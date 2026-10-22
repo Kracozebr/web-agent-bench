@@ -95,7 +95,19 @@ def main() -> int:
     evidence_directory = root / "artifacts" / "bdd-evidence"
     evidence_directory.mkdir(parents=True, exist_ok=True)
     junit_path = evidence_directory / f"{CHANGE_NAME}-pytest.xml"
+    junit_relative = junit_path.relative_to(root).as_posix()
+    python_label = ".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python"
     command = [
+        python_label,
+        "-m",
+        "pytest",
+        "tests/bdd",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        f"--junitxml={junit_relative}",
+    ]
+    execution_command = [
         sys.executable,
         "-m",
         "pytest",
@@ -103,7 +115,7 @@ def main() -> int:
         "-q",
         "-p",
         "no:cacheprovider",
-        f"--junitxml={junit_path}",
+        f"--junitxml={junit_relative}",
     ]
     started_at = _utc_now()
     evidence_path = root / ACCEPTANCE_RELATIVE
@@ -179,7 +191,9 @@ def main() -> int:
         _write_evidence(evidence_path, preflight)
         return regenerate.returncode
 
-    result = subprocess.run(command, cwd=root, text=True, check=False, env=os.environ.copy())
+    result = subprocess.run(
+        execution_command, cwd=root, text=True, check=False, env=os.environ.copy()
+    )
     finished_at = _utc_now()
     try:
         scenario_results = _scenario_results_from_junit(junit_path, scenarios)
