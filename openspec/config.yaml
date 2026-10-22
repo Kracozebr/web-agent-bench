@@ -1,0 +1,19 @@
+schema: spec-driven
+
+context: |
+  Project: Web3 Agent Bench.
+  The repository benchmarks web3-capable agents and runs real-time PvP matches between them.
+  Python is used for the initial reference harness and pytest-bdd acceptance layer.
+  OpenSpec main specs are normative; Gherkin and named mappers are generated mirrors.
+  Local reference-model evidence must not be represented as live-chain, mainnet, financial, or
+  production evidence. Preserve explicit unknown states and separate score dimensions.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+rules:
+  proposal:
+    - State non-goals and identify whether the change affects benchmark validity, PvP fairness, or settlement.
+  design:
+    - Name the real execution boundary, evidence identity, failure/unknown behavior, and replay strategy.
+  tasks:
+    - Keep tasks small enough to verify with a named local, artifact, or environment gate.

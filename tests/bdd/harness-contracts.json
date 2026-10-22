@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "spec_snapshot": {
+    "normative_clauses": 33,
+    "requirement_clause_counts": {
+      "PV-REQ-001": 5,
+      "PV-REQ-002": 4,
+      "PV-REQ-003": 4,
+      "PV-REQ-004": 5,
+      "WB-REQ-001": 3,
+      "WB-REQ-002": 4,
+      "WB-REQ-003": 4,
+      "WB-REQ-004": 4
+    },
+    "requirements": 8,
+    "scenario_ids_sha256": "f8af002eca5526d621f07d7169ceb2f9880c0efc2ed9271b2d577f87e2354404",
+    "scenario_requirement_mapping": {
+      "PV-SC-001": "PV-REQ-001",
+      "PV-SC-002": "PV-REQ-002",
+      "PV-SC-003": "PV-REQ-003",
+      "PV-SC-004": "PV-REQ-004",
+      "WB-SC-001": "WB-REQ-001",
+      "WB-SC-002": "WB-REQ-002",
+      "WB-SC-003": "WB-REQ-003",
+      "WB-SC-004": "WB-REQ-004"
+    },
+    "scenario_requirement_sha256": "4e9a90ffb2089757c53a010b3803d415da317e3356576a2fcdd0038abfd4949f",
+    "scenarios": 8
+  },
+  "coverage_policy": {
+    "status": "complete",
+    "required_protected_scenarios": [
+      "PV-SC-001",
+      "PV-SC-002",
+      "PV-SC-003",
+      "PV-SC-004",
+      "WB-SC-001",
+      "WB-SC-002",
+      "WB-SC-003",
+      "WB-SC-004"
+    ]
+  },
+  "protected_scenarios": {
+    "PV-SC-001": {
+      "boundary": "match_authority",
+      "required_observations": [
+        "one_sided_rejected",
+        "match_started_after_both_ready",
+        "rules_snapshot_immutable"
+      ],
+      "negative_variants": [
+        "one_agent_not_ready",
+        "rules_mutated_after_start"
+      ],
+      "durable_effects": [
+        "match_identity",
+        "rules_snapshot"
+      ],
+      "evidence_mode": "reference match authority state and immutable snapshot"
+    },
+    "PV-SC-002": {
+      "boundary": "match_authority",
+      "required_observations": [
+        "monotonic_sequence",
+        "authority_timestamped",
+        "deadline_decisions_recorded"
+      ],
+      "negative_variants": [
+        "client_timestamp_reordering",
+        "missing_deadline_decision"
+      ],
+      "durable_effects": [
+        "accepted_event_log",
+        "deadline_outcomes"
+      ],
+      "evidence_mode": "reference authority event log"
+    },
+    "PV-SC-003": {
+      "boundary": "match_authority",
+      "required_observations": [
+        "terminal_result_stable",
+        "late_action_recorded",
+        "accepted_history_preserved"
+      ],
+      "negative_variants": [
+        "reconnect_resets_clock",
+        "late_action_changes_winner"
+      ],
+      "durable_effects": [
+        "terminal_result",
+        "rejection_event"
+      ],
+      "evidence_mode": "reference terminal match state and post-terminal event"
+    },
+    "PV-SC-004": {
+      "boundary": "settlement",
+      "required_observations": [
+        "stable_outcome",
+        "single_effect",
+        "dedup_key_recorded"
+      ],
+      "negative_variants": [
+        "duplicate_retry_effect",
+        "ambiguous_provider_result"
+      ],
+      "durable_effects": [
+        "settlement_intent",
+        "deduplication_record"
+      ],
+      "evidence_mode": "reference settlement record with duplicate submission"
+    },
+    "WB-SC-001": {
+      "boundary": "reference_model",
+      "required_observations": [
+        "run_identity_present",
+        "event_sequence_ordered",
+        "event_payloads_hashed"
+      ],
+      "negative_variants": [
+        "missing_run_identity",
+        "unordered_event_sequence"
+      ],
+      "durable_effects": [
+        "run_record",
+        "normalized_event_trace"
+      ],
+      "evidence_mode": "deterministic reference run record"
+    },
+    "WB-SC-002": {
+      "boundary": "reference_model",
+      "required_observations": [
+        "dimensions_separate",
+        "chain_evidence_unknown",
+        "task_outcome_preserved"
+      ],
+      "negative_variants": [
+        "unknown_collapsed_to_failure",
+        "unknown_collapsed_to_success"
+      ],
+      "durable_effects": [
+        "scorecard",
+        "evidence_status"
+      ],
+      "evidence_mode": "reference scorecard with partial chain evidence"
+    },
+    "WB-SC-003": {
+      "boundary": "reference_model",
+      "required_observations": [
+        "same_canonical_inputs",
+        "original_evidence_retained",
+        "replay_marked_separately"
+      ],
+      "negative_variants": [
+        "different_seed_replay",
+        "original_trace_overwritten"
+      ],
+      "durable_effects": [
+        "original_run",
+        "replay_run"
+      ],
+      "evidence_mode": "reference replay comparison"
+    },
+    "WB-SC-004": {
+      "boundary": "chain_observation",
+      "required_observations": [
+        "raw_evidence_reference_preserved",
+        "chain_effect_unknown",
+        "unknown_not_success"
+      ],
+      "negative_variants": [
+        "missing_receipt_classified_success",
+        "provider_ambiguity_hidden"
+      ],
+      "durable_effects": [
+        "transaction_intent",
+        "reconciliation_candidate"
+      ],
+      "evidence_mode": "reference fixture representing an unverified chain observation"
+    }
+  }
+}
+
