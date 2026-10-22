@@ -12,13 +12,13 @@
     "--junitxml=C:\\onchain\\Proj\\web-agent-bench\\artifacts\\bdd-evidence\\web3-agent-bench-baseline-pytest.xml"
   ],
   "exit_code": 0,
-  "finished_at_utc": "2026-10-22T07:26:27.024458Z",
+  "finished_at_utc": "2026-10-22T07:27:14.656526Z",
   "gate": {
     "class": "local",
     "mandatory": true
   },
-  "git_commit": "bcfb1800ef824a1d16aec68a2e651f7a68c0dc64",
-  "git_worktree_dirty": true,
+  "git_commit": "b830aa286f6846c12c700719b29d31bed3ce9bcc",
+  "git_worktree_dirty": false,
   "harness_audit": {
     "approved_scenarios": 8,
     "coverage_status": "complete",
@@ -29,7 +29,7 @@
     "warnings": []
   },
   "harness_contract_sha256": "453da091cddccbb1f2613d0079d43dacfee09784476affb45f15a2a3fc0993f8",
-  "harness_sources_sha256": "d25d2194ddc8e135c1689a395ceaff224ee6582850e0d9f3bd82d9cb29bc4ab8",
+  "harness_sources_sha256": "c44b23a72b1c0f88790e6ac61c88b6b6caf4ed76b4c16c532c06cc9e47c27bd3",
   "lifecycle_phase": "synced-main",
   "main_specs_sha256": "bd94686684e0dfbea3bb74cbb186a1b340f69212fe2fd0cd44857ed763f4eb31",
   "normative_source": "openspec/specs/*/spec.md",
@@ -44,5 +44,5 @@
     "WB-SC-004": "passed"
   },
   "schema_version": 1,
-  "started_at_utc": "2026-10-22T07:26:25.229835Z"
+  "started_at_utc": "2026-10-22T07:27:12.979711Z"
 }
