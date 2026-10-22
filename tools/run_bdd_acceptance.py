@@ -126,10 +126,6 @@ def main() -> int:
         "harness_audit": {"status": "not_run"},
         "scenario_results": {scenario.scenario_id: "not_run" for scenario in scenarios},
     }
-    # AICODE-NOTE: Record running before subprocesses so interruption cannot leave an older pass
-    # looking current to the traceability generator.
-    _write_evidence(evidence_path, preflight)
-
     try:
         git_commit, git_worktree_dirty = _git_metadata(root)
         main_specs_sha256 = sha256_files(root, main_spec_paths(root))
@@ -148,6 +144,11 @@ def main() -> int:
         harness_contract_sha256=harness_contract_sha256,
         harness_sources_sha256=harness_sources_sha256,
     )
+    # AICODE-NOTE: Capture Git metadata before writing the running record so the dirty flag
+    # describes the caller's pre-acceptance worktree, not the evidence file created by this runner.
+    # The running record is still written before the audit, mirror generation, and pytest subprocesses
+    # so an interruption cannot leave an older pass looking current.
+    _write_evidence(evidence_path, preflight)
     audit_process = subprocess.run(
         [sys.executable, str(root / "tools" / "check_bdd_harness.py"), "--json"],
         cwd=root,
