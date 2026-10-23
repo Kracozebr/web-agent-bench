@@ -1,0 +1,417 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "normative_delta": "specs/benchmark-environment-feasibility/spec.md",
+  "note": "Review-only inventory. All gates not_run. Actual local execution plus declared source reads; no external transaction broadcast. Downstream benchmark-task-suite requires separate actual grading gates; this first probe does not depend on a completed task suite.",
+  "protected_scenarios": {
+    "BEF-SC-001": {
+      "requirement_id": "BEF-REQ-001",
+      "title": "Pinned manifest matches actual source and execution",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_001",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "manifest_actual_rpc_runtime_code",
+      "required_observations": [
+        "manifest_hash",
+        "source_block_hash",
+        "local_identity",
+        "contract_code_hashes",
+        "compatibility_status",
+        "manifest_enforced_vs_evaluated_rule_classification"
+      ],
+      "negative_variants": [
+        "wrong_block",
+        "wrong_chain",
+        "missing_code",
+        "unsupported_asset_scheme",
+        "per_trial_latest"
+      ],
+      "durable_effects": [
+        "validated_manifest_binding",
+        "prerequisite_failure_evidence"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-002": {
+      "requirement_id": "BEF-REQ-002",
+      "title": "Basic tools preserve the reference driver's explicit choices",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_002",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_tool_http_evm_services",
+      "required_observations": [
+        "authenticated_scope",
+        "observed_reads",
+        "explicit_choices",
+        "actual_selected_effect",
+        "technical_steps_declared",
+        "technically_valid_learning_mistake_executed",
+        "selected_parameters_not_repaired",
+        "no_goal_based_rejection_or_corrective_reset",
+        "actual_effect_vs_task_criteria_recorded",
+        "protocol_failure_not_silent_correction"
+      ],
+      "negative_variants": [
+        "different_valid_offer",
+        "changed_amount",
+        "route_not_automatically_optimized",
+        "wrong_test_recipient_within_scope",
+        "expense_exceeds_task_budget_within_hard_bounds",
+        "excess_allowance_to_supported_local_spender",
+        "insufficient_test_balance_or_genuine_protocol_failure"
+      ],
+      "durable_effects": [
+        "tool_operation_identity",
+        "selected_parameters",
+        "effect_links",
+        "selected_mistake_parameters",
+        "actual_learning_error_effect_and_cost_references",
+        "manifest_rule_classification_binding"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-003": {
+      "requirement_id": "BEF-REQ-002",
+      "title": "Participant requests cannot reach setup or foreign execution",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_003",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_tool_scope_admin_boundary",
+      "required_observations": [
+        "scope_checked",
+        "admin_unreachable",
+        "no_signature_or_transaction",
+        "protected_state_unchanged",
+        "learning_mistake_policy_does_not_waive_isolation"
+      ],
+      "negative_variants": [
+        "foreign_environment",
+        "stale_generation",
+        "arbitrary_url",
+        "raw_transaction",
+        "admin_rpc",
+        "learning_error_claim_for_foreign_or_admin_access",
+        "real_fund_or_external_write_route",
+        "request_exceeds_preexecution_resource_bound"
+      ],
+      "durable_effects": [
+        "denial_audit",
+        "unchanged_foreign_and_admin_state"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-004": {
+      "requirement_id": "BEF-REQ-003",
+      "title": "Offer inspection neither pays nor delivers purchased data",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_004",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_resource_http_local_evm",
+      "required_observations": [
+        "offer_identity",
+        "payment_requirements",
+        "no_token_delta",
+        "no_settlement",
+        "no_purchased_delivery"
+      ],
+      "negative_variants": [
+        "repeat_offer_read",
+        "malformed_offer_request"
+      ],
+      "durable_effects": [
+        "offer_observation_manifest",
+        "unchanged_payment_delivery_state"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-005": {
+      "requirement_id": "BEF-REQ-003",
+      "title": "Selected x402 purchase settles locally and delivers verified data",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_005",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_x402_local_settlement_delivery",
+      "required_observations": [
+        "scheme_asset_domain",
+        "verified_authorization",
+        "local_receipt",
+        "token_effects",
+        "delivery_hash",
+        "payer_identity"
+      ],
+      "negative_variants": [
+        "verification_without_receipt",
+        "wrong_token_representation",
+        "mismatched_data"
+      ],
+      "durable_effects": [
+        "settlement_operation",
+        "transaction_identity",
+        "delivery_record",
+        "redacted_effect_evidence"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-006": {
+      "requirement_id": "BEF-REQ-003",
+      "title": "Payment recovery preserves one effect under duplicates and uncertainty",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_006",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_x402_http_evm_durable_recovery",
+      "required_observations": [
+        "invalid_payment_denied",
+        "original_identity_recovered",
+        "one_settlement",
+        "one_logical_delivery",
+        "unknown_not_success"
+      ],
+      "negative_variants": [
+        "wrong_domain",
+        "amount_mismatch",
+        "reused_authorization",
+        "response_loss",
+        "concurrent_duplicate",
+        "missing_receipt"
+      ],
+      "durable_effects": [
+        "durable_payment_delivery_identity",
+        "recovery_audit",
+        "no_duplicate_charge"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-007": {
+      "requirement_id": "BEF-REQ-004",
+      "title": "Selected forked-pool swap proves actual constrained effects",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_007",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_tool_http_fork_contract",
+      "required_observations": [
+        "selected_contract_code",
+        "receipt_events",
+        "token_deltas",
+        "allowance",
+        "reserve",
+        "representation_wrapping",
+        "executed_goal_mismatch_not_task_success",
+        "in_scope_wrong_recipient_or_reserve_effect_observed",
+        "boundary_denial_distinct_from_contract_revert",
+        "distinct_native_eth_and_pinned_weth",
+        "explicit_wrap_unwrap_direction_and_amount",
+        "actual_wrap_and_unwrap_receipts",
+        "no_automatic_conversion_by_swap_or_signer",
+        "weth_not_counted_as_native_target_or_gas_reserve",
+        "conversion_gas_attributed_once"
+      ],
+      "negative_variants": [
+        "unsupported_asset_boundary_rejected",
+        "unsupported_route_boundary_rejected",
+        "wrong_goal_recipient_within_test_scope_executes",
+        "actual_output_below_task_goal_recorded",
+        "actual_reserve_below_task_goal_recorded",
+        "local_revert",
+        "technically_valid_wrong_test_recipient",
+        "technically_valid_task_reserve_violation",
+        "agent_chosen_slippage_guard_reverts",
+        "weth_only_native_eth_goal_unmet",
+        "weth_only_native_gas_reserve_unmet",
+        "missing_or_wrong_conversion_amount",
+        "genuine_wrap_or_unwrap_failure",
+        "display_value_not_native_balance"
+      ],
+      "durable_effects": [
+        "swap_operation",
+        "receipts_effects",
+        "constraint_outcome",
+        "unrepaired_selected_exchange_parameters",
+        "observed_goal_mismatch_evidence",
+        "pinned_weth_code_and_asset_identity",
+        "selected_conversion_operation_parameters",
+        "separate_native_and_weth_balance_evidence"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-008": {
+      "requirement_id": "BEF-REQ-005",
+      "title": "Observed successful and reverted gas uses the pinned educational model",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_008",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_receipts_balances_cost_evaluator",
+      "required_observations": [
+        "successful_and_reverted_receipts",
+        "pinned_fee_fx",
+        "actual_payer",
+        "no_double_count",
+        "no_fabricated_rejection_fee",
+        "l1_unmodelled"
+      ],
+      "negative_variants": [
+        "missing_receipt",
+        "sponsored_settlement",
+        "embedded_fee",
+        "preexecution_rejection"
+      ],
+      "durable_effects": [
+        "cost_component_records",
+        "receipt_links",
+        "payer_attribution",
+        "unknown_markers"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-009": {
+      "requirement_id": "BEF-REQ-006",
+      "title": "Two active environments cannot mutate or reset one another",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_009",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "two_actual_nodes_services_isolation",
+      "required_observations": [
+        "independent_chain_state",
+        "independent_service_state",
+        "reset_not_crossing_boundary",
+        "foreign_access_denied"
+      ],
+      "negative_variants": [
+        "concurrent_operations",
+        "foreign_environment_reference",
+        "reset_other_instance"
+      ],
+      "durable_effects": [
+        "separate_generation_operation_records",
+        "isolation_observation_hashes"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-010": {
+      "requirement_id": "BEF-REQ-006",
+      "title": "Reset restores equivalent starts and fences stale work",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_010",
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_chain_service_reset_generation",
+      "required_observations": [
+        "stale_generation_fenced",
+        "chain_baseline",
+        "service_baseline",
+        "fixture_hash",
+        "equivalent_probe_outcome"
+      ],
+      "negative_variants": [
+        "late_worker",
+        "previous_payment_nonce",
+        "stale_delivery_record",
+        "reused_operation_namespace"
+      ],
+      "durable_effects": [
+        "new_generation",
+        "reset_manifest",
+        "baseline_comparison",
+        "distinct_trial_identity"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-011": {
+      "requirement_id": "BEF-REQ-007",
+      "title": "Cold and warm trials produce bounded actual resource evidence",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_011",
+      "adapter": "benchmark_environment_resource_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_process_container_cache_source_measurement",
+      "required_observations": [
+        "host_and_limits",
+        "cold_warm_state",
+        "cpu_peak_ram_elapsed",
+        "cache_artifact_bytes",
+        "source_request_count",
+        "guardrail_stop",
+        "cu_unknown_if_unobservable"
+      ],
+      "negative_variants": [
+        "missing_sampler",
+        "empty_dedicated_cache",
+        "warm_cache",
+        "guardrail_exceeded",
+        "provider_cu_unavailable"
+      ],
+      "durable_effects": [
+        "resource_samples",
+        "trial_conditions",
+        "measured_totals",
+        "stopped_or_complete_status"
+      ],
+      "evidence_mode": "actual_local_process_container_resource_observations",
+      "allowed_private_calls": []
+    },
+    "BEF-SC-012": {
+      "requirement_id": "BEF-REQ-008",
+      "title": "Source proxy and evidence keep execution local and replay read-only",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bef_sc_012",
+      "adapter": "benchmark_source_rpc_evidence_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_source_rpc_proxy_evidence_replay",
+      "required_observations": [
+        "source_chain_block_code",
+        "allowed_read_provenance",
+        "prohibited_not_forwarded",
+        "evidence_paths_hashes",
+        "replay_no_broadcast",
+        "secrets_absent"
+      ],
+      "negative_variants": [
+        "wrong_source_identity",
+        "send_raw_transaction",
+        "admin_method",
+        "sign_method",
+        "secret_in_artifact",
+        "missing_hash"
+      ],
+      "durable_effects": [
+        "source_read_audit",
+        "outbound_denial_record",
+        "redacted_manifest",
+        "replay_comparison"
+      ],
+      "evidence_mode": "actual_source_rpc_readonly_proxy_and_recorded_evidence",
+      "allowed_private_calls": []
+    }
+  }
+}

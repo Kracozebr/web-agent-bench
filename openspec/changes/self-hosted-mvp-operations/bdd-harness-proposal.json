@@ -1,0 +1,372 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "normative_delta": "specs/self-hosted-mvp-operations/spec.md",
+  "note": "Review-only inventory, all not_run. Local recovery excludes total-host-loss; actual Linux target gate is separate. No real-funds broadcast.",
+  "protected_scenarios": {
+    "OPS-SC-001": {
+      "requirement_id": "OPS-REQ-001",
+      "title": "Pinned Compose startup preserves the actual persistent service graph",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_001",
+      "adapter": "mvp_compose_operations_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_compose_http_postgres_volumes",
+      "required_observations": [
+        "actual_service_graph",
+        "pinned_image_schema",
+        "persistent_identity",
+        "after_restart_same_state"
+      ],
+      "negative_variants": [
+        "empty_new_profile",
+        "existing_volume",
+        "process_restart",
+        "wrong_volume_binding"
+      ],
+      "durable_effects": [
+        "deployment_manifest",
+        "persistent_records",
+        "service_observation_hashes"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-002": {
+      "requirement_id": "OPS-REQ-001",
+      "title": "Participant and test roles cannot reach privileged operational surfaces",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_002",
+      "adapter": "mvp_compose_operations_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_compose_network_mount_role_boundary",
+      "required_observations": [
+        "published_ports_checked",
+        "private_services_unreachable",
+        "no_engine_socket_crossing",
+        "no_real_signer_authority"
+      ],
+      "negative_variants": [
+        "direct_admin_port",
+        "test_to_real_signer",
+        "caller_cleanup_path",
+        "engine_endpoint_probe"
+      ],
+      "durable_effects": [
+        "boundary_denial_evidence",
+        "unchanged_protected_state"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-003": {
+      "requirement_id": "OPS-REQ-002",
+      "title": "Invalid configuration or unavailable dependencies cannot pass readiness",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_003",
+      "adapter": "mvp_compose_operations_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_config_startup_http_dependency_checks",
+      "required_observations": [
+        "profile_requirements_checked",
+        "actual_dependency_state",
+        "unsafe_config_rejected",
+        "no_fake_provider_ready"
+      ],
+      "negative_variants": [
+        "missing_secret",
+        "wrong_schema",
+        "unsafe_root",
+        "external_fixture_only",
+        "dependency_unavailable"
+      ],
+      "durable_effects": [
+        "readiness_observations",
+        "startup_failure_record",
+        "no_charge_or_activation"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-004": {
+      "requirement_id": "OPS-REQ-003",
+      "title": "Container restart fences old workers and recovers durable operations",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_004",
+      "adapter": "mvp_compose_operations_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_compose_worker_postgres_domain_restart",
+      "required_observations": [
+        "durable_identity_preserved",
+        "one_domain_effect",
+        "stale_generation_fenced",
+        "successor_not_overlapping"
+      ],
+      "negative_variants": [
+        "response_loss",
+        "duplicate_delivery",
+        "restart_after_commit",
+        "delayed_predecessor"
+      ],
+      "durable_effects": [
+        "operation_records",
+        "executor_generation",
+        "recovery_audit"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-005": {
+      "requirement_id": "OPS-REQ-003",
+      "title": "Resource pressure applies backpressure without destructive shortcuts",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_005",
+      "adapter": "mvp_compose_operations_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_limits_filesystem_admission_boundary",
+      "required_observations": [
+        "configured_limit_observed",
+        "admission_backpressure",
+        "no_unready_debit",
+        "protected_data_retained"
+      ],
+      "negative_variants": [
+        "worker_full",
+        "low_disk",
+        "backup_staging_full",
+        "evidence_write_failure"
+      ],
+      "durable_effects": [
+        "resource_samples",
+        "admission_outcome",
+        "pressure_audit"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-006": {
+      "requirement_id": "OPS-REQ-004",
+      "title": "Thirty-day cleanup protects ongoing work holds and durable proof",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_006",
+      "adapter": "mvp_storage_restore_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_retention_http_postgres_filesystem",
+      "required_observations": [
+        "cutoff_boundary_checked",
+        "protected_classes_retained",
+        "open_holds_retained",
+        "unknown_class_protected",
+        "availability_tombstone",
+        "raw_not_in_backup"
+      ],
+      "negative_variants": [
+        "younger_than_30_days",
+        "exact_cutoff",
+        "ongoing_recovery",
+        "missing_terminal_time",
+        "protected_receipt_body"
+      ],
+      "durable_effects": [
+        "purge_intent_completion",
+        "retained_proof_hashes",
+        "unchanged_domain_records"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-007": {
+      "requirement_id": "OPS-REQ-004",
+      "title": "Cleanup races crashes and unsafe paths preserve authoritative ordering",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_007",
+      "adapter": "mvp_storage_restore_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_retention_concurrency_filesystem_identity",
+      "required_observations": [
+        "hold_order_serialized",
+        "real_path_containment",
+        "link_escape_denied",
+        "retry_same_purge",
+        "actual_availability_reconciled"
+      ],
+      "negative_variants": [
+        "hold_before_purge",
+        "hold_after_purge_boundary",
+        "crash_after_unlink",
+        "symlink_escape",
+        "traversal",
+        "foreign_generation"
+      ],
+      "durable_effects": [
+        "ordered_hold_purge_audit",
+        "idempotent_completion",
+        "unchanged_foreign_files"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-008": {
+      "requirement_id": "OPS-REQ-005",
+      "title": "Local backup commits only a coherent verified set",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_008",
+      "adapter": "mvp_storage_restore_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_postgres_dump_filesystem_backup_manifest",
+      "required_observations": [
+        "same_snapshot_references",
+        "required_files_hashed",
+        "raw_trace_excluded",
+        "incomplete_not_verified",
+        "previous_set_retained"
+      ],
+      "negative_variants": [
+        "concurrent_cleanup",
+        "missing_required_blob",
+        "dump_failure",
+        "hash_mismatch",
+        "staging_quota"
+      ],
+      "durable_effects": [
+        "backup_set_manifest",
+        "snapshot_identity",
+        "verified_or_incomplete_status"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-009": {
+      "requirement_id": "OPS-REQ-006",
+      "title": "Isolated local restore verifies application state and file coverage",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_009",
+      "adapter": "mvp_storage_restore_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_separate_compose_postgres_file_restore",
+      "required_observations": [
+        "new_volumes_source_intact",
+        "application_invariants",
+        "file_hashes_checked",
+        "explicit_expired_availability",
+        "local_boundary_label"
+      ],
+      "negative_variants": [
+        "corrupt_dump",
+        "missing_required_proof",
+        "wrong_schema",
+        "incomplete_set"
+      ],
+      "durable_effects": [
+        "restore_manifest",
+        "verification_report",
+        "source_hash_comparison"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-010": {
+      "requirement_id": "OPS-REQ-006",
+      "title": "Restore mode fences stale authority and uncertain monetary effects",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_010",
+      "adapter": "mvp_storage_restore_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_restore_mode_http_worker_egress_fence",
+      "required_observations": [
+        "restore_mode_persisted",
+        "participant_writes_denied",
+        "signer_egress_denied",
+        "original_identity_retained",
+        "authority_not_auto_revived"
+      ],
+      "negative_variants": [
+        "queued_withdrawal_already_submitted",
+        "lost_revoke_state",
+        "worker_restart",
+        "unreviewed_reactivation"
+      ],
+      "durable_effects": [
+        "restore_fence_record",
+        "reconciliation_items",
+        "unchanged_payment_submission_count"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-011": {
+      "requirement_id": "OPS-REQ-007",
+      "title": "Operator status is private truthful and secret-safe",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_011",
+      "adapter": "mvp_compose_operations_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_operator_http_cli_logs_store",
+      "required_observations": [
+        "operator_role_enforced",
+        "minimal_public_health",
+        "timestamp_provenance",
+        "unknown_not_zero",
+        "secret_safe_output"
+      ],
+      "negative_variants": [
+        "agent_operator_request",
+        "public_status_probe",
+        "stale_backup",
+        "missing_sampler",
+        "sensitive_canary"
+      ],
+      "durable_effects": [
+        "status_manifest",
+        "denial_audit",
+        "redacted_paths_hashes"
+      ],
+      "evidence_mode": "actual_local_compose_application_postgres_filesystem_network_with_declared_domain_fixtures",
+      "allowed_private_calls": []
+    },
+    "OPS-SC-012": {
+      "requirement_id": "OPS-REQ-008",
+      "title": "Actual Linux host proves its own bounded deployment boundary",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ops_sc_012",
+      "adapter": "mvp_actual_linux_host_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_selected_linux_host_https_compose",
+      "required_observations": [
+        "actual_host_identity",
+        "pinned_profile_https",
+        "actual_headroom",
+        "disk_observed",
+        "bounded_smoke",
+        "local_restore_boundary"
+      ],
+      "negative_variants": [
+        "host_unavailable",
+        "wrong_os_profile",
+        "missing_domain",
+        "unsupported_runtime",
+        "disk_threshold"
+      ],
+      "durable_effects": [
+        "target_host_manifest",
+        "raw_observation_hashes",
+        "explicit_gate_status"
+      ],
+      "evidence_mode": "actual_selected_linux_host_https_compose_and_synthetic_workload",
+      "allowed_private_calls": []
+    }
+  }
+}

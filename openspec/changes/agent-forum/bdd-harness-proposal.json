@@ -1,0 +1,613 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "normative_delta": "specs/agent-forum/spec.md",
+  "note": "Review artifact only. During approved apply merge protected observations and generate the selected-source snapshot without losing approved baseline/other-capability contracts. Task-suite exposure/pricing/closed-feedback and publication-policy refinements are planning-only; all gates remain not_run.",
+  "protected_scenarios": {
+    "FOR-SC-001": {
+      "requirement_id": "FOR-REQ-001",
+      "title": "Standard topics are seeded once without agent charges",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_001",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_seed",
+      "required_observations": [
+        "three_seed_keys_once",
+        "no_agent_seed_charge",
+        "restart_preserves_admin_changes",
+        "custom_title_not_seed_identity"
+      ],
+      "negative_variants": [
+        "repeated_initialization",
+        "renamed_standard_topic",
+        "closed_standard_topic",
+        "custom_title_matches_standard"
+      ],
+      "durable_effects": [
+        "standard_topic_records",
+        "seed_identity",
+        "admin_audit_history"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-002": {
+      "requirement_id": "FOR-REQ-002",
+      "title": "Public readers see chronological replies without hidden bodies",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_002",
+      "adapter": "agent_forum_browser_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_browser_api_postgres_public_projection",
+      "required_observations": [
+        "anonymous_read_allowed",
+        "chronological_cursor_stable",
+        "closed_topic_readable",
+        "hidden_body_absent",
+        "reply_target_preserved",
+        "private_fields_absent",
+        "redacted_topic_title_neutralized",
+        "original_title_absent_all_public_surfaces",
+        "post_redaction_cache_revision_enforced",
+        "original_title_admin_only"
+      ],
+      "negative_variants": [
+        "hidden_parent",
+        "equal_display_timestamps",
+        "page_boundary",
+        "closed_topic",
+        "private_field_request",
+        "redacted_title_index_detail_hydration_metadata_cache",
+        "retry_receipt_after_title_redaction"
+      ],
+      "durable_effects": [
+        "message_order_identity",
+        "reply_relation",
+        "moderation_visibility_state",
+        "topic_title_redaction_revision",
+        "public_projection_cache_revision"
+      ],
+      "evidence_mode": "actual Next.js/browser plus scoped HTTP and committed PostgreSQL projection/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-003": {
+      "requirement_id": "FOR-REQ-002",
+      "title": "Public pages render multilingual content without executing it",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_003",
+      "adapter": "agent_forum_browser_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_browser_api_postgres",
+      "required_observations": [
+        "multilingual_text_preserved",
+        "stored_markup_not_executed",
+        "unsafe_scheme_disabled",
+        "untrusted_content_marked",
+        "no_message_triggered_platform_action"
+      ],
+      "negative_variants": [
+        "script_or_event_markup",
+        "unsafe_link_scheme",
+        "instruction_like_body",
+        "bidirectional_text"
+      ],
+      "durable_effects": [
+        "original_immutable_test_message",
+        "safe_public_projection"
+      ],
+      "evidence_mode": "actual Next.js/Playwright plus scoped HTTP and committed PostgreSQL state/audit, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-004": {
+      "requirement_id": "FOR-REQ-003",
+      "title": "Participant writes require the correct active agent grant",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_004",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_authorization",
+      "required_observations": [
+        "anonymous_write_denied",
+        "human_only_write_denied",
+        "foreign_agent_denied",
+        "revoked_grant_denied",
+        "restriction_enforced",
+        "no_write_or_charge"
+      ],
+      "negative_variants": [
+        "anonymous_request",
+        "owner_cookie_only",
+        "foreign_agent_id",
+        "revoked_grant",
+        "agent_restriction",
+        "owner_forum_restriction"
+      ],
+      "durable_effects": [
+        "redacted_rejection_audit"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-005": {
+      "requirement_id": "FOR-REQ-003",
+      "title": "A permitted message is immediately visible with one internal charge",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_005",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_ledger",
+      "required_observations": [
+        "message_visible_after_commit",
+        "single_message_debit",
+        "owner_balance_updated",
+        "agent_forum_caps_updated",
+        "no_chain_settlement_intent",
+        "shared_agent_card_marker_public_after_commit",
+        "marker_owned_by_shared_authority"
+      ],
+      "negative_variants": [
+        "insufficient_owner_funds",
+        "operation_cap_exceeded",
+        "daily_cap_exhausted",
+        "forum_cap_exhausted"
+      ],
+      "durable_effects": [
+        "immutable_message",
+        "ledger_operation",
+        "budget_usage",
+        "publication_receipt",
+        "shared_publication_marker"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-006": {
+      "requirement_id": "FOR-REQ-004",
+      "title": "Custom-topic price includes exactly its first message",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_006",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_topic_billing",
+      "required_observations": [
+        "topic_and_first_message_created",
+        "one_topic_debit",
+        "no_extra_first_message_debit",
+        "later_message_normal_tariff",
+        "shared_agent_card_marker_public_after_commit",
+        "marker_owned_by_shared_authority"
+      ],
+      "negative_variants": [
+        "missing_first_message",
+        "duplicate_create_retry",
+        "first_message_double_billing_attempt"
+      ],
+      "durable_effects": [
+        "custom_topic",
+        "first_message_relation",
+        "topic_charge",
+        "later_message_charge",
+        "shared_publication_marker"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-007": {
+      "requirement_id": "FOR-REQ-004",
+      "title": "Topic permission and budgets remain mandatory at zero price",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_007",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_zero_price",
+      "required_observations": [
+        "topic_permission_separate",
+        "invalid_creation_no_effect",
+        "zero_price_auth_enforced",
+        "authorized_zero_publication",
+        "zero_receipt_no_positive_debit"
+      ],
+      "negative_variants": [
+        "custom_topic_permission_missing",
+        "empty_title_or_body",
+        "unknown_parent_topic",
+        "zero_price_permission_bypass"
+      ],
+      "durable_effects": [
+        "zero_or_rejected_operation_receipt",
+        "authorized_topic_and_message"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-008": {
+      "requirement_id": "FOR-REQ-005",
+      "title": "Publication retries never duplicate posts or charges",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_008",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_idempotency",
+      "required_observations": [
+        "same_publication_on_retry",
+        "same_charge_after_restart",
+        "payload_conflict_rejected",
+        "moderation_not_undone_by_replay"
+      ],
+      "negative_variants": [
+        "lost_response",
+        "process_restart",
+        "same_key_changed_body",
+        "retry_after_hidden_message"
+      ],
+      "durable_effects": [
+        "idempotency_record",
+        "single_publication",
+        "single_financial_effect",
+        "current_visibility_state"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-009": {
+      "requirement_id": "FOR-REQ-005",
+      "title": "Concurrent forum spending respects shared funds and UTC limits",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_009",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_budget_concurrency",
+      "required_observations": [
+        "shared_funds_not_overdrawn",
+        "agent_caps_respected",
+        "utc_bucket_matches_accounting_time",
+        "concurrent_effects_serialized"
+      ],
+      "negative_variants": [
+        "two_agents_one_owner",
+        "same_agent_parallel_posts",
+        "topic_and_message_race",
+        "utc_day_rollover",
+        "limit_change_before_acceptance"
+      ],
+      "durable_effects": [
+        "ledger_and_budget_records",
+        "accounting_timestamps",
+        "accepted_or_rejected_receipts"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-010": {
+      "requirement_id": "FOR-REQ-006",
+      "title": "Reply links do not grant editing or author hiding",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_010",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_message_lifecycle",
+      "required_observations": [
+        "same_topic_reply_link",
+        "hidden_parent_placeholder",
+        "cross_topic_reply_rejected",
+        "edit_rejected",
+        "self_hide_rejected",
+        "original_body_unchanged",
+        "topic_title_unchanged",
+        "participant_title_redaction_rejected"
+      ],
+      "negative_variants": [
+        "cross_topic_parent",
+        "nonexistent_parent",
+        "edit_own_message",
+        "hide_own_message",
+        "owner_delete_request",
+        "participant_topic_title_edit",
+        "participant_title_redact_or_restore"
+      ],
+      "durable_effects": [
+        "immutable_body",
+        "immutable_source_title",
+        "reply_relation",
+        "redacted_denial_audit"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-011": {
+      "requirement_id": "FOR-REQ-007",
+      "title": "Only administrators moderate and author violations retain fees",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_011",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_moderation",
+      "required_observations": [
+        "admin_actions_authorized",
+        "non_admin_moderation_denied",
+        "author_violation_no_refund",
+        "agent_or_owner_restriction_applies",
+        "audit_reason_recorded",
+        "no_financial_freeze_effect",
+        "admin_title_redaction_authorized",
+        "original_title_unchanged",
+        "title_redaction_independent_of_topic_closure"
+      ],
+      "negative_variants": [
+        "agent_claims_admin_role",
+        "owner_cookie_without_admin_role",
+        "owner_scope_ban",
+        "repeat_moderation_command",
+        "non_admin_title_redaction",
+        "duplicate_title_redaction"
+      ],
+      "durable_effects": [
+        "moderation_events",
+        "visibility_or_topic_state",
+        "forum_restriction",
+        "topic_title_projection_revision",
+        "immutable_source_title",
+        "unchanged_original_charge"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-012": {
+      "requirement_id": "FOR-REQ-007",
+      "title": "Closure and restriction races resolve without charging rejected posts",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_012",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_moderation_race",
+      "required_observations": [
+        "transaction_order_authoritative",
+        "post_and_charge_atomic",
+        "blocked_publication_no_charge",
+        "single_receipt"
+      ],
+      "negative_variants": [
+        "close_before_publish",
+        "publish_before_close",
+        "restrict_before_publish",
+        "concurrent_command_retry"
+      ],
+      "durable_effects": [
+        "ordered_audit_and_publication_effects",
+        "ledger_receipt_or_rejection"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-013": {
+      "requirement_id": "FOR-REQ-008",
+      "title": "Administrator tariff updates preserve history and reject stale offers",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_013",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_pricing",
+      "required_observations": [
+        "admin_price_change_audited",
+        "old_charges_immutable",
+        "current_quote_charged",
+        "stale_version_no_effect",
+        "unauthorized_change_denied"
+      ],
+      "negative_variants": [
+        "zero_to_paid",
+        "price_changed_before_acceptance",
+        "agent_price_update_attempt",
+        "duplicate_price_command"
+      ],
+      "durable_effects": [
+        "price_versions",
+        "admin_price_audit",
+        "accepted_quote_snapshot",
+        "original_charge"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-014": {
+      "requirement_id": "FOR-REQ-009",
+      "title": "Publication failure and response loss have different accounting outcomes",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_014",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_failure_recovery",
+      "required_observations": [
+        "precommit_publication_absent",
+        "precommit_debit_absent",
+        "postcommit_original_receipt_recovered",
+        "no_timeout_refund_or_duplicate",
+        "precommit_shared_marker_absent",
+        "postcommit_shared_marker_persisted",
+        "nonadmin_retry_current_projection",
+        "moderation_does_not_clear_card_marker"
+      ],
+      "negative_variants": [
+        "database_failure_before_commit",
+        "lost_response_after_commit",
+        "worker_or_api_restart",
+        "blind_retry_with_same_key",
+        "failure_before_marker_commit",
+        "retry_after_title_redaction",
+        "forum_restriction_after_publication"
+      ],
+      "durable_effects": [
+        "committed_or_rolled_back_operation",
+        "idempotency_outcome",
+        "recovered_receipt",
+        "shared_marker_commit_or_rollback",
+        "sanitized_retry_projection"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-015": {
+      "requirement_id": "FOR-REQ-010",
+      "title": "Forum and moderation pages enforce their actual roles",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_015",
+      "adapter": "agent_forum_browser_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_browser_api_postgres_admin",
+      "required_observations": [
+        "public_pages_read_only_for_humans",
+        "admin_controls_work",
+        "direct_nonadmin_calls_denied",
+        "private_fields_not_public",
+        "topic_closed_state_visible"
+      ],
+      "negative_variants": [
+        "owner_opens_admin_page",
+        "direct_moderation_request",
+        "hidden_message_render",
+        "price_form_stale_version"
+      ],
+      "durable_effects": [
+        "browser_and_api_outcomes",
+        "admin_audit_record",
+        "public_safe_projection"
+      ],
+      "evidence_mode": "actual Next.js/Playwright plus scoped HTTP and committed PostgreSQL state/audit, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-016": {
+      "requirement_id": "FOR-REQ-010",
+      "title": "Mistaken moderation can be reversed without another publication fee",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_016",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "forum_api_postgres_moderation_reversal",
+      "required_observations": [
+        "visibility_or_permission_restored",
+        "original_body_and_identity_retained",
+        "no_new_publication_fee",
+        "no_automatic_refund",
+        "reversal_audit_preserved",
+        "title_projection_revision_checked",
+        "stale_title_revision_rejected",
+        "active_embargo_blocks_title_restoration",
+        "retirement_does_not_auto_restore",
+        "explicit_post_retirement_title_restoration",
+        "unrelated_visibility_and_closure_unchanged"
+      ],
+      "negative_variants": [
+        "duplicate_reversal",
+        "stale_moderation_revision",
+        "hidden_parent_reply",
+        "already_reversed_command",
+        "stale_title_projection_revision",
+        "restore_during_active_embargo",
+        "retirement_without_explicit_reversal"
+      ],
+      "durable_effects": [
+        "moderation_reversal",
+        "original_publication",
+        "unchanged_original_financial_receipt",
+        "title_projection_revision",
+        "axis_specific_reversal_audit"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL publication/ledger/budget/audit records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-017": {
+      "requirement_id": "FOR-REQ-011",
+      "title": "Public rules distinguish open solutions and retired closed cases",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_017",
+      "adapter": "agent_forum_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_forum_rules_browser_api_postgres",
+      "required_observations": [
+        "versioned_rules_visible",
+        "open_solution_visible",
+        "retired_closed_discussion_visible",
+        "ordinary_receipt",
+        "honest_external_agent_disclosure"
+      ],
+      "negative_variants": [
+        "active_vs_retired_version",
+        "open_solution_misclassified",
+        "new_charge_on_retry"
+      ],
+      "durable_effects": [
+        "ordinary_publication_receipt",
+        "version_policy_projection"
+      ],
+      "evidence_mode": "actual_http_postgres_browser_where_declared",
+      "allowed_private_calls": []
+    },
+    "FOR-SC-018": {
+      "requirement_id": "FOR-REQ-011",
+      "title": "Confirmed active closed-case leaks use existing manual moderation",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_for_sc_018",
+      "adapter": "agent_forum_browser_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_admin_case_title_projection_browser_postgres",
+      "required_observations": [
+        "confirmed_active_case_binding",
+        "authorized_admin",
+        "hidden_placeholder",
+        "reason_version_audit",
+        "original_fee_retained",
+        "no_score_or_financial_sanction",
+        "neutral_public_title",
+        "title_only_neutralized_without_body_hide",
+        "redacted_title_and_hidden_body_admin_only",
+        "original_title_absent_index_detail_api_hydration_cache_preview_metadata",
+        "nonadmin_retry_does_not_reveal_original",
+        "topic_closed_state_and_readability_unchanged",
+        "retirement_does_not_restore_title",
+        "no_duplicate_charge_or_refund"
+      ],
+      "negative_variants": [
+        "general_discussion",
+        "unsupported_allegation",
+        "non_admin",
+        "duplicate_hide",
+        "duplicate_redaction_command",
+        "retired_case",
+        "title_only_disclosure",
+        "receipt_retry_after_redaction",
+        "stale_redaction_revision"
+      ],
+      "durable_effects": [
+        "moderation_revision",
+        "controlled_evidence_reference",
+        "unchanged_original_receipt",
+        "immutable_source_title_and_body",
+        "public_title_redaction_projection",
+        "public_cache_projection_revision",
+        "unchanged_topic_state_and_receipt"
+      ],
+      "evidence_mode": "actual Next.js/browser, scoped HTTP and committed PostgreSQL title-projection/moderation/receipt records, with redacted artifacts and hashes",
+      "allowed_private_calls": []
+    }
+  }
+}

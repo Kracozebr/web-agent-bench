@@ -1,0 +1,507 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "normative_delta": "specs/agent-access-and-permissions/spec.md",
+  "note": "Review-only inventory, not runtime contracts or executed evidence.",
+  "protected_scenarios": {
+    "AAP-SC-001": {
+      "requirement_id": "AAP-REQ-001",
+      "title": "Private agent management binds profiles to the verified owner",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_001",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "owner_api_postgres_profiles",
+      "required_observations": [
+        "owner_card_persisted",
+        "foreign_owner_denied",
+        "agent_owner_mutation_denied",
+        "declared_metadata_labelled",
+        "run_snapshot_unchanged",
+        "new_card_no_public_marker",
+        "caller_visibility_change_cannot_publish"
+      ],
+      "negative_variants": [
+        "forged_owner_id",
+        "foreign_agent_id",
+        "agent_changes_cash_permission",
+        "owner_edits_declared_version",
+        "forged_publication_flag",
+        "profile_edit_or_preflight_as_publication"
+      ],
+      "durable_effects": [
+        "profile_identity",
+        "policy_revision",
+        "owner_edit_audit",
+        "private_profile_marker_absent"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-002": {
+      "requirement_id": "AAP-REQ-002",
+      "title": "Browser consent grants one bounded agent identity",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_002",
+      "adapter": "agent_access_browser_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "browser_oauth_postgres_consent",
+      "required_observations": [
+        "consent_owner_agent_bound",
+        "effective_scopes_displayed",
+        "approved_grant_identity",
+        "denied_consent_no_grant"
+      ],
+      "negative_variants": [
+        "consent_denied",
+        "foreign_card_selection",
+        "scope_escalation_in_request",
+        "agent_selection_changed_after_consent"
+      ],
+      "durable_effects": [
+        "consent_revision",
+        "access_grant_identity"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-003": {
+      "requirement_id": "AAP-REQ-002",
+      "title": "Authorization exchange rejects substituted or replayed bindings",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_003",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "oauth_http_postgres_code_exchange",
+      "required_observations": [
+        "binding_validation",
+        "code_consumed_once",
+        "invalid_exchange_denied",
+        "no_scope_escalation"
+      ],
+      "negative_variants": [
+        "wrong_redirect",
+        "wrong_resource_or_issuer",
+        "wrong_pkce",
+        "expired_or_replayed_code"
+      ],
+      "durable_effects": [
+        "code_consumption",
+        "grant_link",
+        "exchange_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-004": {
+      "requirement_id": "AAP-REQ-003",
+      "title": "Manual token issuance is owner-scoped and usable through headers",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_004",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "owner_api_postgres_manual_token",
+      "required_observations": [
+        "owner_issuance",
+        "token_agent_binding",
+        "header_authentication",
+        "unauthorized_issuance_denied"
+      ],
+      "negative_variants": [
+        "foreign_issuance",
+        "agent_self_issuance",
+        "token_for_other_agent",
+        "forged_withdrawal_scope"
+      ],
+      "durable_effects": [
+        "credential_verifier",
+        "grant_identity",
+        "issuance_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-005": {
+      "requirement_id": "AAP-REQ-003",
+      "title": "Credential replacement never exposes old secrets or revives revoked access",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_005",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "owner_api_postgres_secret_replacement",
+      "required_observations": [
+        "show_once_response",
+        "stored_verifier_not_plaintext",
+        "safe_replacement_identity",
+        "old_credential_denied",
+        "secret_absent_from_audit"
+      ],
+      "negative_variants": [
+        "issuance_response_lost",
+        "replacement_retry",
+        "replay_old_token",
+        "replacement_after_global_revoke"
+      ],
+      "durable_effects": [
+        "replacement_lineage",
+        "credential_fence",
+        "sanitized_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-006": {
+      "requirement_id": "AAP-REQ-004",
+      "title": "Four permissions independently govern actual released operations",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_006",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_forum_coordinator_postgres_permission_matrix",
+      "required_observations": [
+        "four_action_permissions_independent",
+        "topic_first_post_included",
+        "standalone_message_permission_checked",
+        "denied_actions_no_effect",
+        "omitted_owner_selections_default_all_false",
+        "free_preflight_without_action_flags",
+        "explicit_owner_selection_required"
+      ],
+      "negative_variants": [
+        "training_only",
+        "ranked_only",
+        "topic_without_message_permission",
+        "all_paid_permissions_disabled",
+        "zero_tariff_does_not_bypass_scope",
+        "new_card_with_omitted_flags",
+        "preflight_must_not_enable_actions"
+      ],
+      "durable_effects": [
+        "allowed_operation_receipts",
+        "denied_action_audit",
+        "no_denied_charge",
+        "initial_policy_revision"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-007": {
+      "requirement_id": "AAP-REQ-004",
+      "title": "Current owner permissions apply to existing connections",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_007",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "domain_http_mcp_postgres_current_policy",
+      "required_observations": [
+        "current_revision_loaded",
+        "fixed_credential_identity_resource_role",
+        "owner_increase_works_without_reconnect",
+        "same_oauth_and_manual_credentials_used",
+        "disabled_and_foreign_authority_denied",
+        "agent_cannot_change_permissions",
+        "re_enable_does_not_reopen_cancelled_runs"
+      ],
+      "negative_variants": [
+        "stale_token_permission_snapshot",
+        "forged_request_scope",
+        "foreign_run_or_owner",
+        "owner_enables_new_action_on_same_credential",
+        "agent_attempts_self_expansion",
+        "policy_cache_or_worker_restart"
+      ],
+      "durable_effects": [
+        "policy_revision_link",
+        "admission_decisions",
+        "no_denied_domain_mutation"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-008": {
+      "requirement_id": "AAP-REQ-005",
+      "title": "Both connection routes share funding caps and promotional policy",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_008",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_forum_coordinator_postgres_shared_billing",
+      "required_observations": [
+        "shared_owner_funds",
+        "same_agent_utc_caps",
+        "bonus_first_sources",
+        "separate_cash_permission",
+        "no_duplicate_or_partial_charge"
+      ],
+      "negative_variants": [
+        "concurrent_credentials",
+        "cash_fallback_disabled",
+        "insufficient_full_nominal_limit",
+        "zero_price_scope_denial"
+      ],
+      "durable_effects": [
+        "shared_source_receipts",
+        "reservation_links",
+        "utc_usage_buckets"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-009": {
+      "requirement_id": "AAP-REQ-005",
+      "title": "Agent access never becomes owner financial authority",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_009",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_payments_forum_identity_role_boundary",
+      "required_observations": [
+        "agent_withdrawal_denied",
+        "recovery_authority_denied",
+        "owner_controls_denied",
+        "human_session_post_denied",
+        "no_signing_intent"
+      ],
+      "negative_variants": [
+        "all_action_flags_enabled",
+        "forged_owner_scope",
+        "owner_cookie_used_as_agent",
+        "direct_api_bypasses_tool_listing"
+      ],
+      "durable_effects": [
+        "role_denial_audit",
+        "no_cash_hold_or_publication",
+        "no_signing_outbox"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-010": {
+      "requirement_id": "AAP-REQ-006",
+      "title": "Revocation fences new work and durably cancels its declared scope",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_010",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_coordinator_forum_postgres_revocation",
+      "required_observations": [
+        "revocation_admission_fence",
+        "queue_release_once",
+        "started_cancel_no_voluntary_refund",
+        "mode_scope_preserved",
+        "other_agents_unchanged",
+        "regrant_no_reopen",
+        "re_enable_mode_no_reopen"
+      ],
+      "negative_variants": [
+        "revoke_start_race",
+        "delayed_cancel_delivery",
+        "restart_duplicate_delivery",
+        "remove_training_not_ranked",
+        "late_action_after_fence",
+        "re_enable_disabled_mode_after_cancel"
+      ],
+      "durable_effects": [
+        "grant_fence_revision",
+        "cancellation_outbox",
+        "source_release_or_retained_debit",
+        "retained_action_evidence"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-011": {
+      "requirement_id": "AAP-REQ-006",
+      "title": "Disconnect refresh and expiry do not impersonate explicit revocation",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_011",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_coordinator_oauth_postgres_reconnect",
+      "required_observations": [
+        "expiry_denies_calls",
+        "no_disconnect_revoke_event",
+        "same_run_deadline",
+        "refresh_scope_preserved",
+        "revoked_refresh_denied"
+      ],
+      "negative_variants": [
+        "transport_loss",
+        "access_token_expiry",
+        "refresh_after_revocation",
+        "reconnect_after_deadline"
+      ],
+      "durable_effects": [
+        "credential_lifecycle",
+        "unchanged_run_clock",
+        "authentication_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-012": {
+      "requirement_id": "AAP-REQ-007",
+      "title": "HTTP and MCP recover one shared operation receipt",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_012",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_http_mcp_forum_coordinator_postgres_idempotency",
+      "required_observations": [
+        "same_operation_across_transports",
+        "original_receipt_recovered",
+        "conflict_rejected",
+        "foreign_reuse_denied"
+      ],
+      "negative_variants": [
+        "http_then_mcp_retry",
+        "mcp_then_http_retry",
+        "payload_changed",
+        "same_key_other_agent"
+      ],
+      "durable_effects": [
+        "one_domain_operation",
+        "one_source_receipt",
+        "idempotency_binding"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-013": {
+      "requirement_id": "AAP-REQ-007",
+      "title": "Protocol rejection does not bypass authentication or fetch policy",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_013",
+      "adapter": "agent_access_http_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "mcp_oauth_http_protocol_fetch_boundary",
+      "required_observations": [
+        "pinned_profile_validation",
+        "resource_token_rejection",
+        "origin_policy",
+        "metadata_fetch_constrained",
+        "no_private_projection"
+      ],
+      "negative_variants": [
+        "unsupported_protocol",
+        "wrong_audience",
+        "untrusted_origin",
+        "internal_metadata_target",
+        "redirect_to_prohibited_target"
+      ],
+      "durable_effects": [
+        "protocol_denial_audit",
+        "no_domain_effect",
+        "safe_fetch_evidence"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-014": {
+      "requirement_id": "AAP-REQ-008",
+      "title": "Owner web controls change real permissions and revoke real access",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_014",
+      "adapter": "agent_access_browser_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "next_browser_http_postgres_owner_controls",
+      "required_observations": [
+        "actual_owner_pages",
+        "four_flags_and_separate_limits",
+        "safe_token_display",
+        "changes_affect_admission",
+        "foreign_control_denied"
+      ],
+      "negative_variants": [
+        "direct_api_foreign_owner",
+        "agent_opens_owner_controls",
+        "reload_after_token_display",
+        "stale_policy_revision"
+      ],
+      "durable_effects": [
+        "ui_driven_policy_revision",
+        "credential_or_revoke_audit",
+        "actual_denial_after_change"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-015": {
+      "requirement_id": "AAP-REQ-008",
+      "title": "A real local OAuth MCP flow reaches protected domain operations",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_015",
+      "adapter": "agent_access_browser_mcp_adapter",
+      "boundary": "environment",
+      "boundary_detail": "local_mcp_client_browser_actual_domain",
+      "required_observations": [
+        "discovery_and_browser_flow",
+        "resource_bound_access",
+        "tool_catalog_and_preflight",
+        "actual_operation_receipt",
+        "revoked_call_denied",
+        "local_scope_label"
+      ],
+      "negative_variants": [
+        "consent_denied",
+        "unsupported_profile",
+        "expired_credential",
+        "call_after_global_revoke"
+      ],
+      "durable_effects": [
+        "grant_and_protocol_manifest",
+        "actual_receipt_identity",
+        "sanitized_client_trace"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "allowed_private_calls": []
+    },
+    "AAP-SC-016": {
+      "requirement_id": "AAP-REQ-008",
+      "title": "Actual pilot client editions have separate compatibility evidence",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aap_sc_016",
+      "adapter": "agent_actual_clients_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_pilot_clients_remote_mcp",
+      "required_observations": [
+        "four_selected_editions_pinned",
+        "no_platform_connector_install",
+        "chosen_auth_route_recorded",
+        "actual_preflight_and_operation",
+        "post_revoke_denial_per_client",
+        "unsupported_alternatives_disclosed"
+      ],
+      "negative_variants": [
+        "client_unavailable",
+        "edition_unknown",
+        "auth_route_unsupported",
+        "protocol_negotiation_failure"
+      ],
+      "durable_effects": [
+        "per_client_compatibility_manifest",
+        "redacted_raw_client_paths_hashes",
+        "actual_operation_and_revocation_links"
+      ],
+      "evidence_mode": "actual_selected_pilot_client_editions_and_integrated_test_deployment",
+      "allowed_private_calls": []
+    }
+  }
+}

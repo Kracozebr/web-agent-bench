@@ -1,0 +1,656 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "normative_delta": "specs/base-account-payments/spec.md",
+  "note": "Review-only inventory; not a runtime manifest or executed evidence.",
+  "protected_scenarios": {
+    "BAP-SC-001": {
+      "requirement_id": "BAP-REQ-001",
+      "title": "Initial funding requires a configured withdrawal method",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_001",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_enrollment",
+      "required_observations": [
+        "funding_gate_before_method",
+        "fresh_enrollment_bound_to_owner",
+        "bonus_actions_unblocked",
+        "agent_or_stale_session_enrollment_denied"
+      ],
+      "negative_variants": [
+        "google_only_initial_passkey",
+        "wallet_initial_binding",
+        "stale_owner_session",
+        "agent_enrollment_request"
+      ],
+      "durable_effects": [
+        "confirmation_method_record",
+        "funding_exposure_state",
+        "enrollment_audit"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-002": {
+      "requirement_id": "BAP-REQ-001",
+      "title": "Address provisioning exposes one permanent owner mapping across retries",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_002",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_provider_fixture_address",
+      "required_observations": [
+        "one_exposed_address_per_owner",
+        "provider_identity_persisted_before_display",
+        "same_address_after_restart_and_link",
+        "foreign_read_denied"
+      ],
+      "negative_variants": [
+        "concurrent_provision",
+        "provider_response_loss",
+        "restart_before_mapping_commit",
+        "linked_login_lookup",
+        "orphan_provider_result"
+      ],
+      "durable_effects": [
+        "owner_address_provider_mapping",
+        "provisioning_operation",
+        "orphan_or_reconciliation_record"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-003": {
+      "requirement_id": "BAP-REQ-002",
+      "title": "Verified transfer events credit the correct owner once",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_003",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_deposit_events",
+      "required_observations": [
+        "actual_receipt_and_logs",
+        "recipient_mapping_authoritative",
+        "multiple_events_distinct",
+        "one_credit_per_supported_event",
+        "sender_not_owner_identity"
+      ],
+      "negative_variants": [
+        "exchange_like_shared_sender",
+        "multiple_transfers_one_transaction",
+        "overlapping_rescan",
+        "transaction_sender_differs_from_token_sender"
+      ],
+      "durable_effects": [
+        "deposit_occurrences",
+        "cash_lots",
+        "receipt_block_evidence",
+        "observer_checkpoint"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-004": {
+      "requirement_id": "BAP-REQ-002",
+      "title": "Wrong or unsupported deposit evidence cannot create cash",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_004",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_deposit_validation",
+      "required_observations": [
+        "wrong_asset_or_network_no_credit",
+        "failed_zero_unknown_recipient_no_credit",
+        "callback_requires_chain_verification",
+        "no_symbol_based_credit"
+      ],
+      "negative_variants": [
+        "fake_token_same_symbol",
+        "failed_receipt",
+        "zero_transfer",
+        "unknown_address",
+        "forged_webhook",
+        "client_claimed_transaction_hash"
+      ],
+      "durable_effects": [
+        "validated_or_rejected_observation",
+        "redacted_evidence_reference"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-005": {
+      "requirement_id": "BAP-REQ-003",
+      "title": "Safe and finalized heads control distinct availability without a second credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_005",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_controlled_finality",
+      "required_observations": [
+        "pending_not_spendable",
+        "safe_services_only",
+        "finalized_residual_withdrawable",
+        "finality_promotion_not_second_credit",
+        "no_timer_or_latest_fallback"
+      ],
+      "negative_variants": [
+        "elapsed_time_without_safe_evidence",
+        "missing_safe_tag",
+        "stale_finalized_head",
+        "mismatched_block_ancestry",
+        "spent_lot_finality_promotion"
+      ],
+      "durable_effects": [
+        "stage_observations",
+        "one_cash_credit",
+        "residual_eligibility_projection"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-006": {
+      "requirement_id": "BAP-REQ-004",
+      "title": "Cash allocation prevents overlap between services runs and withdrawals",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_006",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_forum_coordinator_payments_postgres_allocations",
+      "required_observations": [
+        "fifo_service_allocation",
+        "withdraw_only_finalized_residual",
+        "holds_exclude_double_spend",
+        "cross_owner_isolation"
+      ],
+      "negative_variants": [
+        "forum_vs_withdrawal_race",
+        "queued_run_vs_withdrawal",
+        "mixed_safe_finalized_residual",
+        "two_withdrawals_same_cash"
+      ],
+      "durable_effects": [
+        "cash_lot_allocations",
+        "shared_holds",
+        "application_and_withdrawal_receipts"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-007": {
+      "requirement_id": "BAP-REQ-004",
+      "title": "Refund and cancellation preserve the original cash provenance",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_007",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_coordinator_payments_postgres_source_refund",
+      "required_observations": [
+        "refund_original_cash_lots",
+        "release_original_holds_once",
+        "current_finality_preserved",
+        "bonus_not_cash_refund"
+      ],
+      "negative_variants": [
+        "refund_of_safe_origin",
+        "original_lot_finalized_since_charge",
+        "duplicate_refund",
+        "mixed_bonus_cash_receipt"
+      ],
+      "durable_effects": [
+        "source_linked_refund_or_release",
+        "original_cash_allocations",
+        "immutable_operation_receipt"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-008": {
+      "requirement_id": "BAP-REQ-005",
+      "title": "Observer restart and conflicting providers preserve explicit uncertainty",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_008",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_rpc_fixture_recovery",
+      "required_observations": [
+        "checkpoint_resume_overlap",
+        "missing_or_conflicting_evidence_unknown",
+        "no_duplicate_credit",
+        "no_weaker_stage_fallback"
+      ],
+      "negative_variants": [
+        "crash_between_observation_and_credit",
+        "rpc_head_regression",
+        "provider_disagreement",
+        "missing_receipt_after_notification"
+      ],
+      "durable_effects": [
+        "scan_checkpoint",
+        "observation_history",
+        "reconciliation_case"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-009": {
+      "requirement_id": "BAP-REQ-005",
+      "title": "Canonicality loss preserves history and isolates the affected owner",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_009",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_reorg_fixture",
+      "required_observations": [
+        "canonicality_loss_verified",
+        "unsupported_availability_removed",
+        "consumed_deficit_explicit",
+        "affected_owner_cash_pause",
+        "other_owners_unchanged"
+      ],
+      "negative_variants": [
+        "unspent_credited_lot",
+        "consumed_service_value",
+        "held_queued_run",
+        "stale_rpc_not_reorg_proof",
+        "late_original_receipt"
+      ],
+      "durable_effects": [
+        "append_only_correction",
+        "deficit_or_reconciliation_record",
+        "owner_financial_restriction_reason"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-010": {
+      "requirement_id": "BAP-REQ-006",
+      "title": "Wallet confirmation authorizes one immutable withdrawal intent",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_010",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_actual_wallet_verification",
+      "required_observations": [
+        "wallet_bound_to_owner",
+        "intent_fields_immutable",
+        "proof_consumed_once",
+        "login_signature_not_withdrawal",
+        "recipient_need_not_be_login_wallet"
+      ],
+      "negative_variants": [
+        "changed_amount",
+        "changed_recipient",
+        "wrong_chain_or_token",
+        "expired_nonce",
+        "foreign_wallet",
+        "replayed_valid_proof"
+      ],
+      "durable_effects": [
+        "withdrawal_intent_hash",
+        "authorization_consumption",
+        "rejection_audit"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-011": {
+      "requirement_id": "BAP-REQ-006",
+      "title": "Passkey confirmation is bound to a Google-only owner's withdrawal",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_011",
+      "adapter": "base_account_payments_browser_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_browser_http_postgres_webauthn",
+      "required_observations": [
+        "actual_webauthn_verification",
+        "challenge_bound_to_withdrawal",
+        "rp_origin_and_uv_checked",
+        "login_assertion_rejected",
+        "one_authorized_intent"
+      ],
+      "negative_variants": [
+        "wrong_owner_credential",
+        "wrong_origin_or_rp",
+        "uv_flag_absent",
+        "stale_challenge",
+        "login_challenge_reuse"
+      ],
+      "durable_effects": [
+        "credential_owner_binding",
+        "intent_challenge_record",
+        "authorization_consumption"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-012": {
+      "requirement_id": "BAP-REQ-007",
+      "title": "Withdrawal authorization and finalized cash reservation commit together",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_012",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_payments_forum_coordinator_postgres_withdraw_hold",
+      "required_observations": [
+        "owner_proof_and_hold_atomic",
+        "finalized_cash_only",
+        "one_execution_intent",
+        "no_agent_or_bonus_withdrawal",
+        "forum_ban_alone_not_financial_ban",
+        "configured_minimum_and_whole_remainder_exception",
+        "positive_exact_amount_checked_with_hold",
+        "subminimum_partial_and_zero_rejected_without_effects",
+        "signed_amount_never_resized",
+        "admitted_minimum_policy_and_exception_basis_retained"
+      ],
+      "negative_variants": [
+        "two_withdrawal_race",
+        "concurrent_run_reservation",
+        "bonus_only_balance",
+        "safe_only_balance",
+        "agent_credentials",
+        "forum_restricted_owner_with_valid_cash",
+        "exact_minimum_and_one_base_unit_boundary",
+        "whole_vs_partial_subminimum_remainder",
+        "zero_amount",
+        "display_rounding_cannot_create_whole_remainder",
+        "held_safe_and_bonus_value_excluded_from_remainder",
+        "remainder_changed_before_atomic_reservation",
+        "minimum_changed_before_admission",
+        "minimum_changed_after_admission"
+      ],
+      "durable_effects": [
+        "finalized_lot_hold",
+        "consumed_owner_proof",
+        "payment_outbox_or_rejection",
+        "minimum_policy_version_value_and_admission_basis",
+        "unchanged_owner_confirmed_amount",
+        "rejection_without_proof_consumption_or_partial_hold"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-013": {
+      "requirement_id": "BAP-REQ-008",
+      "title": "Ambiguous signing or broadcast cannot create a fresh payment",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_013",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_rpc_cdp_contract_faults",
+      "required_observations": [
+        "stable_intent_nonce_hash",
+        "signed_identity_persisted_before_broadcast",
+        "pre_submission_release_requires_proven_no_escape",
+        "unknown_keeps_hold",
+        "no_fresh_nonce_retry",
+        "duplicate_worker_fenced"
+      ],
+      "negative_variants": [
+        "lost_sign_response",
+        "lost_broadcast_response",
+        "restart_after_signed_payload_persisted",
+        "cancel_after_payload_may_have_escaped",
+        "cancel_without_boundary_proof",
+        "concurrent_worker",
+        "nonce_conflict"
+      ],
+      "durable_effects": [
+        "payment_attempt_lineage",
+        "nonce_fence",
+        "protected_signed_identity",
+        "pre_submission_cancel_basis",
+        "reconciliation_state"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-014": {
+      "requirement_id": "BAP-REQ-008",
+      "title": "Observed withdrawal settlement and proven failure have different terminal effects",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_014",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_withdrawal_settlement",
+      "required_observations": [
+        "receipt_matches_economic_intent",
+        "finalized_success_settles_once",
+        "finalized_canonical_revert_matches_original_signer_nonce_lineage",
+        "provider_head_evidence_satisfies_pinned_policy",
+        "finalized_revert_releases_once",
+        "nonfinal_or_unknown_does_not_release",
+        "late_evidence_preserved"
+      ],
+      "negative_variants": [
+        "included_not_finalized",
+        "mismatched_token_or_recipient",
+        "included_nonfinal_reverted_receipt",
+        "reverted_receipt_wrong_signer_or_nonce_lineage",
+        "stale_or_conflicting_provider_head_evidence",
+        "replacement_or_drop_claim_without_finalized_revert",
+        "duplicate_terminal_worker",
+        "unresolved_dropped_claim"
+      ],
+      "durable_effects": [
+        "withdrawal_terminal_or_unknown_state",
+        "settled_debit_or_released_hold",
+        "configured_provider_head_evidence",
+        "receipt_and_lineage_evidence"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-015": {
+      "requirement_id": "BAP-REQ-008",
+      "title": "Platform gas never silently reduces the owner's withdrawal",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_015",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_gas_accounting",
+      "required_observations": [
+        "withdrawal_amount_unchanged",
+        "platform_fee_record_separate",
+        "no_bonus_or_owner_gas_charge",
+        "gas_shortage_same_operation_pending"
+      ],
+      "negative_variants": [
+        "gas_unavailable",
+        "liquidity_unavailable",
+        "fee_changed_before_signing",
+        "proven_failed_transaction_gas"
+      ],
+      "durable_effects": [
+        "authorized_amount_snapshot",
+        "platform_fee_entry",
+        "pending_or_settled_payment_identity"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-016": {
+      "requirement_id": "BAP-REQ-009",
+      "title": "Internal sweeps change custody location without creating customer deposits",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_016",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_sweep",
+      "required_observations": [
+        "sweep_not_new_deposit",
+        "customer_liability_unchanged",
+        "typed_gas_and_sweep_intents",
+        "operational_route_restriction",
+        "retry_same_transfer_identity"
+      ],
+      "negative_variants": [
+        "sweep_response_loss",
+        "observer_sees_own_sweep",
+        "gas_topup_not_customer_usdc",
+        "unregistered_destination_for_sweep"
+      ],
+      "durable_effects": [
+        "sweep_and_gas_operation_receipts",
+        "unchanged_customer_lots",
+        "asset_location_evidence"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-017": {
+      "requirement_id": "BAP-REQ-010",
+      "title": "Backup and manual recovery never authorize a payout by themselves",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_017",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_method_recovery",
+      "required_observations": [
+        "backup_verified",
+        "manual_review_evidence_required",
+        "replacement_credential_proven",
+        "google_login_no_auto_reset",
+        "new_withdrawal_requires_fresh_proof",
+        "pending_manual_recovery_withdrawal_pause",
+        "ordinary_services_and_bonuses_remain_available"
+      ],
+      "negative_variants": [
+        "unverified_recovery_request",
+        "admin_without_recovery_scope",
+        "replayed_replacement_proof",
+        "remove_last_method_with_stale_session",
+        "resolved_case_retry"
+      ],
+      "durable_effects": [
+        "recovery_case_decision",
+        "method_revision_audit",
+        "withdrawal_restriction_state"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-018": {
+      "requirement_id": "BAP-REQ-011",
+      "title": "Account and admin pages expose actual payment state under scoped roles",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_018",
+      "adapter": "base_account_payments_browser_http_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_browser_http_postgres_account_admin",
+      "required_observations": [
+        "funding_ui_enrollment_gate",
+        "availability_fields_separate",
+        "actual_owner_confirmation_flow",
+        "admin_views_scoped",
+        "foreign_or_agent_finances_denied",
+        "no_signing_secret_in_projection",
+        "owner_minimum_and_remainder_rule_visible",
+        "authorized_minimum_update_audited",
+        "unauthorized_minimum_change_denied"
+      ],
+      "negative_variants": [
+        "setup_not_complete",
+        "safe_only_funds",
+        "withdrawal_unknown_status",
+        "foreign_owner_request",
+        "agent_admin_route_attempt",
+        "owner_or_agent_attempts_minimum_update",
+        "new_minimum_visible_after_admin_change"
+      ],
+      "durable_effects": [
+        "browser_api_outcomes",
+        "private_payment_projection",
+        "admin_access_audit",
+        "minimum_policy_change_actor_old_new_version_audit"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-019": {
+      "requirement_id": "BAP-REQ-012",
+      "title": "Reconciliation and replay retain asset liability and evidence identities",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_019",
+      "adapter": "base_account_payments_http_chain_adapter",
+      "boundary": "environment",
+      "boundary_detail": "payments_http_postgres_anvil_reconciliation",
+      "required_observations": [
+        "asset_liability_reconciliation",
+        "sweeps_not_double_counted",
+        "inflight_transfers_identified",
+        "replay_no_external_mutation",
+        "missing_or_conflicting_evidence_reported"
+      ],
+      "negative_variants": [
+        "missing_receipt_artifact",
+        "changed_event_hash",
+        "asset_liability_mismatch",
+        "restart_replay",
+        "unknown_external_transfer"
+      ],
+      "durable_effects": [
+        "reconciliation_report",
+        "original_raw_paths_and_hashes",
+        "append_only_payment_journal"
+      ],
+      "evidence_mode": "actual_http_postgres_and_declared_local_chain_browser_or_controlled_provider_inputs",
+      "allowed_private_calls": []
+    },
+    "BAP-SC-020": {
+      "requirement_id": "BAP-REQ-012",
+      "title": "Actual CDP and Base Sepolia integration records its own external evidence",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bap_sc_020",
+      "adapter": "base_account_payments_cdp_testnet_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_cdp_api_base_sepolia_rpc",
+      "required_observations": [
+        "actual_cdp_account_and_signature",
+        "actual_base_sepolia_receipt",
+        "same_intent_reconciled",
+        "actual_rpc_finality_heads_observed",
+        "test_only_config_and_boundary",
+        "missing_dependency_blocks"
+      ],
+      "negative_variants": [
+        "provider_access_unavailable",
+        "sign_only_method_or_policy_incompatible",
+        "test_funds_absent",
+        "receipt_or_head_missing",
+        "duplicate_intent_reconciliation"
+      ],
+      "durable_effects": [
+        "test_provider_account_reference",
+        "testnet_transaction_receipt",
+        "provider_method_policy_evidence",
+        "redacted_external_manifest"
+      ],
+      "evidence_mode": "actual_cdp_base_sepolia_test_assets_no_mainnet",
+      "allowed_private_calls": []
+    }
+  }
+}

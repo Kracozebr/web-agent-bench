@@ -1,0 +1,560 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "normative_delta": "specs/benchmark-leaderboard-and-agent-pages/spec.md",
+  "note": "Review-only inventory; all gates not_run. Declared synthetic credit inputs test actual scoring/projections, not task grading or chain execution. Task-suite exposure/pricing/closed-feedback and publication-policy refinements are planning-only; all gates remain not_run.",
+  "protected_scenarios": {
+    "BLP-SC-001": {
+      "requirement_id": "BLP-REQ-001",
+      "title": "Actual coordinator handoff creates one versioned eligible result",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_001",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_coordinator_handoff_scoring_postgres",
+      "required_observations": [
+        "actual_handoff_resolved",
+        "full_inventory_verified",
+        "pinned_identity",
+        "immutable_result",
+        "achieving_version"
+      ],
+      "negative_variants": [
+        "forged_queue_payload",
+        "stale_profile_edit",
+        "repeated_valid_handoff"
+      ],
+      "durable_effects": [
+        "scored_result",
+        "source_event_hash",
+        "publication_identity"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-002": {
+      "requirement_id": "BLP-REQ-001",
+      "title": "Ineligible unknown or forged outcomes cannot create a ranked record",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_002",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_scoring_source_validation_postgres",
+      "required_observations": [
+        "authoritative_eligibility_checked",
+        "ineligible_no_publication",
+        "unknown_explicit",
+        "complete_known_failure_allowed"
+      ],
+      "negative_variants": [
+        "unknown_task",
+        "missing_task",
+        "duplicate_task",
+        "wrong_version",
+        "invalid_fraction",
+        "conflicting_violation",
+        "fabricated_trusted_flag"
+      ],
+      "durable_effects": [
+        "rejection_reconciliation_audit",
+        "unchanged_best",
+        "no_financial_effect"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-003": {
+      "requirement_id": "BLP-REQ-002",
+      "title": "Overall and four tiers use the pinned weighted formulas",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_003",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_scoring_http_postgres_exact_math",
+      "required_observations": [
+        "weights_1_2_3_5",
+        "denominator_26",
+        "four_tier_values",
+        "partial_credit_exact",
+        "no_rounded_feedback"
+      ],
+      "negative_variants": [
+        "simple_only",
+        "ultra_only",
+        "all_zero",
+        "fractional_credit",
+        "invalid_weight_manifest"
+      ],
+      "durable_effects": [
+        "exact_score_inputs",
+        "aggregate_tier_records",
+        "input_hash"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-004": {
+      "requirement_id": "BLP-REQ-002",
+      "title": "Other measurements do not change outcome score",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_004",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_score_projection_measurement_separation",
+      "required_observations": [
+        "outcome_unchanged",
+        "separate_metric_provenance",
+        "unknown_model_cost",
+        "no_funding_coefficient"
+      ],
+      "negative_variants": [
+        "faster_run",
+        "rejected_safety_attempt",
+        "bonus_funded_run",
+        "missing_llm_cost"
+      ],
+      "durable_effects": [
+        "separate_measurement_projection",
+        "unchanged_outcome_hash"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-005": {
+      "requirement_id": "BLP-REQ-003",
+      "title": "Best selection never assembles tiers across attempts",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_005",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_best_selection_http_postgres",
+      "required_observations": [
+        "strict_best",
+        "one_result_all_tiers",
+        "achieving_snapshot",
+        "retained_equal_representative"
+      ],
+      "negative_variants": [
+        "easy_strong_then_hard_strong",
+        "equal_total_different_tiers",
+        "new_agent_version",
+        "current_model_edit"
+      ],
+      "durable_effects": [
+        "best_result_reference",
+        "publication_revision",
+        "historical_metadata_snapshot"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-006": {
+      "requirement_id": "BLP-REQ-003",
+      "title": "Completion races and retries preserve one best publication",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_006",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_postgres_consumer_concurrency_restart",
+      "required_observations": [
+        "one_result_per_run",
+        "monotonic_best",
+        "duplicate_recovered",
+        "conflict_not_overwrite",
+        "atomic_publication"
+      ],
+      "negative_variants": [
+        "concurrent_high_low",
+        "late_lower",
+        "lost_response",
+        "process_restart",
+        "same_id_different_hash"
+      ],
+      "durable_effects": [
+        "consumed_event_identity",
+        "conflict_audit",
+        "best_publication_commit"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-007": {
+      "requirement_id": "BLP-REQ-004",
+      "title": "Exact ties share competition rank independently of rounded display",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_007",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_rank_query_http_postgres",
+      "required_observations": [
+        "competition_rank",
+        "exact_comparison",
+        "stable_tie_order",
+        "display_half_up",
+        "no_result_not_zero"
+      ],
+      "negative_variants": [
+        "same_display_different_exact",
+        "equal_exact_different_speed",
+        "zero_vs_no_result"
+      ],
+      "durable_effects": [
+        "rank_projection",
+        "exact_score_reference",
+        "formatting_rule"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-008": {
+      "requirement_id": "BLP-REQ-005",
+      "title": "Version activation and late completion preserve historical boards",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_008",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_version_registry_scoring_reads_postgres",
+      "required_observations": [
+        "active_pointer",
+        "observed_version_identity",
+        "late_old_history",
+        "no_copy_or_rescore",
+        "late_admitted_queue_completion_historical_only",
+        "original_result_snapshot_immutable",
+        "history_no_old_execution_or_admission",
+        "shared_lifecycle_active_version_admission"
+      ],
+      "negative_variants": [
+        "empty_new_board",
+        "old_completion_after_switch",
+        "forged_version_query",
+        "queued_old_run_starts_after_switch",
+        "late_result_improves_historical_best",
+        "new_old_version_training_or_ranked_request",
+        "read_history_with_no_old_node_running"
+      ],
+      "durable_effects": [
+        "version_activation_reference",
+        "version_partitioned_results",
+        "historical_projection",
+        "late_historical_best_revision",
+        "unchanged_original_result_snapshots"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-009": {
+      "requirement_id": "BLP-REQ-006",
+      "title": "Anonymous agent pages preserve safe metadata and empty states",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_009",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_public_http_profile_result_projection",
+      "required_observations": [
+        "public_allowlist",
+        "owner_declared_label",
+        "historical_not_rewritten",
+        "no_result_state",
+        "no_private_fields",
+        "public_marker_precondition",
+        "no_result_only_for_published_card"
+      ],
+      "negative_variants": [
+        "no_current_version_result",
+        "renamed_agent",
+        "changed_model",
+        "injected_private_dto"
+      ],
+      "durable_effects": [
+        "public_profile_revision",
+        "selected_result_identity",
+        "redacted_response_evidence"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-010": {
+      "requirement_id": "BLP-REQ-006",
+      "title": "Forum links follow current moderation and render untrusted text safely",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_010",
+      "adapter": "benchmark_pages_browser_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_forum_profile_http_browser_visibility",
+      "required_observations": [
+        "visible_message_links",
+        "hidden_excerpt_absent",
+        "restored_original_link",
+        "inert_text_safe_links",
+        "no_write_effect",
+        "redacted_topic_title_never_in_public_links_or_previews"
+      ],
+      "negative_variants": [
+        "hide_after_cached_read",
+        "restore_hidden",
+        "script_in_description",
+        "unsafe_link",
+        "redacted_title_in_agent_page_cache"
+      ],
+      "durable_effects": [
+        "forum_visibility_revision",
+        "safe_render_evidence",
+        "unchanged_publication_charge"
+      ],
+      "evidence_mode": "actual_next_browser_http_postgres_and_upstream_projections",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-011": {
+      "requirement_id": "BLP-REQ-007",
+      "title": "Compact owner results enforce authorization and feedback release",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_011",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_owner_auth_http_postgres_feedback",
+      "required_observations": [
+        "owner_scope",
+        "release_state",
+        "ranked_not_early",
+        "training_post_task",
+        "unknown_ineligible_explicit",
+        "public_private_separation",
+        "closed_reason_allowlist",
+        "closed_exact_parameters_absent"
+      ],
+      "negative_variants": [
+        "foreign_owner",
+        "guessed_run_id",
+        "agent_as_owner",
+        "expired_session",
+        "early_ranked_read",
+        "shared_cache_reuse",
+        "closed_parameter_in_result",
+        "closed_solution_in_hydration"
+      ],
+      "durable_effects": [
+        "authorized_result_read_evidence",
+        "denial_audit",
+        "no_private_shared_payload"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-012": {
+      "requirement_id": "BLP-REQ-008",
+      "title": "Pagination restart and read-only rebuild preserve coherent projections",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_012",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_projection_http_postgres_rebuild",
+      "required_observations": [
+        "coherent_revision",
+        "bounded_cursor",
+        "no_duplicate_skipped_revision_rows",
+        "rebuild_same_selection",
+        "divergence_explicit",
+        "no_execution"
+      ],
+      "negative_variants": [
+        "changed_revision_cursor",
+        "malformed_cursor",
+        "overlarge_page",
+        "restart",
+        "equal_best_rebuild",
+        "tampered_replay_input"
+      ],
+      "durable_effects": [
+        "publication_revision",
+        "cursor_context",
+        "rebuild_comparison",
+        "original_input_hashes"
+      ],
+      "evidence_mode": "actual_http_postgres_lifecycle_identity_forum_integrations_with_declared_credit_fixtures",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-013": {
+      "requirement_id": "BLP-REQ-009",
+      "title": "Actual public English pages show the same versioned best result",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_013",
+      "adapter": "benchmark_pages_browser_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_next_browser_fastify_postgres_public",
+      "required_observations": [
+        "real_english_pages",
+        "route_links",
+        "same_selected_result",
+        "loading_empty_failure_distinct",
+        "hydration_allowlist",
+        "ranked_participation_rule_visible",
+        "technical_confirmation_training_exceptions",
+        "no_verified_autonomy_claim"
+      ],
+      "negative_variants": [
+        "empty_active_version",
+        "backend_unavailable",
+        "delayed_response",
+        "history_switch",
+        "private_prefetch_probe",
+        "false_verified_autonomy_badge",
+        "approval_event_as_assistance_proof"
+      ],
+      "durable_effects": [
+        "browser_paths_hashes",
+        "public_response_manifest",
+        "page_selection_observations"
+      ],
+      "evidence_mode": "actual_next_browser_http_postgres_and_upstream_projections",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-014": {
+      "requirement_id": "BLP-REQ-009",
+      "title": "Actual owner result pages use real release and access boundaries",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_014",
+      "adapter": "benchmark_pages_browser_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_next_browser_owner_lifecycle_access",
+      "required_observations": [
+        "real_owner_pages",
+        "release_transition",
+        "error_reasons_only",
+        "foreign_denied",
+        "no_private_public_navigation",
+        "actual_upstream_identity"
+      ],
+      "negative_variants": [
+        "foreign_session_navigation",
+        "logout_then_back",
+        "early_ranked_page",
+        "public_cache_after_private",
+        "unknown_run"
+      ],
+      "durable_effects": [
+        "private_browser_evidence",
+        "lifecycle_release_identity",
+        "safe_public_navigation_manifest"
+      ],
+      "evidence_mode": "actual_next_browser_http_postgres_and_upstream_projections",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-015": {
+      "requirement_id": "BLP-REQ-010",
+      "title": "Actual English pages disclose exposure and ranking limitations",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_015",
+      "adapter": "benchmark_leaderboard_http_postgres_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_english_benchmark_leaderboard_browser_api",
+      "required_observations": [
+        "english_policy_visible",
+        "selected_exposure_weights",
+        "version_retirement_context",
+        "external_help_limitation",
+        "known_solution_limitation",
+        "no_sealed_fields"
+      ],
+      "negative_variants": [
+        "stale_version_metadata",
+        "unsupported_autonomy_claim",
+        "closed_parameter_in_payload",
+        "extra_leaderboard"
+      ],
+      "durable_effects": [
+        "versioned_public_policy_projection"
+      ],
+      "evidence_mode": "actual_http_postgres_browser_where_declared",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-016": {
+      "requirement_id": "BLP-REQ-011",
+      "title": "Private cards remain undiscoverable before a public action",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_016",
+      "adapter": "benchmark_pages_browser_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_profile_http_postgres_browser_privacy",
+      "required_observations": [
+        "no_marker_before_public_action",
+        "public_and_foreign_missing_card_equivalence",
+        "owner_and_scoped_operational_access_preserved",
+        "no_html_hydration_prefetch_embed_cache_leak",
+        "no_ranked_row"
+      ],
+      "negative_variants": [
+        "guessed_private_agent_id",
+        "preflight_training_queue_start_or_cancel",
+        "ineligible_ranked_unknown_or_disqualified",
+        "private_response_in_shared_cache",
+        "caller_visibility_flag"
+      ],
+      "durable_effects": [
+        "private_profile_without_marker",
+        "sanitized_http_browser_cache_evidence"
+      ],
+      "evidence_mode": "actual authenticated HTTP/MCP PostgreSQL and browser/client observations where declared; sanitized raw paths and hashes",
+      "allowed_private_calls": []
+    },
+    "BLP-SC-017": {
+      "requirement_id": "BLP-REQ-011",
+      "title": "First public actions commit one durable publication marker",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_blp_sc_017",
+      "adapter": "benchmark_pages_browser_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_forum_lifecycle_profile_transaction_and_browser",
+      "required_observations": [
+        "qualifying_event_marker_same_transaction",
+        "first_event_identity_preserved",
+        "failed_commit_no_marker",
+        "eligible_all_zero_qualifies",
+        "negative_cache_invalidated",
+        "moderation_never_unpublishes_or_leaks",
+        "published_no_result_not_fake_rank",
+        "read_only_rebuild_preserves_first_event_and_forum_only_card",
+        "rebuild_reapplies_current_redacted_title_and_hidden_body"
+      ],
+      "negative_variants": [
+        "forum_and_ranked_trigger_race",
+        "commit_rollback",
+        "lost_response_restart",
+        "duplicate_trigger",
+        "previous_negative_cache",
+        "hidden_message_or_redacted_title",
+        "version_switch_no_current_result",
+        "forged_or_unresolved_marker",
+        "forum_only_public_card_no_ranked_result_rebuild",
+        "redacted_title_and_hidden_body_after_rebuild"
+      ],
+      "durable_effects": [
+        "shared_profile_first_public_event",
+        "originating_publication_or_eligible_terminal_identity",
+        "publication_revision",
+        "current_visibility_read_evidence",
+        "read_only_rebuild_publication_visibility_comparison"
+      ],
+      "evidence_mode": "actual authenticated HTTP/MCP PostgreSQL and browser/client observations where declared; sanitized raw paths and hashes",
+      "allowed_private_calls": []
+    }
+  }
+}

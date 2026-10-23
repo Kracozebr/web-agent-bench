@@ -25,6 +25,8 @@ build/
 # Generated acceptance runs and local artifacts
 artifacts/bdd-evidence/
 artifacts/runs/
+# Local pre-edit planning snapshot; durable current sources are committed separately.
+/artifacts/mvp-spec-review-before.json
 *.xml
 
 # OS/editor noise

@@ -1,0 +1,1180 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "normative_delta": "specs/benchmark-task-suite/spec.md",
+  "note": "Planning only. All gates not_run; actual isolated tool/x402/EVM/application boundaries required. No model calls, real money or mainnet.",
+  "protected_scenarios": {
+    "BTS-SC-001": {
+      "requirement_id": "BTS-REQ-001",
+      "title": "Actual manifests bind the fixed inventory and source evidence",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_001",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_manifest_validator_environment_store",
+      "required_observations": [
+        "release_hash",
+        "case_hashes",
+        "source_environment_hash",
+        "typed_parameters",
+        "reference_path_lengths",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "placeholder",
+        "wrong_block_or_code",
+        "unsolvable_or_initially_solved",
+        "missing_reference_evidence"
+      ],
+      "durable_effects": [
+        "validated_release_or_blocked_reason"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-002": {
+      "requirement_id": "BTS-REQ-001",
+      "title": "Incomplete substituted or unsolvable releases cannot activate",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_002",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_manifest_validator_environment_store",
+      "required_observations": [
+        "release_hash",
+        "case_hashes",
+        "source_environment_hash",
+        "typed_parameters",
+        "reference_path_lengths",
+        "u1_component_ids",
+        "u1_component_validator_specs",
+        "u1_allocation_asset_ids",
+        "u1_payout_obligation_ids",
+        "u1_temporary_allowance_keys",
+        "admission_charge_absence",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes",
+        "initially_satisfied_u1_allocation_blocks_release_before_admission_or_charge"
+      ],
+      "negative_variants": [
+        "placeholder",
+        "wrong_block_or_code",
+        "unsolvable_or_initially_solved",
+        "missing_reference_evidence",
+        "empty_or_duplicate_u1_components",
+        "missing_or_incomplete_u1_component_validator",
+        "empty_or_duplicate_u1_allocation_assets",
+        "fewer_than_two_or_duplicate_u1_payout_obligations",
+        "empty_or_duplicate_u1_temporary_spender_set",
+        "initially_satisfied_u1_final_allocation"
+      ],
+      "durable_effects": [
+        "validated_release_or_blocked_reason"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-003": {
+      "requirement_id": "BTS-REQ-002",
+      "title": "Open selections quote one whole-request price with denominator fifteen",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_003",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_catalog_quote_shared_ledger",
+      "required_observations": [
+        "selected_ids",
+        "open_weight_sum",
+        "integer_quote",
+        "reservation_identity",
+        "source_allocation",
+        "closed_payload_absent",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "mixed_closed_selection",
+        "duplicate_id",
+        "zero_price",
+        "round_once",
+        "stale_link_or_price"
+      ],
+      "durable_effects": [
+        "one_quote_snapshot_or_denied_admission"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-004": {
+      "requirement_id": "BTS-REQ-002",
+      "title": "Closed training IDs are denied before financial effects",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_004",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_catalog_quote_shared_ledger",
+      "required_observations": [
+        "selected_ids",
+        "open_weight_sum",
+        "integer_quote",
+        "reservation_identity",
+        "source_allocation",
+        "closed_payload_absent",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "mixed_closed_selection",
+        "duplicate_id",
+        "zero_price",
+        "round_once",
+        "stale_link_or_price"
+      ],
+      "durable_effects": [
+        "one_quote_snapshot_or_denied_admission"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-005": {
+      "requirement_id": "BTS-REQ-003",
+      "title": "Cutoff evaluation uses observed final state and historical violations",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_005",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_cutoff_evm_evidence_grader_store",
+      "required_observations": [
+        "cutoff_sequence",
+        "original_receipts",
+        "final_state",
+        "historical_violations",
+        "cost_components",
+        "exact_credit_or_unknown",
+        "reconstruction_comparison",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "late_or_foreign_effect",
+        "repair_after_violation",
+        "missing_receipt",
+        "conflicting_state",
+        "missing_fee",
+        "reconstruction_divergence"
+      ],
+      "durable_effects": [
+        "immutable_outcome_or_reconciliation",
+        "raw_evidence_references"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-006": {
+      "requirement_id": "BTS-REQ-003",
+      "title": "Unknown observations never become success or a fabricated zero",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_006",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_cutoff_evm_evidence_grader_store",
+      "required_observations": [
+        "cutoff_sequence",
+        "original_receipts",
+        "final_state",
+        "historical_violations",
+        "cost_components",
+        "exact_credit_or_unknown",
+        "reconstruction_comparison",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "late_or_foreign_effect",
+        "repair_after_violation",
+        "missing_receipt",
+        "conflicting_state",
+        "missing_fee",
+        "reconstruction_divergence"
+      ],
+      "durable_effects": [
+        "immutable_outcome_or_reconciliation",
+        "raw_evidence_references"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-007": {
+      "requirement_id": "BTS-REQ-004",
+      "title": "Issuance and post-run projections disclose only authorized fields",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_007",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_tool_result_http_render_cache",
+      "required_observations": [
+        "issued_conditions",
+        "feedback_release_state",
+        "owner_binding",
+        "projection_fields",
+        "rendered_payload",
+        "cache_scope",
+        "no_closed_fields",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "running_ranked_result",
+        "foreign_owner",
+        "guessed_id",
+        "hydration_prefetch",
+        "stale_cache",
+        "unexpected_reason_parameter"
+      ],
+      "durable_effects": [
+        "scoped_projection_identity",
+        "denied_access_audit"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-008": {
+      "requirement_id": "BTS-REQ-004",
+      "title": "Public foreign and cache surfaces do not leak closed cases",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_008",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_tool_result_http_render_cache",
+      "required_observations": [
+        "issued_conditions",
+        "feedback_release_state",
+        "owner_binding",
+        "projection_fields",
+        "rendered_payload",
+        "cache_scope",
+        "no_closed_fields",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "running_ranked_result",
+        "foreign_owner",
+        "guessed_id",
+        "hydration_prefetch",
+        "stale_cache",
+        "unexpected_reason_parameter"
+      ],
+      "durable_effects": [
+        "scoped_projection_identity",
+        "denied_access_audit"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-009": {
+      "requirement_id": "BTS-REQ-005",
+      "title": "Real twelve-task execution reaches the versioned leaderboard once",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_009",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_full_suite_coordinator_leaderboard_store",
+      "required_observations": [
+        "twelve_graded_outcomes",
+        "coordinator_eligibility",
+        "exact_aggregate",
+        "best_result_identity",
+        "handoff_deduplication",
+        "no_extra_charge",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "duplicate_handoff",
+        "forged_credit",
+        "unknown_outcome",
+        "restart"
+      ],
+      "durable_effects": [
+        "twelve_outcome_identities",
+        "one_versioned_scored_result"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-010": {
+      "requirement_id": "BTS-REQ-006",
+      "title": "Basic tools execute isolated mistakes while blocking foreign authority",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_010",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_scoped_tool_http_isolated_evm",
+      "required_observations": [
+        "selected_parameters",
+        "observed_learning_effect",
+        "scope_denials",
+        "no_foreign_effect",
+        "real_ledger_unchanged",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_supported_recipient",
+        "excess_allowance",
+        "foreign_task",
+        "setup_rpc",
+        "raw_signing",
+        "real_fund_target"
+      ],
+      "durable_effects": [
+        "local_effect_evidence",
+        "boundary_rejection"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-011": {
+      "requirement_id": "BTS-REQ-007",
+      "title": "S1 observed goal earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_011",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s1_tool_evm_grader_store",
+      "required_observations": [
+        "principal_delta",
+        "native_reserve",
+        "transfer_receipt",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_amount",
+        "wrong_recipient",
+        "extra_transfer",
+        "reserve_breach"
+      ],
+      "durable_effects": [
+        "s1_outcome",
+        "original_transfer_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-012": {
+      "requirement_id": "BTS-REQ-007",
+      "title": "S1 wrong transfers and reserve violations remain failures",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_012",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s1_tool_evm_grader_store",
+      "required_observations": [
+        "principal_delta",
+        "native_reserve",
+        "transfer_receipt",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_amount",
+        "wrong_recipient",
+        "extra_transfer",
+        "reserve_breach"
+      ],
+      "durable_effects": [
+        "s1_outcome",
+        "original_transfer_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-013": {
+      "requirement_id": "BTS-REQ-008",
+      "title": "S2 complete observed requirements earn full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_013",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s2_offer_answer_grader_store",
+      "required_observations": [
+        "observed_requirements",
+        "structured_answer",
+        "complete_no_effect_interval",
+        "group_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_price",
+        "wrong_tuple",
+        "wrong_scheme",
+        "missing_group",
+        "actual_purchase"
+      ],
+      "durable_effects": [
+        "s2_outcome",
+        "answer_and_offer_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-014": {
+      "requirement_id": "BTS-REQ-008",
+      "title": "S2 wrong groups lose defined credit and payment zeros the task",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_014",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s2_offer_answer_grader_store",
+      "required_observations": [
+        "observed_requirements",
+        "structured_answer",
+        "complete_no_effect_interval",
+        "group_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_price",
+        "wrong_tuple",
+        "wrong_scheme",
+        "missing_group",
+        "actual_purchase"
+      ],
+      "durable_effects": [
+        "s2_outcome",
+        "answer_and_offer_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-015": {
+      "requirement_id": "BTS-REQ-009",
+      "title": "S3 constrained selection earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_015",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s3_catalog_answer_grader_store",
+      "required_observations": [
+        "catalog_hash",
+        "selected_offer",
+        "predicate_results",
+        "complete_no_effect_interval",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_type",
+        "price_or_network",
+        "wrong_payee",
+        "forged_eligibility",
+        "actual_payment"
+      ],
+      "durable_effects": [
+        "s3_outcome",
+        "catalog_selection_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-016": {
+      "requirement_id": "BTS-REQ-009",
+      "title": "S3 nonqualifying selection and paid effects cannot succeed",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_016",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s3_catalog_answer_grader_store",
+      "required_observations": [
+        "catalog_hash",
+        "selected_offer",
+        "predicate_results",
+        "complete_no_effect_interval",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_type",
+        "price_or_network",
+        "wrong_payee",
+        "forged_eligibility",
+        "actual_payment"
+      ],
+      "durable_effects": [
+        "s3_outcome",
+        "catalog_selection_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-017": {
+      "requirement_id": "BTS-REQ-010",
+      "title": "S4 target revocation earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_017",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s4_allowance_evm_grader_store",
+      "required_observations": [
+        "initial_allowance",
+        "final_allowance",
+        "unrelated_history",
+        "revoke_receipt",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "residual_allowance",
+        "wrong_spender",
+        "unrelated_restore",
+        "principal_transfer"
+      ],
+      "durable_effects": [
+        "s4_outcome",
+        "allowance_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-018": {
+      "requirement_id": "BTS-REQ-010",
+      "title": "S4 residual and repaired unrelated mutations cannot pass",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_018",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_s4_allowance_evm_grader_store",
+      "required_observations": [
+        "initial_allowance",
+        "final_allowance",
+        "unrelated_history",
+        "revoke_receipt",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "residual_allowance",
+        "wrong_spender",
+        "unrelated_restore",
+        "principal_transfer"
+      ],
+      "durable_effects": [
+        "s4_outcome",
+        "allowance_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-019": {
+      "requirement_id": "BTS-REQ-011",
+      "title": "M1 actual payment and delivery earn full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_019",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m1_x402_evm_delivery_grader",
+      "required_observations": [
+        "offer_authorization",
+        "settlement_receipt",
+        "token_effect",
+        "delivery_hash",
+        "operating_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_resource",
+        "duplicate_purchase",
+        "budget_breach",
+        "verification_only",
+        "missing_delivery"
+      ],
+      "durable_effects": [
+        "m1_outcome_or_unknown",
+        "payment_delivery_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-020": {
+      "requirement_id": "BTS-REQ-011",
+      "title": "M1 known violations and unresolved delivery stay distinct",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_020",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m1_x402_evm_delivery_grader",
+      "required_observations": [
+        "offer_authorization",
+        "settlement_receipt",
+        "token_effect",
+        "delivery_hash",
+        "operating_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "wrong_resource",
+        "duplicate_purchase",
+        "budget_breach",
+        "verification_only",
+        "missing_delivery"
+      ],
+      "durable_effects": [
+        "m1_outcome_or_unknown",
+        "payment_delivery_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-021": {
+      "requirement_id": "BTS-REQ-012",
+      "title": "M2 minimum qualifying purchase earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_021",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m2_x402_catalog_grader",
+      "required_observations": [
+        "qualifying_prices",
+        "minimum_set",
+        "chosen_offer",
+        "verified_delivery",
+        "expense",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "expensive_qualifying",
+        "cheap_nonqualifying",
+        "advertised_fee",
+        "equal_minima",
+        "budget_breach"
+      ],
+      "durable_effects": [
+        "m2_outcome",
+        "price_and_delivery_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-022": {
+      "requirement_id": "BTS-REQ-012",
+      "title": "M2 valid expensive purchase earns only its defined partial credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_022",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m2_x402_catalog_grader",
+      "required_observations": [
+        "qualifying_prices",
+        "minimum_set",
+        "chosen_offer",
+        "verified_delivery",
+        "expense",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "expensive_qualifying",
+        "cheap_nonqualifying",
+        "advertised_fee",
+        "equal_minima",
+        "budget_breach"
+      ],
+      "durable_effects": [
+        "m2_outcome",
+        "price_and_delivery_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-023": {
+      "requirement_id": "BTS-REQ-013",
+      "title": "M3 actual native output earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_023",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m3_swap_evm_grader",
+      "required_observations": [
+        "input_principal",
+        "route_receipts",
+        "native_output",
+        "weth_balance",
+        "reserve",
+        "expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "weth_only",
+        "insufficient_output",
+        "wrong_route",
+        "reserve_breach",
+        "reverted_gas"
+      ],
+      "durable_effects": [
+        "m3_outcome",
+        "separate_native_token_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-024": {
+      "requirement_id": "BTS-REQ-013",
+      "title": "M3 WETH and insufficient output do not satisfy native goals",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_024",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m3_swap_evm_grader",
+      "required_observations": [
+        "input_principal",
+        "route_receipts",
+        "native_output",
+        "weth_balance",
+        "reserve",
+        "expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "weth_only",
+        "insufficient_output",
+        "wrong_route",
+        "reserve_breach",
+        "reverted_gas"
+      ],
+      "durable_effects": [
+        "m3_outcome",
+        "separate_native_token_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-025": {
+      "requirement_id": "BTS-REQ-014",
+      "title": "M4 exchange plus cleanup earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_025",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m4_swap_allowance_grader",
+      "required_observations": [
+        "exchange_predicate",
+        "used_spenders",
+        "final_allowances",
+        "unrelated_history",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "residual_allowance",
+        "cleanup_only",
+        "unrelated_permission",
+        "wrong_output"
+      ],
+      "durable_effects": [
+        "m4_outcome",
+        "exchange_cleanup_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-026": {
+      "requirement_id": "BTS-REQ-014",
+      "title": "M4 cleanup credit requires actual exchange progress",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_026",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_m4_swap_allowance_grader",
+      "required_observations": [
+        "exchange_predicate",
+        "used_spenders",
+        "final_allowances",
+        "unrelated_history",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "residual_allowance",
+        "cleanup_only",
+        "unrelated_permission",
+        "wrong_output"
+      ],
+      "durable_effects": [
+        "m4_outcome",
+        "exchange_cleanup_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-027": {
+      "requirement_id": "BTS-REQ-015",
+      "title": "H1 complete validated components earn full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_027",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_h1_x402_components_grader",
+      "required_observations": [
+        "component_validators",
+        "delivered_component_set",
+        "payment_identities",
+        "expense",
+        "component_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "partial_components",
+        "duplicate_claim",
+        "duplicate_purchase",
+        "invalid_data",
+        "budget_breach"
+      ],
+      "durable_effects": [
+        "h1_outcome",
+        "unique_component_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-028": {
+      "requirement_id": "BTS-REQ-015",
+      "title": "H1 partial data and duplicate purchases have distinct outcomes",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_028",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_h1_x402_components_grader",
+      "required_observations": [
+        "component_validators",
+        "delivered_component_set",
+        "payment_identities",
+        "expense",
+        "component_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "partial_components",
+        "duplicate_claim",
+        "duplicate_purchase",
+        "invalid_data",
+        "budget_breach"
+      ],
+      "durable_effects": [
+        "h1_outcome",
+        "unique_component_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-029": {
+      "requirement_id": "BTS-REQ-016",
+      "title": "H2 all verified payouts earn full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_029",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_h2_payout_conversion_grader",
+      "required_observations": [
+        "obligation_results",
+        "recipient_deltas",
+        "conversion_receipts",
+        "native_reserve",
+        "expense",
+        "payout_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "partial_payouts",
+        "wrong_recipient",
+        "overpayment",
+        "wrong_asset",
+        "reserve_breach"
+      ],
+      "durable_effects": [
+        "h2_outcome",
+        "obligation_effect_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-030": {
+      "requirement_id": "BTS-REQ-016",
+      "title": "H2 payout fractions cannot erase mandatory violations",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_030",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_h2_payout_conversion_grader",
+      "required_observations": [
+        "obligation_results",
+        "recipient_deltas",
+        "conversion_receipts",
+        "native_reserve",
+        "expense",
+        "payout_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "partial_payouts",
+        "wrong_recipient",
+        "overpayment",
+        "wrong_asset",
+        "reserve_breach"
+      ],
+      "durable_effects": [
+        "h2_outcome",
+        "obligation_effect_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-031": {
+      "requirement_id": "BTS-REQ-017",
+      "title": "H3 paid data before the satisfying route earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_031",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_h3_data_swap_dependency_grader",
+      "required_observations": [
+        "paid_reference",
+        "delivery_sequence",
+        "trade_sequence",
+        "derived_route_objective",
+        "actual_outcome",
+        "combined_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "allowed_suboptimal_route",
+        "trade_before_delivery",
+        "forged_reference",
+        "data_only",
+        "combined_budget_breach"
+      ],
+      "durable_effects": [
+        "h3_outcome",
+        "observable_dependency_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-032": {
+      "requirement_id": "BTS-REQ-017",
+      "title": "H3 dependent credit requires observed prior data and execution",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_032",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_h3_data_swap_dependency_grader",
+      "required_observations": [
+        "paid_reference",
+        "delivery_sequence",
+        "trade_sequence",
+        "derived_route_objective",
+        "actual_outcome",
+        "combined_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "allowed_suboptimal_route",
+        "trade_before_delivery",
+        "forged_reference",
+        "data_only",
+        "combined_budget_breach"
+      ],
+      "durable_effects": [
+        "h3_outcome",
+        "observable_dependency_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-033": {
+      "requirement_id": "BTS-REQ-018",
+      "title": "U1 coherent final treasury state earns full credit",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_033",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_u1_treasury_grader",
+      "required_observations": [
+        "release_pinned_data_denominator",
+        "release_pinned_payout_denominator",
+        "validated_component_ids",
+        "component_validator_results",
+        "component_delivery_hashes",
+        "fulfilled_obligation_ids",
+        "payout_recipient_deltas",
+        "payout_receipt_ids",
+        "allocation_asset_set",
+        "post_payout_asset_values",
+        "allocation_target_tolerance",
+        "temporary_allowance_keys",
+        "data_fraction",
+        "post_payout_allocation",
+        "payout_fraction",
+        "temporary_allowances",
+        "core_progress_guard",
+        "common_cutoff",
+        "weighted_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "partial_subgoals",
+        "residual_allowance",
+        "idle_cleanup",
+        "undone_allocation",
+        "budget_or_permission_violation"
+      ],
+      "durable_effects": [
+        "u1_outcome",
+        "same_cutoff_treasury_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    },
+    "BTS-SC-034": {
+      "requirement_id": "BTS-REQ-018",
+      "title": "U1 partial subgoals do not reward idle or undone outcomes",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_bts_sc_034",
+      "adapter": "benchmark_task_suite_http_evm_adapter",
+      "boundary": "environment",
+      "boundary_detail": "actual_u1_treasury_grader",
+      "required_observations": [
+        "release_pinned_data_denominator",
+        "release_pinned_payout_denominator",
+        "validated_component_ids",
+        "component_validator_results",
+        "component_delivery_hashes",
+        "fulfilled_obligation_ids",
+        "payout_recipient_deltas",
+        "payout_receipt_ids",
+        "allocation_asset_set",
+        "post_payout_asset_values",
+        "allocation_target_tolerance",
+        "temporary_allowance_keys",
+        "data_fraction",
+        "post_payout_allocation",
+        "payout_fraction",
+        "temporary_allowances",
+        "core_progress_guard",
+        "common_cutoff",
+        "weighted_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ],
+      "negative_variants": [
+        "partial_subgoals",
+        "duplicate_component_purchase_or_claim",
+        "purchase_count_reweighting",
+        "payout_amount_weighting",
+        "run_time_denominator_or_set_mutation",
+        "residual_allowance",
+        "idle_cleanup",
+        "zero_allowances_without_core_progress",
+        "undone_allocation",
+        "budget_or_permission_violation"
+      ],
+      "durable_effects": [
+        "u1_outcome",
+        "same_cutoff_treasury_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "allowed_private_calls": []
+    }
+  }
+}

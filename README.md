@@ -7,6 +7,12 @@ The repository currently contains the project operating system, OpenSpec contrac
 pytest-bdd mirror, and a small deterministic reference adapter. It does not yet claim to execute
 against live wallets, public chains, or an internet-facing match server.
 
+The MVP planning snapshot and accepted delivery sequence are in
+[`docs/mvp-execution-plan.md`](docs/mvp-execution-plan.md). It links the ten
+proposed OpenSpec packets, remaining preparation work and the parallel
+[`UI layout brief`](docs/ui-layout-brief.md). Planning and mock UI do not establish
+runtime acceptance or approval of every implementation packet.
+
 ## What is in the first slice
 
 - `openspec/specs/benchmarking-core/spec.md` defines reproducible run identity, score/evidence
@@ -55,4 +61,3 @@ mandatory BDD gates, `/opsx:sync`, and `/opsx:archive`. The detailed contract is
 
 The local Git repository is initialized for this project. No remote is configured by this
 bootstrap; add one only when the destination is known.
-
