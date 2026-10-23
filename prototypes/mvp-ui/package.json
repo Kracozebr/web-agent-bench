@@ -1,0 +1,8 @@
+{
+  "name": "web3-agent-bench-mvp-ui-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check app.js && node --check domain.js && node --check mock-data.js && node --input-type=module -e \"import('./smoke-check.mjs')\""
+  }
+}

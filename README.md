@@ -13,6 +13,11 @@ proposed OpenSpec packets, remaining preparation work and the parallel
 [`UI layout brief`](docs/ui-layout-brief.md). Planning and mock UI do not establish
 runtime acceptance or approval of every implementation packet.
 
+The local [MVP UI prototype](prototypes/mvp-ui/README.md) revises the latest Stitch
+export with synthetic data and explicit simulated interactions. It is a design
+artifact for later integration, not the Next.js application, authentication,
+ledger, MCP server or chain execution layer.
+
 ## What is in the first slice
 
 - `openspec/specs/benchmarking-core/spec.md` defines reproducible run identity, score/evidence

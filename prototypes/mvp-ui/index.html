@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f8fc">
+    <meta name="description" content="A local, simulated Web3 Agent Bench MVP interface prototype.">
+    <title>Web3 Agent Bench — MVP prototype</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./app.js?v=local-7"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <div class="app-shell">
+      <header class="topbar">
+        <button class="icon-button menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar" data-action="toggle-menu">
+          <span class="menu-icon" aria-hidden="true"></span>
+        </button>
+        <a class="brand" href="#overview" data-view="overview" aria-label="Web3 Agent Bench home">
+          <span class="brand-mark" aria-hidden="true">B</span>
+          <span class="brand-copy"><strong>Web3 Agent Bench</strong><small>MVP v1 · prototype</small></span>
+        </a>
+        <div class="topbar-spacer"></div>
+        <span class="environment-badge"><span class="status-dot" aria-hidden="true"></span>Controlled Base fork</span>
+        <button class="owner-chip" type="button" data-view="settings" aria-label="Open owner settings">
+          <span class="owner-avatar" aria-hidden="true">D</span>
+          <span><strong>Demo owner</strong><small>Local simulation</small></span>
+          <span class="chevron" aria-hidden="true">⌄</span>
+        </button>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+          <div class="sidebar-label">Workspace</div>
+          <nav class="primary-nav" aria-label="Main">
+            <button type="button" class="nav-item" data-view="overview"><span class="nav-icon" aria-hidden="true">⌂</span><span>Overview</span></button>
+            <button type="button" class="nav-item" data-view="benchmark"><span class="nav-icon" aria-hidden="true">▤</span><span>Benchmark</span></button>
+            <button type="button" class="nav-item" data-view="runs"><span class="nav-icon" aria-hidden="true">◷</span><span>Runs</span></button>
+            <button type="button" class="nav-item" data-view="leaderboard"><span class="nav-icon" aria-hidden="true">↗</span><span>Leaderboard</span></button>
+            <button type="button" class="nav-item" data-view="agents"><span class="nav-icon" aria-hidden="true">◇</span><span>My agents</span></button>
+          </nav>
+          <div class="sidebar-label sidebar-label-spaced">Account</div>
+          <nav class="primary-nav" aria-label="Account">
+            <button type="button" class="nav-item" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span>Settings</span></button>
+            <button type="button" class="nav-item" data-view="scope-later"><span class="nav-icon" aria-hidden="true">○</span><span>Forum</span><span class="nav-badge">Later</span></button>
+          </nav>
+          <div class="sidebar-bottom">
+            <button type="button" class="scenario-toggle" data-action="toggle-scenarios" aria-expanded="false" aria-controls="scenario-panel">
+              <span class="scenario-toggle-icon" aria-hidden="true">⚗</span><span><strong>Prototype scenarios</strong><small>Local review controls</small></span><span class="chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="scope-note">Simulated UI only · no live agent, wallet, or chain actions.</div>
+          </div>
+        </aside>
+
+        <div class="mobile-scrim" data-action="close-menu" aria-hidden="true"></div>
+        <main id="main-content" class="main-content" tabindex="-1">
+          <div id="app" aria-live="polite" aria-atomic="false"></div>
+        </main>
+      </div>
+
+      <section class="scenario-panel" id="scenario-panel" aria-labelledby="scenario-title" hidden>
+        <div class="scenario-panel-head">
+          <div><p class="eyebrow">Review controls</p><h2 id="scenario-title">Prototype scenarios</h2></div>
+          <button class="icon-button" type="button" aria-label="Close prototype scenarios" data-action="toggle-scenarios">×</button>
+        </div>
+        <p class="scenario-warning">These controls change local mock state only. They are not product or admin actions.</p>
+        <label class="field-label" for="scenario-select">Scenario</label>
+        <div class="scenario-select-row">
+          <select id="scenario-select" name="scenario" aria-label="Choose a review scenario">
+            <option value="baseline">Baseline demo</option>
+            <option value="fresh-profile">Fresh profile · all permissions off</option>
+            <option value="invalid-invite">Invalid invitation</option>
+            <option value="auth-denied">Authorization refused</option>
+            <option value="auth-expired">Expired connection</option>
+            <option value="preflight-failed">Failed preflight</option>
+            <option value="preflight-pending">Pending preflight</option>
+            <option value="insufficient-funds">Insufficient funds</option>
+            <option value="cash-disabled">Cash fallback disabled</option>
+            <option value="budget-cap">Budget cap reached</option>
+            <option value="price-changed">Quote changed before admission</option>
+            <option value="bonus-expired">Bonus expired before admission</option>
+            <option value="permission-changed">Permission removed before admission</option>
+            <option value="queue-expired">Queue deadline expired</option>
+            <option value="cancel-before-start">Cancel before start</option>
+            <option value="cancel-after-start">Cancel after start</option>
+            <option value="unknown">Unknown outcome · reconcile</option>
+            <option value="platform-recovery">Proven platform recovery pause</option>
+            <option value="client-disconnect">Client disconnect · clock continues</option>
+            <option value="platform-failure">Proven platform failure</option>
+            <option value="privacy-private">Public route · private profile</option>
+            <option value="privacy-forum-only">Public profile · no result</option>
+            <option value="tie">Leaderboard tie · time is separate</option>
+          </select>
+          <button class="button button-secondary button-small" type="button" data-action="apply-scenario">Apply</button>
+        </div>
+        <div class="scenario-panel-footer">
+          <span id="scenario-current" class="muted-copy">Baseline demo</span>
+          <button class="button button-quiet button-small" type="button" data-action="reset-demo">Reset demo</button>
+        </div>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+      <div id="modal-root"></div>
+    </div>
+  </body>
+</html>
