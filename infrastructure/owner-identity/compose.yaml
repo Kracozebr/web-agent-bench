@@ -1,0 +1,84 @@
+name: web-agent-bench-oid
+
+services:
+  runtime:
+    profiles: [tools]
+    image: web-agent-bench-oid-runtime:local
+    build:
+      context: ../..
+      dockerfile: infrastructure/owner-identity/Dockerfile
+    init: true
+    working_dir: /workspace
+    environment:
+      OID_PUBLIC_ORIGIN: http://127.0.0.1:3000
+      OID_API_URL: http://127.0.0.1:8784
+      OID_API_PORT: "8784"
+      OID_REGISTRATION_MODE: closed
+      OID_CHROMIUM_EXECUTABLE: /usr/bin/chromium
+      NEXT_TELEMETRY_DISABLED: "1"
+      OPENSPEC_TELEMETRY: "0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - owner_password
+      - observer_password
+      - auth_secret
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:8784:8784"
+    volumes:
+      - ../..:/workspace
+      - root-modules:/workspace/node_modules
+      - api-modules:/workspace/packages/owner-identity/node_modules
+      - web-modules:/workspace/packages/owner-web/node_modules
+      - acceptance-modules:/workspace/packages/owner-acceptance/node_modules
+      - bef-modules:/workspace/packages/benchmark-environment/node_modules
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    shm_size: 256mb
+    mem_limit: 4g
+    pids_limit: 512
+
+  postgres:
+    image: postgres:18.6-trixie@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+    restart: "no"
+    environment:
+      POSTGRES_DB: owner_identity
+      POSTGRES_USER: oid_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/owner_password
+    secrets:
+      - owner_password
+      - observer_password
+    ports:
+      - "127.0.0.1:${OID_DATABASE_HOST_PORT:-55433}:5432"
+    volumes:
+      - oid-data:/var/lib/postgresql
+      - ./init-observer.sh:/docker-entrypoint-initdb.d/10-observer.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oid_owner -d owner_identity"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  owner_password:
+    file: ../../.local/owner-identity/secrets/owner-password
+  observer_password:
+    file: ../../.local/owner-identity/secrets/observer-password
+  auth_secret:
+    file: ../../.local/owner-identity/secrets/auth-secret
+
+volumes:
+  oid-data:
+  root-modules:
+  api-modules:
+  web-modules:
+  acceptance-modules:
+  bef-modules:

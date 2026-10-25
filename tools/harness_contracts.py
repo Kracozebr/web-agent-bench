@@ -459,5 +459,40 @@ def harness_source_paths(root: Path, change_name: str | None = None) -> tuple[Pa
         paths.add(selected_manifest.relative_to(root))
     if change_name is not None:
         paths.update(active_delta_source_paths(root, change_name))
+        if change_name == "owner-identity-and-pilot-admission":
+            source_roots = (
+                root / "packages" / "owner-identity",
+                root / "packages" / "owner-web",
+                root / "packages" / "owner-acceptance",
+                root / "infrastructure" / "owner-identity",
+            )
+            allowed_suffixes = {
+                ".mjs", ".js", ".ts", ".tsx", ".json", ".md", ".css", ".ps1", ".yaml", ".yml"
+            }
+            excluded_names = {
+                "node_modules", ".next", "dist", "artifacts", "coverage", "__pycache__"
+            }
+            for source_root in source_roots:
+                if not source_root.is_dir():
+                    continue
+                for candidate in source_root.rglob("*"):
+                    if not candidate.is_file() or any(part in excluded_names for part in candidate.parts):
+                        continue
+                    if candidate.name == "scenario-map.md" or candidate.name == "acceptance-evidence.json":
+                        continue
+                    if candidate.suffix in allowed_suffixes:
+                        paths.add(candidate.relative_to(root))
+            for relative in (
+                Path("package.json"),
+                Path("pnpm-workspace.yaml"),
+                Path("pnpm-lock.yaml"),
+                Path("Dockerfile"),
+                Path(".dockerignore"),
+                Path("tools") / "replay_oid_acceptance.py",
+                Path("tools") / "harness_contracts.py",
+                Path("tools") / "run_bdd_acceptance.py",
+            ):
+                if (root / relative).is_file():
+                    paths.add(relative)
     return tuple(sorted(paths, key=lambda item: item.as_posix()))
 

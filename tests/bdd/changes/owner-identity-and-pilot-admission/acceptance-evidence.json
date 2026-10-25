@@ -1,0 +1,61 @@
+{
+  "acceptance_state": "failed",
+  "active_delta_sha256": "700c0888b15971f48bacdc70ea655d0924bbf1c16e6110dbe5e92124093fcb56",
+  "bef_spec_profile": "active-delta",
+  "change": "owner-identity-and-pilot-admission",
+  "command": [
+    ".venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_owner_identity_and_pilot_admission_bdd.py",
+    "--change",
+    "owner-identity-and-pilot-admission",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/owner-identity-and-pilot-admission-pytest.xml"
+  ],
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-25T14:09:46.941944Z",
+  "gate": {
+    "class": "environment",
+    "mandatory": true
+  },
+  "git_commit": "01771feb878656da1543908802c1862ed9006aa7",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "approved_scenarios": 12,
+    "change": "owner-identity-and-pilot-admission",
+    "coverage_status": "complete",
+    "errors": [],
+    "normative_source": "openspec/changes/owner-identity-and-pilot-admission/specs/*/spec.md",
+    "protected_scenarios": 12,
+    "status": "passed",
+    "unprotected_scenarios": [],
+    "warnings": []
+  },
+  "harness_contract_sha256": "79a625c2377a509ea921e47517ed2a7d22cc47c4d1b5c548dc1b34e3f8800e9c",
+  "harness_sources_sha256": "4a237109200888f892b97a95cd83e474117365a1d4a7cd39e280f2a88fcb45f6",
+  "harness_sources_sha256_after": "4a237109200888f892b97a95cd83e474117365a1d4a7cd39e280f2a88fcb45f6",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/owner-identity-and-pilot-admission/specs/*/spec.md",
+  "scenario_map_sha256": "0f2f88d3744c75a2349e0f3a79957738f2bf7f98a2637ad0879b5d803eedd731",
+  "scenario_results": {
+    "OID-SC-001": "passed",
+    "OID-SC-002": "passed",
+    "OID-SC-003": "blocked",
+    "OID-SC-004": "blocked",
+    "OID-SC-005": "blocked",
+    "OID-SC-006": "blocked",
+    "OID-SC-007": "blocked",
+    "OID-SC-008": "blocked",
+    "OID-SC-009": "blocked",
+    "OID-SC-010": "blocked",
+    "OID-SC-011": "passed",
+    "OID-SC-012": "blocked"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-25T14:09:28.857418Z"
+}

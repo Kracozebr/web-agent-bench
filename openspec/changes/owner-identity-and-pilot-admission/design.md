@@ -1,7 +1,8 @@
 ## Context
 
-Status: proposed; complete scenario/scope approval is pending. The selected
-TypeScript/Better Auth/Fastify/Next.js/PostgreSQL application is not implemented.
+Status: approved for implementation; see [approval.md](approval.md). The selected
+TypeScript/Better Auth/Fastify/Next.js/PostgreSQL application is implemented locally;
+see [implementation-review.md](implementation-review.md) for actual evidence and remaining gates.
 The user selected Google or wallet login, explicit linking to one account,
 invitation-only first admission and later open registration without migration.
 The free stage uses personal bonuses at normal tariffs, issued independently.

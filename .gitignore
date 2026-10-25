@@ -15,6 +15,12 @@ htmlcov/
 node_modules/
 dist/
 build/
+.next/
+playwright-report/
+test-results/
+*.tsbuildinfo
+/.pnpm-store/
+/_tmp_*
 
 # Local configuration and secrets
 /.local/

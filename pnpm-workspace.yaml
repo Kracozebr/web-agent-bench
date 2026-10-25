@@ -1,5 +1,8 @@
 packages:
   - packages/benchmark-environment
+  - packages/owner-identity
+  - packages/owner-web
+  - packages/owner-acceptance
 
 allowBuilds:
   esbuild: true

@@ -1,7 +1,7 @@
 {
   "proposal_schema": "bdd-harness-contract-proposal/v1",
-  "review_status": "pending",
-  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/owner-identity-and-pilot-admission/harness-contracts.json",
   "normative_delta": "specs/owner-identity-and-pilot-admission/spec.md",
   "note": "Review-only inventory, not runtime contracts or executed evidence.",
   "protected_scenarios": {

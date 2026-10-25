@@ -5,7 +5,8 @@ bonuses or funding become usable. Google and wallet login must resolve explicitl
 linked methods to one durable owner without duplicate activation or implicit
 account/fund merging.
 
-Status: proposed; complete acceptance inventory and implementation scope await approval.
+Status: approved for implementation on 2026-10-25; see [approval.md](approval.md).
+Acceptance remains a separate result; mandatory unavailable gates prevent closeout.
 
 ## What Changes
 

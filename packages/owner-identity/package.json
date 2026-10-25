@@ -1,0 +1,38 @@
+{
+  "name": "@web-agent-bench/owner-identity",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fastify owner identity, verified sign-in, and pilot admission backed by PostgreSQL.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "pnpm check",
+    "migrate": "tsx src/migrate.ts"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "1.7.12",
+    "@fastify/cookie": "11.1.2",
+    "@signinwithethereum/siwe": "4.2.1",
+    "better-auth": "1.7.12",
+    "drizzle-orm": "0.45.4",
+    "postgres": "3.4.9",
+    "viem": "2.56.9"
+  },
+  "peerDependencies": {
+    "fastify": "5.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.7",
+    "fastify": "5.12.7",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

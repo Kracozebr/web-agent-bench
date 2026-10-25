@@ -1,6 +1,6 @@
 # Owner identity and pilot admission
 
-Status: proposed active delta; full scenario/scope approval is pending. Selected product choices and remaining defaults are distinguished in ../../design.md. All acceptance is not_run.
+Status: approved active delta; see ../../approval.md. Selected product choices and implementation configuration are distinguished in ../../design.md. Approval is not acceptance evidence.
 
 ## ADDED Requirements
 

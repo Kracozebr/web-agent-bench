@@ -3,6 +3,11 @@
 .local
 **/.local
 node_modules
+.pnpm-store
+_tmp_*
+**/.next
+**/playwright-report
+**/test-results
 **/node_modules
 artifacts
 **/artifacts

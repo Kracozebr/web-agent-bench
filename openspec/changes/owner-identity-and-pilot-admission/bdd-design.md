@@ -2,10 +2,10 @@
 
 Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
-**Status:** Awaiting review and explicit approval.
+**Status:** Approved for implementation; see [approval.md](approval.md).
 **Normative delta source:** `specs/owner-identity-and-pilot-admission/spec.md` (proposed active delta).
 **Target main source after sync:** `openspec/specs/owner-identity-and-pilot-admission/spec.md`.
-**Execution status:** all 12 mandatory scenarios are `not_run`; no executable test or product file has been created.
+**Execution status:** implementation and active-delta wiring are in progress. Approval and structural validation do not establish runtime acceptance; see the separate acceptance evidence when generated.
 
 ## Intent
 
@@ -55,5 +55,5 @@ All gates are mandatory `environment`. OID-SC-001–011 use actual local applica
 
 Approval authorizes only these 12 scenarios/variants, named mappers/adapters, identity/admission pages and shared real integration scope. It does not authorize mainnet funds, production provider activation, account merges, recovery redesign, new assertions or universal wallet compatibility.
 
-**Decision:** pending.
-**Decision reference:** the user selected Google/wallet login with explicit linking, invitation-only first admission and later open registration preserving accounts. The user also selected a bonus-funded free stage at normal tariffs; invitation activation does not issue that grant. Single-use mechanism, conflict/bootstrap/session defaults and complete implementation/scenario scope remain proposed.
+**Decision:** approved for unchanged OID-SC-001–012 scope and reviewed defaults; see [approval.md](approval.md).
+**Decision reference:** [approval.md](approval.md) records the owner's explicit approval of this unchanged twelve-scenario scope and reviewed defaults. The selected bonus-funded free stage is separate from admission: invitation activation does not issue a grant. Current per-gate evidence and remaining blockers are documented in [implementation-review.md](implementation-review.md).

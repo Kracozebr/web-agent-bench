@@ -74,6 +74,15 @@ environment gates за 436,94 секунды. Semantic audit прошёл; хе�
 активного каталога change. Отчёт main: [acceptance-evidence.json](../tests/bdd/acceptance-evidence.json).
 Browser → backend → БД E2E продуктовых сценариев относятся к этапу 2; они пока не реализованы.
 
+25 октября владелец поручил перейти к этапу 2 с сабагентами GPT-6 Luna/xhigh.
+Подготовлен [review входа в продуктовый этап](stage2-entry-review.md): первый
+пакет — `owner-identity-and-pilot-admission`, затем access и run/task пути.
+Владелец затем одобрил OID scope. Реализован первый настоящий UI → backend → БД
+путь: вход, приглашение, активация, привязка кошелька и возврат к тому же owner.
+Проверки выполняются в Docker; OID-SC-001/002/011 прошли, девять gates blocked.
+См. [review реализации](../openspec/changes/owner-identity-and-pilot-admission/implementation-review.md).
+Карточка агента, доступ/MCP, preflight и handoff ещё нужны для завершения этапа 2.
+
 ## Последовательность и критерии перехода
 
 | Этап | Работа | Результат для перехода дальше |
