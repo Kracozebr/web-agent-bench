@@ -29,8 +29,11 @@ The runner starts the actual owner API and production Next server in the same
 container, then drives browser controls through the same-origin proxy. The
 runner also exercises private agent-card creation/edit and permission settings,
 including foreign-owner denial, idempotent retry and a two-tab revision race.
-These are partial AAP observations; all sixteen full AAP gates remain blocked
-until actual credential/domain/client boundaries are implemented. Stop the dev
+The runner also exercises manual credential issuance, response loss/replacement,
+expiry, live policy reload and durable credential revoke across API restart.
+AAP-SC-004 passes only when its eight named observations/negatives derive from
+actual browser/HTTP/SQL evidence. Fifteen other full AAP gates remain blocked
+on OAuth, domain, lifecycle and client boundaries. Stop the dev
 container before building/running production acceptance to avoid sharing writes
 to Next.js `.next`; restart it afterward.
 

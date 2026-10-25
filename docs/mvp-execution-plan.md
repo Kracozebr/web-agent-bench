@@ -84,8 +84,9 @@ Browser → backend → БД E2E продуктовых сценариев от�
 После согласования AAP реализованы приватная карточка агента и четыре настройки
 permissions с настоящим UI → API → PostgreSQL и проверкой конфликта двух вкладок.
 См. [AAP review реализации](../openspec/changes/agent-access-and-permissions/implementation-review.md).
-Полные 16 AAP gates blocked: доступ/MCP, credentials, preflight, доменные действия
-и handoff ещё нужны для завершения этапа 2.
+Добавлены ручной credential с однократным показом, безопасная замена, отзыв и
+настоящий header preflight. AAP-SC-004 passed; 15 остальных gates blocked:
+OAuth/MCP, доменные действия, lifecycle delivery и handoff ещё нужны для этапа 2.
 
 ## Последовательность и критерии перехода
 

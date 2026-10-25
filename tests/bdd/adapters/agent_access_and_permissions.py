@@ -23,6 +23,19 @@ from .registry import ScenarioContext, ScenarioRegistry
 CHANGE_NAME = "agent-access-and-permissions"
 SCENARIO_IDS = tuple(f"AAP-SC-{number:03d}" for number in range(1, 17))
 PARTIAL_CARD_SCENARIOS = frozenset({"AAP-SC-001", "AAP-SC-006", "AAP-SC-014"})
+PASSABLE_SCENARIOS = frozenset({"AAP-SC-004"})
+SC004_OBSERVATIONS = (
+    "owner_issuance",
+    "token_agent_binding",
+    "header_authentication",
+    "unauthorized_issuance_denied",
+)
+SC004_NEGATIVES = (
+    "foreign_issuance",
+    "agent_self_issuance",
+    "token_for_other_agent",
+    "forged_withdrawal_scope",
+)
 ADAPTER_PROFILES = frozenset(
     {
         "agent_access_http_mcp_adapter",
@@ -40,7 +53,7 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SAFE_ARTIFACT_RE = re.compile(r"^[a-z][a-z0-9-]*\.json$")
 SECRET_KEY_RE = re.compile(
-    r"^(?:access(?:token)?|accesstoken|authtoken|bearer|cookie|cookies|password|"
+    r"^(?:accesstoken|authtoken|bearer|cookie|cookies|password|"
     r"secret|clientsecret|manualtoken|tokenvalue|authorization|privatekey|"
     r"mnemonic|seedphrase|rawsignature|signature|walletmaterial|databaseurl|"
     r"oauthcode|oauthstate)$",
@@ -49,7 +62,7 @@ SECRET_KEY_RE = re.compile(
 SECRET_TEXT_RE = re.compile(
     r"\bBearer\s+(?!<redacted>|\[redacted\]|\*{3})\S+|"
     r"(?:[?&](?:code|state|access_token|refresh_token|id_token|client_secret)=)"
-    r"(?!<redacted>|\[redacted\])[^&#\s]+",
+    r"(?!<redacted>|\[redacted\])[^&#\s]+|\baap1_[A-Za-z0-9_-]{43}\b",
     re.IGNORECASE,
 )
 
@@ -85,7 +98,7 @@ def _load_run(scenario_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any
     if (
         index.get("schemaVersion") != "agent-access-evidence-index/v1"
         or index.get("scenarioId") != scenario_id
-        or index.get("status") != "blocked"
+        or index.get("status") not in {"blocked", "passed"}
     ):
         raise AssertionError(f"{scenario_id} evidence index identity or schema is invalid")
     run_id = index.get("latestRunId")
@@ -103,6 +116,7 @@ def _load_run(scenario_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any
         or manifest.get("runId") != run_id
         or manifest.get("specProfile") != "active-delta"
         or manifest.get("status") not in {"blocked", "failed", "passed"}
+        or index.get("status") != manifest.get("status")
     ):
         raise AssertionError(f"{scenario_id} run manifest identity or schema is invalid")
 
@@ -146,6 +160,12 @@ def _load_run(scenario_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any
     provenance = loaded["provenance.json"]
     if provenance.get("contractSha256") != hashlib.sha256(contract_bytes).hexdigest():
         raise AssertionError(f"{scenario_id} evidence was captured against another runtime contract")
+    if manifest.get("status") == "passed" and (
+        provenance.get("sourceStableDuringRun") is not True
+        or not provenance.get("inputHashesBefore")
+        or provenance.get("inputHashesBefore") != provenance.get("inputHashesAfter")
+    ):
+        raise AssertionError(f"{scenario_id} cannot pass with unstable or absent source provenance")
     database = loaded["database.json"]
     observer = database.get("observer")
     if not isinstance(observer, dict) or observer.get("role") != "oid_observer":
@@ -184,11 +204,209 @@ def _all_false(row: Any) -> bool:
     return all(row.get(key) is False for key in ("training", "ranked", "forum_messages", "custom_topics"))
 
 
-def _derive_partial_facts(scenario_id: str, artifacts: dict[str, dict[str, Any]]) -> dict[str, bool]:
-    """Derive only owner-card/policy setup facts; never infer full domain acceptance."""
+def _derive_sc004_facts(artifacts: dict[str, dict[str, Any]]) -> dict[str, bool]:
+    """Recompute SC004's four observations and four negatives from browser and SQL facts."""
 
-    if scenario_id not in PARTIAL_CARD_SCENARIOS:
+    browser = artifacts["browser.json"]
+    database = artifacts["database.json"]
+    owner_id = browser.get("ownerId")
+    agent_id = browser.get("primaryAgentId")
+    resource = browser.get("resource")
+    preflight = browser.get("preflight", {})
+    initial = browser.get("initialIssue", {})
+    negatives = browser.get("directHttpNegatives", {})
+    attempts = negatives.get("attempts", []) if isinstance(negatives, dict) else []
+    attempt_by_variant = {
+        row.get("variant"): row for row in attempts if isinstance(row, dict)
+    }
+    capture = browser.get("capture", {})
+    actions = capture.get("actions", []) if isinstance(capture, dict) else []
+    requests = capture.get("requests", []) if isinstance(capture, dict) else []
+    responses = capture.get("responses", []) if isinstance(capture, dict) else []
+    issuance_checkpoint = database.get("initialIssuanceCheckpoint", {})
+    issuance_credentials = issuance_checkpoint.get("credentials", [])
+    issuance_grants = issuance_checkpoint.get("grants", [])
+    issuance_operations = issuance_checkpoint.get("operations", [])
+    issuance_audits = issuance_checkpoint.get("audits", [])
+    credential = next(
+        (row for row in issuance_credentials if isinstance(row, dict) and row.get("id") == initial.get("credentialId")),
+        None,
+    )
+    grant = next(
+        (row for row in issuance_grants if isinstance(row, dict) and row.get("id") == initial.get("grantId")),
+        None,
+    )
+    operation_id = initial.get("operationId")
+    issue_path = f"/api/owner/agents/{agent_id}/manual-credential"
+    clicked_issue = any(
+        isinstance(row, dict) and row.get("action") == "click" and row.get("selector") == f"credential-issue-{agent_id}"
+        for row in actions
+    )
+    issue_request = any(
+        isinstance(row, dict) and row.get("method") == "POST" and row.get("path") == issue_path
+        and row.get("operationId") == operation_id
+        for row in requests
+    )
+    issue_response = any(
+        isinstance(row, dict) and row.get("method") == "POST" and row.get("path") == issue_path and row.get("status") == 201
+        for row in responses
+    )
+    initial_preflight = preflight.get("initial", {}) if isinstance(preflight, dict) else {}
+    cookie_only = preflight.get("cookieOnly", {}) if isinstance(preflight, dict) else {}
+    checkpoint = database.get("negativePersistenceCheckpoint", {})
+    no_unauthorized_insert = (
+        checkpoint.get("credentialsBefore") == checkpoint.get("credentialsAfter")
+        and checkpoint.get("grantsBefore") == checkpoint.get("grantsAfter")
+        and isinstance(checkpoint.get("credentialsBefore"), list)
+        and isinstance(checkpoint.get("grantsBefore"), list)
+    )
+    verifier_safe = (
+        isinstance(credential, dict) and credential.get("verifier_present") is True
+        and issuance_checkpoint.get("noPlaintextCredentialColumn") is True
+        and issuance_checkpoint.get("secretAbsentFromOperations") is True
+        and issuance_checkpoint.get("secretAbsentFromAudit") is True
+    )
+    grant_bound = (
+        isinstance(credential, dict) and isinstance(grant, dict)
+        and credential.get("grant_id") == grant.get("id")
+        and credential.get("owner_id") == owner_id and credential.get("agent_id") == agent_id
+        and grant.get("owner_id") == owner_id and grant.get("agent_id") == agent_id
+        and grant.get("source") == "manual" and grant.get("role") == "agent"
+        and grant.get("resource") == resource and grant.get("status") == "active"
+    )
+    operation_recorded = any(
+        isinstance(row, dict) and row.get("operationId") == operation_id
+        and row.get("action") == "agent.manual_credential.issue" and row.get("responseHasSecret") is False
+        for row in issuance_operations
+    )
+    audit_recorded = any(
+        isinstance(row, dict) and row.get("operationId") == operation_id
+        and row.get("eventType") == "agent.manual_credential.issued"
+        and row.get("actorOwnerId") == owner_id and row.get("subjectOwnerId") == owner_id
+        and row.get("metadataHasSecret") is False
+        for row in issuance_audits
+    )
+
+    foreign = attempt_by_variant.get("foreign_issuance", {})
+    self_issue = attempt_by_variant.get("agent_self_issuance", {})
+    other_agent = attempt_by_variant.get("token_for_other_agent", {})
+    forged_scope = attempt_by_variant.get("forged_withdrawal_scope", {})
+    foreign_isolation = (
+        foreign.get("method") == "POST" and foreign.get("path") == issue_path
+        and foreign.get("status") == 404 and foreign.get("actorOwnerId") != owner_id
+        and negatives.get("foreignOwnerId") == foreign.get("actorOwnerId")
+    )
+    self_issue_denied = (
+        self_issue.get("method") == "POST" and self_issue.get("path") == issue_path
+        and self_issue.get("status") == 401 and self_issue.get("actorAgentId") == agent_id
+    )
+    other_agent_denied = (
+        other_agent.get("method") == "GET" and other_agent.get("path") == "/api/agent/preflight"
+        and other_agent.get("status") == 403 and other_agent.get("requestedAgentId") != agent_id
+        and initial_preflight.get("agentId") == agent_id
+    )
+    forged_scope_denied = (
+        forged_scope.get("method") == "PUT" and forged_scope.get("path") == f"/api/owner/agents/{agent_id}/permissions"
+        and forged_scope.get("status") == 401 and forged_scope.get("attemptedScope") == "wallet.withdraw"
+    )
+    header_authenticated = (
+        initial_preflight.get("status") == 200 and initial_preflight.get("allowed") is True
+        and initial_preflight.get("agentId") == agent_id and initial_preflight.get("resource") == resource
+        and initial_preflight.get("role") == "agent"
+        and cookie_only.get("hasOwnerSessionCookie") is True and cookie_only.get("status") == 401
+    )
+    return {
+        "owner_issuance": bool(clicked_issue and issue_request and issue_response and initial.get("oneTimeSecretDisplayed") is True
+            and initial.get("oneTimeSecretDismissed") is True and initial.get("responseStatus") == 201
+            and operation_recorded and audit_recorded and verifier_safe),
+        "token_agent_binding": bool(grant_bound and initial_preflight.get("agentId") == agent_id
+            and initial_preflight.get("resource") == resource and initial_preflight.get("role") == "agent"),
+        "header_authentication": bool(header_authenticated and verifier_safe),
+        "unauthorized_issuance_denied": bool(foreign_isolation and self_issue_denied and no_unauthorized_insert),
+        "foreign_issuance": bool(foreign_isolation and no_unauthorized_insert),
+        "agent_self_issuance": bool(self_issue_denied and no_unauthorized_insert),
+        "token_for_other_agent": bool(other_agent_denied),
+        "forged_withdrawal_scope": bool(forged_scope_denied),
+    }
+
+
+def _derive_credential_partial_facts(scenario_id: str, browser: dict[str, Any], database: dict[str, Any]) -> dict[str, bool]:
+    """Derive credential lifecycle observations without closing unavailable full gates."""
+
+    if scenario_id == "AAP-SC-004":
+        return _derive_sc004_facts({"browser.json": browser, "database.json": database})
+    credential_browser = browser["credentials"] if isinstance(browser.get("credentials"), dict) else browser
+    credential_database = database["credentials"] if isinstance(database.get("credentials"), dict) else database
+    if not isinstance(credential_browser, dict) or not isinstance(credential_database, dict):
         return {}
+    lost = credential_browser.get("lostResponse", {})
+    revoke = credential_browser.get("globalRevoke", {})
+    expiry = credential_browser.get("expiry", {})
+    credentials = credential_database.get("credentials", [])
+    grants = credential_database.get("grants", [])
+    primary_id = credential_browser.get("primaryAgentId")
+    primary_credentials = [row for row in credentials if isinstance(row, dict) and row.get("agent_id") == primary_id]
+    old = next((row for row in primary_credentials if row.get("id") == lost.get("predecessorCredentialId")), None)
+    facts: dict[str, bool] = {}
+    if scenario_id in {"AAP-SC-005", "AAP-SC-014"}:
+        facts.update({
+            "issuance_response_lost_after_commit": lost.get("committed") is True and lost.get("upstreamCommitStatus") in {200, 201}
+                and lost.get("browserSawResponse") is False,
+            "safe_status_recovered": lost.get("safeStatusRecovered") is True and bool(lost.get("activeCredentialId")),
+            "explicit_replacement_committed": lost.get("explicitReplacementStatus") == 200
+                and lost.get("explicitReplacementHeaderPreflightStatus") == 200,
+            "predecessor_fenced": isinstance(old, dict) and old.get("status") == "replaced"
+                and lost.get("predecessorDeniedStatus") == 401,
+            "verifier_only_storage": credential_database.get("noPlaintextCredentialColumn") is True
+                and credential_database.get("secretAbsentFromOperations") is True
+                and credential_database.get("secretAbsentFromAudit") is True
+                and all(row.get("verifier_present") is True for row in primary_credentials),
+        })
+    if scenario_id == "AAP-SC-007":
+        preflight = credential_browser.get("preflight", {})
+        facts.update({
+            "existing_token_observes_current_policy": preflight.get("policyAppliedWithoutReplacement") is True
+                and preflight.get("sameTokenAfterPolicy", {}).get("status") == 200,
+            "fixed_credential_resource_role": all(row.get("resource") == credential_browser.get("resource") and row.get("role") == "agent"
+                for row in primary_credentials),
+        })
+    if scenario_id in {"AAP-SC-009", "AAP-SC-014"}:
+        negatives = credential_browser.get("directHttpNegatives", {})
+        attempts = {row.get("variant"): row for row in negatives.get("attempts", []) if isinstance(row, dict)}
+        facts["agent_owner_management_denied"] = attempts.get("agent_self_issuance", {}).get("status") == 401
+        facts["forged_withdrawal_scope_denied"] = attempts.get("forged_withdrawal_scope", {}).get("status") == 401
+    if scenario_id in {"AAP-SC-010", "AAP-SC-014"}:
+        outbox = next((row for row in credential_database.get("outbox", []) if isinstance(row, dict) and row.get("agent_id") == primary_id), None)
+        final_agent = next((row for row in credential_database.get("agents", []) if isinstance(row, dict) and row.get("id") == primary_id), None)
+        facts.update({
+            "credential_fence_survives_restart": revoke.get("oldTokenDeniedAfterRestart") is True
+                and isinstance(final_agent, dict) and final_agent.get("access_revoked_at") is not None,
+            "other_agent_unaffected": revoke.get("otherAgentStillWorksAfterRestart") is True,
+            "pending_outbox_observed": isinstance(outbox, dict) and outbox.get("status") == "pending"
+                and outbox.get("event_type") == "agent.access.revoked" and outbox.get("scope") == "all",
+            "coordinator_delivery_observed": False,
+            "cancelled_runs_observed": False,
+        })
+    if scenario_id in {"AAP-SC-011", "AAP-SC-014"}:
+        expired = expiry.get("fixture", {})
+        expired_row = next((row for row in credentials if isinstance(row, dict) and row.get("id") == expired.get("credentialId")), None)
+        facts.update({
+            "expiry_fixture_isolated_and_labelled": expired.get("method") == "dedicated acceptance DB expiry fixture"
+                and expired.get("updatedRows") == 1,
+            "expired_credential_denied": expiry.get("preflightStatus") == 401
+                and isinstance(expired_row, dict) and expired_row.get("status") == "expired",
+            "run_deadline_preservation_observed": False,
+        })
+    return facts
+
+
+def _derive_partial_facts(scenario_id: str, artifacts: dict[str, dict[str, Any]]) -> dict[str, bool]:
+    """Derive observed setup facts; never infer unsupported domain acceptance."""
+
+    if scenario_id == "AAP-SC-004":
+        return _derive_credential_partial_facts(scenario_id, artifacts["browser.json"], artifacts["database.json"])
+    if scenario_id not in PARTIAL_CARD_SCENARIOS:
+        return _derive_credential_partial_facts(scenario_id, artifacts["browser.json"], artifacts["database.json"])
     browser = artifacts["browser.json"]
     database = artifacts["database.json"]
     capture = browser.get("capture")
@@ -292,7 +510,7 @@ def _derive_partial_facts(scenario_id: str, artifacts: dict[str, dict[str, Any]]
         and isinstance(agent, dict)
         and "is_public" not in agent
     )
-    return {
+    facts = {
         "owner_card_persisted": card_persisted,
         "declared_metadata_labelled": declared_metadata,
         "foreign_owner_denied": foreign_denials,
@@ -301,6 +519,9 @@ def _derive_partial_facts(scenario_id: str, artifacts: dict[str, dict[str, Any]]
         "initial_policy_all_false": initial_defaults,
         "policy_edit_committed": bool(policy_committed and policy_matches_response),
     }
+    if scenario_id == "AAP-SC-014":
+        facts.update(_derive_credential_partial_facts(scenario_id, browser, database))
+    return facts
 
 
 class AgentAccessEvidenceCase:
@@ -327,9 +548,17 @@ class AgentAccessEvidenceCase:
         if manifest["status"] == "failed":
             raise AssertionError(f"{scenario_id} latest AAP browser/database run failed")
         if manifest["status"] == "passed":
-            raise AssertionError(
-                f"{scenario_id} cannot pass through the card-only adapter; its full approved boundary is not verified here"
-            )
+            if scenario_id not in PASSABLE_SCENARIOS:
+                raise AssertionError(f"{scenario_id} cannot pass through the available partial AAP evidence")
+            if any(derived.get(name) is not True for name in (*SC004_OBSERVATIONS, *SC004_NEGATIVES)):
+                raise AssertionError("AAP-SC-004 passed evidence does not derive every approved observation and negative from raw artifacts")
+            observations = manifest.get("observations", {})
+            negatives = manifest.get("negativeVariants", {})
+            if any(observations.get(name, {}).get("status") != "observed" for name in SC004_OBSERVATIONS):
+                raise AssertionError("AAP-SC-004 passed manifest has an unobserved required observation")
+            if any(negatives.get(name, {}).get("status") != "observed" for name in SC004_NEGATIVES):
+                raise AssertionError("AAP-SC-004 passed manifest has an unobserved approved negative variant")
+            return
         pytest.skip(f"BLOCKED: {scenario_id} remains {manifest['blockedReasonCode']}; card facts are partial only")
 
     def _execute_AAP_SC_001(self, context: ScenarioContext) -> None:
@@ -417,6 +646,8 @@ class AgentAccessEvidenceCase:
         context.check("token_agent_binding", facts.get("token_agent_binding") is True)
         context.check("header_authentication", facts.get("header_authentication") is True)
         context.check("unauthorized_issuance_denied", facts.get("unauthorized_issuance_denied") is True)
+        if any(facts.get(name) is not True for name in SC004_NEGATIVES):
+            raise AssertionError("AAP-SC-004 negative variants did not all derive from raw evidence")
 
     def _verify_AAP_SC_005(self, context: ScenarioContext) -> None:
         facts = context.state.get("aap_derived_observations", {})

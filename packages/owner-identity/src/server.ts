@@ -356,6 +356,11 @@ async function start() {
     requireOrigin,
     rateLimit,
     rateLimitMax: config.authRateLimitMax,
+    credentialRateLimitMax: config.agentCredentialRateLimitMax,
+    preflightRateLimitMax: config.agentPreflightRateLimitMax,
+    manualCredentialTtlSeconds: config.manualCredentialTtlSeconds,
+    agentResource: `${config.publicOrigin}/api/agent`,
+    agentPreflightUrl: `${config.publicOrigin}/api/agent/preflight`,
     resolveOwner: async (request) => {
       const session = await authenticated(request);
       const context = await ownerFor(session);

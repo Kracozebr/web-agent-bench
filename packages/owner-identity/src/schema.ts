@@ -1,5 +1,6 @@
 import {
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -97,6 +98,9 @@ export const agentProfiles = pgTable("oid_agent", {
   clientMetadata: jsonb("client_metadata").$type<{ clientName: string | null; modelName: string | null }>().notNull().default({ clientName: null, modelName: null }),
   declaredVersion: text("declared_version"),
   revision: integer("revision").notNull().default(1),
+  accessRevision: integer("access_revision").notNull().default(1),
+  accessGeneration: integer("access_generation").notNull().default(1),
+  accessRevokedAt: time("access_revoked_at"),
   createdAt: time("created_at").notNull().defaultNow(),
   updatedAt: time("updated_at").notNull().defaultNow()
 }, (table) => [
@@ -123,6 +127,56 @@ export const agentOperations = pgTable("oid_agent_operation", {
   responseJson: jsonb("response_json"),
   createdAt: time("created_at").notNull().defaultNow()
 }, (table) => [index("oid_agent_operation_owner_created_idx").on(table.ownerId, table.createdAt)]);
+
+export const agentAccessGrants = pgTable("oid_agent_access_grant", {
+  id: uuid("id").primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  agentId: uuid("agent_id").notNull(),
+  operationId: text("operation_id").notNull().unique(),
+  source: text("source").notNull().default("manual"),
+  resource: text("resource").notNull(),
+  role: text("role").notNull().default("agent"),
+  accessGeneration: integer("access_generation").notNull(),
+  createdAt: time("created_at").notNull().defaultNow(),
+  expiresAt: time("expires_at").notNull(),
+  revokedAt: time("revoked_at"),
+  revocationReason: text("revocation_reason")
+}, (table) => [
+  foreignKey({
+    columns: [table.ownerId, table.agentId],
+    foreignColumns: [agentProfiles.ownerId, agentProfiles.id],
+    name: "oid_agent_access_grant_owner_agent_fk"
+  }).onDelete("cascade"),
+  index("oid_agent_access_grant_agent_created_idx").on(table.agentId, table.createdAt),
+  index("oid_agent_access_grant_agent_generation_idx").on(table.agentId, table.accessGeneration)
+]);
+
+export const agentManualCredentials = pgTable("oid_agent_manual_credential", {
+  id: uuid("id").primaryKey(),
+  grantId: uuid("grant_id").notNull().unique().references(() => agentAccessGrants.id, { onDelete: "cascade" }),
+  verifierHash: text("verifier_hash").notNull().unique(),
+  createdAt: time("created_at").notNull().defaultNow()
+}, (table) => [index("oid_agent_manual_credential_created_idx").on(table.createdAt)]);
+
+export const agentCancellationOutbox = pgTable("oid_agent_cancellation_outbox", {
+  eventId: uuid("event_id").primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  agentId: uuid("agent_id").notNull(),
+  accessGeneration: integer("access_generation").notNull(),
+  operationId: text("operation_id").notNull().unique(),
+  eventType: text("event_type").notNull().default("agent.access.revoked"),
+  status: text("status").notNull().default("pending"),
+  payloadJson: jsonb("payload_json").$type<{ scope: "all"; reason: "owner_global_revoke" }>().notNull(),
+  createdAt: time("created_at").notNull().defaultNow()
+}, (table) => [
+  foreignKey({
+    columns: [table.ownerId, table.agentId],
+    foreignColumns: [agentProfiles.ownerId, agentProfiles.id],
+    name: "oid_agent_cancellation_outbox_owner_agent_fk"
+  }).onDelete("cascade"),
+  uniqueIndex("oid_agent_cancellation_outbox_generation_uq").on(table.agentId, table.accessGeneration),
+  index("oid_agent_cancellation_outbox_status_created_idx").on(table.status, table.createdAt)
+]);
 
 export const authFlows = pgTable("oid_auth_flow", {
   id: uuid("id").primaryKey(),

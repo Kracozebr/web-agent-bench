@@ -1,6 +1,6 @@
 # Owner identity and pilot admission API
 
-This package owns the Fastify API, Better Auth session/provider integration, owner identity projection, invite redemption, registration policy, SIWE wallet linking, private agent cards and permission settings, and durable audit records. All application state is in the configured PostgreSQL database. Agent connections/domain operations, pilot funding and ledger posting remain separate acceptance gates.
+This package owns the Fastify API, Better Auth session/provider integration, owner identity projection, invite redemption, registration policy, SIWE wallet linking, private agent cards and permission settings, manual credentials/preflight and durable audit records. All application state is in the configured PostgreSQL database. OAuth/MCP connections, paid domain operations, pilot funding and ledger posting remain separate acceptance gates.
 
 ## Local start
 
@@ -27,6 +27,9 @@ The API defaults to `127.0.0.1:8784`. Set `OID_API_HOST=0.0.0.0` only when the A
 | `OID_REGISTRATION_MODE` | Initial policy used only when the singleton policy row is first migrated: `closed` (default) or `open`. |
 | `OID_SESSION_TTL_SECONDS` | Session lifetime; default 604800, range 300–31536000. |
 | `OID_INVITATION_TTL_SECONDS` | Default invitation lifetime; default 604800, range 60–2592000. |
+| `OID_MANUAL_CREDENTIAL_TTL_SECONDS` | Default manual credential lifetime; default 86400, range 300–2592000. |
+| `OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX` | Owner manual credential requests per IP and configured window; default 30. |
+| `OID_AGENT_PREFLIGHT_RATE_LIMIT_MAX` | Agent preflight requests per IP and per credential/IP and configured window; default 60. |
 | `OID_AUTH_RATE_LIMIT_MAX` | Requests per IP and configured window for auth/admin/admission groups; default 10. |
 | `OID_SIWE_RATE_LIMIT_MAX` | SIWE requests per IP and configured window; default 6. |
 | `OID_RATE_LIMIT_WINDOW_SECONDS` | Rate limit bucket size; default 60 seconds. |
@@ -45,6 +48,10 @@ Better Auth owns the allowlisted `/api/auth/*` endpoints: Google `sign-in/social
 | `POST /api/admission/activate` | Body `{invitation?,operationId}`; consumes an invite atomically in closed mode, or admits under current open policy. |
 | `POST /api/owner/links/siwe/nonce` | Body `{operationId}`; issues a 15-minute owner/session-bound linking nonce. |
 | `POST /api/owner/links/siwe/verify` | Body `{operationId,message,signature}`; verifies the EOA proof and commits the identity association. |
+| `GET /api/owner/agents/:agentId/manual-credential` | Returns safe access revision, resource/preflight URL, and manual credential status metadata; never returns token plaintext. |
+| `POST /api/owner/agents/:agentId/manual-credential` | Body `{operationId,expectedAccessRevision,intent:"issue"|"replace",expiresInSeconds?}`; returns a 256-bit opaque token once. `replace` fences any current predecessor and also recovers an uncertain issuance whose first response was lost. Replays return a safe receipt without the token. |
+| `POST /api/owner/agents/:agentId/access-revoke` | Body `{operationId,expectedAccessRevision}`; globally fences current agent credentials/grants and writes a pending cancellation intent. Coordinator delivery is not implemented by this package. |
+| `GET /api/agent/preflight` | Requires `Authorization: Bearer ...`, `X-Agent-Id`, and `X-Agent-Resource`; validates the fixed agent/resource binding and returns current policy. Preflight is free but grants no action permission. |
 | `GET /api/admin/invitations` | Lists invitations issued by the configured administrator, without verifier material. |
 | `POST /api/admin/invitations` | Body `{operationId,expiresAt?}`; returns a new one-time `secret`. Only its SHA-256 verifier is persisted. |
 | `POST /api/admin/invitations/:id/revoke` | Body `{operationId}`; revokes an unused invitation. |
@@ -55,6 +62,6 @@ Application mutations require a same-origin `Origin` matching `OID_PUBLIC_ORIGIN
 
 ## Persistence and boundary
 
-`migrate` creates Better Auth's user/session/account/verification/wallet-address tables plus `oid_owner`, `oid_identity`, `oid_invitation`, `oid_admission`, `oid_invitation_redemption`, `oid_registration_policy`, `oid_siwe_challenge`, `oid_auth_flow`, `oid_google_link_state`, `oid_rate_limit`, and `oid_audit`. Invitation verifier values and OAuth state/flow values are one-way digests; SIWE nonce values are hashed. Auth flows expose a random `operationId` in provider initiation responses, retain only purpose/provider/session and opaque HMAC context, and record succeeded/failed audit events. Audit rows omit invitation secrets, OAuth state/code, provider tokens, signatures, and cookies. The acceptance observer should use a separate read-only database role.
+`migrate` creates Better Auth's user/session/account/verification/wallet-address tables plus `oid_owner`, `oid_identity`, `oid_invitation`, `oid_admission`, `oid_invitation_redemption`, `oid_registration_policy`, `oid_siwe_challenge`, `oid_auth_flow`, `oid_google_link_state`, `oid_rate_limit`, `oid_agent_access_grant`, `oid_agent_manual_credential`, `oid_agent_cancellation_outbox`, and `oid_audit`. Manual credentials store only a SHA-256 verifier for a 256-bit random token; operation receipts and audit metadata retain safe IDs and status, never token plaintext or verifier hashes. Credential replacement increments the optimistic access revision and revokes its predecessor. Global revoke increments the generation, revokes every current grant, and creates a cancellation outbox item constrained to `pending`; it does not claim coordinator delivery or run cancellation. A globally revoked agent needs a separate future owner reauthorization flow before a new credential can be issued. The acceptance observer should use a separate read-only database role.
 
 This package is an identity/admission reference implementation. A green local provider fixture or SIWE test proves the declared local contract only. It does not prove production Google configuration, mainnet behavior, funding/ledger effects, or production readiness.

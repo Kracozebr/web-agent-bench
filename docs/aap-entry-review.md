@@ -12,8 +12,9 @@
 ## Обязательные gates
 
 В пакете 8 требований и 16 обязательных environment-сценариев; approval получено,
-все полные gates пока `blocked`. Приватная карточка и policy прошли локальный
-UI → backend → PostgreSQL путь; см. [review реализации](../openspec/changes/agent-access-and-permissions/implementation-review.md).
+AAP-SC-004 прошёл, остальные 15 полных gates пока `blocked`. Приватная карточка,
+policy и ручной credential прошли локальный UI → backend → PostgreSQL путь;
+см. [review реализации](../openspec/changes/agent-access-and-permissions/implementation-review.md).
 Поэтапная реализация не отменяет оставшиеся gates.
 OID approval относится только к OID-SC-001–012.
 

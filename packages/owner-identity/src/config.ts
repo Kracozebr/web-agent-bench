@@ -17,6 +17,9 @@ export interface OwnerIdentityConfig {
   registrationMode: RegistrationMode;
   sessionTtlSeconds: number;
   invitationTtlSeconds: number;
+  manualCredentialTtlSeconds: number;
+  agentCredentialRateLimitMax: number;
+  agentPreflightRateLimitMax: number;
   authRateLimitMax: number;
   siweRateLimitMax: number;
   rateLimitWindowSeconds: number;
@@ -105,6 +108,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     registrationMode,
     sessionTtlSeconds: integer(env, "OID_SESSION_TTL_SECONDS", 604800, 300, 31536000),
     invitationTtlSeconds: integer(env, "OID_INVITATION_TTL_SECONDS", 604800, 60, 2592000),
+    manualCredentialTtlSeconds: integer(env, "OID_MANUAL_CREDENTIAL_TTL_SECONDS", 86400, 300, 2592000),
+    agentCredentialRateLimitMax: integer(env, "OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX", 30, 1, 1000),
+    agentPreflightRateLimitMax: integer(env, "OID_AGENT_PREFLIGHT_RATE_LIMIT_MAX", 60, 1, 1000),
     authRateLimitMax: integer(env, "OID_AUTH_RATE_LIMIT_MAX", 10, 1, 1000),
     siweRateLimitMax: integer(env, "OID_SIWE_RATE_LIMIT_MAX", 6, 1, 1000),
     rateLimitWindowSeconds: integer(env, "OID_RATE_LIMIT_WINDOW_SECONDS", 60, 1, 3600),

@@ -16,6 +16,7 @@ import { runSessionCases } from "./session-cases.mjs";
 import { runGoogleLinkStartRace } from "./link-start-race.mjs";
 import { runAapCardCases } from "./aap-cases.mjs";
 import { saveAapEvidence } from "./aap-evidence.mjs";
+import { runAapCredentialCases } from "./credential-cases.mjs";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(packageRoot, "../..");
@@ -69,6 +70,12 @@ async function stopChild(child) {
   if (child.exitCode === null) {
     try { process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ }
   }
+}
+
+async function restartOwnerApi() {
+  await stopChild(apiChild);
+  apiChild = startChild([resolve(repoRoot, "packages/owner-identity/dist/server.js")], apiEnvironment, "restarted API", process.execPath);
+  await waitHttp(new URL("/healthz", apiOrigin), (response) => response.ok, "restarted owner API");
 }
 
 async function runCommand(args, env, label) {
@@ -543,11 +550,7 @@ async function main() {
     const race = await runAdmissionRace({
       adminPage: admin.page, newContext,
       login: (context, subject) => googleLogin(context, "OID-SC-003", subject), observer,
-      restartApi: async () => {
-        await stopChild(apiChild);
-        apiChild = startChild([resolve(repoRoot, "packages/owner-identity/dist/server.js")], apiEnvironment, "restarted API", process.execPath);
-        await waitHttp(new URL("/healthz", apiOrigin), (response) => response.ok, "restarted owner API");
-      },
+      restartApi: restartOwnerApi,
     });
 
     phase = "concurrent_google_link_starts";
@@ -563,6 +566,13 @@ async function main() {
     const aap = await runAapCardCases({ page: ownerLogin.page, ownerId, adminPage: admin.page, newContext,
       login: (context, subject) => googleLogin(context, "AAP-SC-001", subject),
       observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+
+    phase = "agent_credential_issue_replace_and_revoke";
+    const credentialData = await runAapCredentialCases({ page: ownerLogin.page, ownerId,
+      adminPage: admin.page, newContext, publicOrigin,
+      login: (context, subject) => googleLogin(context, "AAP-SC-004", subject),
+      observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
+      databaseUrl: process.env.OID_DATABASE_URL, restartApi: restartOwnerApi });
 
     const operations = [
       issueOperation, sc009IssueOperation, activationOperation, revokeOperation, ...policyOperations, walletResult.linkOperationId,
@@ -628,7 +638,7 @@ async function main() {
       inputHashesBefore: sourceHashesBefore,
       inputHashesAfter: sourceHashesAfter,
     };
-    const aapSaved = await saveAapEvidence({ ...aap, provenance });
+    const aapSaved = await saveAapEvidence({ ...aap, credentialData, provenance });
     const googleMatrixRows = await observer.snapshot({ subjects: googleMatrix.subjects, operationIds: googleMatrix.operations });
     const sc001 = await saveCompleteScenario("OID-SC-001", { trials: googleMatrix.trials, callerEmailEndpoint: googleMatrix.callerEmailEndpoint }, googleMatrixRows, provenance);
     const siweMatrixRows = await observer.snapshot({ ownerIds: [siweMatrix.ownerId], subjectHashes: siweMatrix.subjectHashes, operationIds: siweMatrix.operations, nonceHashes: siweMatrix.nonceHashes });
@@ -696,7 +706,7 @@ async function main() {
       status: finalStatus,
       scenarios: [sc001, sc002, sc009, saved, ...blocked],
       counts: { passed: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "passed").length, blocked: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "blocked").length, failed: 0 },
-      aap: { privateCardAndPolicyObserved: true, scenarios: aapSaved },
+      aap: { privateCardAndPolicyObserved: true, manualCredentialObserved: credentialData.sc004Ready === true, scenarios: aapSaved },
       observations: { adminOAuth: true, invitationIssuedInUI: true, invitationSecretExcludedFromList: true, inviteVerifierMatches: true, ownerActivationViaUI: true, independentReadOnlyPostgresRows: true },
       blockedReason: "Unsupported downstream boundaries, remaining scenario-specific negative matrices, and external OID-SC-012 compatibility remain blocked.",
     }, null, 2));

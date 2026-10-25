@@ -15,7 +15,7 @@
 
 - [ ] 3.1 Implement browser consent for a selected existing agent with bounded scopes/resource/client binding and denial without grant issuance.
 - [ ] 3.2 Integrate the selected OAuth/profile discovery, code exchange, PKCE and credential checks; reject substituted, expired and replayed bindings through the real verifier.
-- [ ] 3.3 Implement owner-issued manual credentials with explicit scope/expiry, show-once secret handling, verifier storage and safe issuance-response-loss replacement.
+- [x] 3.3 Implement owner-issued manual credentials with explicit scope/expiry, show-once secret handling, verifier storage and safe issuance-response-loss replacement.
 - [ ] 3.4 Connect both credential routes to one domain principal and real remote MCP transport without requiring a platform connector install.
 
 ## 4. Domain authorization and money

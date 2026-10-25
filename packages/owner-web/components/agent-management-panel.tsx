@@ -38,6 +38,57 @@ interface PendingOperation {
 interface AgentsResponse { agents: AgentCard[] }
 interface AgentResponse { agent: AgentCard }
 
+type ManualCredentialStatus = "active" | "expired" | "replaced" | "revoked";
+
+interface ManualCredentialRecord {
+  id: string;
+  grantId: string;
+  status: ManualCredentialStatus;
+  role: "agent";
+  resource: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  revocationReason: null | "replaced" | "owner_global_revoke";
+}
+
+interface ManualCredentialSnapshot {
+  access: {
+    status: "active" | "revoked";
+    revision: number;
+    revokedAt: string | null;
+  };
+  resource: string;
+  preflightUrl: string;
+  credentials: ManualCredentialRecord[];
+}
+
+interface ManualCredentialIssueResponse {
+  credential: ManualCredentialRecord;
+  secret?: string;
+  replayed: boolean;
+  secretAvailable: boolean;
+}
+
+interface AgentAccessRevokeResponse {
+  access: ManualCredentialSnapshot["access"];
+  cancellation: {
+    eventId: string;
+    status: "pending";
+    createdAt: string;
+  };
+  replayed: boolean;
+}
+
+interface CredentialPanelState {
+  snapshot?: ManualCredentialSnapshot;
+  loading: boolean;
+  errorMessage?: string;
+  message?: string;
+  oneTimeSecret?: string;
+  requiresReplacement: boolean;
+}
+
 const permissionOptions: Array<{ key: PermissionKey; label: string; description: string }> = [
   { key: "training", label: "Training runs", description: "Choose whether to allow training runs when connected." },
   { key: "ranked", label: "Ranked runs", description: "Choose whether to allow ranked runs when connected. Funding and limits remain separate." },
@@ -91,6 +142,25 @@ function nextOperationId(store: Record<string, PendingOperation>, key: string, p
 
 function forgetOperation(store: Record<string, PendingOperation>, key: string) {
   delete store[key];
+}
+
+function manualCredentialPath(agentId: string) {
+  return `/api/owner/agents/${encodeURIComponent(agentId)}/manual-credential` as const;
+}
+
+function formatTimestamp(value: string | null | undefined) {
+  if (!value) return "Not recorded";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function credentialStatusLabel(status: ManualCredentialStatus) {
+  switch (status) {
+    case "active": return "Active";
+    case "expired": return "Expired";
+    case "replaced": return "Replaced";
+    case "revoked": return "Revoked";
+  }
 }
 
 function ProfileFields({
@@ -176,12 +246,14 @@ export function AgentManagementPanel() {
   const [profileDrafts, setProfileDrafts] = useState<Record<string, AgentDraft>>({});
   const [permissionDrafts, setPermissionDrafts] = useState<Record<string, AgentPermissions>>({});
   const [editing, setEditing] = useState<Record<string, boolean>>({});
+  const [credentialPanels, setCredentialPanels] = useState<Record<string, CredentialPanelState>>({});
   const [createDraft, setCreateDraft] = useState<AgentDraft>(emptyDraft);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   const pendingOperations = useRef<Record<string, PendingOperation>>({});
+  const credentialOperations = useRef(new Set<string>());
 
   const fetchAgents = useCallback(async () => {
     const response = await apiRequest<AgentsResponse>("/api/owner/agents");
@@ -200,6 +272,49 @@ export function AgentManagementPanel() {
     return nextAgents;
   }, [fetchAgents, setServerAgents]);
 
+  const refreshCredentialStatus = useCallback(async (agentId: string, statusMessage?: string) => {
+    setCredentialPanels((current) => ({
+      ...current,
+      [agentId]: {
+        ...current[agentId],
+        loading: true,
+        errorMessage: undefined,
+        requiresReplacement: current[agentId]?.requiresReplacement ?? false,
+      },
+    }));
+    try {
+      const snapshot = await apiRequest<ManualCredentialSnapshot>(manualCredentialPath(agentId));
+      setCredentialPanels((current) => {
+        const previous = current[agentId];
+        return {
+          ...current,
+          [agentId]: {
+            ...previous,
+            snapshot,
+            loading: false,
+            errorMessage: undefined,
+            message: statusMessage ?? (previous?.oneTimeSecret ? previous.message : undefined),
+            requiresReplacement: previous?.requiresReplacement ?? false,
+          },
+        };
+      });
+      return snapshot;
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) router.replace("/sign-in");
+      setCredentialPanels((current) => ({
+        ...current,
+        [agentId]: {
+          ...current[agentId],
+          loading: false,
+          errorMessage: errorText(reason),
+          message: statusMessage ?? current[agentId]?.message,
+          requiresReplacement: current[agentId]?.requiresReplacement ?? false,
+        },
+      }));
+      return null;
+    }
+  }, [router]);
+
   useEffect(() => {
     let active = true;
     void getCurrentOwner().then(async (current) => {
@@ -216,6 +331,8 @@ export function AgentManagementPanel() {
       const nextAgents = await fetchAgents();
       if (!active) return;
       setServerAgents(nextAgents);
+      await Promise.all(nextAgents.map((agent) => refreshCredentialStatus(agent.id)));
+      if (!active) return;
       setLoading(false);
     }).catch((reason: unknown) => {
       if (!active) return;
@@ -228,7 +345,7 @@ export function AgentManagementPanel() {
       setLoading(false);
     });
     return () => { active = false; };
-  }, [fetchAgents, router, setServerAgents]);
+  }, [fetchAgents, refreshCredentialStatus, router, setServerAgents]);
 
   function updateProfileDraft(id: string, key: keyof AgentDraft, value: string) {
     setProfileDrafts((current) => ({ ...current, [id]: { ...current[id], [key]: value } }));
@@ -275,6 +392,7 @@ export function AgentManagementPanel() {
         : `The server created the private card at profile revision ${response.agent.revision}.`);
       try {
         await refreshAgents();
+        await refreshCredentialStatus(response.agent.id);
       } catch {
         setError(true);
         setMessage("The server confirmed card creation, but the agent list could not refresh. Reload this page before making another change.");
@@ -367,11 +485,216 @@ export function AgentManagementPanel() {
     }
   }
 
+  async function issueManualCredential(agent: AgentCard, intent: "issue" | "replace") {
+    const panel = credentialPanels[agent.id];
+    const snapshot = panel?.snapshot;
+    if (
+      !owner
+      || owner.admissionStatus !== "admitted"
+      || !snapshot
+      || panel.loading
+      || panel.errorMessage
+      || snapshot.access.status !== "active"
+      || busy
+      || credentialOperations.current.has(agent.id)
+    ) return;
+
+    credentialOperations.current.add(agent.id);
+    setBusy(true);
+    setError(false);
+    setCredentialPanels((current) => ({
+      ...current,
+      [agent.id]: {
+        ...current[agent.id],
+        loading: true,
+        errorMessage: undefined,
+        message: intent === "replace" ? "Replacing the manual credential…" : "Issuing the manual credential…",
+        oneTimeSecret: undefined,
+      },
+    }));
+
+    try {
+      const response = await apiRequest<ManualCredentialIssueResponse>(manualCredentialPath(agent.id), {
+        method: "POST",
+        body: JSON.stringify({
+          operationId: newOperationId(),
+          expectedAccessRevision: snapshot.access.revision,
+          intent,
+        }),
+      });
+
+      if (response.replayed || response.secretAvailable !== true || typeof response.secret !== "string" || response.secret.length === 0) {
+        const statusMessage = "The request was already recorded, so its credential cannot be shown again. The safe status is refreshed; replace it explicitly if you need a new credential.";
+        setCredentialPanels((current) => ({
+          ...current,
+          [agent.id]: {
+            ...current[agent.id],
+            loading: false,
+            oneTimeSecret: undefined,
+            requiresReplacement: true,
+            message: statusMessage,
+          },
+        }));
+        await refreshCredentialStatus(agent.id, statusMessage);
+        return;
+      }
+
+      if (!response.credential?.id || response.credential.status !== "active") {
+        const statusMessage = "The server did not confirm a new active credential. The safe status is refreshed; replace the credential explicitly if needed.";
+        setCredentialPanels((current) => ({
+          ...current,
+          [agent.id]: {
+            ...current[agent.id],
+            loading: false,
+            oneTimeSecret: undefined,
+            requiresReplacement: true,
+            message: statusMessage,
+          },
+        }));
+        await refreshCredentialStatus(agent.id, statusMessage);
+        return;
+      }
+
+      const statusMessage = `Credential shown once. It expires ${formatTimestamp(response.credential.expiresAt)}.`;
+      setCredentialPanels((current) => ({
+        ...current,
+        [agent.id]: {
+          ...current[agent.id],
+          loading: false,
+          errorMessage: undefined,
+          oneTimeSecret: response.secret,
+          requiresReplacement: false,
+          message: statusMessage,
+        },
+      }));
+      const safeStatus = await refreshCredentialStatus(agent.id, statusMessage);
+      if (safeStatus?.access.status === "revoked") {
+        setCredentialPanels((current) => ({
+          ...current,
+          [agent.id]: {
+            ...current[agent.id],
+            oneTimeSecret: undefined,
+            message: "Agent access is revoked. This page cannot issue or restore a credential.",
+          },
+        }));
+      }
+    } catch (reason) {
+      const statusMessage = reason instanceof ApiError && reason.code === "CREDENTIAL_EXISTS"
+        ? "A manual credential already exists. Its safe status is being refreshed; replace it to issue a new one."
+        : "The issuance response could not be confirmed. The safe credential status is being checked; if you still need a token, replace it explicitly. The earlier secret cannot be retrieved.";
+      setCredentialPanels((current) => ({
+        ...current,
+        [agent.id]: {
+          ...current[agent.id],
+          loading: false,
+          oneTimeSecret: undefined,
+          requiresReplacement: true,
+          message: statusMessage,
+        },
+      }));
+      if (reason instanceof ApiError && reason.status === 401) router.replace("/sign-in");
+      const safeStatus = await refreshCredentialStatus(agent.id, statusMessage);
+      if (safeStatus?.access.status === "revoked") {
+        setCredentialPanels((current) => ({
+          ...current,
+          [agent.id]: {
+            ...current[agent.id],
+            oneTimeSecret: undefined,
+            requiresReplacement: false,
+            message: "Agent access is revoked. This page cannot issue or restore a credential.",
+          },
+        }));
+      }
+    } finally {
+      credentialOperations.current.delete(agent.id);
+      setBusy(false);
+    }
+  }
+
+  async function revokeAgentAccess(agent: AgentCard) {
+    const panel = credentialPanels[agent.id];
+    const snapshot = panel?.snapshot;
+    if (
+      !owner
+      || owner.admissionStatus !== "admitted"
+      || !snapshot
+      || panel.loading
+      || panel.errorMessage
+      || snapshot.access.status !== "active"
+      || busy
+      || credentialOperations.current.has(agent.id)
+    ) return;
+
+    credentialOperations.current.add(agent.id);
+    setBusy(true);
+    setError(false);
+    setCredentialPanels((current) => ({
+      ...current,
+      [agent.id]: {
+        ...current[agent.id],
+        loading: true,
+        errorMessage: undefined,
+        message: "Revoking all access for this agent…",
+        oneTimeSecret: undefined,
+      },
+    }));
+
+    try {
+      const response = await apiRequest<AgentAccessRevokeResponse>(`/api/owner/agents/${encodeURIComponent(agent.id)}/access-revoke`, {
+        method: "POST",
+        body: JSON.stringify({
+          operationId: newOperationId(),
+          expectedAccessRevision: snapshot.access.revision,
+        }),
+      });
+      if (response.access?.status !== "revoked" || response.cancellation?.status !== "pending") {
+        throw new Error("The server did not confirm the access fence and pending cancellation intent.");
+      }
+
+      const statusMessage = "Agent access is revoked. New agent actions are blocked. Run cancellation is pending.";
+      setCredentialPanels((current) => ({
+        ...current,
+        [agent.id]: {
+          ...current[agent.id],
+          snapshot: current[agent.id]?.snapshot
+            ? { ...current[agent.id].snapshot!, access: response.access }
+            : current[agent.id]?.snapshot,
+          loading: false,
+          errorMessage: undefined,
+          message: statusMessage,
+          oneTimeSecret: undefined,
+          requiresReplacement: false,
+        },
+      }));
+      await refreshCredentialStatus(agent.id, statusMessage);
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) router.replace("/sign-in");
+      const safeStatus = await refreshCredentialStatus(agent.id);
+      const statusMessage = safeStatus?.access.status === "revoked"
+        ? "Agent access is revoked. New agent actions are blocked; this page has not confirmed run cancellation delivery."
+        : safeStatus
+          ? "The revoke request was not confirmed. Current agent access is still active; you can try again."
+          : "The revoke request was not confirmed, and current access status could not be loaded.";
+      setCredentialPanels((current) => ({
+        ...current,
+        [agent.id]: {
+          ...current[agent.id],
+          oneTimeSecret: undefined,
+          message: statusMessage,
+        },
+      }));
+    } finally {
+      credentialOperations.current.delete(agent.id);
+      setBusy(false);
+    }
+  }
+
   async function refresh() {
     setBusy(true);
     setError(false);
     try {
-      await refreshAgents();
+      const nextAgents = await refreshAgents();
+      await Promise.all(nextAgents.map((agent) => refreshCredentialStatus(agent.id)));
       setMessage("Loaded the latest agent cards and policy revisions from the server.");
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) router.replace("/sign-in");
@@ -431,6 +754,18 @@ export function AgentManagementPanel() {
               const permissions = permissionDrafts[agent.id] ?? permissionsFromAgent(agent);
               const profileChanged = JSON.stringify(serializeProfile(draft)) !== JSON.stringify(serializeProfile(draftFromAgent(agent)));
               const permissionsChanged = permissionOptions.some(({ key }) => permissions[key] !== agent.permissions[key]);
+              const credentialPanel = credentialPanels[agent.id] ?? { loading: true, requiresReplacement: false };
+              const credentialSnapshot = credentialPanel.snapshot;
+              const credentials = [...(credentialSnapshot?.credentials ?? [])].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+              const currentCredential = credentials.find((credential) => credential.status === "active") ?? credentials[0];
+              const replaceCredential = credentialPanel.requiresReplacement || credentials.length > 0;
+              const credentialActionsEnabled = Boolean(
+                credentialSnapshot
+                && credentialSnapshot.access.status === "active"
+                && !credentialPanel.loading
+                && !credentialPanel.errorMessage
+                && !busy,
+              );
               return (
                 <article className="agent-card" data-testid={`agent-card-${agent.id}`} key={agent.id} aria-labelledby={`agent-title-${agent.id}`}>
                   <div className="section-heading">
@@ -486,6 +821,115 @@ export function AgentManagementPanel() {
                   <button className="button button-primary" data-testid="agent-permissions-save" type="button" onClick={() => void savePermissions(agent)} disabled={busy || !permissionsChanged}>
                     Save permissions
                   </button>
+
+                  <hr className="divider" />
+                  <section className="stack-sm" aria-labelledby={`agent-connection-title-${agent.id}`}>
+                    <div className="section-heading">
+                      <div>
+                        <h4 id={`agent-connection-title-${agent.id}`}>Manual connection</h4>
+                        <p className="fine">Issue a private credential for this agent, review safe status, or revoke all agent access.</p>
+                      </div>
+                      <button
+                        className="button button-small"
+                        data-testid={`credential-status-refresh-${agent.id}`}
+                        type="button"
+                        onClick={() => void refreshCredentialStatus(agent.id)}
+                        disabled={busy || credentialPanel.loading}
+                      >
+                        {credentialPanel.loading ? "Checking…" : "Check status"}
+                      </button>
+                    </div>
+
+                    <div data-testid={`credential-list-${agent.id}`}>
+                      <p data-testid={`credential-status-${agent.id}`} role="status">
+                        Current manual credential: {currentCredential ? credentialStatusLabel(currentCredential.status) : "Not issued"}
+                      </p>
+                      <p data-testid={`credential-access-status-${agent.id}`} role="status">
+                        Agent access: {credentialSnapshot?.access.status === "revoked" ? "Revoked" : credentialSnapshot?.access.status === "active" ? "Active" : "Status unavailable"}
+                      </p>
+                      <p className="fine" data-testid={`credential-revision-${agent.id}`}>
+                        Access revision {credentialSnapshot?.access.revision ?? "unavailable"}
+                      </p>
+                      {credentials.length ? (
+                        <ul className="stack-sm">
+                          {credentials.map((credential) => (
+                            <li key={credential.id} data-testid={`credential-record-${credential.id}`}>
+                              <span data-testid={`credential-record-status-${credential.id}`}>{credentialStatusLabel(credential.status)}</span>
+                              {" · "}Credential {credential.id}
+                              {" · "}Created {formatTimestamp(credential.createdAt)}
+                              {" · "}Expires {formatTimestamp(credential.expiresAt)}
+                              {credential.revokedAt ? ` · Revoked ${formatTimestamp(credential.revokedAt)}` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="fine">No manual credentials have been issued for this agent.</p>
+                      )}
+                    </div>
+
+                    {credentialSnapshot?.access.status === "active" ? (
+                      <div className="button-row">
+                        <button
+                          className="button button-primary"
+                          data-testid={replaceCredential ? `credential-replace-${currentCredential?.id ?? agent.id}` : `credential-issue-${agent.id}`}
+                          type="button"
+                          onClick={() => void issueManualCredential(agent, replaceCredential ? "replace" : "issue")}
+                          disabled={!credentialActionsEnabled}
+                        >
+                          {replaceCredential ? "Replace manual credential" : "Issue manual credential"}
+                        </button>
+                        <button
+                          className="button button-danger"
+                          data-testid={`agent-revoke-${agent.id}`}
+                          type="button"
+                          onClick={() => void revokeAgentAccess(agent)}
+                          disabled={!credentialActionsEnabled}
+                        >
+                          Revoke all agent access
+                        </button>
+                      </div>
+                    ) : credentialSnapshot?.access.status === "revoked" ? (
+                      <p className="notice notice-warning">Agent access is revoked. This page cannot restore it.</p>
+                    ) : (
+                      <p className="fine">Check the safe credential status before issuing or replacing a credential.</p>
+                    )}
+
+                    {credentialPanel.oneTimeSecret && credentialSnapshot ? (
+                      <div className="once-secret" data-testid={`credential-secret-panel-${agent.id}`}>
+                        <p className="once-secret-title">Copy this credential now. It will not be shown again after you leave or reload this page.</p>
+                        <code className="code-secret" data-testid={`credential-secret-once-${agent.id}`}>{credentialPanel.oneTimeSecret}</code>
+                        <div className="stack-sm" data-testid={`credential-setup-${agent.id}`}>
+                          <p className="fine">Use these values in the client’s manual connection settings:</p>
+                          <dl className="kv-list">
+                            <dt>Preflight URL</dt><dd><code>{credentialSnapshot.preflightUrl}</code></dd>
+                            <dt>Authorization</dt><dd><code>Bearer</code> header with the credential shown above</dd>
+                            <dt>X-Agent-Id</dt><dd><code>{agent.id}</code></dd>
+                            <dt>X-Agent-Resource</dt><dd><code>{credentialSnapshot.resource}</code></dd>
+                          </dl>
+                        </div>
+                        <button
+                          className="button button-small"
+                          data-testid={`credential-secret-dismiss-${agent.id}`}
+                          type="button"
+                          onClick={() => setCredentialPanels((current) => ({
+                            ...current,
+                            [agent.id]: { ...current[agent.id], oneTimeSecret: undefined },
+                          }))}
+                        >
+                          Hide credential
+                        </button>
+                      </div>
+                    ) : null}
+
+                    <p
+                      className={`status-box ${credentialPanel.errorMessage ? "status-error" : ""}`}
+                      data-testid={`credential-error-${agent.id}`}
+                      role={credentialPanel.errorMessage ? "alert" : "status"}
+                      aria-live="polite"
+                    >
+                      {credentialPanel.errorMessage || credentialPanel.message || ""}
+                    </p>
+                  </section>
                 </article>
               );
             })}

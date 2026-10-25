@@ -46,9 +46,15 @@ const statements = [
     client_metadata jsonb NOT NULL DEFAULT '{"clientName":null,"modelName":null}'::jsonb CHECK (jsonb_typeof(client_metadata)='object'),
     declared_version text CHECK (declared_version IS NULL OR length(declared_version) <= 80),
     revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
+    access_revision integer NOT NULL DEFAULT 1 CHECK (access_revision > 0),
+    access_generation integer NOT NULL DEFAULT 1 CHECK (access_generation > 0),
+    access_revoked_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT oid_agent_owner_id_uq UNIQUE(owner_id,id)
   )`,
+  `ALTER TABLE oid_agent ADD COLUMN IF NOT EXISTS access_revision integer NOT NULL DEFAULT 1 CHECK (access_revision > 0)`,
+  `ALTER TABLE oid_agent ADD COLUMN IF NOT EXISTS access_generation integer NOT NULL DEFAULT 1 CHECK (access_generation > 0)`,
+  `ALTER TABLE oid_agent ADD COLUMN IF NOT EXISTS access_revoked_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS oid_agent_owner_updated_idx ON oid_agent(owner_id,updated_at)`,
   `CREATE TABLE IF NOT EXISTS oid_agent_policy (
     agent_id uuid PRIMARY KEY REFERENCES oid_agent(id) ON DELETE CASCADE,
@@ -62,6 +68,37 @@ const statements = [
     payload_hash text NOT NULL, response_json jsonb, created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS oid_agent_operation_owner_created_idx ON oid_agent_operation(owner_id,created_at)`,
+  `CREATE TABLE IF NOT EXISTS oid_agent_access_grant (
+    id uuid PRIMARY KEY, owner_id uuid NOT NULL, agent_id uuid NOT NULL,
+    operation_id text NOT NULL UNIQUE, source text NOT NULL DEFAULT 'manual' CHECK (source='manual'),
+    resource text NOT NULL, role text NOT NULL DEFAULT 'agent' CHECK (role='agent'),
+    access_generation integer NOT NULL CHECK (access_generation > 0),
+    created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL,
+    revoked_at timestamptz,
+    revocation_reason text CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke')),
+    CONSTRAINT oid_agent_access_grant_owner_agent_fk FOREIGN KEY(owner_id,agent_id)
+      REFERENCES oid_agent(owner_id,id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_access_grant_agent_created_idx ON oid_agent_access_grant(agent_id,created_at)`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_access_grant_agent_generation_idx ON oid_agent_access_grant(agent_id,access_generation)`,
+  `CREATE TABLE IF NOT EXISTS oid_agent_manual_credential (
+    id uuid PRIMARY KEY, grant_id uuid NOT NULL UNIQUE REFERENCES oid_agent_access_grant(id) ON DELETE CASCADE,
+    verifier_hash text NOT NULL UNIQUE, created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_manual_credential_created_idx ON oid_agent_manual_credential(created_at)`,
+  `CREATE TABLE IF NOT EXISTS oid_agent_cancellation_outbox (
+    event_id uuid PRIMARY KEY, owner_id uuid NOT NULL, agent_id uuid NOT NULL,
+    access_generation integer NOT NULL CHECK (access_generation > 0),
+    operation_id text NOT NULL UNIQUE, event_type text NOT NULL DEFAULT 'agent.access.revoked'
+      CHECK (event_type='agent.access.revoked'),
+    status text NOT NULL DEFAULT 'pending' CHECK (status='pending'),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json)='object'),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT oid_agent_cancellation_outbox_owner_agent_fk FOREIGN KEY(owner_id,agent_id)
+      REFERENCES oid_agent(owner_id,id) ON DELETE CASCADE,
+    CONSTRAINT oid_agent_cancellation_outbox_agent_generation_uq UNIQUE(agent_id,access_generation)
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_cancellation_outbox_status_created_idx ON oid_agent_cancellation_outbox(status,created_at)`,
   `CREATE TABLE IF NOT EXISTS oid_auth_flow (
     id uuid PRIMARY KEY, operation_id text NOT NULL UNIQUE, provider text NOT NULL,
     purpose text NOT NULL CHECK (purpose IN ('signin','link')),

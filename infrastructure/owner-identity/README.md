@@ -74,3 +74,13 @@ invitations or admission. Missing downstream services and the separate actual
 Google/browser-wallet gate remain blocked, preventing sync/archive. See the
 owner-acceptance package for the evidence boundary. Database startup alone is
 not authentication or browser E2E evidence.
+
+The manual agent-credential profile uses `OID_MANUAL_CREDENTIAL_TTL_SECONDS`
+(default 86400; supported 300–2592000 seconds),
+`OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX` (30 requests/IP/window), and
+`OID_AGENT_PREFLIGHT_RATE_LIMIT_MAX` (60 requests/IP/window, also enforced per
+resolved credential/IP). The existing rate window defaults to 60 seconds.
+The Compose runtime passes these nonsecret configuration variables through.
+Credentials are bound to the configured public origin plus `/api/agent`.
+Issuance plaintext is never part of the image, secret files or evidence.
+See the approved change's [configuration profile](../../openspec/changes/agent-access-and-permissions/configuration.md).

@@ -13,8 +13,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tests.bdd.adapters.agent_access_and_permissions import (
-    PARTIAL_CARD_SCENARIOS, SCENARIO_IDS, _derive_partial_facts, _load_run,
+    PARTIAL_CARD_SCENARIOS, SC004_NEGATIVES, SC004_OBSERVATIONS, SCENARIO_IDS,
+    _derive_partial_facts, _load_run,
 )
+
+CARD_FACT_NAMES = frozenset({
+    "owner_card_persisted",
+    "declared_metadata_labelled",
+    "foreign_owner_denied",
+    "caller_visibility_change_cannot_publish",
+    "profile_edit_correlated_to_postgres",
+    "initial_policy_all_false",
+    "policy_edit_committed",
+})
 
 
 def main() -> int:
@@ -32,8 +43,21 @@ def main() -> int:
         if provenance.get("sourceStableDuringRun") is not True or not provenance.get("inputHashesBefore") or provenance.get("inputHashesBefore") != provenance.get("inputHashesAfter"):
             raise AssertionError(f"{scenario_id} source inputs changed during capture")
         facts = _derive_partial_facts(scenario_id, artifacts)
-        if scenario_id in PARTIAL_CARD_SCENARIOS and (not facts or not all(facts.values())):
+        if scenario_id in PARTIAL_CARD_SCENARIOS and (
+            not facts or any(facts.get(name) is not True for name in CARD_FACT_NAMES)
+        ):
             raise AssertionError(f"{scenario_id} partial card facts do not follow from raw artifacts")
+        if scenario_id == "AAP-SC-004":
+            if any(facts.get(name) is not True for name in (*SC004_OBSERVATIONS, *SC004_NEGATIVES)):
+                raise AssertionError("AAP-SC-004 facts do not derive all approved observations and negatives")
+            for name in SC004_OBSERVATIONS:
+                if manifest.get("observations", {}).get(name, {}).get("status") != "observed":
+                    raise AssertionError(f"AAP-SC-004 observation is not marked observed: {name}")
+            for name in SC004_NEGATIVES:
+                if manifest.get("negativeVariants", {}).get(name, {}).get("status") != "observed":
+                    raise AssertionError(f"AAP-SC-004 negative is not marked observed: {name}")
+        elif manifest["status"] == "passed":
+            raise AssertionError(f"{scenario_id} has a full passed status without an implemented acceptance boundary")
         results.append({"scenarioId": scenario_id, "runId": manifest["runId"], "status": manifest["status"],
                         "integrity": "verified", "artifactCount": len(artifacts), "partialFacts": facts})
     blocked = args.require_passed and any(item["status"] != "passed" for item in results)
