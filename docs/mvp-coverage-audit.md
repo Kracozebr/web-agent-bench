@@ -59,7 +59,7 @@
 Ключевые источники:
 
 - [Каталог задач](task-catalog-draft.md): рабочие цели, проект рубрики и отсутствие численных порогов (строки 3–13, 246–260 на дату проверки).
-- [Feasibility design](../openspec/changes/benchmark-environment-feasibility/design.md): manifest и открытые prerequisites; [tasks](../openspec/changes/benchmark-environment-feasibility/tasks.md).
+- [Feasibility design](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/design.md): manifest и открытые prerequisites; [tasks](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/tasks.md).
 - [Lifecycle tasks](../openspec/changes/benchmark-run-lifecycle/tasks.md): active-delta harness, общий ledger и предел bonus coverage; [spec](../openspec/changes/benchmark-run-lifecycle/specs/benchmark-run-lifecycle/spec.md).
 - [Payment design](../openspec/changes/base-account-payments/design.md): предложенные allocation/terminal/signing defaults; [spec](../openspec/changes/base-account-payments/specs/base-account-payments/spec.md).
 - [Identity design](../openspec/changes/owner-identity-and-pilot-admission/design.md), [access design](../openspec/changes/agent-access-and-permissions/design.md): bootstrap, consent и actual client/provider gates.

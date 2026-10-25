@@ -1,8 +1,555 @@
 {
+  "coverage_policy": {
+    "required_protected_scenarios": [
+      "BEF-SC-001",
+      "BEF-SC-002",
+      "BEF-SC-003",
+      "BEF-SC-004",
+      "BEF-SC-005",
+      "BEF-SC-006",
+      "BEF-SC-007",
+      "BEF-SC-008",
+      "BEF-SC-009",
+      "BEF-SC-010",
+      "BEF-SC-011",
+      "BEF-SC-012",
+      "PV-SC-001",
+      "PV-SC-002",
+      "PV-SC-003",
+      "PV-SC-004",
+      "WB-SC-001",
+      "WB-SC-002",
+      "WB-SC-003",
+      "WB-SC-004"
+    ],
+    "status": "complete"
+  },
+  "protected_scenarios": {
+    "BEF-SC-001": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "validated_manifest_binding",
+        "prerequisite_failure_evidence"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "wrong_block",
+        "wrong_chain",
+        "missing_code",
+        "unsupported_asset_scheme",
+        "per_trial_latest"
+      ],
+      "required_observations": [
+        "manifest_hash",
+        "source_block_hash",
+        "local_identity",
+        "contract_code_hashes",
+        "compatibility_status",
+        "manifest_enforced_vs_evaluated_rule_classification"
+      ]
+    },
+    "BEF-SC-002": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "tool_operation_identity",
+        "selected_parameters",
+        "effect_links",
+        "selected_mistake_parameters",
+        "actual_learning_error_effect_and_cost_references",
+        "manifest_rule_classification_binding"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "different_valid_offer",
+        "changed_amount",
+        "route_not_automatically_optimized",
+        "wrong_test_recipient_within_scope",
+        "expense_exceeds_task_budget_within_hard_bounds",
+        "excess_allowance_to_supported_local_spender",
+        "insufficient_test_balance_or_genuine_protocol_failure"
+      ],
+      "required_observations": [
+        "authenticated_scope",
+        "observed_reads",
+        "explicit_choices",
+        "actual_selected_effect",
+        "technical_steps_declared",
+        "technically_valid_learning_mistake_executed",
+        "selected_parameters_not_repaired",
+        "no_goal_based_rejection_or_corrective_reset",
+        "actual_effect_vs_task_criteria_recorded",
+        "protocol_failure_not_silent_correction"
+      ]
+    },
+    "BEF-SC-003": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "denial_audit",
+        "unchanged_foreign_and_admin_state"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "foreign_environment",
+        "stale_generation",
+        "arbitrary_url",
+        "raw_transaction",
+        "admin_rpc",
+        "learning_error_claim_for_foreign_or_admin_access",
+        "real_fund_or_external_write_route",
+        "request_exceeds_preexecution_resource_bound"
+      ],
+      "required_observations": [
+        "scope_checked",
+        "admin_unreachable",
+        "no_signature_or_transaction",
+        "protected_state_unchanged",
+        "learning_mistake_policy_does_not_waive_isolation"
+      ]
+    },
+    "BEF-SC-004": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "offer_observation_manifest",
+        "unchanged_payment_delivery_state"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "repeat_offer_read",
+        "malformed_offer_request"
+      ],
+      "required_observations": [
+        "offer_identity",
+        "payment_requirements",
+        "no_token_delta",
+        "no_settlement",
+        "no_purchased_delivery"
+      ]
+    },
+    "BEF-SC-005": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "settlement_operation",
+        "transaction_identity",
+        "delivery_record",
+        "redacted_effect_evidence"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "verification_without_receipt",
+        "wrong_token_representation",
+        "mismatched_data"
+      ],
+      "required_observations": [
+        "scheme_asset_domain",
+        "verified_authorization",
+        "local_receipt",
+        "token_effects",
+        "delivery_hash",
+        "payer_identity"
+      ]
+    },
+    "BEF-SC-006": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "durable_payment_delivery_identity",
+        "recovery_audit",
+        "no_duplicate_charge"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "wrong_domain",
+        "amount_mismatch",
+        "reused_authorization",
+        "response_loss",
+        "concurrent_duplicate",
+        "missing_receipt"
+      ],
+      "required_observations": [
+        "invalid_payment_denied",
+        "original_identity_recovered",
+        "one_settlement",
+        "one_logical_delivery",
+        "unknown_not_success"
+      ]
+    },
+    "BEF-SC-007": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "swap_operation",
+        "receipts_effects",
+        "constraint_outcome",
+        "unrepaired_selected_exchange_parameters",
+        "observed_goal_mismatch_evidence",
+        "pinned_weth_code_and_asset_identity",
+        "selected_conversion_operation_parameters",
+        "separate_native_and_weth_balance_evidence"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "unsupported_asset_boundary_rejected",
+        "unsupported_route_boundary_rejected",
+        "wrong_goal_recipient_within_test_scope_executes",
+        "actual_output_below_task_goal_recorded",
+        "actual_reserve_below_task_goal_recorded",
+        "local_revert",
+        "technically_valid_wrong_test_recipient",
+        "technically_valid_task_reserve_violation",
+        "agent_chosen_slippage_guard_reverts",
+        "weth_only_native_eth_goal_unmet",
+        "weth_only_native_gas_reserve_unmet",
+        "missing_or_wrong_conversion_amount",
+        "genuine_wrap_or_unwrap_failure",
+        "display_value_not_native_balance"
+      ],
+      "required_observations": [
+        "selected_contract_code",
+        "receipt_events",
+        "token_deltas",
+        "allowance",
+        "reserve",
+        "representation_wrapping",
+        "executed_goal_mismatch_not_task_success",
+        "in_scope_wrong_recipient_or_reserve_effect_observed",
+        "boundary_denial_distinct_from_contract_revert",
+        "distinct_native_eth_and_pinned_weth",
+        "explicit_wrap_unwrap_direction_and_amount",
+        "actual_wrap_and_unwrap_receipts",
+        "no_automatic_conversion_by_swap_or_signer",
+        "weth_not_counted_as_native_target_or_gas_reserve",
+        "conversion_gas_attributed_once"
+      ]
+    },
+    "BEF-SC-008": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "cost_component_records",
+        "receipt_links",
+        "payer_attribution",
+        "unknown_markers"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "missing_receipt",
+        "sponsored_settlement",
+        "embedded_fee",
+        "preexecution_rejection"
+      ],
+      "required_observations": [
+        "successful_and_reverted_receipts",
+        "pinned_fee_fx",
+        "actual_payer",
+        "no_double_count",
+        "no_fabricated_rejection_fee",
+        "l1_unmodelled"
+      ]
+    },
+    "BEF-SC-009": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "separate_generation_operation_records",
+        "isolation_observation_hashes"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "concurrent_operations",
+        "foreign_environment_reference",
+        "reset_other_instance"
+      ],
+      "required_observations": [
+        "independent_chain_state",
+        "independent_service_state",
+        "reset_not_crossing_boundary",
+        "foreign_access_denied"
+      ]
+    },
+    "BEF-SC-010": {
+      "adapter": "benchmark_environment_http_evm_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "new_generation",
+        "reset_manifest",
+        "baseline_comparison",
+        "distinct_trial_identity"
+      ],
+      "evidence_mode": "actual_local_tool_http_durable_store_x402_anvil_receipts",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "late_worker",
+        "previous_payment_nonce",
+        "stale_delivery_record",
+        "reused_operation_namespace"
+      ],
+      "required_observations": [
+        "stale_generation_fenced",
+        "chain_baseline",
+        "service_baseline",
+        "fixture_hash",
+        "equivalent_probe_outcome"
+      ]
+    },
+    "BEF-SC-011": {
+      "adapter": "benchmark_environment_resource_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "resource_samples",
+        "trial_conditions",
+        "measured_totals",
+        "stopped_or_complete_status"
+      ],
+      "evidence_mode": "actual_local_process_container_resource_observations",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "missing_sampler",
+        "empty_dedicated_cache",
+        "warm_cache",
+        "guardrail_exceeded",
+        "provider_cu_unavailable"
+      ],
+      "required_observations": [
+        "host_and_limits",
+        "cold_warm_state",
+        "cpu_peak_ram_elapsed",
+        "cache_artifact_bytes",
+        "source_request_count",
+        "guardrail_stop",
+        "cu_unknown_if_unobservable"
+      ]
+    },
+    "BEF-SC-012": {
+      "adapter": "benchmark_source_rpc_evidence_adapter",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "source_read_audit",
+        "outbound_denial_record",
+        "redacted_manifest",
+        "replay_comparison"
+      ],
+      "evidence_mode": "actual_source_rpc_readonly_proxy_and_recorded_evidence",
+      "gate": "environment",
+      "mandatory": true,
+      "negative_variants": [
+        "wrong_source_identity",
+        "send_raw_transaction",
+        "admin_method",
+        "sign_method",
+        "secret_in_artifact",
+        "missing_hash"
+      ],
+      "required_observations": [
+        "source_chain_block_code",
+        "allowed_read_provenance",
+        "prohibited_not_forwarded",
+        "evidence_paths_hashes",
+        "replay_no_broadcast",
+        "secrets_absent"
+      ]
+    },
+    "PV-SC-001": {
+      "boundary": "match_authority",
+      "durable_effects": [
+        "match_identity",
+        "rules_snapshot"
+      ],
+      "evidence_mode": "reference match authority state and immutable snapshot",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "one_agent_not_ready",
+        "rules_mutated_after_start"
+      ],
+      "required_observations": [
+        "one_sided_rejected",
+        "match_started_after_both_ready",
+        "rules_snapshot_immutable"
+      ]
+    },
+    "PV-SC-002": {
+      "boundary": "match_authority",
+      "durable_effects": [
+        "accepted_event_log",
+        "deadline_outcomes"
+      ],
+      "evidence_mode": "reference authority event log",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "client_timestamp_reordering",
+        "missing_deadline_decision"
+      ],
+      "required_observations": [
+        "monotonic_sequence",
+        "authority_timestamped",
+        "deadline_decisions_recorded"
+      ]
+    },
+    "PV-SC-003": {
+      "boundary": "match_authority",
+      "durable_effects": [
+        "terminal_result",
+        "rejection_event"
+      ],
+      "evidence_mode": "reference terminal match state and post-terminal event",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "reconnect_resets_clock",
+        "late_action_changes_winner"
+      ],
+      "required_observations": [
+        "terminal_result_stable",
+        "late_action_recorded",
+        "accepted_history_preserved"
+      ]
+    },
+    "PV-SC-004": {
+      "boundary": "settlement",
+      "durable_effects": [
+        "settlement_intent",
+        "deduplication_record"
+      ],
+      "evidence_mode": "reference settlement record with duplicate submission",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "duplicate_retry_effect",
+        "ambiguous_provider_result"
+      ],
+      "required_observations": [
+        "stable_outcome",
+        "single_effect",
+        "dedup_key_recorded"
+      ]
+    },
+    "WB-SC-001": {
+      "boundary": "reference_model",
+      "durable_effects": [
+        "run_record",
+        "normalized_event_trace"
+      ],
+      "evidence_mode": "deterministic reference run record",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "missing_run_identity",
+        "unordered_event_sequence"
+      ],
+      "required_observations": [
+        "run_identity_present",
+        "event_sequence_ordered",
+        "event_payloads_hashed"
+      ]
+    },
+    "WB-SC-002": {
+      "boundary": "reference_model",
+      "durable_effects": [
+        "scorecard",
+        "evidence_status"
+      ],
+      "evidence_mode": "reference scorecard with partial chain evidence",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "unknown_collapsed_to_failure",
+        "unknown_collapsed_to_success"
+      ],
+      "required_observations": [
+        "dimensions_separate",
+        "chain_evidence_unknown",
+        "task_outcome_preserved"
+      ]
+    },
+    "WB-SC-003": {
+      "boundary": "reference_model",
+      "durable_effects": [
+        "original_run",
+        "replay_run"
+      ],
+      "evidence_mode": "reference replay comparison",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "different_seed_replay",
+        "original_trace_overwritten"
+      ],
+      "required_observations": [
+        "same_canonical_inputs",
+        "original_evidence_retained",
+        "replay_marked_separately"
+      ]
+    },
+    "WB-SC-004": {
+      "boundary": "chain_observation",
+      "durable_effects": [
+        "transaction_intent",
+        "reconciliation_candidate"
+      ],
+      "evidence_mode": "reference fixture representing an unverified chain observation",
+      "gate": "local",
+      "mandatory": true,
+      "negative_variants": [
+        "missing_receipt_classified_success",
+        "provider_ambiguity_hidden"
+      ],
+      "required_observations": [
+        "raw_evidence_reference_preserved",
+        "chain_effect_unknown",
+        "unknown_not_success"
+      ]
+    }
+  },
   "schema_version": 1,
   "spec_snapshot": {
-    "normative_clauses": 33,
+    "normative_clauses": 91,
     "requirement_clause_counts": {
+      "BEF-REQ-001": 5,
+      "BEF-REQ-002": 11,
+      "BEF-REQ-003": 7,
+      "BEF-REQ-004": 13,
+      "BEF-REQ-005": 5,
+      "BEF-REQ-006": 5,
+      "BEF-REQ-007": 5,
+      "BEF-REQ-008": 7,
       "PV-REQ-001": 5,
       "PV-REQ-002": 4,
       "PV-REQ-003": 4,
@@ -12,9 +559,21 @@
       "WB-REQ-003": 4,
       "WB-REQ-004": 4
     },
-    "requirements": 8,
-    "scenario_ids_sha256": "f8af002eca5526d621f07d7169ceb2f9880c0efc2ed9271b2d577f87e2354404",
+    "requirements": 16,
+    "scenario_ids_sha256": "ece006a466321b92b3f7470a277b5e2349be3f34e8f28a39faf4561cc9120180",
     "scenario_requirement_mapping": {
+      "BEF-SC-001": "BEF-REQ-001",
+      "BEF-SC-002": "BEF-REQ-002",
+      "BEF-SC-003": "BEF-REQ-002",
+      "BEF-SC-004": "BEF-REQ-003",
+      "BEF-SC-005": "BEF-REQ-003",
+      "BEF-SC-006": "BEF-REQ-003",
+      "BEF-SC-007": "BEF-REQ-004",
+      "BEF-SC-008": "BEF-REQ-005",
+      "BEF-SC-009": "BEF-REQ-006",
+      "BEF-SC-010": "BEF-REQ-006",
+      "BEF-SC-011": "BEF-REQ-007",
+      "BEF-SC-012": "BEF-REQ-008",
       "PV-SC-001": "PV-REQ-001",
       "PV-SC-002": "PV-REQ-002",
       "PV-SC-003": "PV-REQ-003",
@@ -24,159 +583,7 @@
       "WB-SC-003": "WB-REQ-003",
       "WB-SC-004": "WB-REQ-004"
     },
-    "scenario_requirement_sha256": "4e9a90ffb2089757c53a010b3803d415da317e3356576a2fcdd0038abfd4949f",
-    "scenarios": 8
-  },
-  "coverage_policy": {
-    "status": "complete",
-    "required_protected_scenarios": [
-      "PV-SC-001",
-      "PV-SC-002",
-      "PV-SC-003",
-      "PV-SC-004",
-      "WB-SC-001",
-      "WB-SC-002",
-      "WB-SC-003",
-      "WB-SC-004"
-    ]
-  },
-  "protected_scenarios": {
-    "PV-SC-001": {
-      "boundary": "match_authority",
-      "required_observations": [
-        "one_sided_rejected",
-        "match_started_after_both_ready",
-        "rules_snapshot_immutable"
-      ],
-      "negative_variants": [
-        "one_agent_not_ready",
-        "rules_mutated_after_start"
-      ],
-      "durable_effects": [
-        "match_identity",
-        "rules_snapshot"
-      ],
-      "evidence_mode": "reference match authority state and immutable snapshot"
-    },
-    "PV-SC-002": {
-      "boundary": "match_authority",
-      "required_observations": [
-        "monotonic_sequence",
-        "authority_timestamped",
-        "deadline_decisions_recorded"
-      ],
-      "negative_variants": [
-        "client_timestamp_reordering",
-        "missing_deadline_decision"
-      ],
-      "durable_effects": [
-        "accepted_event_log",
-        "deadline_outcomes"
-      ],
-      "evidence_mode": "reference authority event log"
-    },
-    "PV-SC-003": {
-      "boundary": "match_authority",
-      "required_observations": [
-        "terminal_result_stable",
-        "late_action_recorded",
-        "accepted_history_preserved"
-      ],
-      "negative_variants": [
-        "reconnect_resets_clock",
-        "late_action_changes_winner"
-      ],
-      "durable_effects": [
-        "terminal_result",
-        "rejection_event"
-      ],
-      "evidence_mode": "reference terminal match state and post-terminal event"
-    },
-    "PV-SC-004": {
-      "boundary": "settlement",
-      "required_observations": [
-        "stable_outcome",
-        "single_effect",
-        "dedup_key_recorded"
-      ],
-      "negative_variants": [
-        "duplicate_retry_effect",
-        "ambiguous_provider_result"
-      ],
-      "durable_effects": [
-        "settlement_intent",
-        "deduplication_record"
-      ],
-      "evidence_mode": "reference settlement record with duplicate submission"
-    },
-    "WB-SC-001": {
-      "boundary": "reference_model",
-      "required_observations": [
-        "run_identity_present",
-        "event_sequence_ordered",
-        "event_payloads_hashed"
-      ],
-      "negative_variants": [
-        "missing_run_identity",
-        "unordered_event_sequence"
-      ],
-      "durable_effects": [
-        "run_record",
-        "normalized_event_trace"
-      ],
-      "evidence_mode": "deterministic reference run record"
-    },
-    "WB-SC-002": {
-      "boundary": "reference_model",
-      "required_observations": [
-        "dimensions_separate",
-        "chain_evidence_unknown",
-        "task_outcome_preserved"
-      ],
-      "negative_variants": [
-        "unknown_collapsed_to_failure",
-        "unknown_collapsed_to_success"
-      ],
-      "durable_effects": [
-        "scorecard",
-        "evidence_status"
-      ],
-      "evidence_mode": "reference scorecard with partial chain evidence"
-    },
-    "WB-SC-003": {
-      "boundary": "reference_model",
-      "required_observations": [
-        "same_canonical_inputs",
-        "original_evidence_retained",
-        "replay_marked_separately"
-      ],
-      "negative_variants": [
-        "different_seed_replay",
-        "original_trace_overwritten"
-      ],
-      "durable_effects": [
-        "original_run",
-        "replay_run"
-      ],
-      "evidence_mode": "reference replay comparison"
-    },
-    "WB-SC-004": {
-      "boundary": "chain_observation",
-      "required_observations": [
-        "raw_evidence_reference_preserved",
-        "chain_effect_unknown",
-        "unknown_not_success"
-      ],
-      "negative_variants": [
-        "missing_receipt_classified_success",
-        "provider_ambiguity_hidden"
-      ],
-      "durable_effects": [
-        "transaction_intent",
-        "reconciliation_candidate"
-      ],
-      "evidence_mode": "reference fixture representing an unverified chain observation"
-    }
+    "scenario_requirement_sha256": "ef85b922b8c2b93694b5773c4ebfda81f0cc2774b42251bdd0b50d4ce597b859",
+    "scenarios": 20
   }
 }
-

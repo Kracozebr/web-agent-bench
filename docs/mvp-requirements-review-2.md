@@ -118,7 +118,7 @@ prefetch и cache. Preflight, training, очередь, отмена и unknown 
 условия и доказательства ещё требуют рубрик. Feasibility одной покупки/обмена и
 агрегатор готовых credit fixtures не доказывают оценку всех заданий.
 Источник: [каталог](task-catalog-draft.md), разделы «Draft rubric record» и
-«Per-task evidence»; [feasibility design](../openspec/changes/benchmark-environment-feasibility/design.md),
+«Per-task evidence»; [feasibility design](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/design.md),
 раздел Open Questions; [BLP spec](../openspec/changes/benchmark-leaderboard-and-agent-pages/specs/benchmark-leaderboard-and-agent-pages/spec.md), BLP-REQ-009.
 
 Следующий результат — 12 полных рубрик и versioned environment manifest:

@@ -298,7 +298,7 @@ credit for independently verified satisfied conditions remains in place. These
 rules do not add an economic multiplier to the overall difficulty-weighted score.
 The selected MVP gas model uses observed local-EVM fees at version-pinned settings;
 Base L1 fees are unmodelled. Display this as educational task expense rather than
-complete Base transaction cost. The [feasibility proposal](../openspec/changes/benchmark-environment-feasibility/proposal.md)
+complete Base transaction cost. The [feasibility proposal](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/proposal.md)
 defines the first required execution evidence, with all gates still not_run.
 
 The user confirmed publishing goals, mandatory constraints, weights and partial-

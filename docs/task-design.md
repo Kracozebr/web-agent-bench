@@ -48,6 +48,19 @@ After approval, add the Gherkin mirror, named mapper, reusable step bindings, an
 or alongside production changes. Do not replace a missing chain or agent environment with a false
 proxy. Report implementation and acceptance separately.
 
+## Browser-to-database E2E
+
+Owner instruction, 2026-10-23: user-facing E2E starts by clicking the actual
+browser control and follows the running backend to the final persisted result.
+Exercise the real frontend/API/database path; independently read the resulting
+database rows and relevant durable backend/job state, correlated to the action.
+Checking only a toast, DOM or localStorage, intercepting a successful mutation,
+or invoking the mutation directly through an API does not establish this E2E.
+Private fixture setup and read-only outcome inspection may use test facilities;
+the initiating business action must still pass through the browser and actual
+backend. Keep environment/integration probes labelled separately. Add these E2E
+checks alongside each implemented user journey; pilot acceptance reruns them.
+
 ## Sync and archive
 
 Run `/opsx:sync` only when tasks and mandatory gates pass. Preserve unaffected main-spec content,

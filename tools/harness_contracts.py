@@ -12,6 +12,9 @@ from typing import Any, Iterable
 
 MANIFEST_RELATIVE = Path("tests") / "bdd" / "harness-contracts.json"
 MAIN_SPECS_RELATIVE = Path("openspec") / "specs"
+CHANGE_ROOT_RELATIVE = Path("openspec") / "changes"
+ACTIVE_RUNTIME_ROOT = Path("tests") / "bdd" / "changes"
+_CHANGE_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 # AICODE-NOTE: Boundary names are deliberately explicit. A local reference model must not be
 # silently reported as a sandbox, chain, match-server, or settlement result.
@@ -45,17 +48,184 @@ class HarnessContract:
     allowed_private_calls: tuple[str, ...]
 
 
-def manifest_path(root: Path) -> Path:
-    return root / MANIFEST_RELATIVE
+def validate_change_name(change_name: str) -> str:
+    """Reject names that could escape the repository's change-owned paths."""
+
+    if not isinstance(change_name, str) or not _CHANGE_NAME_RE.fullmatch(change_name):
+        raise ValueError(f"invalid OpenSpec change name: {change_name!r}")
+    return change_name
 
 
-def load_manifest(root: Path) -> tuple[dict[str, Any], dict[str, HarnessContract]]:
-    """Load and structurally validate the checked-in semantic contract."""
+def change_root(root: Path, change_name: str) -> Path:
+    return root / CHANGE_ROOT_RELATIVE / validate_change_name(change_name)
 
-    path = manifest_path(root)
+
+def change_spec_paths(root: Path, change_name: str) -> tuple[Path, ...]:
+    """Return the active delta's normative spec paths relative to the repository."""
+
+    directory = change_root(root, change_name) / "specs"
+    return tuple(
+        sorted(
+            (path.relative_to(root) for path in directory.glob("*/spec.md")),
+            key=lambda item: item.as_posix(),
+        )
+    )
+
+
+def proposal_path(root: Path, change_name: str) -> Path:
+    return change_root(root, change_name) / "bdd-harness-proposal.json"
+
+
+def manifest_path(root: Path, change_name: str | None = None) -> Path:
+    if change_name is None:
+        return root / MANIFEST_RELATIVE
+    return root / ACTIVE_RUNTIME_ROOT / validate_change_name(change_name) / "harness-contracts.json"
+
+
+def acceptance_path(root: Path, change_name: str | None = None) -> Path:
+    if change_name is None:
+        return root / "tests" / "bdd" / "acceptance-evidence.json"
+    return root / ACTIVE_RUNTIME_ROOT / validate_change_name(change_name) / "acceptance-evidence.json"
+
+
+def scenario_map_path(root: Path, change_name: str | None = None) -> Path:
+    if change_name is None:
+        return root / "tests" / "bdd" / "scenario-map.md"
+    return root / ACTIVE_RUNTIME_ROOT / validate_change_name(change_name) / "scenario-map.md"
+
+
+def load_proposal(root: Path, change_name: str) -> dict[str, Any]:
+    """Load an approved review inventory; this is never a runtime contract."""
+
+    path = proposal_path(root, change_name)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot load active BDD proposal {path}: {error}") from error
+    if not isinstance(payload, dict) or payload.get("proposal_schema") != "bdd-harness-contract-proposal/v1":
+        raise ValueError("active BDD proposal must use bdd-harness-contract-proposal/v1")
+    if payload.get("review_status") != "approved":
+        raise ValueError(
+            f"active BDD proposal {change_name!r} is not approved; "
+            f"review_status={payload.get('review_status')!r}"
+        )
+    normative_delta = payload.get("normative_delta")
+    if not isinstance(normative_delta, str) or not normative_delta.strip():
+        raise ValueError("active BDD proposal must declare normative_delta")
+    normative_path = Path(normative_delta)
+    selected_specs = {
+        (root / path).relative_to(change_root(root, change_name)).as_posix()
+        for path in change_spec_paths(root, change_name)
+    }
+    if (
+        normative_path.is_absolute()
+        or ".." in normative_path.parts
+        or normative_path.as_posix() not in selected_specs
+    ):
+        raise ValueError(f"active BDD proposal targets unexpected normative delta {normative_delta!r}")
+    expected_manifest = manifest_path(root, change_name).relative_to(root).as_posix()
+    if payload.get("runtime_manifest") != expected_manifest:
+        raise ValueError(
+            "active BDD proposal runtime_manifest does not target its separate runtime contract: "
+            f"expected {expected_manifest!r}, found {payload.get('runtime_manifest')!r}"
+        )
+    scenarios = payload.get("protected_scenarios")
+    if not isinstance(scenarios, dict) or not scenarios:
+        raise ValueError("active BDD proposal must declare protected_scenarios")
+    for scenario_id, row in scenarios.items():
+        if not isinstance(scenario_id, str) or not scenario_id.strip() or not isinstance(row, dict):
+            raise ValueError("active BDD proposal has an invalid protected_scenarios entry")
+        required_text = ("requirement_id", "title", "named_mapper", "adapter", "boundary", "evidence_mode")
+        for field in required_text:
+            value = row.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"proposal scenario {scenario_id} needs non-empty {field}")
+        if row.get("mandatory") is not True:
+            raise ValueError(f"proposal scenario {scenario_id} must be mandatory")
+        if not isinstance(row.get("gate"), str) or not row["gate"].strip():
+            raise ValueError(f"proposal scenario {scenario_id} needs a gate")
+        for field in ("required_observations", "negative_variants", "durable_effects"):
+            values = row.get(field)
+            if not isinstance(values, list) or not values or not all(
+                isinstance(item, str) and item.strip() for item in values
+            ):
+                raise ValueError(f"proposal scenario {scenario_id} needs non-empty {field}")
+            if len(set(values)) != len(values):
+                raise ValueError(f"proposal scenario {scenario_id} has duplicate {field}")
+        allowed_private_calls = row.get("allowed_private_calls", [])
+        if not isinstance(allowed_private_calls, list) or not all(
+            isinstance(item, str) and item.strip() for item in allowed_private_calls
+        ):
+            raise ValueError(f"proposal scenario {scenario_id} has invalid allowed_private_calls")
+    return payload
+
+
+def validate_proposal_inventory(
+    proposal: dict[str, Any], scenarios: Iterable[Any], contracts: dict[str, "HarnessContract"] | None = None
+) -> None:
+    """Bind the approved proposal to source scenarios and, when present, runtime contracts."""
+
+    scenario_list = list(scenarios)
+    planned = proposal["protected_scenarios"]
+    expected_ids = {scenario.scenario_id for scenario in scenario_list}
+    planned_ids = set(planned)
+    if planned_ids != expected_ids:
+        raise ValueError(
+            "active BDD proposal scenario inventory drifted: "
+            f"missing={sorted(expected_ids - planned_ids)}, extra={sorted(planned_ids - expected_ids)}"
+        )
+    for scenario in scenario_list:
+        row = planned[scenario.scenario_id]
+        comparisons = {
+            "requirement_id": scenario.requirement_id,
+            "title": scenario.title,
+            "named_mapper": scenario.mapper_name,
+        }
+        for field, expected in comparisons.items():
+            if row[field] != expected:
+                raise ValueError(
+                    f"active BDD proposal drift for {scenario.scenario_id} {field}: "
+                    f"expected {expected!r}, found {row[field]!r}"
+                )
+    if contracts is None:
+        return
+    contract_ids = set(contracts)
+    if contract_ids != expected_ids:
+        raise ValueError(
+            "active runtime contract inventory drifted: "
+            f"missing={sorted(expected_ids - contract_ids)}, extra={sorted(contract_ids - expected_ids)}"
+        )
+    contract_fields = {
+        "boundary": "boundary",
+        "required_observations": "required_observations",
+        "negative_variants": "negative_variants",
+        "durable_effects": "durable_effects",
+        "evidence_mode": "evidence_mode",
+        "allowed_private_calls": "allowed_private_calls",
+    }
+    for scenario_id, contract in contracts.items():
+        row = planned[scenario_id]
+        for proposal_field, contract_field in contract_fields.items():
+            if tuple(row[proposal_field]) != tuple(getattr(contract, contract_field)):
+                raise ValueError(
+                    f"active runtime contract drift for {scenario_id} {proposal_field}"
+                )
+
+
+def load_manifest(
+    root: Path, change_name: str | None = None
+) -> tuple[dict[str, Any], dict[str, HarnessContract]]:
+    """Load and structurally validate the selected runtime semantic contract."""
+
+    path = manifest_path(root, change_name)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        if change_name is not None and not path.exists():
+            raise ValueError(
+                f"active change {change_name!r} has no runtime harness contract at {path}; "
+                "the approved proposal inventory is not a runtime contract"
+            ) from error
         raise ValueError(f"cannot load harness contract {path}: {error}") from error
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         raise ValueError("harness contract must be an object with schema_version=1")
@@ -147,25 +317,40 @@ def scenario_id_digest(scenarios: Iterable[Any]) -> str:
     return hashlib.sha256(("\n".join(scenario_ids) + "\n").encode("utf-8")).hexdigest()
 
 
-def requirement_clause_counts(root: Path) -> dict[str, int]:
-    """Count normative MUST/SHALL clauses per main requirement for drift detection."""
+def source_spec_paths(root: Path, change_name: str | None = None) -> tuple[Path, ...]:
+    """Return selected normative spec paths; no change selects synchronized main specs."""
+
+    if change_name is None:
+        return main_spec_paths(root)
+    return change_spec_paths(root, change_name)
+
+
+def requirement_clause_counts(root: Path, change_name: str | None = None) -> dict[str, int]:
+    """Count normative clauses in the selected source for drift detection."""
 
     counts: dict[str, int] = {}
-    for source in sorted((root / MAIN_SPECS_RELATIVE).glob("*/spec.md")):
+    paths = source_spec_paths(root, change_name)
+    if not paths:
+        selected = "main specs" if change_name is None else f"change {change_name!r} specs"
+        raise ValueError(f"no normative spec files found for {selected}")
+    for relative in paths:
+        source = root / relative
         text = source.read_text(encoding="utf-8")
         matches = list(_REQUIREMENT_RE.finditer(text))
         for index, match in enumerate(matches):
             end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
             requirement_id = match.group("id")
             if requirement_id in counts:
-                raise ValueError(f"duplicate requirement ID in main specs: {requirement_id}")
+                raise ValueError(f"duplicate requirement ID in selected specs: {requirement_id}")
             counts[requirement_id] = len(_NORMATIVE_WORD_RE.findall(text[match.end() : end]))
     return dict(sorted(counts.items()))
 
 
-def current_spec_snapshot(root: Path, scenarios: Iterable[Any]) -> dict[str, Any]:
+def current_spec_snapshot(
+    root: Path, scenarios: Iterable[Any], change_name: str | None = None
+) -> dict[str, Any]:
     scenario_list = list(scenarios)
-    clause_counts = requirement_clause_counts(root)
+    clause_counts = requirement_clause_counts(root, change_name)
     scenario_mapping = dict(
         sorted((item.scenario_id, item.requirement_id) for item in scenario_list)
     )
@@ -180,8 +365,13 @@ def current_spec_snapshot(root: Path, scenarios: Iterable[Any]) -> dict[str, Any
     }
 
 
-def validate_spec_snapshot(root: Path, scenarios: Iterable[Any], payload: dict[str, Any]) -> None:
-    expected = current_spec_snapshot(root, scenarios)
+def validate_spec_snapshot(
+    root: Path,
+    scenarios: Iterable[Any],
+    payload: dict[str, Any],
+    change_name: str | None = None,
+) -> None:
+    expected = current_spec_snapshot(root, scenarios, change_name)
     actual = payload.get("spec_snapshot")
     if actual != expected:
         raise ValueError(
@@ -212,17 +402,42 @@ def main_spec_paths(root: Path) -> tuple[Path, ...]:
     )
 
 
-def harness_source_paths(root: Path) -> tuple[Path, ...]:
-    """Return the tracked source set whose behavior the acceptance gate exercises."""
+def active_delta_source_paths(root: Path, change_name: str) -> tuple[Path, ...]:
+    """Return active approval, design, spec, proposal, and runtime-contract inputs."""
+
+    name = validate_change_name(change_name)
+    paths = set(change_spec_paths(root, name))
+    selected_change_root = change_root(root, name)
+    for filename in (
+        "approval.md",
+        "proposal.md",
+        "design.md",
+        "bdd-design.md",
+        "bdd-harness-proposal.json",
+        "tasks.md",
+    ):
+        candidate = selected_change_root / filename
+        if candidate.is_file():
+            paths.add(candidate.relative_to(root))
+    selected_manifest = manifest_path(root, name)
+    if selected_manifest.is_file():
+        paths.add(selected_manifest.relative_to(root))
+    return tuple(sorted(paths, key=lambda item: item.as_posix()))
+
+
+def harness_source_paths(root: Path, change_name: str | None = None) -> tuple[Path, ...]:
+    """Return executable/normative inputs, excluding result-bearing scenario maps."""
 
     paths: set[Path] = set()
     for relative in (
         Path("tools") / "check_bdd_harness.py",
+        Path("tools") / "replay_bef_evidence.py",
+        Path("tools") / "run_bef_sc011_trials.py",
+        Path("tools") / "bef_resource_sampler.py",
         Path("tools") / "generate_bdd_mirrors.py",
         Path("tools") / "harness_contracts.py",
         Path("tools") / "run_bdd_acceptance.py",
         Path("tests") / "bdd" / "conftest.py",
-        Path("tests") / "bdd" / "scenario-map.md",
     ):
         if (root / relative).is_file():
             paths.add(relative)
@@ -239,5 +454,10 @@ def harness_source_paths(root: Path) -> tuple[Path, ...]:
                 if path.is_file()
             )
     paths.update(main_spec_paths(root))
+    selected_manifest = manifest_path(root, change_name)
+    if selected_manifest.is_file():
+        paths.add(selected_manifest.relative_to(root))
+    if change_name is not None:
+        paths.update(active_delta_source_paths(root, change_name))
     return tuple(sorted(paths, key=lambda item: item.as_posix()))
 

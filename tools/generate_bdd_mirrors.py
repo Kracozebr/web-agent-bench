@@ -15,7 +15,15 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from tools.harness_contracts import load_manifest, validate_spec_snapshot
+from tools.harness_contracts import (
+    acceptance_path,
+    load_manifest,
+    load_proposal,
+    scenario_map_path,
+    source_spec_paths,
+    validate_proposal_inventory,
+    validate_spec_snapshot,
+)
 
 
 CHANGE_NAME = "web3-agent-bench-baseline"
@@ -66,9 +74,10 @@ class ContractError(ValueError):
     """The approved specification, contract, or generated mirror has drifted."""
 
 
-def _capabilities(root: Path) -> tuple[Capability, ...]:
+def _capabilities(root: Path, change_name: str | None = None) -> tuple[Capability, ...]:
     capabilities: list[Capability] = []
-    for spec_path in sorted((root / MAIN_SPECS_RELATIVE).glob("*/spec.md")):
+    for source_relative in source_spec_paths(root, change_name):
+        spec_path = root / source_relative
         label = spec_path.read_text(encoding="utf-8").splitlines()[0].removeprefix("# ").strip()
         directory = spec_path.parent.name
         capabilities.append(
@@ -87,10 +96,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
 def _parse_spec_source(
     root: Path,
     capability: Capability,
+    source_relative: Path,
     scenarios: list[Scenario],
     seen_ids: set[str],
 ) -> None:
-    source_relative = MAIN_SPECS_RELATIVE / capability.directory / "spec.md"
     source = root / source_relative
     lines = source.read_text(encoding="utf-8").splitlines()
     current_requirement: str | None = None
@@ -134,19 +143,56 @@ def _parse_spec_source(
         index += 3
 
 
-def parse_specs(root: Path) -> list[Scenario]:
-    """Parse the complete synchronized main-spec scenario inventory."""
+def parse_specs(root: Path, change_name: str | None = None) -> list[Scenario]:
+    """Parse the synchronized main inventory or one explicitly selected active delta."""
 
     scenarios: list[Scenario] = []
     seen_ids: set[str] = set()
-    for capability in _capabilities(root):
-        _parse_spec_source(root, capability, scenarios, seen_ids)
+    capabilities = _capabilities(root, change_name)
+    for capability in capabilities:
+        source_relative = (
+            MAIN_SPECS_RELATIVE / capability.directory / "spec.md"
+            if change_name is None
+            else Path("openspec") / "changes" / change_name / "specs" / capability.directory / "spec.md"
+        )
+        _parse_spec_source(root, capability, source_relative, scenarios, seen_ids)
     if not scenarios:
         raise ContractError("main specs contain no scenarios")
     return scenarios
 
 
-def render_feature(capability: Capability, scenarios: Iterable[Scenario]) -> str:
+def _gate_metadata(scenario: Scenario, gate_source: dict[str, object] | None) -> tuple[str, bool]:
+    """Read reviewed gate metadata from an active proposal or promoted main manifest."""
+
+    rows = {} if gate_source is None else gate_source.get("protected_scenarios", {})
+    if not isinstance(rows, dict):
+        raise ContractError("gate metadata protected_scenarios must be an object")
+    row = rows.get(scenario.scenario_id, {})
+    if not isinstance(row, dict):
+        raise ContractError(f"invalid gate metadata for {scenario.scenario_id}")
+    if (
+        gate_source is not None
+        and "proposal_schema" not in gate_source
+        and row.get("boundary") == "environment"
+        and not {"gate", "mandatory"}.issubset(row)
+    ):
+        raise ContractError(f"missing gate metadata for {scenario.scenario_id}")
+    gate = row.get("gate", "local")
+    mandatory = row.get("mandatory", True)
+    if (
+        not isinstance(gate, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_-]*", gate)
+        or not isinstance(mandatory, bool)
+    ):
+        raise ContractError(f"invalid gate metadata for {scenario.scenario_id}")
+    return gate, mandatory
+
+
+def render_feature(
+    capability: Capability,
+    scenarios: Iterable[Scenario],
+    proposal: dict[str, object] | None = None,
+) -> str:
     scenarios = list(scenarios)
     sources = sorted({scenario.source_relative_path.as_posix() for scenario in scenarios})
     lines = [
@@ -156,15 +202,22 @@ def render_feature(capability: Capability, scenarios: Iterable[Scenario]) -> str
         "",
         f"@cap_{capability.slug}",
         f"Feature: {capability.label} approved scenarios",
-        "  Executable mirror of the synchronized main OpenSpec contract.",
+        (
+            "  Executable mirror of the selected active OpenSpec contract."
+            if proposal is not None and "proposal_schema" in proposal
+            else "  Executable mirror of the synchronized main OpenSpec contract."
+        ),
     ]
     for scenario in scenarios:
+        gate, mandatory = _gate_metadata(scenario, proposal)
+        mandatory_tag = " @mandatory" if mandatory else " @optional"
+        gate_tag = gate.replace("-", "_")
         lines.extend(
             [
                 "",
-                f"  {scenario.requirement_tag} {scenario.feature_tag} @gate_local @mandatory",
+                f"  {scenario.requirement_tag} {scenario.feature_tag} @gate_{gate_tag}{mandatory_tag}",
                 f"  Scenario: {scenario.title}",
-                f'    Given the approved local setup for "{scenario.scenario_id}"',
+                f'    Given the approved {gate.replace("-", " ")} setup for "{scenario.scenario_id}"',
                 f"    When {scenario.when}",
                 f"    Then {scenario.then}",
             ]
@@ -194,27 +247,41 @@ def render_mapper(capability: Capability, scenarios: Iterable[Scenario]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _change_metadata(change_name: str | None) -> tuple[str, str, str]:
+    if change_name is None:
+        return CHANGE_NAME, LIFECYCLE_PHASE, NORMATIVE_SOURCE
+    return (
+        change_name,
+        "active-delta",
+        f"openspec/changes/{change_name}/specs/*/spec.md",
+    )
+
+
 def load_acceptance_results(
-    root: Path, scenarios: Iterable[Scenario], evidence_path: Path | None = None
+    root: Path,
+    scenarios: Iterable[Scenario],
+    evidence_path: Path | None = None,
+    change_name: str | None = None,
 ) -> dict[str, str]:
     """Load a durable local-gate record, failing closed on stale inventory."""
 
     scenarios = list(scenarios)
-    evidence_path = evidence_path or root / ACCEPTANCE_RELATIVE
+    selected_change, lifecycle_phase, normative_source = _change_metadata(change_name)
+    evidence_path = evidence_path or acceptance_path(root, change_name)
     if not evidence_path.exists():
         return {scenario.scenario_id: "not_run" for scenario in scenarios}
     try:
         payload = json.loads(evidence_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ContractError(f"cannot read acceptance evidence: {error}") from error
-    if payload.get("change") != CHANGE_NAME:
+    if payload.get("change") != selected_change:
         return {scenario.scenario_id: "not_run" for scenario in scenarios}
     if payload.get("acceptance_state") == "running":
         return {scenario.scenario_id: "not_run" for scenario in scenarios}
     if payload.get("acceptance_state") not in {"complete", "failed"}:
         return {scenario.scenario_id: "not_run" for scenario in scenarios}
-    if payload.get("lifecycle_phase") != LIFECYCLE_PHASE or payload.get("normative_source") != NORMATIVE_SOURCE:
-        raise ContractError("BDD acceptance evidence does not target synchronized main specs")
+    if payload.get("lifecycle_phase") != lifecycle_phase or payload.get("normative_source") != normative_source:
+        raise ContractError("BDD acceptance evidence does not target the selected normative source")
     results = payload.get("scenario_results")
     expected_ids = {scenario.scenario_id for scenario in scenarios}
     if not isinstance(results, dict) or set(results) != expected_ids:
@@ -226,22 +293,36 @@ def load_acceptance_results(
 
 
 def render_scenario_map(
-    scenarios: Iterable[Scenario], results: dict[str, str], contracts: dict[str, object]
+    scenarios: Iterable[Scenario],
+    results: dict[str, str],
+    contracts: dict[str, object],
+    change_name: str | None = None,
+    proposal: dict[str, object] | None = None,
 ) -> str:
+    selected_change, lifecycle_phase, normative_source = _change_metadata(change_name)
+    task_design_path = "../../docs/task-design.md" if change_name is None else "../../../../docs/task-design.md"
+    evidence_relative = acceptance_path(Path("."), change_name).as_posix()
     lines = [
-        f"# Scenario map: `{CHANGE_NAME}`",
+        f"# Scenario map: `{selected_change}`",
         "",
-        "Workflow: [`docs/task-design.md`](../../docs/task-design.md)",
+        f"Workflow: [`docs/task-design.md`]({task_design_path})",
         "",
-        f"**Lifecycle phase:** `{LIFECYCLE_PHASE}`",
-        f"**Normative source:** `{NORMATIVE_SOURCE}`",
-        "**Acceptance evidence:** `tests/bdd/acceptance-evidence.json`",
+        f"**Lifecycle phase:** `{lifecycle_phase}`",
+        f"**Normative source:** `{normative_source}`",
+        f"**Acceptance evidence:** `{evidence_relative}`",
         "",
         "| Requirement ID | Scenario ID | Mirrored title | Feature tag | Named mapper | Adapter | Gate | Mandatory | Harness contract | Evidence | Result |",
         "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for scenario in scenarios:
         contract = contracts.get(scenario.scenario_id)
+        proposal_row = (
+            proposal.get("protected_scenarios", {}).get(scenario.scenario_id, {})
+            if proposal is not None
+            else {}
+        )
+        adapter = proposal_row.get("adapter", scenario.capability.adapter)
+        gate, mandatory = _gate_metadata(scenario, proposal)
         if contract is None:
             contract_summary = "unprotected; see harness audit"
             evidence = EXPECTED_EVIDENCE
@@ -255,37 +336,54 @@ def render_scenario_map(
         lines.append(
             "| "
             f"`{scenario.requirement_id}` | `{scenario.scenario_id}` | {scenario.title} | "
-            f"`{scenario.feature_tag}` | `{scenario.mapper_name}` | `{scenario.capability.adapter}` | "
-            f"`local` | yes | {contract_summary} | {evidence} | `{results[scenario.scenario_id]}` |"
+            f"`{scenario.feature_tag}` | `{scenario.mapper_name}` | `{adapter}` | "
+            f"`{gate}` | {'yes' if mandatory else 'no'} | {contract_summary} | {evidence} | "
+            f"`{results[scenario.scenario_id]}` |"
         )
-    lines.extend(
-        [
-            "",
+    if change_name is None:
+        source_transition = [
             "## Source transition",
             "",
             "- [x] Normative behavior resolves to synchronized main capability specs.",
             "- [x] OpenSpec scenario IDs and titles equal the Gherkin and named-mapper inventories.",
             "- [x] No executable reference targets an active change path in this baseline.",
         ]
-    )
+    else:
+        source_transition = [
+            "## Active-delta review",
+            "",
+            "- [x] Normative behavior resolves to the selected active OpenSpec delta.",
+            "- [x] OpenSpec scenario IDs and titles equal the Gherkin and named-mapper inventories.",
+            "- [x] The approved proposal is review metadata; the separate manifest supplies runtime contracts.",
+        ]
+    lines.extend(["", *source_transition])
     return "\n".join(lines) + "\n"
 
 
 def expected_outputs(
-    root: Path, scenarios: list[Scenario], acceptance_evidence_path: Path | None = None
+    root: Path,
+    scenarios: list[Scenario],
+    acceptance_evidence_path: Path | None = None,
+    change_name: str | None = None,
 ) -> dict[Path, str]:
-    manifest, contracts = load_manifest(root)
-    validate_spec_snapshot(root, scenarios, manifest)
-    results = load_acceptance_results(root, scenarios, acceptance_evidence_path)
+    manifest, contracts = load_manifest(root, change_name)
+    validate_spec_snapshot(root, scenarios, manifest, change_name)
+    gate_source = manifest
+    if change_name is not None:
+        gate_source = load_proposal(root, change_name)
+        validate_proposal_inventory(gate_source, scenarios, contracts)
+    results = load_acceptance_results(
+        root, scenarios, acceptance_evidence_path, change_name
+    )
     outputs: dict[Path, str] = {
-        root / "tests" / "bdd" / "scenario-map.md": render_scenario_map(
-            scenarios, results, contracts
+        scenario_map_path(root, change_name): render_scenario_map(
+            scenarios, results, contracts, change_name, gate_source
         )
     }
-    for capability in _capabilities(root):
+    for capability in _capabilities(root, change_name):
         capability_scenarios = [scenario for scenario in scenarios if scenario.capability == capability]
         outputs[root / "tests" / "bdd" / "features" / f"{capability.slug}.feature"] = render_feature(
-            capability, capability_scenarios
+            capability, capability_scenarios, gate_source
         )
         outputs[root / "tests" / "bdd" / "mappers" / f"test_{capability.slug}_bdd.py"] = render_mapper(
             capability, capability_scenarios
@@ -293,7 +391,34 @@ def expected_outputs(
     return outputs
 
 
-def validate_generated_inventory(root: Path, outputs: dict[Path, str]) -> list[Path]:
+def _has_source_marker(path: Path, change_name: str | None) -> bool:
+    try:
+        header = "\n".join(path.read_text(encoding="utf-8").splitlines()[:3])
+    except (OSError, UnicodeDecodeError):
+        return False
+    if change_name is None:
+        return "Normative source(s): openspec/specs/" in header
+    return f"Normative source(s): openspec/changes/{change_name}/specs/" in header
+
+
+def _belongs_to_other_source(path: Path, change_name: str | None) -> bool:
+    try:
+        header = "\n".join(path.read_text(encoding="utf-8").splitlines()[:3])
+    except (OSError, UnicodeDecodeError):
+        return False
+    if change_name is None:
+        return "Normative source(s): openspec/changes/" in header
+    if _has_source_marker(path, change_name):
+        return False
+    return (
+        "Normative source(s): openspec/specs/" in header
+        or "Normative source(s): openspec/changes/" in header
+    )
+
+
+def validate_generated_inventory(
+    root: Path, outputs: dict[Path, str], change_name: str | None = None
+) -> list[Path]:
     stale = [
         path
         for path, expected in outputs.items()
@@ -305,6 +430,12 @@ def validate_generated_inventory(root: Path, outputs: dict[Path, str]) -> list[P
     expected_mapper_paths = {path for path in outputs if path.parent == mappers}
     actual_feature_paths = set(features.glob("*.feature")) if features.exists() else set()
     actual_mapper_paths = set(mappers.glob("test_*_bdd.py")) if mappers.exists() else set()
+    actual_feature_paths = {
+        path for path in actual_feature_paths if not _belongs_to_other_source(path, change_name)
+    }
+    actual_mapper_paths = {
+        path for path in actual_mapper_paths if not _belongs_to_other_source(path, change_name)
+    }
     unexpected = sorted(
         (actual_feature_paths - expected_feature_paths)
         | (actual_mapper_paths - expected_mapper_paths),
@@ -313,22 +444,32 @@ def validate_generated_inventory(root: Path, outputs: dict[Path, str]) -> list[P
     return stale + unexpected
 
 
-def generate(root: Path, check: bool, acceptance_evidence_path: Path | None = None) -> int:
-    scenarios = parse_specs(root)
-    outputs = expected_outputs(root, scenarios, acceptance_evidence_path)
-    stale = validate_generated_inventory(root, outputs)
+def generate(
+    root: Path,
+    check: bool,
+    acceptance_evidence_path: Path | None = None,
+    change_name: str | None = None,
+) -> int:
+    scenarios = parse_specs(root, change_name)
+    outputs = expected_outputs(root, scenarios, acceptance_evidence_path, change_name)
+    stale = validate_generated_inventory(root, outputs, change_name)
     if check:
         if stale:
             print("BDD mirror validation failed; regenerate or remove stale generated paths:", file=sys.stderr)
             for path in stale:
                 print(f"- {path.relative_to(root).as_posix()}", file=sys.stderr)
             return 1
-        print(f"BDD mirror validation passed: {len(scenarios)} approved scenarios.")
+        selected_change, _phase, _source = _change_metadata(change_name)
+        print(f"BDD mirror validation passed for {selected_change}: {len(scenarios)} approved scenarios.")
         return 0
     for path, content in outputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8", newline="\n")
-    print(f"Generated BDD mirrors: {len(scenarios)} approved scenarios across {len(_capabilities(root))} capabilities.")
+    selected_change, _phase, _source = _change_metadata(change_name)
+    print(
+        f"Generated BDD mirrors for {selected_change}: {len(scenarios)} approved scenarios "
+        f"across {len(_capabilities(root, change_name))} capabilities."
+    )
     return 0
 
 
@@ -336,9 +477,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail instead of writing stale mirrors")
     parser.add_argument("--acceptance-evidence", type=Path, default=None)
+    parser.add_argument(
+        "--change",
+        default=None,
+        help="select one active OpenSpec change; omit to use synchronized main specs",
+    )
     args = parser.parse_args(argv)
     try:
-        return generate(REPOSITORY_ROOT, check=args.check, acceptance_evidence_path=args.acceptance_evidence)
+        return generate(
+            REPOSITORY_ROOT,
+            check=args.check,
+            acceptance_evidence_path=args.acceptance_evidence,
+            change_name=args.change,
+        )
     except (ContractError, OSError, ValueError) as error:
         print(f"BDD mirror generation failed: {error}", file=sys.stderr)
         return 1

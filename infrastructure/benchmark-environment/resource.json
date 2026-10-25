@@ -1,0 +1,9 @@
+{
+  "resourceId": "bef-resource-v1",
+  "schema": "web-agent-bench/resource/v1",
+  "content": {
+    "title": "Pinned local acceptance resource",
+    "body": "Delivery is available only after the declared local x402 settlement succeeds.",
+    "sourceBoundary": "private acceptance environment"
+  }
+}

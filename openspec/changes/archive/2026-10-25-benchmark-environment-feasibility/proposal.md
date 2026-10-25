@@ -4,7 +4,8 @@ The MVP needs observed proof that its selected controlled x402 service and narro
 Base fork can execute, reset and remain isolated within bounded infrastructure.
 Identity/billing designs alone do not establish task execution or resource cost.
 
-Status: proposed; concrete acceptance and implementation approval remain pending.
+Status: implementation scope authorized on 2026-10-23; see [approval.md](approval.md).
+Concrete configuration prerequisites and runtime acceptance remain outstanding.
 
 ## What Changes
 

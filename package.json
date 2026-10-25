@@ -1,0 +1,16 @@
+{
+  "name": "web-agent-bench",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "bef:build": "pnpm --filter @web-agent-bench/benchmark-environment build",
+    "bef:check": "pnpm --filter @web-agent-bench/benchmark-environment check",
+    "bef:dev": "pnpm --filter @web-agent-bench/benchmark-environment dev",
+    "bef:migrate": "pnpm --filter @web-agent-bench/benchmark-environment migrate",
+    "bef:probe": "pnpm --filter @web-agent-bench/benchmark-environment probe --"
+  }
+}

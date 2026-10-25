@@ -178,8 +178,8 @@ Web3 tasks. Avoid implementing a realistic DEX from scratch or supporting every
 public router/aggregator in the first release. The user accepted combining these
 parts; exact contracts, block, tools and settlement implementation remain open.
 
-The proposed [feasibility packet](../openspec/changes/benchmark-environment-feasibility/proposal.md)
-and [BDD design](../openspec/changes/benchmark-environment-feasibility/bdd-design.md) cover
+The proposed [feasibility packet](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/proposal.md)
+and [BDD design](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/bdd-design.md) cover
 one x402 purchase and one swap against a selected forked pool, reset and repeated
 with cold/warm caches. Measure CPU, RAM, cache/artifact bytes, provider CU/requests,
 latency, receipts and outcome verification. Required observations also include

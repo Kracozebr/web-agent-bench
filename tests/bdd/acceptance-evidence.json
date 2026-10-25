@@ -1,39 +1,142 @@
 {
   "acceptance_state": "complete",
+  "active_delta_sha256": null,
+  "bef_spec_profile": "synced-main",
   "change": "web3-agent-bench-baseline",
   "command": [
     ".venv/Scripts/python.exe",
     "-m",
     "pytest",
-    "tests/bdd",
+    "tests/bdd/mappers/test_benchmark_environment_feasibility_bdd.py",
+    "tests/bdd/mappers/test_benchmarking_core_bdd.py",
+    "tests/bdd/mappers/test_realtime_pvp_bdd.py",
+    "tests/bdd/traceability",
     "-q",
     "-p",
     "no:cacheprovider",
     "--junitxml=artifacts/bdd-evidence/web3-agent-bench-baseline-pytest.xml"
   ],
   "exit_code": 0,
-  "finished_at_utc": "2026-10-22T07:27:47.599896Z",
+  "finished_at_utc": "2026-10-25T07:59:16.896276Z",
   "gate": {
-    "class": "local",
-    "mandatory": true
+    "class": "per_scenario",
+    "mandatory": true,
+    "scenario_classes": {
+      "BEF-SC-001": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-002": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-003": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-004": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-005": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-006": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-007": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-008": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-009": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-010": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-011": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BEF-SC-012": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "PV-SC-001": {
+        "class": "local",
+        "mandatory": true
+      },
+      "PV-SC-002": {
+        "class": "local",
+        "mandatory": true
+      },
+      "PV-SC-003": {
+        "class": "local",
+        "mandatory": true
+      },
+      "PV-SC-004": {
+        "class": "local",
+        "mandatory": true
+      },
+      "WB-SC-001": {
+        "class": "local",
+        "mandatory": true
+      },
+      "WB-SC-002": {
+        "class": "local",
+        "mandatory": true
+      },
+      "WB-SC-003": {
+        "class": "local",
+        "mandatory": true
+      },
+      "WB-SC-004": {
+        "class": "local",
+        "mandatory": true
+      }
+    }
   },
-  "git_commit": "2f71e6e665008f7fdfbbe61fbf2cee58c98b7059",
-  "git_worktree_dirty": false,
+  "git_commit": "8091238a693dcddbb7c4f2560ec5c948ad337714",
+  "git_worktree_dirty": true,
   "harness_audit": {
-    "approved_scenarios": 8,
+    "approved_scenarios": 20,
+    "change": "web3-agent-bench-baseline",
     "coverage_status": "complete",
     "errors": [],
-    "protected_scenarios": 8,
+    "normative_source": "openspec/specs/*/spec.md",
+    "protected_scenarios": 20,
     "status": "passed",
     "unprotected_scenarios": [],
     "warnings": []
   },
-  "harness_contract_sha256": "453da091cddccbb1f2613d0079d43dacfee09784476affb45f15a2a3fc0993f8",
-  "harness_sources_sha256": "969ead6b2220eeba774f0a593a542c3472f0e08e3535dfb85559e41e06094b58",
+  "harness_contract_sha256": "19551b934c2451be30f5bd61a247dd71194cdc000f3396fc5183efbb50416e2d",
+  "harness_sources_sha256": "801ea1637c80afc8baad1404bc6429812b423964abfc373f135f38b834b099ae",
+  "harness_sources_sha256_after": "801ea1637c80afc8baad1404bc6429812b423964abfc373f135f38b834b099ae",
   "lifecycle_phase": "synced-main",
-  "main_specs_sha256": "bd94686684e0dfbea3bb74cbb186a1b340f69212fe2fd0cd44857ed763f4eb31",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/specs/*/spec.md",
+  "scenario_map_sha256": "cc35b9729f11021977c8192a3470bd8b5bb9e3962ef6e093001faa2f8ac0a09a",
   "scenario_results": {
+    "BEF-SC-001": "passed",
+    "BEF-SC-002": "passed",
+    "BEF-SC-003": "passed",
+    "BEF-SC-004": "passed",
+    "BEF-SC-005": "passed",
+    "BEF-SC-006": "passed",
+    "BEF-SC-007": "passed",
+    "BEF-SC-008": "passed",
+    "BEF-SC-009": "passed",
+    "BEF-SC-010": "passed",
+    "BEF-SC-011": "passed",
+    "BEF-SC-012": "passed",
     "PV-SC-001": "passed",
     "PV-SC-002": "passed",
     "PV-SC-003": "passed",
@@ -44,5 +147,6 @@
     "WB-SC-004": "passed"
   },
   "schema_version": 1,
-  "started_at_utc": "2026-10-22T07:27:45.992311Z"
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-25T07:54:54.598942Z"
 }

@@ -18,8 +18,17 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from tests.bdd.adapters import build_registry
-from tools.generate_bdd_mirrors import parse_specs
-from tools.harness_contracts import load_manifest, validate_spec_snapshot
+from tools.generate_bdd_mirrors import (
+    expected_outputs,
+    parse_specs,
+    validate_generated_inventory,
+)
+from tools.harness_contracts import (
+    load_manifest,
+    load_proposal,
+    validate_proposal_inventory,
+    validate_spec_snapshot,
+)
 
 
 def _contains_scenario(node: ast.AST, scenario_id: str) -> bool:
@@ -137,30 +146,66 @@ def _audit_case(scenario_id: str, contract: Any, case: object) -> list[str]:
     return errors
 
 
-def audit(root: Path) -> dict[str, Any]:
+def audit(root: Path, change_name: str | None = None) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
-    scenarios = parse_specs(root)
+    scenarios = parse_specs(root, change_name)
     approved_ids = {scenario.scenario_id for scenario in scenarios}
-    manifest, contracts = load_manifest(root)
+    manifest, contracts = load_manifest(root, change_name)
     try:
-        validate_spec_snapshot(root, scenarios, manifest)
+        validate_spec_snapshot(root, scenarios, manifest, change_name)
     except ValueError as error:
         errors.append(str(error))
 
-    registry = build_registry()
-    registered_ids = set(registry.inventory())
+    proposal = None
+    if change_name is not None:
+        proposal = load_proposal(root, change_name)
+        validate_proposal_inventory(proposal, scenarios, contracts)
+
+    registry = None
+    try:
+        registry = build_registry(change_name)
+    except (ImportError, ValueError, RuntimeError) as error:
+        errors.append(f"cannot build selected adapter registry: {error}")
+    registered_ids = set(registry.inventory()) if registry is not None else set()
     if registered_ids != approved_ids:
         errors.append(
             "adapter inventory drifted: "
             f"missing={sorted(approved_ids - registered_ids)}, "
             f"unexpected={sorted(registered_ids - approved_ids)}"
         )
+    if change_name is not None and registry is not None and proposal is not None:
+        expected_profiles = {
+            scenario_id: row["adapter"]
+            for scenario_id, row in proposal["protected_scenarios"].items()
+        }
+        actual_profiles = registry.adapter_profiles()
+        if actual_profiles != expected_profiles:
+            errors.append(
+                "adapter profile inventory drifted: "
+                f"missing={sorted(set(expected_profiles) - set(actual_profiles))}, "
+                f"unexpected={sorted(set(actual_profiles) - set(expected_profiles))}, "
+                f"mismatched={sorted(scenario_id for scenario_id in set(actual_profiles) & set(expected_profiles) if actual_profiles[scenario_id] != expected_profiles[scenario_id])}"
+            )
+
+    if change_name is not None:
+        mirror_outputs = {
+            path: content
+            for path, content in expected_outputs(root, scenarios, change_name=change_name).items()
+            if path.name != "scenario-map.md"
+        }
+        stale_mirrors = validate_generated_inventory(root, mirror_outputs, change_name)
+        if stale_mirrors:
+            errors.append(
+                "active feature/mapper inventory drifted: "
+                f"{[path.relative_to(root).as_posix() for path in stale_mirrors]}"
+            )
 
     contract_ids = set(contracts)
     for scenario_id in sorted(contract_ids - approved_ids):
         errors.append(f"contract declares unknown scenario: {scenario_id}")
     for scenario_id in sorted(contract_ids & approved_ids & registered_ids):
+        assert registry is not None
         errors.extend(_audit_case(scenario_id, contracts[scenario_id], registry.cases()[scenario_id]))
 
     unprotected = sorted(approved_ids - contract_ids)
@@ -181,6 +226,12 @@ def audit(root: Path) -> dict[str, Any]:
     if unprotected:
         warnings.append(f"{len(unprotected)} approved scenarios remain outside protected contracts")
     return {
+        "change": change_name or "web3-agent-bench-baseline",
+        "normative_source": (
+            f"openspec/changes/{change_name}/specs/*/spec.md"
+            if change_name is not None
+            else "openspec/specs/*/spec.md"
+        ),
         "status": "failed" if errors else "passed",
         "coverage_status": actual_coverage_status,
         "protected_scenarios": len(contract_ids & approved_ids),
@@ -194,11 +245,17 @@ def audit(root: Path) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--change",
+        default=None,
+        help="select one active OpenSpec change; omit to audit synchronized main specs",
+    )
     args = parser.parse_args(argv)
     try:
-        report = audit(REPOSITORY_ROOT)
-    except (OSError, ValueError, RuntimeError) as error:
+        report = audit(REPOSITORY_ROOT, args.change)
+    except (OSError, ValueError, RuntimeError, ImportError) as error:
         report = {
+            "change": args.change or "web3-agent-bench-baseline",
             "status": "failed",
             "protected_scenarios": 0,
             "approved_scenarios": 0,

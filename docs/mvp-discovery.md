@@ -325,7 +325,7 @@ with 22 mandatory planned boundary scenarios, and
 [base-account-payments](../openspec/changes/base-account-payments/proposal.md) with 20, and
 [agent-access-and-permissions](../openspec/changes/agent-access-and-permissions/proposal.md) with 16, and
 [owner-identity-and-pilot-admission](../openspec/changes/owner-identity-and-pilot-admission/proposal.md) with 12, and
-[benchmark-environment-feasibility](../openspec/changes/benchmark-environment-feasibility/proposal.md) with 12, and
+[benchmark-environment-feasibility](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/proposal.md) with 12, and
 [benchmark-leaderboard-and-agent-pages](../openspec/changes/benchmark-leaderboard-and-agent-pages/proposal.md) with 15, and
 [self-hosted-mvp-operations](../openspec/changes/self-hosted-mvp-operations/proposal.md) with 12, and
 [benchmark-task-suite](../openspec/changes/benchmark-task-suite/proposal.md) with 34.

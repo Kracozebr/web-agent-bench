@@ -1,6 +1,7 @@
 ## Context
 
-Status: proposed; scenario/implementation approval is pending. The user selected
+Status: scenario/implementation scope authorized; see [approval.md](approval.md).
+Concrete execution prerequisites remain outstanding. The user selected
 an Anvil execution layer with controlled x402 endpoints and a narrow pinned Base
 fork. Existing planning does not prove a working node, settlement path or budget.
 The user's reported server is 16 CPU/32 GB RAM; available headroom/disk IOPS and

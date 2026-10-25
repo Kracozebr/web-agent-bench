@@ -1,0 +1,205 @@
+{
+  "schemaVersion": "bef-runtime-manifest/v1",
+  "change": "benchmark-environment-feasibility",
+  "source": {
+    "name": "Base",
+    "chainId": 8453,
+    "caip2": "eip155:8453",
+    "rpcUrlEnv": "BEF_SOURCE_RPC_URL",
+    "blockNumber": "0x32871b4",
+    "blockHash": "0x8884b44376e007d7e298126e56b88f5b93ad202993ba099938689affc5eda966",
+    "blockTimestamp": "0x6adb404b",
+    "intakeArtifact": "infrastructure/benchmark-environment/source-intake/source-observations.json",
+    "intakeArtifactSha256": "fdb84c4dfd8772904b11ea996ed07401299badb2f68e5af7d45639ff769a0298",
+    "fundingArtifact": "infrastructure/benchmark-environment/source-intake/usdc-funding-observation.json",
+    "fundingArtifactSha256": "ec4222c022f512b9219f12916a8c759637c4a0964c7149526bdb780d9baaa90f",
+    "implementationCodeArtifact": "infrastructure/benchmark-environment/source-intake/usdc-implementation-code.json",
+    "implementationCodeArtifactSha256": "1d1700654a19ef8ffb27fbb1d5f6a19ae6b0430b6c515bc6f5aad26a7bc9a539",
+    "implementationSlotArtifact": "infrastructure/benchmark-environment/source-intake/usdc-implementation-observation.json",
+    "implementationSlotArtifactSha256": "672b67b7f89bc2a2688c311a848d9c56acf8accd07663685ab8ac9fd7539d245",
+    "allowedMethods": [
+      "eth_chainId",
+      "eth_getBlockByNumber",
+      "eth_getBlockByHash",
+      "eth_getCode",
+      "eth_getStorageAt",
+      "eth_call",
+        "eth_getBalance",
+        "eth_getTransactionCount"
+    ],
+    "maxBatchItems": 10,
+    "maxRequestBytes": 65536,
+    "maxResponseBytes": 4194304
+  },
+  "local": {
+    "chainId": 8453,
+    "identity": "private-anvil-fork",
+    "executionNetwork": "ethereum",
+    "hardfork": "prague",
+    "sourceProxyHost": "source-proxy",
+    "databaseHost": "postgres",
+    "environments": [
+      { "id": "bef-env-a", "anvilHost": "anvil-a", "localProxyHost": "local-proxy-a", "facilitatorHost": "facilitator-a" },
+      { "id": "bef-env-b", "anvilHost": "anvil-b", "localProxyHost": "local-proxy-b", "facilitatorHost": "facilitator-b" }
+    ],
+    "anvilVersion": "1.8.6",
+    "nodeVersion": "24.22.1",
+    "postgresqlVersion": "18.6",
+    "fastifyVersion": "5.12.7",
+    "versions": {
+      "x402Core": "2.28.0",
+      "x402Evm": "2.28.0",
+      "x402Fastify": "2.28.0",
+      "viem": "2.47.4",
+      "postgresDriver": "8.16.3"
+    },
+    "forkBlock": "0x32871b4",
+    "hostPublishedBind": "127.0.0.1"
+  },
+  "contracts": {
+    "usdc": {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "proxyCodeHash": "0xa6705a10bb756b5dea144591118be77d7af0c3eee3bf2dfe2583dcb0364fefab",
+      "implementation": "0x2ce6311ddae708829bc0784c967b7d77d19fd779",
+      "implementationCodeHash": "0x11b75a237997ab8328f65b2d5a55c10f0346d0a175741ed42ddf4f2c66b9e873",
+      "implementationSlot": "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+      "decimals": 6,
+      "eip3009": true
+    },
+    "weth": {
+      "address": "0x4200000000000000000000000000000000000006",
+      "codeHash": "0x8a3a1f6a9f9dce633117adee5b458245835a8645a8c8726a26382a4622508b1c",
+      "decimals": 18
+    },
+    "factory": {
+      "address": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      "codeHash": "0x95707a4ac71f20181a63ef7d180e3c625be5d20fc8f6f980befa966bad568132"
+    },
+    "swapRouter02": {
+      "address": "0x2626664c2603336E57B271c5C0b26F421741e481",
+      "codeHash": "0x38bd640f47df62b2fd5a6755a63f4976ad847dc9b946ae0d145d21d16bb124e4"
+    },
+    "quoterV2": {
+      "address": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+      "codeHash": "0xceb5b8bc35e09fc64b1c48c6b920e0d2e37d5710e4f3ef214e1a81f75acee51e"
+    },
+    "pool": {
+      "address": "0xd0b53d9277642d899df5c87a3966a349a798f224",
+      "codeHash": "0xcd06f61c6db6a1d8317548aaaa0aa83254624aec741534c51815810e977587ae",
+      "token0": "0x4200000000000000000000000000000000000006",
+      "token1": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "fee": 500,
+      "liquidityAtSource": "0x0000000000000000000000000000000000000000000000000e211c40c66dde1c",
+      "sqrtPriceX96AtSource": "0x0000000000000000000000000000000000000000000334b25e8dc7637a0450fa"
+    }
+  },
+  "funding": {
+    "mode": "private-anvil-impersonated-transfer",
+    "donor": "0xd0b53d9277642d899df5c87a3966a349a798f224",
+    "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "maxUsdcUnitsPerGeneration": "100000000",
+    "nativeEthWeiPerGeneration": "10000000000000000000",
+    "donorNativeEthWeiForGas": "100000000000000000",
+    "facilitatorNativeEthWei": "10000000000000000000",
+    "ephemeralKeys": true,
+    "persistentKeyMaterial": false
+  },
+  "x402": {
+    "sdk": "@x402",
+    "version": "2.28.0",
+    "scheme": "exact",
+    "assetTransferMethod": "eip3009",
+    "eip712Domain": {
+      "name": "USD Coin",
+      "version": "2"
+    },
+    "network": "eip155:8453",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "amount": "100000",
+    "offers": [
+      { "id": "canonical", "amount": "100000" },
+      { "id": "task-goal-exceeded", "amount": "3000000" }
+    ],
+    "resourceId": "bef-resource-v1",
+    "resourcePath": "infrastructure/benchmark-environment/resource.json",
+    "resourceSha256": "9e88598571803977360bacdd8a8b5bb1cb3d6a72989ac6215b50c1ab4386a05d",
+    "maxTimeoutSeconds": 120,
+    "facilitatorGasPayer": "ephemeral-local-facilitator",
+    "confirmationTimeoutMs": 120000
+  },
+  "swap": {
+    "route": "uniswap-v3-exactInputSingle",
+    "tokenIn": "0x4200000000000000000000000000000000000006",
+    "tokenOut": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "fee": 500,
+    "maxAmountIn": "100000000000000000",
+    "maxSlippageBps": 1000,
+    "maxTransactionGas": "1200000",
+    "recipientMayBeTaskGoalMismatch": true,
+    "allowanceMustBeExplicitlySelected": true
+  },
+  "feePolicy": {
+    "baseFeeWei": "5000000",
+    "priorityFeeWei": "1000000",
+    "ethUsdcRateNumerator": "15020514483295716381154243967034954650524622599204",
+    "ethUsdcRateDenominator": "6277101735386680763835789423207666416102355444464034512896",
+    "rounding": "floor-to-6-decimal-usdc-units",
+    "baseL1Fee": "unmodelled",
+    "principalSeparateFromExpense": true
+  },
+  "ruleClassification": {
+    "alwaysEnforced": [
+      "scoped-authentication",
+      "active-generation",
+      "fixed-environment",
+      "fixed-contract-route",
+      "transaction-bounds",
+      "resource-guardrails",
+      "no-upstream-write",
+      "no-raw-rpc",
+      "fixture-funding-cap"
+    ],
+    "taskEvaluation": [
+      "recipient-goal",
+      "expense-budget",
+      "native-eth-reserve",
+      "allowance-cleanup",
+      "native-eth-versus-weth",
+      "selected-output-minimum"
+    ]
+  },
+  "taskGoal": {
+    "expenseBudgetUsdcUnits": "2000000",
+    "nativeEthReserveWei": "1000000000000000000",
+    "nativeEthTargetWei": "2000000000000000000",
+    "minimumSwapOutputUsdcUnits": "100000000",
+    "allowanceCleanupExpected": true,
+    "recipientIsDriverSelected": true,
+    "nativeEthAndWethAreDistinct": true,
+    "minimumOutputIsDriverSelected": true
+  },
+  "tools": {
+    "reads": ["balances", "offer", "quote"],
+    "writes": ["purchase", "approve", "swap", "wrap", "unwrap"],
+    "noArbitraryUrls": true,
+    "noRawRpc": true,
+    "noParticipantAnvilAdmin": true,
+    "requireRunTokenAndGeneration": true,
+    "idempotencyScope": "environment-generation-participant-key"
+  },
+  "guardrails": {
+    "maxTrialSeconds": 120,
+    "maxSwapScenarioSeconds": 1800,
+    "maxResourceScenarioSeconds": 900,
+    "maxResourceReadOverrunSeconds": 2,
+    "maxAnvilMemoryBytesEach": 1073741824,
+    "maxAnvilCacheBytesEach": 268435456,
+    "maxApiMemoryBytes": 805306368,
+    "maxDatabaseMemoryBytes": 805306368,
+    "maxSourceCallsPerTrial": 10000,
+    "maxConcurrentEnvironments": 2,
+    "maxEvidenceBytesPerTrial": 67108864,
+    "maxHttpRequestBytes": 65536,
+    "maxRpcBatchItems": 10
+  }
+}

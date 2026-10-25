@@ -1,0 +1,13 @@
+{
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": "0x2105"
+  },
+  "request": {
+    "method": "eth_chainId",
+    "id": 1,
+    "jsonrpc": "2.0",
+    "params": []
+  }
+}

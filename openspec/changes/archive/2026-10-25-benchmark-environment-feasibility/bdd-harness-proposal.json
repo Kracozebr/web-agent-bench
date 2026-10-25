@@ -1,7 +1,8 @@
 {
   "proposal_schema": "bdd-harness-contract-proposal/v1",
-  "review_status": "pending",
-  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "review_status": "approved",
+  "approval_reference": "approval.md",
+  "runtime_manifest": "tests/bdd/changes/benchmark-environment-feasibility/harness-contracts.json",
   "normative_delta": "specs/benchmark-environment-feasibility/spec.md",
   "note": "Review-only inventory. All gates not_run. Actual local execution plus declared source reads; no external transaction broadcast. Downstream benchmark-task-suite requires separate actual grading gates; this first probe does not depend on a completed task suite.",
   "protected_scenarios": {

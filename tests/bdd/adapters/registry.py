@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from tools.harness_contracts import HarnessContract, load_manifest
+from tools.harness_contracts import (
+    HarnessContract,
+    load_manifest,
+    load_proposal,
+    validate_change_name,
+)
 
 
 @dataclass
@@ -48,15 +54,24 @@ class ScenarioCase(Protocol):
 class ScenarioRegistry:
     """Map every normative ID to a real capability-bound execution case."""
 
-    def __init__(self) -> None:
+    def __init__(self, change_name: str | None = None) -> None:
         self._cases: dict[str, ScenarioCase] = {}
+        self._adapter_profiles: dict[str, str | None] = {}
+        self.change_name = validate_change_name(change_name) if change_name is not None else None
         repository_root = __import__("pathlib").Path(__file__).resolve().parents[3]
-        _, self._contracts = load_manifest(repository_root)
+        _, self._contracts = load_manifest(repository_root, self.change_name)
+        if self.change_name is not None:
+            load_proposal(repository_root, self.change_name)
 
-    def register(self, scenario_id: str, case: ScenarioCase) -> None:
+    def register(
+        self, scenario_id: str, case: ScenarioCase, *, adapter_profile: str | None = None
+    ) -> None:
         if scenario_id in self._cases:
             raise ValueError(f"duplicate scenario adapter: {scenario_id}")
+        if adapter_profile is not None and (not isinstance(adapter_profile, str) or not adapter_profile.strip()):
+            raise ValueError(f"invalid adapter profile for {scenario_id}")
         self._cases[scenario_id] = case
+        self._adapter_profiles[scenario_id] = adapter_profile
 
     def setup(self, context: ScenarioContext) -> None:
         self._require(context.scenario_id).setup(context)
@@ -84,6 +99,9 @@ class ScenarioRegistry:
     def contracts(self) -> dict[str, HarnessContract]:
         return dict(self._contracts)
 
+    def adapter_profiles(self) -> dict[str, str | None]:
+        return dict(self._adapter_profiles)
+
     def _require(self, scenario_id: str) -> ScenarioCase:
         try:
             return self._cases[scenario_id]
@@ -91,13 +109,46 @@ class ScenarioRegistry:
             raise AssertionError(f"approved scenario has no real adapter: {scenario_id}") from error
 
 
-def build_registry() -> ScenarioRegistry:
-    """Compose the capability adapters without import cycles during collection."""
+def build_registry(change_name: str | None = None) -> ScenarioRegistry:
+    """Build the synchronized baseline registry or one explicitly selected active delta."""
 
-    from . import benchmarking_core, realtime_pvp
+    registry = ScenarioRegistry(change_name)
+    if change_name is None:
+        from . import benchmarking_core, realtime_pvp
 
-    registry = ScenarioRegistry()
-    benchmarking_core.register(registry)
-    realtime_pvp.register(registry)
+        benchmarking_core.register(registry)
+        realtime_pvp.register(registry)
+        contract_ids = set(registry.contracts())
+        bef_ids = {f"BEF-SC-{number:03d}" for number in range(1, 13)}
+        if bef_ids.intersection(contract_ids):
+            if not bef_ids.issubset(contract_ids):
+                raise ValueError("main BEF contract inventory is incomplete")
+            from . import benchmark_environment_feasibility
+
+            if set(benchmark_environment_feasibility.SCENARIO_IDS) != bef_ids:
+                raise ValueError("main BEF adapter inventory is inconsistent")
+            benchmark_environment_feasibility.register(registry)
+        return registry
+
+    module_name = validate_change_name(change_name).replace("-", "_")
+    module = importlib.import_module(f"tests.bdd.adapters.{module_name}")
+    register = getattr(module, "register", None)
+    if not callable(register):
+        raise ValueError(f"active adapter module {module.__name__} must expose register(registry)")
+    profiles = getattr(module, "ADAPTER_PROFILES", None)
+    if not isinstance(profiles, (set, frozenset, tuple, list)) or not profiles or not all(
+        isinstance(profile, str) and profile.strip() for profile in profiles
+    ):
+        raise ValueError(
+            f"active adapter module {module.__name__} must declare non-empty ADAPTER_PROFILES"
+        )
+    register(registry)
+    registered_profiles = set(registry.adapter_profiles().values())
+    registered_profiles.discard(None)
+    if registered_profiles != set(profiles):
+        raise ValueError(
+            f"active adapter profile inventory drifted: "
+            f"declared={sorted(profiles)}, registered={sorted(registered_profiles)}"
+        )
     return registry
 

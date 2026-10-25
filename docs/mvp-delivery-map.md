@@ -396,11 +396,11 @@ no account, invitation, external project or executable acceptance has been creat
 It supplies the upstream owner principal, not another ledger or agent-grant system.
 
 Seventh planning packet:
-[benchmark-environment-feasibility proposal](../openspec/changes/benchmark-environment-feasibility/proposal.md),
-[design](../openspec/changes/benchmark-environment-feasibility/design.md),
-[delta](../openspec/changes/benchmark-environment-feasibility/specs/benchmark-environment-feasibility/spec.md),
-[tasks](../openspec/changes/benchmark-environment-feasibility/tasks.md) and
-[BDD design](../openspec/changes/benchmark-environment-feasibility/bdd-design.md).
+[benchmark-environment-feasibility proposal](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/proposal.md),
+[design](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/design.md),
+[delta](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/specs/benchmark-environment-feasibility/spec.md),
+[tasks](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/tasks.md) and
+[BDD design](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/bdd-design.md).
 It defines the first delivery slice: actual local x402 purchase and selected
 forked-pool swap, educational local gas, two-environment isolation/reset,
 read-only source boundary and bounded cold/warm measurements. The user selected

@@ -492,7 +492,7 @@ Environment & Tools; Benchmark & Leaderboard; Forum & Administration; Operations
   вход Google/SIWE, явная привязка, приглашения и открытие регистрации;
   8 требований и 12 обязательных BDD-сценариев, включая отдельную будущую проверку
   настоящего Google и выбранного браузерного кошелька.
-- [Проверка испытательной среды](../openspec/changes/benchmark-environment-feasibility/proposal.md):
+- [Проверка испытательной среды](../openspec/changes/archive/2026-10-25-benchmark-environment-feasibility/proposal.md):
   одна локальная покупка x402 и обмен через выбранный контракт в Base fork,
   учебный газ, изоляция/сброс, защита внешней сети и холодные/тёплые замеры;
   8 требований и 12 обязательных BDD-сценариев. Это первый этап внедрения,

@@ -1,0 +1,461 @@
+name: web-agent-bench-bef
+
+x-node-runtime: &node-runtime
+  image: web-agent-bench-bef-runtime:local
+  build:
+    context: ../..
+    dockerfile: infrastructure/benchmark-environment/Dockerfile
+  working_dir: /workspace
+  init: true
+  restart: "no"
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  volumes: &pinned-inputs
+    - ./manifest.json:/workspace/infrastructure/benchmark-environment/manifest.json:ro
+    - ./resource.json:/workspace/infrastructure/benchmark-environment/resource.json:ro
+    - ./migrations:/workspace/infrastructure/benchmark-environment/migrations:ro
+    - ./source-intake:/workspace/infrastructure/benchmark-environment/source-intake:ro
+  networks:
+    - private
+
+x-node-healthcheck: &node-healthcheck
+  interval: 5s
+  timeout: 3s
+  retries: 24
+  start_period: 20s
+
+services:
+  postgres:
+    image: postgres:18.6-trixie@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+    restart: "no"
+    environment:
+      POSTGRES_DB: bef
+      POSTGRES_USER: bef_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_owner_password
+      PGDATA: /var/lib/postgresql/data
+    secrets:
+      - postgres_owner_password
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - max_connections=50
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - private
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bef_owner -d bef"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+
+  source-proxy:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/proxy.js"]
+    environment:
+      BEF_PROXY_MODE: source
+      BEF_PROXY_BIND: 0.0.0.0
+      BEF_PROXY_PORT: "8545"
+      BEF_SOURCE_RPC_URL_FILE: /run/secrets/source_rpc_url
+      BEF_SERVICE_KEY_FILE: /run/secrets/service_key
+    secrets:
+      - source_rpc_url
+      - service_key
+    ports:
+      - "127.0.0.1:${BEF_SOURCE_PROXY_HOST_PORT:-18544}:8545"
+    networks:
+      - private
+      - upstream
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 96
+    healthcheck:
+      <<: *node-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8545/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+  anvil-a:
+    image: ghcr.io/foundry-rs/foundry:v1.8.6@sha256:4a16a86f41d30418fbdca47ce2868121bbb0aeaa0a34bde2dd1e2911c4be2464
+    entrypoint: ["anvil"]
+    environment:
+      HOME: /home/foundry
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8545"
+      - --chain-id
+      - "8453"
+      - --network
+      - ethereum
+      - --hardfork
+      - prague
+      - --fork-url
+      - http://source-proxy:8545
+      - --fork-block-number
+      - "52982196"
+      - --base-fee
+      - "5000000"
+      - --accounts
+      - "0"
+      - --silent
+      - --cache-path
+      - /var/lib/anvil/state-cache
+      - --max-persisted-states
+      - "1"
+    depends_on:
+      source-proxy:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+      - ./source-intake:/source-intake:ro
+      - type: bind
+        source: ${BEF_ANVIL_A_STATE_CACHE_HOST_DIR:-../../artifacts/runs/bef-ethereum-prague-cache/a/state}
+        target: /var/lib/anvil/state-cache
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BEF_ANVIL_A_RPC_CACHE_HOST_DIR:-../../artifacts/runs/bef-ethereum-prague-cache/a/foundry-cache}
+        target: /home/foundry/.foundry/cache
+        bind:
+          create_host_path: false
+    networks:
+      - private
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "cast", "chain-id", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+
+  anvil-b:
+    image: ghcr.io/foundry-rs/foundry:v1.8.6@sha256:4a16a86f41d30418fbdca47ce2868121bbb0aeaa0a34bde2dd1e2911c4be2464
+    entrypoint: ["anvil"]
+    environment:
+      HOME: /home/foundry
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8545"
+      - --chain-id
+      - "8453"
+      - --network
+      - ethereum
+      - --hardfork
+      - prague
+      - --fork-url
+      - http://source-proxy:8545
+      - --fork-block-number
+      - "52982196"
+      - --base-fee
+      - "5000000"
+      - --accounts
+      - "0"
+      - --silent
+      - --cache-path
+      - /var/lib/anvil/state-cache
+      - --max-persisted-states
+      - "1"
+    depends_on:
+      source-proxy:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+      - ./source-intake:/source-intake:ro
+      - type: bind
+        source: ${BEF_ANVIL_B_STATE_CACHE_HOST_DIR:-../../artifacts/runs/bef-ethereum-prague-cache/b/state}
+        target: /var/lib/anvil/state-cache
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BEF_ANVIL_B_RPC_CACHE_HOST_DIR:-../../artifacts/runs/bef-ethereum-prague-cache/b/foundry-cache}
+        target: /home/foundry/.foundry/cache
+        bind:
+          create_host_path: false
+    networks:
+      - private
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "cast", "chain-id", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+
+  local-proxy-a:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/proxy.js"]
+    environment:
+      BEF_PROXY_MODE: local
+      BEF_PROXY_BIND: 0.0.0.0
+      BEF_PROXY_PORT: "8545"
+      BEF_ENV_ID: bef-env-a
+      BEF_RPC_TARGET_URL: http://anvil-a:8545
+      BEF_SERVICE_KEY_FILE: /run/secrets/service_key
+    secrets:
+      - service_key
+    depends_on:
+      anvil-a:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      <<: *node-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8545/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+  local-proxy-b:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/proxy.js"]
+    environment:
+      BEF_PROXY_MODE: local
+      BEF_PROXY_BIND: 0.0.0.0
+      BEF_PROXY_PORT: "8545"
+      BEF_ENV_ID: bef-env-b
+      BEF_RPC_TARGET_URL: http://anvil-b:8545
+      BEF_SERVICE_KEY_FILE: /run/secrets/service_key
+    secrets:
+      - service_key
+    depends_on:
+      anvil-b:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      <<: *node-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8545/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+  facilitator-a:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/facilitator.js"]
+    environment:
+      BEF_ENV_ID: bef-env-a
+      BEF_FACILITATOR_BIND: 0.0.0.0
+      BEF_FACILITATOR_PORT: "4021"
+      BEF_ANVIL_ADMIN_RPC_URL: http://anvil-a:8545
+      BEF_DATABASE_URL_FILE: /run/secrets/database_api_url
+      BEF_SERVICE_KEY_FILE: /run/secrets/service_key
+    secrets:
+      - database_api_url
+      - service_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      anvil-a:
+        condition: service_healthy
+    mem_limit: 384m
+    cpus: 0.75
+    pids_limit: 96
+    healthcheck:
+      <<: *node-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4021/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+  facilitator-b:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/facilitator.js"]
+    environment:
+      BEF_ENV_ID: bef-env-b
+      BEF_FACILITATOR_BIND: 0.0.0.0
+      BEF_FACILITATOR_PORT: "4021"
+      BEF_ANVIL_ADMIN_RPC_URL: http://anvil-b:8545
+      BEF_DATABASE_URL_FILE: /run/secrets/database_api_url
+      BEF_SERVICE_KEY_FILE: /run/secrets/service_key
+    secrets:
+      - database_api_url
+      - service_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      anvil-b:
+        condition: service_healthy
+    mem_limit: 384m
+    cpus: 0.75
+    pids_limit: 96
+    healthcheck:
+      <<: *node-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4021/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+  migrate:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/migrate.js"]
+    environment:
+      BEF_DATABASE_OWNER_URL_FILE: /run/secrets/database_owner_url
+      BEF_DATABASE_API_PASSWORD_FILE: /run/secrets/database_api_password
+      BEF_DATABASE_OBSERVER_PASSWORD_FILE: /run/secrets/database_observer_password
+    secrets:
+      - database_owner_url
+      - database_api_password
+      - database_observer_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+
+  api:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/index.js"]
+    environment:
+      BEF_API_BIND: 0.0.0.0
+      BEF_API_PORT: "3000"
+      BEF_DATABASE_URL_FILE: /run/secrets/database_api_url
+      BEF_ADMIN_KEY_FILE: /run/secrets/admin_key
+      BEF_SERVICE_KEY_FILE: /run/secrets/service_key
+      BEF_SOURCE_PROXY_URL: http://source-proxy:8545
+      BEF_ANVIL_ADMIN_RPC_URL_BEF_ENV_A: http://anvil-a:8545
+      BEF_ANVIL_ADMIN_RPC_URL_BEF_ENV_B: http://anvil-b:8545
+      BEF_LOCAL_RPC_PROXY_URL_BEF_ENV_A: http://local-proxy-a:8545
+      BEF_LOCAL_RPC_PROXY_URL_BEF_ENV_B: http://local-proxy-b:8545
+      BEF_FACILITATOR_URL_BEF_ENV_A: http://facilitator-a:4021
+      BEF_FACILITATOR_URL_BEF_ENV_B: http://facilitator-b:4021
+    secrets:
+      - database_api_url
+      - admin_key
+      - service_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      source-proxy:
+        condition: service_healthy
+      local-proxy-a:
+        condition: service_healthy
+      local-proxy-b:
+        condition: service_healthy
+      facilitator-a:
+        condition: service_healthy
+      facilitator-b:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 128
+    healthcheck:
+      <<: *node-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+  gateway:
+    <<: *node-runtime
+    command: ["node", "packages/benchmark-environment/dist/gateway.js"]
+    environment:
+      BEF_GATEWAY_BIND: 0.0.0.0
+    ports:
+      - "127.0.0.1:${BEF_API_HOST_PORT:-8783}:8783"
+      - "127.0.0.1:${BEF_DATABASE_HOST_PORT:-55432}:55432"
+      - "127.0.0.1:${BEF_LOCAL_RPC_A_HOST_PORT:-18545}:18545"
+      - "127.0.0.1:${BEF_LOCAL_RPC_B_HOST_PORT:-28545}:28545"
+      - "127.0.0.1:${BEF_FACILITATOR_A_HOST_PORT:-14021}:14021"
+      - "127.0.0.1:${BEF_FACILITATOR_B_HOST_PORT:-24021}:24021"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      local-proxy-a:
+        condition: service_healthy
+      local-proxy-b:
+        condition: service_healthy
+      facilitator-a:
+        condition: service_healthy
+      facilitator-b:
+        condition: service_healthy
+    networks:
+      upstream:
+        gw_priority: 1
+      private: {}
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+
+secrets:
+  source_rpc_url:
+    file: .local/secrets/source-rpc-url
+  admin_key:
+    file: .local/secrets/admin-key
+  service_key:
+    file: .local/secrets/service-key
+  postgres_owner_password:
+    file: .local/secrets/postgres-owner-password
+  database_owner_url:
+    file: .local/secrets/database-owner-url
+  database_api_password:
+    file: .local/secrets/database-api-password
+  database_observer_password:
+    file: .local/secrets/database-observer-password
+  database_api_url:
+    file: .local/secrets/database-api-url
+
+volumes:
+  postgres-data:
+
+networks:
+  private:
+    name: web-agent-bench-bef-private
+    internal: true
+  upstream:
+    name: web-agent-bench-bef-upstream
+    driver: bridge

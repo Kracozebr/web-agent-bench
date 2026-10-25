@@ -1,13 +1,30 @@
 # BDD design packet: `benchmark-environment-feasibility`
 
-Workflow: [docs/task-design.md](../../../docs/task-design.md)
+Workflow: [docs/task-design.md](../../../../docs/task-design.md)
 
-**Status:** Awaiting review and explicit scope approval.
+**Status:** Existing twelve-scenario implementation scope authorized on 2026-10-23; see [approval.md](approval.md). Concrete execution configuration remains a prerequisite.
 **Normative delta source:** `specs/benchmark-environment-feasibility/spec.md`.
 **Target main source after sync:** `openspec/specs/benchmark-environment-feasibility/spec.md`.
-**Execution status:** all 12 mandatory scenarios are `not_run`; no executable test, node or product implementation has been created by this packet.
+**Execution status:** the full acceptance run finished on 2026-10-24 at 10:26:22 UTC with SC001, SC003, SC004, SC005 and SC012 passed and seven mandatory gates blocked by missing implementation/capabilities. See [acceptance evidence](../../../../tests/bdd/changes/benchmark-environment-feasibility/acceptance-evidence.json) and [implementation review](implementation-review.md) for original capture paths, prior failures and recovery evidence. The isolated Compose deployment runs both Anvil environments, PostgreSQL, API, facilitators and read-only proxies. The complete mandatory suite has not passed; blocked gates prevent sync/archive. These are environment gates; browser-to-database product E2E remains delivery stage 2.
 
 ## Intent
+
+Later focused execution: SC007 passed all fourteen approved variants in 54.31
+seconds (`bef-sc-007-428b28d9a48f4efbaa0e14cc49360f59`), closing tasks 4.1/4.2.
+SC006 then passed in 17.98 seconds (`bef-sc-006-6edbb23297124edcab1a4b85a387916a`),
+with four operations and 141 indexed artifacts, closing task 3.4.
+SC011 passed a fresh full mapper in 140.40 seconds
+(`bef-sc011-d8bf6a020d3748a689b54dc757109992`), with two purchase operations and
+268 indexed artifacts, closing tasks 6.1/6.2. Source counts
+remain aggregate proxy-window observations; provider CU is unknown and startup
+CPU/RAM is outside the measurement window.
+SC008 then passed in 15.60 seconds
+(`bef-sc-008-ceac18cb8e404e5ab1e49beefb683fda`), with six operations and
+284 artifacts, closing tasks 4.3/4.4 (17/25 tasks total). It observes actual
+successful/reverted gas, original-hash recovery, rejection without a fee and
+separate principal/service components; Base L1 fees remain unmodelled.
+The complete report above remains historical until the next full acceptance run;
+focused execution does not establish the remaining mandatory gates.
 
 Prove the narrow selected environment boundary with actual local settlement and
 forked-contract execution, complete reset/isolation, educational gas and bounded
@@ -71,7 +88,8 @@ alone is not semantic evidence. No private production call exceptions are propos
   trial with its own manifest/identity; it is not replay.
 - Missing prerequisites/observations produce `blocked`; actual violated assertions
   produce `failed`. Mandatory blocked/skipped/not-run gates prevent sync/archive.
-  All current gates remain `not_run`; this document contains no execution result.
+  The current per-scenario result is recorded in the linked acceptance evidence;
+  no passing runtime result is asserted by this design document.
 
 ## Learning-error observations
 
@@ -90,9 +108,9 @@ A changed payment asset/scheme boundary, new scenario or changed assertion retur
 for review. No real source-network transaction, customer wallet, CDP operation or
 production deployment is within this packet.
 
-**Decision:** pending.
-**Decision reference:** the user confirmed distinct ETH/WETH assets and explicit agent-selected wrap/unwrap without automatic swap conversion; WETH alone cannot satisfy an ETH target or native gas reserve. The user also confirmed that technically valid learning mistakes execute within isolated test state and their observed consequences are evaluated, while service/admin/foreign-run/real-fund and hard infrastructure boundaries remain enforced. This product decision does not approve the full scenario/implementation scope.
+**Decision:** implementation authorized for the existing twelve scenarios; mandatory runtime gates have not passed. See [approval.md](approval.md).
+**Decision reference:** the user confirmed distinct ETH/WETH assets and explicit agent-selected wrap/unwrap without automatic swap conversion; WETH alone cannot satisfy an ETH target or native gas reserve. Technically valid learning mistakes execute within isolated test state and their observed consequences are evaluated, while service/admin/foreign-run/real-fund and hard infrastructure boundaries remain enforced. The later implementation authorization for the existing twelve-scenario scope is recorded in [approval.md](approval.md).
 
 ## Downstream scope clarification
 
-The twelve existing feasibility scenarios remain unchanged. benchmark-task-suite consumes their actual manifest/effect evidence; this purchase/swap probe cannot establish twelve-rubric grading or replace BTS gates. All gates remain not_run.
+The twelve existing feasibility scenarios remain unchanged. benchmark-task-suite consumes their actual manifest/effect evidence; this purchase/swap probe cannot establish twelve-rubric grading or replace BTS gates. Mandatory blocked gates prevent sync and archive.

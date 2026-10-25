@@ -1,0 +1,60 @@
+{
+  "acceptance_state": "complete",
+  "active_delta_sha256": "5abebd1a7189396735d2800808d73b6d0fa0f3abaacbebdbad455a76987415fe",
+  "change": "benchmark-environment-feasibility",
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_benchmark_environment_feasibility_bdd.py",
+    "--change",
+    "benchmark-environment-feasibility",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/benchmark-environment-feasibility-pytest.xml"
+  ],
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-25T07:30:36.238184Z",
+  "gate": {
+    "class": "environment",
+    "mandatory": true
+  },
+  "git_commit": "8091238a693dcddbb7c4f2560ec5c948ad337714",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "approved_scenarios": 12,
+    "change": "benchmark-environment-feasibility",
+    "coverage_status": "complete",
+    "errors": [],
+    "normative_source": "openspec/changes/benchmark-environment-feasibility/specs/*/spec.md",
+    "protected_scenarios": 12,
+    "status": "passed",
+    "unprotected_scenarios": [],
+    "warnings": []
+  },
+  "harness_contract_sha256": "9fdb57dcfe72cd28dd34a3846066ae848d33ceb3baa6fee59d6f43f7d242133d",
+  "harness_sources_sha256": "0acc92af67991c2154b45aea45a6e95a465c1b3198959aeb42e8c26af9cab283",
+  "harness_sources_sha256_after": "0acc92af67991c2154b45aea45a6e95a465c1b3198959aeb42e8c26af9cab283",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bd94686684e0dfbea3bb74cbb186a1b340f69212fe2fd0cd44857ed763f4eb31",
+  "normative_source": "openspec/changes/benchmark-environment-feasibility/specs/*/spec.md",
+  "scenario_map_sha256": "f59f07778096f90ad39ee259ec0113dc2bc756632f0b989a33af94609a63f131",
+  "scenario_results": {
+    "BEF-SC-001": "passed",
+    "BEF-SC-002": "passed",
+    "BEF-SC-003": "passed",
+    "BEF-SC-004": "passed",
+    "BEF-SC-005": "passed",
+    "BEF-SC-006": "passed",
+    "BEF-SC-007": "passed",
+    "BEF-SC-008": "passed",
+    "BEF-SC-009": "passed",
+    "BEF-SC-010": "passed",
+    "BEF-SC-011": "passed",
+    "BEF-SC-012": "passed"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-25T07:23:17.123534Z"
+}

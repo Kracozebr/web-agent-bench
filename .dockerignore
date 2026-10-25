@@ -1,0 +1,17 @@
+.git
+.venv
+.local
+**/.local
+node_modules
+**/node_modules
+artifacts
+**/artifacts
+private.env
+.env
+.env.*
+*.key
+*.pem
+*.seed
+**/dist
+**/.pytest_cache
+**/__pycache__

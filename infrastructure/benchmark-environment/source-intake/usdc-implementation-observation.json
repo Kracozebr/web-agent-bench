@@ -1,0 +1,17 @@
+{
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": "0x0000000000000000000000002ce6311ddae708829bc0784c967b7d77d19fd779"
+  },
+  "request": {
+    "params": [
+      "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+      "0x32871b4"
+    ],
+    "id": 2,
+    "method": "eth_getStorageAt",
+    "jsonrpc": "2.0"
+  }
+}
