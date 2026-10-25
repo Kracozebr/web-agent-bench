@@ -1,18 +1,18 @@
 ## 1. Product and shared-contract review
 
-- [ ] 1.1 Retain confirmed queued-expiry cancellation and full-price budgets; carry the selected commit-time expired-refund default into the plan, review remaining precision/allocation and initial cash permission, and obtain explicit approval of all 15 scenarios and implementation scope. Gate: artifact proposal/design/BDD review.
+- [x] 1.1 Retain confirmed queued-expiry cancellation and full-price budgets; carry the selected commit-time expired-refund default into the plan, review remaining precision/allocation and initial cash permission, and obtain explicit approval of all 15 scenarios and implementation scope. Gate: artifact proposal/design/BDD review.
 - [ ] 1.2 Reconcile shared ledger/auth/price/budget ports and the active forum/run deltas, including source snapshots, current permissions and cancellation/refund reasons; preserve other scenario contracts. Gate: artifact cross-capability interface/scenario review.
 - [ ] 1.3 Pin synthetic catalog, role provisioning, clock/config and grant amount/retention limits; label opening cash provenance and declare real-runtime prerequisites. Gate: artifact acceptance-boundary/config review.
 
 ## 2. Approved acceptance integration
 
-- [ ] 2.1 Reuse approved active-delta source selection, merge reviewed contracts without losing baseline observations and generate exact feature/mapper inventory for all 15 TBB scenarios. Gate: artifact source/title/WHEN/THEN and semantic contract audit.
+- [x] 2.1 Reuse approved active-delta source selection, merge reviewed contracts without losing baseline observations and generate exact feature/mapper inventory for all 15 TBB scenarios. Gate: artifact source/title/WHEN/THEN and semantic contract audit.
 - [ ] 2.2 Register actual HTTP/browser adapters and configure local PostgreSQL/Fastify/Next.js plus integrated forum/coordinator and ephemeral synthetic auth; report missing dependencies as blocked. Gate: environment boundary/auth identity.
 
 ## 3. Grants and source accounting
 
 - [ ] 3.1 Add source/lot/allocation fields and immutable grant/ledger audit constraints to the shared schema; preserve documented existing cash provenance. Gate: environment TBB-SC-001/002/003.
-- [ ] 3.2 Implement admin-only idempotent grant commands with exact integer units, optional immutable expiry and no-expiry default; reject invalid/conflicting/participant mutations. Gate: environment TBB-SC-001/002.
+- [x] 3.2 Implement admin-only idempotent grant commands with exact integer units, optional immutable expiry and no-expiry default; reject invalid/conflicting/participant mutations. Gate: environment TBB-SC-001/002.
 - [ ] 3.3 Implement private source-specific balance/lot views with expiry enforced independently of sweeps and no bonus in withdrawable cash. Gate: environment TBB-SC-003.
 - [ ] 3.4 Implement server-owned service classification and promotional-source allowlist, including denied/unknown classes and forged-label rejection. Gate: environment TBB-SC-004; no PvP settlement claim.
 

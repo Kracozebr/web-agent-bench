@@ -2,7 +2,7 @@
 
 Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
-**Status:** Awaiting approval; every gate not_run.
+**Status:** Approved for incremental implementation; see [approval.md](approval.md). Runtime gates remain separate.
 **Normative delta source:** specs/benchmark-task-suite/spec.md
 **Target main source after sync:** openspec/specs/benchmark-task-suite/spec.md
 
@@ -53,7 +53,7 @@ Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
 ## Semantic harness contract
 
-`bdd-harness-proposal.json` is a pending inventory, not an applied runtime manifest. Each scenario requires the named observations, negative variants and durable effects at its real boundary. Active-delta registration and real adapters must precede execution; never sync a draft to bypass main-only tooling.
+`bdd-harness-proposal.json` is the approved inventory. Its runtime contract is registered in `tests/bdd/changes/benchmark-task-suite/harness-contracts.json`. Each scenario requires the named observations, negative variants and durable effects at its real boundary. Real adapters must precede execution; never sync a draft to bypass tooling.
 
 ## Execution design
 
@@ -66,7 +66,7 @@ Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
 ## Approval boundary
 
-Approval is pending for these 34 scenarios, actual public-surface adapter, catalog/evaluator/projection and coordinator integration in isolated test funds. Real payments, external broadcast, model calls and public fixture publication are excluded. New scenarios or changed assertions return to review.
+Approval covers these 34 scenarios, actual public-surface adapter, catalog/evaluator/projection and coordinator integration in isolated test funds. Real payments, external broadcast, model calls and public fixture publication are excluded. New scenarios or changed assertions return to review.
 
-**Decision:** pending
-**Decision reference:** user authorized proposal preparation and planning reconciliation; no executable tests or product implementation approved.
+**Decision:** approved on 2026-10-25; approval.md supersedes the historical review notes below.
+**Decision reference:** The owner answered “Утверждаю весь описанный этап” to the 74-scenario review at commit `9ee9211`. Earlier individual product decisions are retained below as history.

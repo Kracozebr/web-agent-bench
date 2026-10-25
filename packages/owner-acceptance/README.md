@@ -18,7 +18,7 @@ this capture makes no production rate-limit acceptance claim.
 
 The local acceptance gate is separate from the external provider gate. OID-SC-012
 is recorded as `blocked` by this runner; it does not open Google or a browser
-wallet account. Missing downstream agent-access, billing, or ledger boundaries
+wallet account. Missing downstream agent-access, spending, or coordinator boundaries
 are also `blocked`, with a specific reason code.
 
 ## Commands
@@ -34,6 +34,8 @@ read-only observer account.
 ./infrastructure/owner-identity/tool.ps1 pnpm --filter @web-agent-bench/owner-acceptance replay -- all
 ./infrastructure/owner-identity/tool.ps1 python tools/run_bdd_acceptance.py --change agent-access-and-permissions
 ./infrastructure/owner-identity/tool.ps1 python tools/replay_aap_acceptance.py all
+./infrastructure/owner-identity/tool.ps1 python tools/run_bdd_acceptance.py --change tester-bonus-billing
+./infrastructure/owner-identity/tool.ps1 python tools/replay_tbb_acceptance.py all
 ```
 
 The runner starts the actual owner API and production Next server in the same
@@ -51,6 +53,15 @@ alone cannot pass SC015; domain, lifecycle and actual-client boundaries remain
 separate mandatory gates. Stop the dev
 container before building/running production acceptance to avoid sharing writes
 to Next.js `.next`; restart it afterward.
+
+The initial billing slice exercises admin bonus issuance through the browser,
+loss of the committed response, restart and same-key retry, unauthorized owner
+and agent attempts, invalid terms and immutable-edit rejection. Its independent
+`oid_observer` reads lots, source entries, operation receipts and issuance or
+rejection audits. TBB-SC-001/002 are the only passable whole billing gates in
+this slice. Owner billing and financial-policy UI captures are partial evidence
+for TBB-SC-013; actual spending authorization and downstream domain gates remain
+blocked. The manifest never converts those partial controls into a full pass.
 
 The parent BDD command replays each scenario's sanitized observation manifest.
 Scenario directories retain individual runs and SHA-256 hashes; replay performs

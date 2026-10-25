@@ -1,6 +1,6 @@
 {
   "acceptance_state": "failed",
-  "active_delta_sha256": "29ef433a88d89489fc69f80aaa42ca73f38f55e14cada44d66b29041812942ab",
+  "active_delta_sha256": "4e09b1dc18dc3d45caebe4202146f1a4bd6b3aff680e10bdec1ad7ef76d79986",
   "bef_spec_profile": "active-delta",
   "change": "agent-access-and-permissions",
   "command": [
@@ -16,12 +16,12 @@
     "--junitxml=artifacts/bdd-evidence/agent-access-and-permissions-pytest.xml"
   ],
   "exit_code": 0,
-  "finished_at_utc": "2026-10-25T19:14:37.672207Z",
+  "finished_at_utc": "2026-10-25T20:32:59.814968Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "b4dcc1a5437dc0eaf6fcbc494d59a00e9349be5f",
+  "git_commit": "9ee92115abfb86f45fcf61b1f76e9c31e6fb39d5",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 16,
@@ -35,8 +35,8 @@
     "warnings": []
   },
   "harness_contract_sha256": "9a65f6257e884712d6b7de092477f7b090be11a69806be30f9c9bde004815456",
-  "harness_sources_sha256": "8c29d27c7c839b384b7d5c7a90c8b04286182b85366f44f0516ca95bdb299383",
-  "harness_sources_sha256_after": "8c29d27c7c839b384b7d5c7a90c8b04286182b85366f44f0516ca95bdb299383",
+  "harness_sources_sha256": "f7f909e15fa36fe0edef021f0316b2d96d388eeee8699c790c6fc71fe3f9bdd0",
+  "harness_sources_sha256_after": "f7f909e15fa36fe0edef021f0316b2d96d388eeee8699c790c6fc71fe3f9bdd0",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/agent-access-and-permissions/specs/*/spec.md",
@@ -61,5 +61,5 @@
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-25T19:14:19.070118Z"
+  "started_at_utc": "2026-10-25T20:32:45.215699Z"
 }

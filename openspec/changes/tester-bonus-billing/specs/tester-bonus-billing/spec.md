@@ -1,9 +1,7 @@
 # Tester bonus billing
 
-Status: proposed, awaiting complete scenario/scope approval. Confirmed product rules
-including queued-expiry cancellation and full-price budgets, and remaining
-unapproved refund/precision defaults are distinguished in
-`../../design.md`. All acceptance gates are `not_run`.
+Status: approved for incremental implementation on 2026-10-25; see [approval](../../approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## ADDED Requirements
 

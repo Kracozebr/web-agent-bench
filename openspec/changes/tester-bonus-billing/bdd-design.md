@@ -2,7 +2,7 @@
 
 Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
-**Status:** Awaiting review and explicit approval.
+**Status:** Approved for incremental implementation; see [approval.md](approval.md). Runtime gates remain separate.
 **Normative delta source:** `specs/tester-bonus-billing/spec.md` (proposed active delta).
 **Target main source after sync:** `openspec/specs/tester-bonus-billing/spec.md`.
 **Execution status:** all 15 mandatory scenarios are `not_run`; no executable test or product file has been created.
@@ -44,9 +44,9 @@ using a declared server-owned test catalog; they do not implement or verify PvP.
 
 `bdd-harness-proposal.json` is a review artifact, not the runtime manifest. It
 declares every boundary, required observation, negative variant and durable
-effect. After explicit approval, merge the contracts into the shared runtime
-manifest preserving approved baseline and other-capability observations, then
-generate the selected normative-source snapshot. Counting IDs is insufficient.
+effect. The approved contracts are registered separately in
+`tests/bdd/changes/tester-bonus-billing/harness-contracts.json` with an active-delta
+snapshot. Baseline and other-capability manifests remain separate. Counting IDs is insufficient.
 
 ## Execution design
 
@@ -88,11 +88,11 @@ owner/admin pages and the declared local acceptance deployment. It does not
 authorize real funds, production deployment, new assertions or PvP settlement.
 Queued-expiry cancellation and full-price budgets are user-confirmed. The
 commit-time expired-refund rule is the selected engineering default for this plan;
-precision/allocation and other defaults remain review items. The complete BDD and
-implementation approval remains pending, and changed assertions return to review.
+precision/allocation and other defaults were accepted in the complete stage review.
+Changed assertions return to review.
 
-**Decision:** pending.
-**Decision reference:** the user confirmed eligible services, bonus-first spending,
+**Decision:** approved on 2026-10-25; approval.md supersedes the historical review notes below.
+**Decision reference:** The owner answered “Утверждаю весь описанный этап” to the 74-scenario review at commit `9ee9211`. Earlier individual product decisions are retained below as history.
 owner-authorized cash shortfalls, one-bonus-per-USDC service value and optional
 immutable grant expiry with an indefinite default, then queued-expiry cancellation
 without extra USDC and full nominal-price agent limits. No message has approved this

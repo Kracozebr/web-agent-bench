@@ -1,5 +1,6 @@
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
+import { migrateLedger } from "./ledger-migrate.js";
 
 const statements = [
   `CREATE TABLE IF NOT EXISTS oid_auth_user (
@@ -261,6 +262,7 @@ async function main() {
     await client.begin(async (tx) => {
       await tx.unsafe("SELECT pg_advisory_xact_lock(824731201, 17)");
       for (const statement of statements) await tx.unsafe(statement);
+      await migrateLedger(tx);
       const resource = `${config.publicOrigin}/api/agent`;
       const now = new Date().toISOString();
       await tx.unsafe(

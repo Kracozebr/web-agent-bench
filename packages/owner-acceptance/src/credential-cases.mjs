@@ -49,7 +49,7 @@ async function waitForApiResponse(page, path, method) {
   return page.waitForResponse((response) => isLocalApiResponse(response, path, method), { timeout: 15000 });
 }
 
-async function createCard(page, name, captureApi) {
+export async function createCard(page, name, captureApi) {
   const form = page.getByTestId("agent-create-form");
   await form.getByTestId("agent-name").fill(name);
   await form.getByTestId("agent-description").fill("Synthetic credential acceptance card");
@@ -81,18 +81,20 @@ async function waitForTokenAndDismiss(page, agentId, issueBody) {
   return token;
 }
 
-async function issueThroughUi(page, agentId, intent = "issue", captureApi) {
+export async function issueThroughUi(page, agentId, intent = "issue", captureApi) {
   const safeBefore = await currentCredentialStatus(page, agentId);
   const expectedAccessRevision = safeBefore.body.access.revision;
   const path = `/api/owner/agents/${agentId}/manual-credential`;
-  const responsePromise = waitForApiResponse(page, path, "POST");
   const target = intent === "replace"
     ? page.getByTestId(`credential-replace-${safeBefore.body.credentials.find((row) => row.status === "active")?.id}`)
     : page.getByTestId(`credential-issue-${agentId}`);
+  await target.waitFor({ state: "visible", timeout: 15000 });
   assert(await target.count() === 1, `Credential ${intent} control is not uniquely available`);
   captureApi?.action("click", await target.getAttribute("data-testid"));
-  await target.click();
-  const response = await responsePromise;
+  const [response] = await Promise.all([
+    waitForApiResponse(page, path, "POST"),
+    target.click()
+  ]);
   const body = await response.json();
   const requestBody = response.request().postDataJSON();
   const expectedStatus = intent === "issue" ? 201 : 200;

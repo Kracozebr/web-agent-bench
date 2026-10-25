@@ -1,0 +1,416 @@
+{
+  "coverage_policy": {
+    "required_protected_scenarios": [
+      "TBB-SC-001",
+      "TBB-SC-002",
+      "TBB-SC-003",
+      "TBB-SC-004",
+      "TBB-SC-005",
+      "TBB-SC-006",
+      "TBB-SC-007",
+      "TBB-SC-008",
+      "TBB-SC-009",
+      "TBB-SC-010",
+      "TBB-SC-011",
+      "TBB-SC-012",
+      "TBB-SC-013",
+      "TBB-SC-014",
+      "TBB-SC-015"
+    ],
+    "status": "complete"
+  },
+  "protected_scenarios": {
+    "TBB-SC-001": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "grant_lot",
+        "grant_operation_receipt",
+        "issuance_audit"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "owner_grant_attempt",
+        "agent_grant_attempt",
+        "negative_zero_or_excess_precision",
+        "past_expiry",
+        "same_key_changed_amount",
+        "lost_response_restart"
+      ],
+      "required_observations": [
+        "admin_only_grant",
+        "single_grant_after_restart",
+        "actor_reason_terms_preserved",
+        "invalid_or_conflicting_grant_no_effect"
+      ]
+    },
+    "TBB-SC-002": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "immutable_grant_terms",
+        "separate_later_grant",
+        "rejection_audit"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "expiry_boundary_timestamp",
+        "change_existing_expiry",
+        "change_existing_owner",
+        "change_existing_amount"
+      ],
+      "required_observations": [
+        "default_no_expiry",
+        "explicit_expiry_pinned",
+        "original_terms_immutable",
+        "later_grant_independent"
+      ]
+    },
+    "TBB-SC-003": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "source_typed_ledger",
+        "lot_allocation_records",
+        "private_balance_projection"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "fractional_tariff",
+        "unsupported_precision",
+        "reserved_lot",
+        "expired_lot_without_sweep",
+        "foreign_account_request",
+        "bonus_to_cash_request"
+      ],
+      "required_observations": [
+        "cash_bonus_separate",
+        "fractional_units_exact",
+        "expired_not_available",
+        "reserved_not_available",
+        "foreign_owner_read_denied",
+        "bonus_not_withdrawable_cash"
+      ]
+    },
+    "TBB-SC-004": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "server_owned_product_policy_identity",
+        "quote_or_rejection_receipt"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "prize_entry_with_forum_label",
+        "withdrawal_source_bonus",
+        "participant_transfer",
+        "unknown_service",
+        "custom_topic_permission_absent"
+      ],
+      "required_observations": [
+        "four_services_bonus_eligible",
+        "denied_classes_no_bonus_effect",
+        "unknown_service_closed",
+        "client_label_not_authoritative"
+      ]
+    },
+    "TBB-SC-005": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "forum_publication",
+        "source_and_lot_debits",
+        "budget_usage",
+        "mixed_operation_receipt"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "bonus_covers_full_price",
+        "mixed_topic_fee",
+        "multiple_grant_lots",
+        "zero_price_requires_auth"
+      ],
+      "required_observations": [
+        "bonus_first_allocation",
+        "permitted_cash_remainder_exact",
+        "one_publication_receipt",
+        "topic_first_message_not_double_charged",
+        "ledger_and_publication_atomic"
+      ]
+    },
+    "TBB-SC-006": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "rejection_or_original_operation_receipt",
+        "unchanged_or_single_committed_sources"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "cash_permission_false",
+        "cash_shortfall",
+        "agent_self_authorizes_cash",
+        "database_failure_before_commit",
+        "lost_response_after_commit"
+      ],
+      "required_observations": [
+        "no_cash_without_owner_permission",
+        "insufficient_funds_no_partial_effect",
+        "rollback_preserves_sources",
+        "postcommit_response_loss_recovers_once"
+      ]
+    },
+    "TBB-SC-007": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "serialized_allocations",
+        "cash_and_bonus_holds",
+        "committed_publication_or_queued_run",
+        "durable_idempotency_receipt"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "two_agents_one_grant",
+        "forum_vs_run_reserve_race",
+        "duplicate_delivery",
+        "cash_reservation_competition"
+      ],
+      "required_observations": [
+        "no_double_bonus_allocation",
+        "cash_reservations_respected",
+        "one_receipt_after_restart",
+        "source_conservation_per_lot"
+      ]
+    },
+    "TBB-SC-008": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "run_quote_source_snapshot",
+        "lot_and_cash_reservations",
+        "one_start_receipt",
+        "ordinary_eligibility_bundle"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "price_changed_while_queued",
+        "new_grant_after_reservation",
+        "duplicate_start_delivery",
+        "bonus_only_training",
+        "bonus_only_ranked"
+      ],
+      "required_observations": [
+        "queued_sources_held_not_debited",
+        "quote_split_immutable",
+        "start_sources_and_task_atomic",
+        "no_silent_cash_increase",
+        "normal_ranked_eligibility_handoff"
+      ]
+    },
+    "TBB-SC-009": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "rejected_before_start_reason",
+        "released_source_reservations",
+        "original_grant_expiry"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "expiry_exactly_at_start",
+        "one_of_multiple_lots_expired",
+        "cash_available_but_split_pinned",
+        "restart_after_expiry"
+      ],
+      "required_observations": [
+        "expired_grant_start_rejected",
+        "both_holds_released_once",
+        "expired_release_not_spendable",
+        "no_expiry_cash_substitution"
+      ]
+    },
+    "TBB-SC-010": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "owner_policy_revision",
+        "start_rejection_or_bonus_receipt",
+        "released_or_committed_allocations"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "permission_revoked_while_queued",
+        "agent_claims_permission_enabled",
+        "fully_bonus_funded_request",
+        "concurrent_policy_update"
+      ],
+      "required_observations": [
+        "cash_permission_checked_at_start",
+        "disabled_cash_no_debit",
+        "source_holds_released",
+        "bonus_only_no_cash_permission_needed"
+      ]
+    },
+    "TBB-SC-011": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "original_source_debit_links",
+        "source_specific_refund_receipt",
+        "lot_restoration_or_retained_charge",
+        "product_refund_reason"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "full_bonus_refund",
+        "mixed_refund_retry",
+        "voluntary_poststart_cancel",
+        "author_violation_moderation",
+        "agent_claims_platform_fault"
+      ],
+      "required_observations": [
+        "cash_refund_matches_cash_debit",
+        "bonus_refund_matches_original_lots",
+        "refund_once_after_restart",
+        "nonrefundable_sources_retained"
+      ]
+    },
+    "TBB-SC-012": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "unchanged_original_grant_and_history",
+        "source_specific_refund_receipt_and_commit_time",
+        "one_linked_no_expiry_replacement_grant",
+        "unique_replacement_identity_by_refund_and_source_portion",
+        "idempotent_refund_result"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "refund_commit_at_exact_expiry_boundary",
+        "request_before_expiry_commit_after_expiry",
+        "commit_before_expiry_retry_after_expiry",
+        "duplicate_refund_after_restart",
+        "duplicate_replacement_on_retry",
+        "bonus_converted_to_cash"
+      ],
+      "required_observations": [
+        "refund_expiry_decided_at_serialized_commit_time",
+        "expired_original_grant_and_history_unchanged",
+        "replacement_grant_linked_to_original_and_refund_receipt",
+        "replacement_grant_has_ordinary_no_expiry_default",
+        "live_original_lot_restored_under_original_expiry",
+        "cash_refund_returns_to_original_source",
+        "retry_returns_same_refund_and_grant_result"
+      ]
+    },
+    "TBB-SC-013": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "admin_grant_audit",
+        "owner_policy_revision",
+        "private_balance_history",
+        "browser_api_outcomes"
+      ],
+      "evidence_mode": "actual Next.js/Playwright plus scoped HTTP, committed PostgreSQL source/lot/application state and audit; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "owner_opens_admin_grant_page",
+        "agent_changes_cash_permission",
+        "foreign_owner_history",
+        "direct_api_bypass_attempt"
+      ],
+      "required_observations": [
+        "actual_admin_form_commits_grant",
+        "owner_views_separate_sources_and_terms",
+        "owner_cash_control_enforced",
+        "nonadmin_grant_denied",
+        "public_financial_data_absent"
+      ]
+    },
+    "TBB-SC-014": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "nominal_budget_reservation_and_usage",
+        "utc_bucket_identity",
+        "original_charge_refund_link"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "bonus_rich_agent_cash_zero",
+        "mixed_operation_at_cap",
+        "forum_vs_benchmark_category",
+        "queued_midnight_rollover",
+        "refund_next_day"
+      ],
+      "required_observations": [
+        "full_nominal_price_in_caps",
+        "bonus_not_limit_bypass",
+        "current_utc_start_recheck",
+        "refund_original_usage_bucket"
+      ]
+    },
+    "TBB-SC-015": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "source_attributed_usage_projection",
+        "original_receipt_and_provenance_links",
+        "replay_comparison"
+      ],
+      "evidence_mode": "actual scoped HTTP plus committed PostgreSQL source/lot/application state and restart/race observations; synthetic identities and redacted raw paths/hashes",
+      "negative_variants": [
+        "bonus_only_ranked_purchase",
+        "mixed_purchase_partial_subsidy",
+        "repeated_receipt_projection",
+        "refunded_cash_portion",
+        "synthetic_opening_cash_credit"
+      ],
+      "required_observations": [
+        "grant_not_customer_revenue",
+        "mixed_only_cash_portion_paid",
+        "source_refunds_deduct_correctly",
+        "operation_projection_idempotent",
+        "synthetic_cash_provenance_explicit"
+      ]
+    }
+  },
+  "schema_version": 1,
+  "spec_snapshot": {
+    "normative_clauses": 93,
+    "requirement_clause_counts": {
+      "TBB-REQ-001": 11,
+      "TBB-REQ-002": 9,
+      "TBB-REQ-003": 8,
+      "TBB-REQ-004": 14,
+      "TBB-REQ-005": 15,
+      "TBB-REQ-006": 17,
+      "TBB-REQ-007": 6,
+      "TBB-REQ-008": 7,
+      "TBB-REQ-009": 6
+    },
+    "requirements": 9,
+    "scenario_ids_sha256": "755a81df78760ef173b85dd5bbc8d8095a51532dcc3fd084cec55eba7b48161e",
+    "scenario_requirement_mapping": {
+      "TBB-SC-001": "TBB-REQ-001",
+      "TBB-SC-002": "TBB-REQ-001",
+      "TBB-SC-003": "TBB-REQ-002",
+      "TBB-SC-004": "TBB-REQ-003",
+      "TBB-SC-005": "TBB-REQ-004",
+      "TBB-SC-006": "TBB-REQ-004",
+      "TBB-SC-007": "TBB-REQ-004",
+      "TBB-SC-008": "TBB-REQ-005",
+      "TBB-SC-009": "TBB-REQ-005",
+      "TBB-SC-010": "TBB-REQ-005",
+      "TBB-SC-011": "TBB-REQ-006",
+      "TBB-SC-012": "TBB-REQ-006",
+      "TBB-SC-013": "TBB-REQ-008",
+      "TBB-SC-014": "TBB-REQ-007",
+      "TBB-SC-015": "TBB-REQ-009"
+    },
+    "scenario_requirement_sha256": "7c857b94eb606b04fc2d66481e65aa61976f86989cbf62904a6db309cdafff41",
+    "scenarios": 15
+  }
+}

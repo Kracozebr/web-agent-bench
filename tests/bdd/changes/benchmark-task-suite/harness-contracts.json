@@ -1,0 +1,1040 @@
+{
+  "coverage_policy": {
+    "required_protected_scenarios": [
+      "BTS-SC-001",
+      "BTS-SC-002",
+      "BTS-SC-003",
+      "BTS-SC-004",
+      "BTS-SC-005",
+      "BTS-SC-006",
+      "BTS-SC-007",
+      "BTS-SC-008",
+      "BTS-SC-009",
+      "BTS-SC-010",
+      "BTS-SC-011",
+      "BTS-SC-012",
+      "BTS-SC-013",
+      "BTS-SC-014",
+      "BTS-SC-015",
+      "BTS-SC-016",
+      "BTS-SC-017",
+      "BTS-SC-018",
+      "BTS-SC-019",
+      "BTS-SC-020",
+      "BTS-SC-021",
+      "BTS-SC-022",
+      "BTS-SC-023",
+      "BTS-SC-024",
+      "BTS-SC-025",
+      "BTS-SC-026",
+      "BTS-SC-027",
+      "BTS-SC-028",
+      "BTS-SC-029",
+      "BTS-SC-030",
+      "BTS-SC-031",
+      "BTS-SC-032",
+      "BTS-SC-033",
+      "BTS-SC-034"
+    ],
+    "status": "complete"
+  },
+  "protected_scenarios": {
+    "BTS-SC-001": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "validated_release_or_blocked_reason"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "placeholder",
+        "wrong_block_or_code",
+        "unsolvable_or_initially_solved",
+        "missing_reference_evidence"
+      ],
+      "required_observations": [
+        "release_hash",
+        "case_hashes",
+        "source_environment_hash",
+        "typed_parameters",
+        "reference_path_lengths",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-002": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "validated_release_or_blocked_reason"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "placeholder",
+        "wrong_block_or_code",
+        "unsolvable_or_initially_solved",
+        "missing_reference_evidence",
+        "empty_or_duplicate_u1_components",
+        "missing_or_incomplete_u1_component_validator",
+        "empty_or_duplicate_u1_allocation_assets",
+        "fewer_than_two_or_duplicate_u1_payout_obligations",
+        "empty_or_duplicate_u1_temporary_spender_set",
+        "initially_satisfied_u1_final_allocation"
+      ],
+      "required_observations": [
+        "release_hash",
+        "case_hashes",
+        "source_environment_hash",
+        "typed_parameters",
+        "reference_path_lengths",
+        "u1_component_ids",
+        "u1_component_validator_specs",
+        "u1_allocation_asset_ids",
+        "u1_payout_obligation_ids",
+        "u1_temporary_allowance_keys",
+        "admission_charge_absence",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes",
+        "initially_satisfied_u1_allocation_blocks_release_before_admission_or_charge"
+      ]
+    },
+    "BTS-SC-003": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "one_quote_snapshot_or_denied_admission"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "mixed_closed_selection",
+        "duplicate_id",
+        "zero_price",
+        "round_once",
+        "stale_link_or_price"
+      ],
+      "required_observations": [
+        "selected_ids",
+        "open_weight_sum",
+        "integer_quote",
+        "reservation_identity",
+        "source_allocation",
+        "closed_payload_absent",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-004": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "one_quote_snapshot_or_denied_admission"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "mixed_closed_selection",
+        "duplicate_id",
+        "zero_price",
+        "round_once",
+        "stale_link_or_price"
+      ],
+      "required_observations": [
+        "selected_ids",
+        "open_weight_sum",
+        "integer_quote",
+        "reservation_identity",
+        "source_allocation",
+        "closed_payload_absent",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-005": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "immutable_outcome_or_reconciliation",
+        "raw_evidence_references"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "late_or_foreign_effect",
+        "repair_after_violation",
+        "missing_receipt",
+        "conflicting_state",
+        "missing_fee",
+        "reconstruction_divergence"
+      ],
+      "required_observations": [
+        "cutoff_sequence",
+        "original_receipts",
+        "final_state",
+        "historical_violations",
+        "cost_components",
+        "exact_credit_or_unknown",
+        "reconstruction_comparison",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-006": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "immutable_outcome_or_reconciliation",
+        "raw_evidence_references"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "late_or_foreign_effect",
+        "repair_after_violation",
+        "missing_receipt",
+        "conflicting_state",
+        "missing_fee",
+        "reconstruction_divergence"
+      ],
+      "required_observations": [
+        "cutoff_sequence",
+        "original_receipts",
+        "final_state",
+        "historical_violations",
+        "cost_components",
+        "exact_credit_or_unknown",
+        "reconstruction_comparison",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-007": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "scoped_projection_identity",
+        "denied_access_audit"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "running_ranked_result",
+        "foreign_owner",
+        "guessed_id",
+        "hydration_prefetch",
+        "stale_cache",
+        "unexpected_reason_parameter"
+      ],
+      "required_observations": [
+        "issued_conditions",
+        "feedback_release_state",
+        "owner_binding",
+        "projection_fields",
+        "rendered_payload",
+        "cache_scope",
+        "no_closed_fields",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-008": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "scoped_projection_identity",
+        "denied_access_audit"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "running_ranked_result",
+        "foreign_owner",
+        "guessed_id",
+        "hydration_prefetch",
+        "stale_cache",
+        "unexpected_reason_parameter"
+      ],
+      "required_observations": [
+        "issued_conditions",
+        "feedback_release_state",
+        "owner_binding",
+        "projection_fields",
+        "rendered_payload",
+        "cache_scope",
+        "no_closed_fields",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-009": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "twelve_outcome_identities",
+        "one_versioned_scored_result"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "duplicate_handoff",
+        "forged_credit",
+        "unknown_outcome",
+        "restart"
+      ],
+      "required_observations": [
+        "twelve_graded_outcomes",
+        "coordinator_eligibility",
+        "exact_aggregate",
+        "best_result_identity",
+        "handoff_deduplication",
+        "no_extra_charge",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-010": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "local_effect_evidence",
+        "boundary_rejection"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_supported_recipient",
+        "excess_allowance",
+        "foreign_task",
+        "setup_rpc",
+        "raw_signing",
+        "real_fund_target"
+      ],
+      "required_observations": [
+        "selected_parameters",
+        "observed_learning_effect",
+        "scope_denials",
+        "no_foreign_effect",
+        "real_ledger_unchanged",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-011": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s1_outcome",
+        "original_transfer_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_amount",
+        "wrong_recipient",
+        "extra_transfer",
+        "reserve_breach"
+      ],
+      "required_observations": [
+        "principal_delta",
+        "native_reserve",
+        "transfer_receipt",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-012": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s1_outcome",
+        "original_transfer_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_amount",
+        "wrong_recipient",
+        "extra_transfer",
+        "reserve_breach"
+      ],
+      "required_observations": [
+        "principal_delta",
+        "native_reserve",
+        "transfer_receipt",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-013": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s2_outcome",
+        "answer_and_offer_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_price",
+        "wrong_tuple",
+        "wrong_scheme",
+        "missing_group",
+        "actual_purchase"
+      ],
+      "required_observations": [
+        "observed_requirements",
+        "structured_answer",
+        "complete_no_effect_interval",
+        "group_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-014": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s2_outcome",
+        "answer_and_offer_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_price",
+        "wrong_tuple",
+        "wrong_scheme",
+        "missing_group",
+        "actual_purchase"
+      ],
+      "required_observations": [
+        "observed_requirements",
+        "structured_answer",
+        "complete_no_effect_interval",
+        "group_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-015": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s3_outcome",
+        "catalog_selection_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_type",
+        "price_or_network",
+        "wrong_payee",
+        "forged_eligibility",
+        "actual_payment"
+      ],
+      "required_observations": [
+        "catalog_hash",
+        "selected_offer",
+        "predicate_results",
+        "complete_no_effect_interval",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-016": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s3_outcome",
+        "catalog_selection_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_type",
+        "price_or_network",
+        "wrong_payee",
+        "forged_eligibility",
+        "actual_payment"
+      ],
+      "required_observations": [
+        "catalog_hash",
+        "selected_offer",
+        "predicate_results",
+        "complete_no_effect_interval",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-017": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s4_outcome",
+        "allowance_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "residual_allowance",
+        "wrong_spender",
+        "unrelated_restore",
+        "principal_transfer"
+      ],
+      "required_observations": [
+        "initial_allowance",
+        "final_allowance",
+        "unrelated_history",
+        "revoke_receipt",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-018": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "s4_outcome",
+        "allowance_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "residual_allowance",
+        "wrong_spender",
+        "unrelated_restore",
+        "principal_transfer"
+      ],
+      "required_observations": [
+        "initial_allowance",
+        "final_allowance",
+        "unrelated_history",
+        "revoke_receipt",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-019": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m1_outcome_or_unknown",
+        "payment_delivery_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_resource",
+        "duplicate_purchase",
+        "budget_breach",
+        "verification_only",
+        "missing_delivery"
+      ],
+      "required_observations": [
+        "offer_authorization",
+        "settlement_receipt",
+        "token_effect",
+        "delivery_hash",
+        "operating_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-020": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m1_outcome_or_unknown",
+        "payment_delivery_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "wrong_resource",
+        "duplicate_purchase",
+        "budget_breach",
+        "verification_only",
+        "missing_delivery"
+      ],
+      "required_observations": [
+        "offer_authorization",
+        "settlement_receipt",
+        "token_effect",
+        "delivery_hash",
+        "operating_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-021": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m2_outcome",
+        "price_and_delivery_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "expensive_qualifying",
+        "cheap_nonqualifying",
+        "advertised_fee",
+        "equal_minima",
+        "budget_breach"
+      ],
+      "required_observations": [
+        "qualifying_prices",
+        "minimum_set",
+        "chosen_offer",
+        "verified_delivery",
+        "expense",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-022": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m2_outcome",
+        "price_and_delivery_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "expensive_qualifying",
+        "cheap_nonqualifying",
+        "advertised_fee",
+        "equal_minima",
+        "budget_breach"
+      ],
+      "required_observations": [
+        "qualifying_prices",
+        "minimum_set",
+        "chosen_offer",
+        "verified_delivery",
+        "expense",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-023": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m3_outcome",
+        "separate_native_token_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "weth_only",
+        "insufficient_output",
+        "wrong_route",
+        "reserve_breach",
+        "reverted_gas"
+      ],
+      "required_observations": [
+        "input_principal",
+        "route_receipts",
+        "native_output",
+        "weth_balance",
+        "reserve",
+        "expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-024": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m3_outcome",
+        "separate_native_token_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "weth_only",
+        "insufficient_output",
+        "wrong_route",
+        "reserve_breach",
+        "reverted_gas"
+      ],
+      "required_observations": [
+        "input_principal",
+        "route_receipts",
+        "native_output",
+        "weth_balance",
+        "reserve",
+        "expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-025": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m4_outcome",
+        "exchange_cleanup_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "residual_allowance",
+        "cleanup_only",
+        "unrelated_permission",
+        "wrong_output"
+      ],
+      "required_observations": [
+        "exchange_predicate",
+        "used_spenders",
+        "final_allowances",
+        "unrelated_history",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-026": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "m4_outcome",
+        "exchange_cleanup_binding"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "residual_allowance",
+        "cleanup_only",
+        "unrelated_permission",
+        "wrong_output"
+      ],
+      "required_observations": [
+        "exchange_predicate",
+        "used_spenders",
+        "final_allowances",
+        "unrelated_history",
+        "exact_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-027": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "h1_outcome",
+        "unique_component_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "partial_components",
+        "duplicate_claim",
+        "duplicate_purchase",
+        "invalid_data",
+        "budget_breach"
+      ],
+      "required_observations": [
+        "component_validators",
+        "delivered_component_set",
+        "payment_identities",
+        "expense",
+        "component_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-028": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "h1_outcome",
+        "unique_component_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "partial_components",
+        "duplicate_claim",
+        "duplicate_purchase",
+        "invalid_data",
+        "budget_breach"
+      ],
+      "required_observations": [
+        "component_validators",
+        "delivered_component_set",
+        "payment_identities",
+        "expense",
+        "component_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-029": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "h2_outcome",
+        "obligation_effect_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "partial_payouts",
+        "wrong_recipient",
+        "overpayment",
+        "wrong_asset",
+        "reserve_breach"
+      ],
+      "required_observations": [
+        "obligation_results",
+        "recipient_deltas",
+        "conversion_receipts",
+        "native_reserve",
+        "expense",
+        "payout_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-030": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "h2_outcome",
+        "obligation_effect_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "partial_payouts",
+        "wrong_recipient",
+        "overpayment",
+        "wrong_asset",
+        "reserve_breach"
+      ],
+      "required_observations": [
+        "obligation_results",
+        "recipient_deltas",
+        "conversion_receipts",
+        "native_reserve",
+        "expense",
+        "payout_fraction",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-031": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "h3_outcome",
+        "observable_dependency_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "allowed_suboptimal_route",
+        "trade_before_delivery",
+        "forged_reference",
+        "data_only",
+        "combined_budget_breach"
+      ],
+      "required_observations": [
+        "paid_reference",
+        "delivery_sequence",
+        "trade_sequence",
+        "derived_route_objective",
+        "actual_outcome",
+        "combined_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-032": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "h3_outcome",
+        "observable_dependency_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "allowed_suboptimal_route",
+        "trade_before_delivery",
+        "forged_reference",
+        "data_only",
+        "combined_budget_breach"
+      ],
+      "required_observations": [
+        "paid_reference",
+        "delivery_sequence",
+        "trade_sequence",
+        "derived_route_objective",
+        "actual_outcome",
+        "combined_expense",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-033": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "u1_outcome",
+        "same_cutoff_treasury_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "partial_subgoals",
+        "residual_allowance",
+        "idle_cleanup",
+        "undone_allocation",
+        "budget_or_permission_violation"
+      ],
+      "required_observations": [
+        "release_pinned_data_denominator",
+        "release_pinned_payout_denominator",
+        "validated_component_ids",
+        "component_validator_results",
+        "component_delivery_hashes",
+        "fulfilled_obligation_ids",
+        "payout_recipient_deltas",
+        "payout_receipt_ids",
+        "allocation_asset_set",
+        "post_payout_asset_values",
+        "allocation_target_tolerance",
+        "temporary_allowance_keys",
+        "data_fraction",
+        "post_payout_allocation",
+        "payout_fraction",
+        "temporary_allowances",
+        "core_progress_guard",
+        "common_cutoff",
+        "weighted_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    },
+    "BTS-SC-034": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "u1_outcome",
+        "same_cutoff_treasury_evidence"
+      ],
+      "evidence_mode": "actual_tool_http_x402_local_evm_receipts_and_application_store",
+      "negative_variants": [
+        "partial_subgoals",
+        "duplicate_component_purchase_or_claim",
+        "purchase_count_reweighting",
+        "payout_amount_weighting",
+        "run_time_denominator_or_set_mutation",
+        "residual_allowance",
+        "idle_cleanup",
+        "zero_allowances_without_core_progress",
+        "undone_allocation",
+        "budget_or_permission_violation"
+      ],
+      "required_observations": [
+        "release_pinned_data_denominator",
+        "release_pinned_payout_denominator",
+        "validated_component_ids",
+        "component_validator_results",
+        "component_delivery_hashes",
+        "fulfilled_obligation_ids",
+        "payout_recipient_deltas",
+        "payout_receipt_ids",
+        "allocation_asset_set",
+        "post_payout_asset_values",
+        "allocation_target_tolerance",
+        "temporary_allowance_keys",
+        "data_fraction",
+        "post_payout_allocation",
+        "payout_fraction",
+        "temporary_allowances",
+        "core_progress_guard",
+        "common_cutoff",
+        "weighted_credit",
+        "case_hash",
+        "cutoff",
+        "raw_paths_hashes"
+      ]
+    }
+  },
+  "schema_version": 1,
+  "spec_snapshot": {
+    "normative_clauses": 169,
+    "requirement_clause_counts": {
+      "BTS-REQ-001": 18,
+      "BTS-REQ-002": 10,
+      "BTS-REQ-003": 14,
+      "BTS-REQ-004": 13,
+      "BTS-REQ-005": 6,
+      "BTS-REQ-006": 7,
+      "BTS-REQ-007": 8,
+      "BTS-REQ-008": 7,
+      "BTS-REQ-009": 6,
+      "BTS-REQ-010": 6,
+      "BTS-REQ-011": 7,
+      "BTS-REQ-012": 7,
+      "BTS-REQ-013": 9,
+      "BTS-REQ-014": 7,
+      "BTS-REQ-015": 9,
+      "BTS-REQ-016": 9,
+      "BTS-REQ-017": 8,
+      "BTS-REQ-018": 18
+    },
+    "requirements": 18,
+    "scenario_ids_sha256": "45d134635a4ab0feeaf7ed49909661d5f38e90296ec7f72bc5ab17153207b2ff",
+    "scenario_requirement_mapping": {
+      "BTS-SC-001": "BTS-REQ-001",
+      "BTS-SC-002": "BTS-REQ-001",
+      "BTS-SC-003": "BTS-REQ-002",
+      "BTS-SC-004": "BTS-REQ-002",
+      "BTS-SC-005": "BTS-REQ-003",
+      "BTS-SC-006": "BTS-REQ-003",
+      "BTS-SC-007": "BTS-REQ-004",
+      "BTS-SC-008": "BTS-REQ-004",
+      "BTS-SC-009": "BTS-REQ-005",
+      "BTS-SC-010": "BTS-REQ-006",
+      "BTS-SC-011": "BTS-REQ-007",
+      "BTS-SC-012": "BTS-REQ-007",
+      "BTS-SC-013": "BTS-REQ-008",
+      "BTS-SC-014": "BTS-REQ-008",
+      "BTS-SC-015": "BTS-REQ-009",
+      "BTS-SC-016": "BTS-REQ-009",
+      "BTS-SC-017": "BTS-REQ-010",
+      "BTS-SC-018": "BTS-REQ-010",
+      "BTS-SC-019": "BTS-REQ-011",
+      "BTS-SC-020": "BTS-REQ-011",
+      "BTS-SC-021": "BTS-REQ-012",
+      "BTS-SC-022": "BTS-REQ-012",
+      "BTS-SC-023": "BTS-REQ-013",
+      "BTS-SC-024": "BTS-REQ-013",
+      "BTS-SC-025": "BTS-REQ-014",
+      "BTS-SC-026": "BTS-REQ-014",
+      "BTS-SC-027": "BTS-REQ-015",
+      "BTS-SC-028": "BTS-REQ-015",
+      "BTS-SC-029": "BTS-REQ-016",
+      "BTS-SC-030": "BTS-REQ-016",
+      "BTS-SC-031": "BTS-REQ-017",
+      "BTS-SC-032": "BTS-REQ-017",
+      "BTS-SC-033": "BTS-REQ-018",
+      "BTS-SC-034": "BTS-REQ-018"
+    },
+    "scenario_requirement_sha256": "f3db0d1bbc509b64155ccfd8c48b08f3f55493b1d73cd0916f28a3dc0b329ce2",
+    "scenarios": 34
+  }
+}

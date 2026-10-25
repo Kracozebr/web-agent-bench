@@ -1,7 +1,7 @@
 # Benchmark run lifecycle
 
-Status: proposed, awaiting scenario and implementation approval. New engineering
-defaults are identified in `../../design.md`; no acceptance gate has run.
+Status: approved for incremental implementation on 2026-10-25; see [approval](../../approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## ADDED Requirements
 

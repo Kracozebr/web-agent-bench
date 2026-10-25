@@ -1,9 +1,7 @@
 ## Context
 
-Status: proposed, awaiting complete scenario/scope approval. The selected product
-uses real USDC on Base plus internal usage billing. Tester grants are a separate
-promotional source. The repository has planning packets and a reference harness,
-not the selected TypeScript application or a working bonus ledger.
+Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## Goals / Non-Goals
 

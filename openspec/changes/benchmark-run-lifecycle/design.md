@@ -1,10 +1,7 @@
 ## Context
 
-Status: proposed for review; no implementation/BDD approval recorded. The repository
-contains a Python reference harness, not the selected TypeScript application.
-The selected product rules are in `docs/mvp-discovery.md`; this change designs
-one coordinator capability. It does not select concrete Base contracts or a
-real-money signer. No integration or load result is asserted.
+Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## Goals / Non-Goals
 

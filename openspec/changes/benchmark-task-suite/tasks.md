@@ -1,6 +1,6 @@
 ## 1. Review and prerequisites
 
-- [ ] 1.1 Review all detailed mandatory predicates and proposed partial-credit splits; approve the exact BTS scenario/adapter scope before implementation.
+- [x] 1.1 Review all detailed mandatory predicates and proposed partial-credit splits; approve the exact BTS scenario/adapter scope before implementation.
 - [ ] 1.2 Resolve actual feasibility manifest and pin all typed open/closed case quantities, identities, fee/rate rules, finite deadlines and U1's nonempty unique required sets with fixed cardinalities; block unresolved or invalid releases before task admission/charge (BTS-SC-001/002).
 - [ ] 1.3 Validate same-tool reference paths, nontrivial solvability and provisional difficulty; return incompatible goals/categories for review rather than adding calls (BTS-SC-001/002).
 

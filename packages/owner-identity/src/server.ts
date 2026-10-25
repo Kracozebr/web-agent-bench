@@ -4,6 +4,7 @@ import cookie from "@fastify/cookie";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { getAddress, verifyMessage } from "viem";
 import { registerAgentRoutes } from "./agents.js";
+import { registerLedgerRoutes } from "./ledger.js";
 import { createAuth, siweRequestFingerprint, withSiweRequest } from "./auth.js";
 import { loadConfig, getGoogleMode } from "./config.js";
 import { createDatabase } from "./db.js";
@@ -452,6 +453,15 @@ async function start() {
       const context = await ownerFor(session);
       return { owner: context.owner };
     }
+  });
+
+  registerLedgerRoutes(app, {
+    db,
+    requireAdmin,
+    requireOrigin,
+    rateLimit,
+    rateLimitMax: config.authRateLimitMax,
+    resolveOwner: async (request) => ownerFor(await authenticated(request))
   });
 
   app.get("/healthz", async (_request, reply) => {

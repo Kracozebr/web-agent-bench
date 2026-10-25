@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, apiRequest, errorText, getCurrentOwner, InvitationRecord, newOperationId, OwnerProjection, RegistrationPolicy } from "@/lib/api";
+import { BonusGrantPanel } from "@/components/bonus-grant-panel";
 
 interface InvitationsResponse { invitations: InvitationRecord[] }
 interface IssuedInvitation { id: string; secret: string; expiresAt: string }
@@ -185,8 +186,9 @@ export function AdminPanel() {
       <div className="page-heading">
         <p className="eyebrow">Configured administrator</p>
         <h1>Admission controls</h1>
-        <p className="lede">Issue or revoke invitations and set the policy for new owners. The API verifies administrator authority for every action.</p>
+        <p className="lede">Manage owner admission and issue immutable tester bonus grants. The API verifies administrator authority for every action.</p>
       </div>
+      <BonusGrantPanel />
       <div className="content-grid">
         <section className="card span-6" aria-labelledby="policy-title">
           <div className="section-heading">

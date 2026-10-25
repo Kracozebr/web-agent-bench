@@ -7,6 +7,7 @@ const links = [
   { href: "/sign-in", label: "Sign in" },
   { href: "/account", label: "Owner account" },
   { href: "/agents", label: "Agents" },
+  { href: "/billing", label: "Billing" },
   { href: "/admin", label: "Administration" },
 ];
 
@@ -27,7 +28,7 @@ export function SiteHeader() {
           <Link
             key={link.href}
             href={link.href}
-            aria-current={pathname === link.href ? "page" : undefined}
+            aria-current={pathname === link.href || (link.href === "/billing" && pathname.startsWith("/billing/")) ? "page" : undefined}
           >
             {link.label}
           </Link>

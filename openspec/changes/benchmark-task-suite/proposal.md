@@ -5,8 +5,8 @@ credits, but neither defines how observed x402/EVM actions earn those credits.
 The agreed closed subset also changes training admission and feedback. This packet
 connects actual task evidence to reproducible grading before implementation.
 
-Status: planning proposal, awaiting scenario/implementation approval; every new
-gate is `not_run`. Product selections come from `docs/closed-benchmark-design.md`.
+Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## What Changes
 

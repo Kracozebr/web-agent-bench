@@ -28,6 +28,65 @@ export interface RegistrationPolicy {
   updatedAt?: string;
 }
 
+export interface OwnerBillingBalances {
+  cash: { available: string; reserved: string };
+  bonus: { available: string; reserved: string; expired: string };
+}
+
+export interface OwnerBonusGrant {
+  id: string;
+  amount: string;
+  available: string;
+  reserved: string;
+  expired: string;
+  createdAt: string;
+  expiresAt: string | null;
+  reason: string;
+  status: "available" | "partially_reserved" | "reserved" | "expired" | "spent";
+}
+
+export interface AdminIssuedBonusGrant {
+  id: string;
+  ownerId: string;
+  amount: string;
+  reason: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+export interface OwnerBillingHistoryEntry {
+  id: string;
+  type: string;
+  source: "cash_usdc" | "tester_bonus";
+  amount: string;
+  createdAt: string;
+  expiresAt?: string | null;
+  reason?: string;
+  status?: string;
+}
+
+export interface OwnerBillingResponse {
+  cash: OwnerBillingBalances["cash"];
+  bonus: OwnerBillingBalances["bonus"];
+  grants: OwnerBonusGrant[];
+  history: OwnerBillingHistoryEntry[];
+  observedAt: string;
+  nextUtcResetAt: string;
+}
+
+export interface AgentFinancialPolicy {
+  revision: number;
+  allowCashShortfall: boolean;
+  operationLimit: string | null;
+  utcDayLimit: string | null;
+  categoryLimits: {
+    benchmark: string | null;
+    forum: string | null;
+  };
+}
+
+export type AgentFinancialPolicyResponse = AgentFinancialPolicy;
+
 export interface IdentityConfig {
   googleEnabled: boolean;
   googleMode: "provider-fixture" | "google" | "disabled";
@@ -72,12 +131,27 @@ const knownMessages: Record<string, string> = {
   ADMISSION_ALREADY_GRANTED: "This owner is already admitted. Refresh the owner session; no invitation is needed.",
   IDENTITY_ALREADY_LINKED: "This sign-in method is already linked to another owner.",
   POLICY_REVISION_CONFLICT: "Admission settings changed in another session. The latest settings have been loaded.",
-  REVISION_CONFLICT: "This agent changed in another session. The latest server revision has been loaded; review it before saving again.",
+  REVISION_CONFLICT: "Settings changed in another session. The latest server revision has been loaded; review it before saving again.",
   ACCESS_REVISION_CONFLICT: "This agent’s access changed in another session. Check its current status before trying again.",
   CREDENTIAL_EXISTS: "A manual credential already exists. Check its safe status and replace it to issue a new one.",
   REAUTHORIZATION_REQUIRED: "All access for this agent was revoked. A new owner authorization is required before issuing another credential.",
   ACCESS_ALREADY_REVOKED: "All access for this agent has already been revoked.",
   OPERATION_ID_CONFLICT: "This operation identifier was already used with different data. Refresh the server state before retrying.",
+  IDEMPOTENCY_CONFLICT: "This operation identifier was already used with different data. Use the unchanged request to recover its result, or start a new operation after reviewing server state.",
+  OWNER_NOT_FOUND: "The target owner was not found. Check the owner UUID before retrying.",
+  AGENT_NOT_FOUND: "This agent is no longer available to this owner. Refresh the agent list before changing its policy.",
+  INVALID_OPERATION_ID: "The request identifier is invalid. Submit the form again to start a valid operation.",
+  INVALID_REQUEST: "The server rejected unsupported or malformed fields. Review the form and try again.",
+  INVALID_OWNER_ID: "Enter a valid owner UUID.",
+  INVALID_AGENT_ID: "This agent identifier is invalid. Refresh the agent list and try again.",
+  INVALID_AMOUNT: "Enter a positive amount with no more than six decimal places.",
+  INVALID_REASON: "Enter a non-empty reason of at most 500 characters.",
+  INVALID_EXPIRY: "Enter a valid expiry time, or leave it blank for no expiry.",
+  EXPIRY_NOT_FUTURE: "That expiry time is no longer in the future. Choose a later time or leave it blank for no expiry.",
+  INVALID_REVISION: "The settings revision is invalid. Refresh the page before saving again.",
+  INVALID_CASH_POLICY: "The cash permission value is invalid. Refresh the page and try again.",
+  INVALID_CATEGORY_LIMITS: "The category limits are invalid. Refresh the page and review the benchmark and forum caps.",
+  IMMUTABLE_GRANT: "Bonus grant terms are immutable after issuance.",
   UNKNOWN_FIELD: "The server rejected an unsupported agent field. Review the current server response before trying again.",
   RATE_LIMITED: "Too many attempts. Wait a moment and try again.",
 };

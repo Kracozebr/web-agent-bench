@@ -4,8 +4,8 @@ Tester incentives must not become withdrawable USDC or fund another agent's PvP
 winnings. Separate promotional accounting lets the pilot subsidize useful activity
 while preserving the distinction between bonuses, customer funds and paid demand.
 
-Status: proposed; complete implementation/BDD approval is pending. The user's
-individual product decisions do not approve this entire packet.
+Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## What Changes
 

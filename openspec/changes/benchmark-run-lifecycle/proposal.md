@@ -5,8 +5,8 @@ has a reference benchmarking contract. A durable run coordinator needs a
 reviewable contract before queue retries, reconnects and uncertain task effects
 can influence charges or leaderboard eligibility.
 
-Status: **proposed, awaiting review and explicit implementation/BDD approval**.
-Product discovery decisions do not constitute that approval.
+Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## What Changes
 

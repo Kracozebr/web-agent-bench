@@ -1,8 +1,7 @@
 ## Context
 
-Status: proposed, awaiting review of detailed rubrics and scenarios. Product
-scope is confirmed; the credit splits below are engineering proposals, not
-measured difficulty or executed acceptance. All gates are `not_run`.
+Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 The reference harness does not run a product, chain or agent. Environment
 feasibility must first bind actual controlled x402 and forked EVM identities.

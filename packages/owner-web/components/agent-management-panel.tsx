@@ -4,6 +4,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApiError, apiRequest, errorText, getCurrentOwner, newOperationId, type OwnerProjection } from "@/lib/api";
+import { FinancialPolicy } from "@/components/financial-policy";
 
 type PermissionKey = "training" | "ranked" | "forumMessages" | "customTopics";
 type AgentPermissions = Record<PermissionKey, boolean>;
@@ -885,6 +886,9 @@ export function AgentManagementPanel() {
                   <button className="button button-primary" data-testid="agent-permissions-save" type="button" onClick={() => void savePermissions(agent)} disabled={busy || !permissionsChanged}>
                     Save permissions
                   </button>
+
+                  <hr className="divider" />
+                  <FinancialPolicy agentId={agent.id} />
 
                   <hr className="divider" />
                   <section className="stack-sm" aria-labelledby={`agent-connection-title-${agent.id}`}>

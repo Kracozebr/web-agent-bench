@@ -1,9 +1,9 @@
 {
   "proposal_schema": "bdd-harness-contract-proposal/v1",
-  "review_status": "pending",
-  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/benchmark-task-suite/harness-contracts.json",
   "normative_delta": "specs/benchmark-task-suite/spec.md",
-  "note": "Planning only. All gates not_run; actual isolated tool/x402/EVM/application boundaries required. No model calls, real money or mainnet.",
+  "note": "Approved unchanged inventory; approval.md records scope. Runtime registration and evidence are separate.",
   "protected_scenarios": {
     "BTS-SC-001": {
       "requirement_id": "BTS-REQ-001",

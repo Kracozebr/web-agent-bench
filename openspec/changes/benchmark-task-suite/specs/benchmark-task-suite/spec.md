@@ -1,6 +1,7 @@
 # Benchmark task suite
 
-Status: proposed; scenario and implementation approval is pending. Every new gate is not_run. Product scope is confirmed; detailed rubric credit splits require review. No mainnet or agent-autonomy claim.
+Status: approved for incremental implementation on 2026-10-25; see [approval](../../approval.md).
+Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
 
 ## ADDED Requirements
 

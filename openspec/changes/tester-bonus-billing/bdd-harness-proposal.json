@@ -1,9 +1,9 @@
 {
   "proposal_schema": "bdd-harness-contract-proposal/v1",
-  "review_status": "pending",
-  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/tester-bonus-billing/harness-contracts.json",
   "normative_delta": "specs/tester-bonus-billing/spec.md",
-  "note": "Review artifact only; merge after approval while preserving baseline and other-capability contracts. No executed gate or production funding evidence.",
+  "note": "Approved unchanged inventory; approval.md records scope. Runtime registration and evidence are separate.",
   "protected_scenarios": {
     "TBB-SC-001": {
       "requirement_id": "TBB-REQ-001",

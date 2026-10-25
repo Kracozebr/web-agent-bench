@@ -2,7 +2,7 @@
 
 Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
-**Status:** Awaiting review and explicit approval.
+**Status:** Approved for incremental implementation; see [approval.md](approval.md). Runtime gates remain separate.
 **Normative delta source:** `specs/benchmark-run-lifecycle/spec.md` (proposed active delta).
 **Target main source after sync:** `openspec/specs/benchmark-run-lifecycle/spec.md`.
 **Execution status:** all 25 mandatory scenarios are `not_run`; no new test/adapter/implementation file exists.
@@ -62,9 +62,9 @@ The shared adapter is a planned HTTP/real-boundary adapter, not an in-memory mod
 `bdd-harness-proposal.json` is a review artifact, not the runtime manifest and not
 executed tests. Each scenario names boundary detail, required observations,
 negative/adversarial variants, durable effects and evidence mode. No private-call
-exceptions are proposed. During approved apply, merge these contracts into
-`tests/bdd/harness-contracts.json`, preserving the eight existing baseline scenarios
-and recalculating the snapshot from the selected normative source. Inventory-only
+exceptions are proposed. Approved contracts are registered separately in
+`tests/bdd/changes/benchmark-run-lifecycle/harness-contracts.json`, preserving baseline
+contracts and pinning the snapshot from the selected normative source. Inventory-only
 coverage does not satisfy a gate: real adapter observations must be present.
 
 ## Execution design
@@ -112,8 +112,8 @@ database/local-test-executor scope in proposal/design/tasks. It does not authori
 real funds, production signing, mainnet deployment or additional test assertions.
 New scenarios/changed assertions return this packet to review.
 
-**Decision:** pending.
-**Decision reference:** user discovery decisions establish inputs; no message has
+**Decision:** approved on 2026-10-25; approval.md supersedes the historical review notes below.
+**Decision reference:** The owner answered “Утверждаю весь описанный этап” to the 74-scenario review at commit `9ee9211`. Earlier individual product decisions are retained below as history.
 approved this concrete BDD packet or its new engineering defaults. The user has
 confirmed explicit owner revocation as cancellation, including queue release and
 no voluntary refund after start; BRL-SC-006/012/013 now include this trigger.

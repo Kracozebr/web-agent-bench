@@ -60,6 +60,10 @@ Better Auth owns the allowlisted `/api/auth/*` endpoints: Google `sign-in/social
 | `GET /api/agent/preflight` | Requires `Authorization: Bearer ...`, `X-Agent-Id`, and `X-Agent-Resource`; validates the fixed agent/resource binding and returns current policy. Preflight is free but grants no action permission. |
 | `POST /api/agent/mcp` | Official SDK stateless HTTP handler, protocol `2026-07-28`, legacy rejected. The bounded `identity.preflight` tool accepts `{agentId,operationId}`; both manual and OAuth credentials resolve through the same current grant/policy verifier. |
 | `GET /api/admin/invitations` | Lists invitations issued by the configured administrator, without verifier material. |
+| `POST /api/admin/bonus-grants` | Configured admin only; `{operationId,ownerId,amount,reason,expiresAt?}` commits one immutable promotional lot, ledger entry, receipt and audit. Exact six-decimal accounting; omission means no expiry. Same key/payload recovers the grant after restart. |
+| `PUT` or `PATCH /api/admin/bonus-grants/:grantId` | Authenticated immutable-edit rejection with a safe audit; grant terms cannot be changed. |
+| `GET /api/owner/billing` | Private verified-session source balances, immutable lots and source-specific history. Expired available bonuses are excluded using database time. |
+| `GET` or `PUT /api/owner/agents/:agentId/financial-policy` | Current owner only; cash-shortfall permission and operation/UTC-day/category caps. Updates require `operationId` and `expectedRevision`; defaults deny cash and set all caps to zero. Explicit `null` means uncapped. |
 | `POST /api/admin/invitations` | Body `{operationId,expiresAt?}`; returns a new one-time `secret`. Only its SHA-256 verifier is persisted. |
 | `POST /api/admin/invitations/:id/revoke` | Body `{operationId}`; revokes an unused invitation. |
 | `GET /api/admin/registration-policy` | Returns `{mode,revision,updatedAt}`. |

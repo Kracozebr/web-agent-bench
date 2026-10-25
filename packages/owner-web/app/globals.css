@@ -152,6 +152,20 @@ td code, code { font-family: var(--font-mono); font-size: 11px; }
 .permission-switch input[type="checkbox"]:checked { border-color: var(--primary); background: var(--primary); }
 .permission-switch input[type="checkbox"]:checked::before { transform: translateX(19px); }
 .permission-fieldset:disabled .permission-switch { cursor: not-allowed; opacity: .65; }
+.financial-policy-section { display: grid; gap: 13px; }
+.financial-policy-section h4 { margin: 0 0 4px; font-size: 14px; }
+.financial-policy-form { gap: 13px; }
+.financial-cap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.financial-cap-unlimited { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 12px; font-weight: 600; }
+.financial-cap-unlimited input[type="checkbox"] { width: 16px; height: 16px; min-height: 16px; margin: 0; accent-color: var(--primary); }
+.billing-balance-grid { margin-top: 15px; }
+.balance-card { display: grid; align-content: start; gap: 2px; box-shadow: none; }
+.balance-card .eyebrow { margin-bottom: 4px; }
+.balance-card h3 { margin: 0; color: var(--ink-soft); font-size: 12px; font-weight: 600; }
+.balance-amount { margin: 0 0 4px; font-family: var(--font-mono); font-size: clamp(16px, 2.3vw, 22px); font-weight: 700; overflow-wrap: anywhere; }
+.bonus-grant-result { display: grid; gap: 14px; margin-top: 16px; }
+.bonus-grant-result .kv-list dt { color: #27664a; }
+.bonus-grant-result .kv-list dd { color: #174b35; }
 
 @media (max-width: 700px) {
   .topbar { min-height: 64px; flex-wrap: wrap; gap: 9px; padding: 10px 16px; }
@@ -167,6 +181,7 @@ td code, code { font-family: var(--font-mono); font-size: 11px; }
   .agent-fields { grid-template-columns: 1fr; }
   .agent-field-wide { grid-column: auto; }
   .agent-revisions { justify-items: start; text-align: left; }
+  .financial-cap-grid { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

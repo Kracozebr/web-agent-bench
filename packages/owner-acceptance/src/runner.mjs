@@ -19,6 +19,9 @@ import { runAapCardCases } from "./aap-cases.mjs";
 import { saveAapEvidence } from "./aap-evidence.mjs";
 import { runAapCredentialCases } from "./credential-cases.mjs";
 import { runAapOauthCases } from "./oauth-cases.mjs";
+import { runBillingCases } from "./billing-cases.mjs";
+import { saveBillingEvidence } from "./billing-evidence.mjs";
+import { runFinancialUiCases } from "./financial-ui-cases.mjs";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(packageRoot, "../..");
@@ -431,6 +434,12 @@ async function collectSourceHashes() {
     resolve(repoRoot, "tests/bdd/mappers/test_agent_access_and_permissions_bdd.py"),
     resolve(repoRoot, "tools/replay_oid_acceptance.py"),
     resolve(repoRoot, "tools/replay_aap_acceptance.py"),
+    resolve(repoRoot, "openspec/changes/tester-bonus-billing"),
+    resolve(repoRoot, "tests/bdd/changes/tester-bonus-billing"),
+    resolve(repoRoot, "tests/bdd/adapters/tester_bonus_billing.py"),
+    resolve(repoRoot, "tests/bdd/features/tester_bonus_billing.feature"),
+    resolve(repoRoot, "tests/bdd/mappers/test_tester_bonus_billing_bdd.py"),
+    resolve(repoRoot, "tools/replay_tbb_acceptance.py"),
     resolve(repoRoot, "tools/harness_contracts.py"),
     resolve(repoRoot, "tools/run_bdd_acceptance.py"),
     resolve(repoRoot, "package.json"),
@@ -629,6 +638,19 @@ async function main() {
       observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
       databaseUrl: process.env.OID_DATABASE_URL, restartApi: restartOwnerApi });
 
+    phase = "browser_bonus_grants_and_immutable_terms";
+    const billingData = await runBillingCases({ adminPage: admin.page, ownerPage: ownerLogin.page,
+      ownerId, newContext, publicOrigin,
+      login: (context, subject) => googleLogin(context, "TBB-SC-001", subject),
+      observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
+      databaseUrl: process.env.OID_DATABASE_URL, restartApi: restartOwnerApi });
+
+    phase = "browser_financial_controls_and_owner_billing";
+    const financialUi = await runFinancialUiCases({ page: ownerLogin.page, ownerId,
+      observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL, billingData });
+    billingData.browserData["TBB-SC-013"] = financialUi.browserData;
+    billingData.databaseData["TBB-SC-013"] = financialUi.databaseData;
+
     const operations = [
       issueOperation, sc009IssueOperation, activationOperation, revokeOperation, ...policyOperations, walletResult.linkOperationId,
       ...failedFlows.flatMap((row) => row.capture.authOperations.map((operation) => operation.operationId)),
@@ -697,6 +719,7 @@ async function main() {
       inputHashesAfter: sourceHashesAfter,
     };
     const aapSaved = await saveAapEvidence({ ...aap, credentialData, oauthData, provenance });
+    const billingSaved = await saveBillingEvidence({ ...billingData, provenance });
     const googleMatrixRows = await observer.snapshot({ subjects: googleMatrix.subjects, operationIds: googleMatrix.operations });
     const sc001 = await saveCompleteScenario("OID-SC-001", { trials: googleMatrix.trials, callerEmailEndpoint: googleMatrix.callerEmailEndpoint }, googleMatrixRows, provenance);
     const siweMatrixRows = await observer.snapshot({ ownerIds: [siweMatrix.ownerId], subjectHashes: siweMatrix.subjectHashes, operationIds: siweMatrix.operations, nonceHashes: siweMatrix.nonceHashes });
@@ -766,6 +789,7 @@ async function main() {
       counts: { passed: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "passed").length, blocked: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "blocked").length, failed: 0 },
       aap: { privateCardAndPolicyObserved: true, manualCredentialObserved: credentialData.sc004Ready === true,
         browserConsentObserved: oauthData.sc002Ready === true, oauthExchangeObserved: oauthData.sc003Ready === true, scenarios: aapSaved },
+      billing: { grantObserved: billingData.sc001Ready === true, immutableTermsObserved: billingData.sc002Ready === true, scenarios: billingSaved },
       observations: { adminOAuth: true, invitationIssuedInUI: true, invitationSecretExcludedFromList: true, inviteVerifierMatches: true, ownerActivationViaUI: true, independentReadOnlyPostgresRows: true },
       blockedReason: "Unsupported downstream boundaries, remaining scenario-specific negative matrices, and external OID-SC-012 compatibility remain blocked.",
     }, null, 2));

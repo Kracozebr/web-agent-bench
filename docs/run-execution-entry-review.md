@@ -1,6 +1,6 @@
 # Следующий продуктовый путь: запуск, учёт средств и выполнение заданий
 
-Дата: 25 октября 2026 года. Статус: подготовлено для explicit approval.
+Дата: 25 октября 2026 года. Статус: approved для поэтапной реализации; см. раздел «Решение».
 Это review существующих OpenSpec-пакетов, не изменение их требований,
 assertions, обязательности или результатов приёмки. Код и executable tests
 этим документом не разрешаются автоматически.
@@ -176,16 +176,13 @@ TTL/caps intent, queue deadline, task/overall timeouts, recovery bounds, capacit
 
 ## Решение
 
-**Pending.** Предыдущее согласование OID/AAP не покрывает эти новые 74 сценария.
-Текущее «Ок, давай дальше» подтверждает направление; оно не подменяет review
-конкретных денежных defaults, rubric fractions и inventory, показанных здесь.
+**Approved, 2026-10-25.** Владелец ответил «Утверждаю весь описанный этап»
+на вопрос о поэтапной реализации описанных BRL/TBB/BTS пакетов: 74 сценария,
+денежные defaults и rubric fractions, без реальных денег и production.
+Scope review зафиксирован коммитом `9ee9211`. Отдельные approval.md находятся
+в каждом из трёх change. Одобрение не является runtime acceptance; новые
+assertions/сценарии требуют нового review.
 
-Основание отдельного согласования — [docs/task-design.md](task-design.md):
-«Stop for explicit approval before editing executable tests or product code».
-BRL/TBB/BTS proposals и BDD designs также явно сохраняют approval pending.
-После подтверждения фиксируется scoped approval для перечисленных неизменённых
-пакетов и начинается поэтапная реализация; acceptance claims остаются отдельными.
-Следующий implementation command после approval —
-`/opsx:apply benchmark-run-lifecycle` с согласованными общими портами TBB/BTS;
-затем соответствующие `/opsx:apply tester-bonus-billing` и
-`/opsx:apply benchmark-task-suite`. Сейчас эти команды не выполняются.
+Начальная реализация следует порядку выше: ledger и owner/admin controls,
+затем intent/admission/cancel и task release/execution. Неполный release не
+активируется; отсутствие внешних зависимостей остаётся явным blocked gate.
