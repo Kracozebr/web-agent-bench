@@ -25,6 +25,40 @@ def _identity(database: dict[str, Any], provider: str, subject_sha256: str | Non
     )
 
 
+def _session_facts(browser: dict[str, Any], database: dict[str, Any]) -> dict[str, bool]:
+    before = database.get("before", {})
+    after = database.get("after", {})
+    denied = database.get("denied", {})
+    prepared = database.get("expiryPrepared", {})
+    expired_after = database.get("expiryAfter", {})
+    protocol = browser.get("protocolNegatives", {})
+    snapshots = [before, after, denied, prepared, expired_after, database.get("expiryBefore", {})]
+    if not all(snapshot.get("observer", {}).get("role") == "oid_observer"
+               and snapshot.get("observer", {}).get("transaction_read_only") == "on" for snapshot in snapshots):
+        return {name: False for name in ("logout", "origin", "forged", "expired")}
+    active = lambda snapshot: sum(row.get("active_session_count", 0) for row in _items(snapshot.get("sessions")))
+    preserved = all(before.get(key) == after.get(key) for key in ("owners", "identities", "admissions"))
+    logout = bool(
+        browser.get("logoutStatus") == 200 and browser.get("loggedOutStatus") == 401
+        and browser.get("reusedStatus") == 401 and active(before) == 1 and active(after) == 0
+        and preserved and any(row.get("selector") == "sign-out" for row in _items(browser.get("capture", {}).get("actions")))
+    )
+    origin = bool(
+        protocol.get("crossOriginStatus") == 403 and protocol.get("crossOriginOperation")
+        and denied.get("observer", {}).get("role") == "oid_observer"
+        and not any(row.get("operation_id") == protocol["crossOriginOperation"] for row in _items(denied.get("challenges")))
+    )
+    return {
+        "logout": logout,
+        "origin": origin,
+        "forged": bool(protocol.get("forgedAdminStatus") == 403 and before.get("invitations") == denied.get("invitations")),
+        "expired": bool(browser.get("expiredStatus") == 401 and browser.get("expiredMutationStatus") == 401
+                        and browser.get("expirySetup", {}).get("changedFreshPendingSessions") == 1
+                        and active(database.get("expiryBefore", {})) == 1 and active(prepared) == 0
+                        and expired_after.get("admissions") == []),
+    }
+
+
 def derive_observations(
     scenario_id: str,
     browser: dict[str, Any],
@@ -34,6 +68,10 @@ def derive_observations(
     provenance: dict[str, Any],
 ) -> dict[str, bool]:
     """Return only facts derivable from raw allowlisted observations."""
+
+    if scenario_id == "OID-SC-008":
+        facts = _session_facts(browser, database)
+        return {"origin_csrf_checked": facts["origin"], "logout_session_invalidated": facts["logout"]}
 
     if scenario_id == "OID-SC-001":
         valid = _trial(browser, "valid") or {}
@@ -258,6 +296,11 @@ def derive_negative_variants(
     provenance: dict[str, Any],
 ) -> dict[str, bool]:
     """Derive contract negative variants from observed browser and SQL results."""
+
+    if scenario_id == "OID-SC-008":
+        facts = _session_facts(browser, database)
+        return {"expired_session": facts["expired"], "forged_owner_admin_id": facts["forged"],
+                "cross_origin_mutation": facts["origin"], "reused_logged_out_session": facts["logout"]}
 
     if scenario_id == "OID-SC-001":
         trials = {name: _trial(browser, name) for name in (

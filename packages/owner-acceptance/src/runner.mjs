@@ -12,6 +12,10 @@ import { linkWalletAndReturn, runInvalidWalletCases } from "./wallet-cases.mjs";
 import { runGoogleBrowserFailures, runGoogleClaimMatrix } from "./google-browser-cases.mjs";
 import { runFreshSiweProtocol } from "./siwe-protocol-cases.mjs";
 import { runAdmissionRace } from "./admission-race.mjs";
+import { runSessionCases } from "./session-cases.mjs";
+import { runGoogleLinkStartRace } from "./link-start-race.mjs";
+import { runAapCardCases } from "./aap-cases.mjs";
+import { saveAapEvidence } from "./aap-evidence.mjs";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(packageRoot, "../..");
@@ -174,7 +178,11 @@ async function googleLogin(context, scenarioId, subject) {
   captureApi.action("click", "sign-in-google");
   const callback = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/auth/callback/google", { timeout: 30000 }).catch(() => null);
   await page.getByTestId("sign-in-google").click();
-  if (!(await callback)) throw new Error("Google callback route did not complete");
+  if (!(await callback)) {
+    console.error(JSON.stringify({ event: "oid_callback_missing", scenarioId,
+      responses: capture.responses.filter((row) => row.path.startsWith("/api/")).slice(-8) }));
+    throw new Error("Google callback route did not complete");
+  }
   await waitForPath(page, ["/account", "/activate", "/sign-in"], 25000);
   const owner = await waitOwner(page, "authenticated", 5000).catch(() => waitOwner(page, "anonymous", 5000));
   return { page, capture, captureApi, fixtureRoute, owner };
@@ -307,13 +315,18 @@ async function saveBlockedScenario(scenarioId, reasonCode, reason, provenance, d
   const notRun = (name) => ({ status: "not_run", reasonCode, detail: reason });
   const observations = Object.fromEntries(REQUIRED[scenarioId].map((name) => [name, notRun(name)]));
   const negatives = Object.fromEntries(NEGATIVES[scenarioId].map((name) => [name, notRun(name)]));
+  if (scenarioId === "OID-SC-008" && browserData) {
+    const local = { status: "observed", evidence: ["browser.json", "database.json"], detail: "Local session boundary; agent authority is separately blocked." };
+    for (const name of ["origin_csrf_checked", "logout_session_invalidated"]) observations[name] = local;
+    for (const name of ["expired_session", "forged_owner_admin_id", "cross_origin_mutation", "reused_logged_out_session"]) negatives[name] = local;
+  }
   const manifestPath = await writeManifest(scenarioId, {
     runId: run.runId,
     status: "blocked",
     blockedReasonCode: reasonCode,
     statusDetail: reason,
-    observationStatus: "not_run",
-    negativeVariantStatus: "not_run",
+    observationStatus: Object.values(observations).some((row) => row.status === "observed") ? "partial" : "not_run",
+    negativeVariantStatus: Object.values(negatives).some((row) => row.status === "observed") ? "partial" : "not_run",
     observations,
     negativeVariants: negatives,
     artifacts,
@@ -355,7 +368,14 @@ async function collectSourceHashes() {
     resolve(repoRoot, "tests/bdd/features/owner_identity_and_pilot_admission.feature"),
     resolve(repoRoot, "tests/bdd/changes/owner-identity-and-pilot-admission"),
     resolve(repoRoot, "openspec/changes/owner-identity-and-pilot-admission"),
+    resolve(repoRoot, "openspec/changes/agent-access-and-permissions"),
+    resolve(repoRoot, "tests/bdd/changes/agent-access-and-permissions"),
+    resolve(repoRoot, "tests/bdd/adapters/agent_access_and_permissions.py"),
+    resolve(repoRoot, "tests/bdd/adapters/aap_evidence_verifier.py"),
+    resolve(repoRoot, "tests/bdd/features/agent_access_and_permissions.feature"),
+    resolve(repoRoot, "tests/bdd/mappers/test_agent_access_and_permissions_bdd.py"),
     resolve(repoRoot, "tools/replay_oid_acceptance.py"),
+    resolve(repoRoot, "tools/replay_aap_acceptance.py"),
     resolve(repoRoot, "tools/harness_contracts.py"),
     resolve(repoRoot, "tools/run_bdd_acceptance.py"),
     resolve(repoRoot, "package.json"),
@@ -530,6 +550,20 @@ async function main() {
       },
     });
 
+    phase = "concurrent_google_link_starts";
+    const linkStartRace = await runGoogleLinkStartRace({ adminPage: admin.page, newContext, observer });
+    phase = "owner_session_logout_and_expiry";
+    const sessionCases = await runSessionCases({
+      adminPage: admin.page, newContext,
+      login: (context, subject) => googleLogin(context, "OID-SC-008", subject),
+      observer, databaseUrl: process.env.OID_DATABASE_URL,
+    });
+
+    phase = "private_agent_card_and_policy_browser_flow";
+    const aap = await runAapCardCases({ page: ownerLogin.page, ownerId, adminPage: admin.page, newContext,
+      login: (context, subject) => googleLogin(context, "AAP-SC-001", subject),
+      observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+
     const operations = [
       issueOperation, sc009IssueOperation, activationOperation, revokeOperation, ...policyOperations, walletResult.linkOperationId,
       ...failedFlows.flatMap((row) => row.capture.authOperations.map((operation) => operation.operationId)),
@@ -594,6 +628,7 @@ async function main() {
       inputHashesBefore: sourceHashesBefore,
       inputHashesAfter: sourceHashesAfter,
     };
+    const aapSaved = await saveAapEvidence({ ...aap, provenance });
     const googleMatrixRows = await observer.snapshot({ subjects: googleMatrix.subjects, operationIds: googleMatrix.operations });
     const sc001 = await saveCompleteScenario("OID-SC-001", { trials: googleMatrix.trials, callerEmailEndpoint: googleMatrix.callerEmailEndpoint }, googleMatrixRows, provenance);
     const siweMatrixRows = await observer.snapshot({ ownerIds: [siweMatrix.ownerId], subjectHashes: siweMatrix.subjectHashes, operationIds: siweMatrix.operations, nonceHashes: siweMatrix.nonceHashes });
@@ -642,17 +677,17 @@ async function main() {
       "OID-SC-003": ["bonus_ledger_boundary_unavailable", "Actual two-owner invitation race, lost response, backend restart and original-operation retry were observed; the downstream no-bonus ledger boundary is unavailable."],
       "OID-SC-004": ["downstream_private_handlers_unavailable", "Participant card, delegated-token, and funding handlers are not exposed by this local application."],
       "OID-SC-005": ["agent_and_ledger_boundary_unavailable", "Agent IDs, balances, bonus, deposit, and withdrawal surfaces are unavailable."],
-      "OID-SC-006": ["cross_session_conflict_matrix_not_run", "Identity collision, cross-tab substitution, and replayed-link matrix remains untested."],
+      "OID-SC-006": ["remaining_identity_conflict_matrix_not_run", "Two real concurrent Google link controls produced one pending flow and one conflict with unchanged identities; existing-identity collision, foreign-session substitution and downstream preservation remain untested."],
       "OID-SC-007": ["policy_race_and_ledger_boundary_not_run", "Policy controls were exercised, but race and existing agent/ledger preservation are not proven."],
-      "OID-SC-008": ["session_expiry_and_agent_boundary_not_run", "Logout is not yet recorded in this scenario; expiry and agent credential boundaries are unavailable."],
+      "OID-SC-008": ["agent_credential_and_revocation_boundary_unavailable", "UI logout, persisted session invalidation, old-cookie rejection, expired-session denial and origin/forged-admin negatives were observed; actual agent authority and revocation boundaries remain unavailable."],
       "OID-SC-010": ["downstream_aap_and_funding_handlers_unavailable", "AAP/agent-card, delegated credential, bonus, and funding handlers are unavailable."],
       "OID-SC-012": ["external_google_and_wallet_gate_not_run", "No external Google account or selected browser wallet was used."],
     };
     const blockedSnapshot = await observer.snapshot();
     for (const [scenarioId, [reasonCode, reason]] of Object.entries(blockers)) {
       blocked.push(await saveBlockedScenario(scenarioId, reasonCode, reason, provenance,
-        scenarioId === "OID-SC-003" ? race.databaseData : blockedSnapshot,
-        scenarioId === "OID-SC-003" ? race.browserData : undefined));
+        scenarioId === "OID-SC-003" ? race.databaseData : scenarioId === "OID-SC-006" ? linkStartRace.databaseData : scenarioId === "OID-SC-008" ? sessionCases.databaseData : blockedSnapshot,
+        scenarioId === "OID-SC-003" ? race.browserData : scenarioId === "OID-SC-006" ? linkStartRace.browserData : scenarioId === "OID-SC-008" ? sessionCases.browserData : undefined));
     }
     finalStatus = "partial_blocked";
     console.log(JSON.stringify({
@@ -661,6 +696,7 @@ async function main() {
       status: finalStatus,
       scenarios: [sc001, sc002, sc009, saved, ...blocked],
       counts: { passed: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "passed").length, blocked: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "blocked").length, failed: 0 },
+      aap: { privateCardAndPolicyObserved: true, scenarios: aapSaved },
       observations: { adminOAuth: true, invitationIssuedInUI: true, invitationSecretExcludedFromList: true, inviteVerifierMatches: true, ownerActivationViaUI: true, independentReadOnlyPostgresRows: true },
       blockedReason: "Unsupported downstream boundaries, remaining scenario-specific negative matrices, and external OID-SC-012 compatibility remain blocked.",
     }, null, 2));

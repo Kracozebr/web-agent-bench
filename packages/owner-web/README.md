@@ -1,7 +1,7 @@
 # Owner web
 
-Next.js owner identity and pilot admission UI. All sign-in, activation, identity-linking,
-invitation, and registration-policy mutations go to the Fastify API. There is no demo auth or
+Next.js owner identity, pilot admission and private agent-card UI. All sign-in, activation, identity-linking,
+invitation, registration-policy, card and permission-setting mutations go to the Fastify API. There is no demo auth or
 browser-persisted success state.
 
 ## Local development

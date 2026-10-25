@@ -21,11 +21,20 @@ read-only observer account.
 ./infrastructure/owner-identity/tool.ps1 pnpm --filter @web-agent-bench/owner-acceptance acceptance
 ./infrastructure/owner-identity/tool.ps1 python tools/run_bdd_acceptance.py --change owner-identity-and-pilot-admission
 ./infrastructure/owner-identity/tool.ps1 pnpm --filter @web-agent-bench/owner-acceptance replay -- all
+./infrastructure/owner-identity/tool.ps1 python tools/run_bdd_acceptance.py --change agent-access-and-permissions
+./infrastructure/owner-identity/tool.ps1 python tools/replay_aap_acceptance.py all
 ```
 
 The runner starts the actual owner API and production Next server in the same
 container, then drives browser controls through the same-origin proxy. The
-parent BDD command replays each scenario's sanitized observation manifest.
+runner also exercises private agent-card creation/edit and permission settings,
+including foreign-owner denial, idempotent retry and a two-tab revision race.
+These are partial AAP observations; all sixteen full AAP gates remain blocked
+until actual credential/domain/client boundaries are implemented. Stop the dev
+container before building/running production acceptance to avoid sharing writes
+to Next.js `.next`; restart it afterward.
+
+The parent BDD command replays each scenario's sanitized observation manifest.
 Scenario directories retain individual runs and SHA-256 hashes; replay performs
 no authentication, invitation, policy, or product operation. A blocked result
 is evidence of a remaining gate, not a passing acceptance.

@@ -89,6 +89,41 @@ export const owners = pgTable("oid_owner", {
   admittedAt: time("admitted_at")
 }, (table) => [index("oid_owner_admission_status_idx").on(table.admissionStatus)]);
 
+export const agentProfiles = pgTable("oid_agent", {
+  id: uuid("id").primaryKey(),
+  ownerId: uuid("owner_id").notNull().references(() => owners.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  clientMetadata: jsonb("client_metadata").$type<{ clientName: string | null; modelName: string | null }>().notNull().default({ clientName: null, modelName: null }),
+  declaredVersion: text("declared_version"),
+  revision: integer("revision").notNull().default(1),
+  createdAt: time("created_at").notNull().defaultNow(),
+  updatedAt: time("updated_at").notNull().defaultNow()
+}, (table) => [
+  index("oid_agent_owner_updated_idx").on(table.ownerId, table.updatedAt),
+  uniqueIndex("oid_agent_owner_id_uq").on(table.ownerId, table.id)
+]);
+
+export const agentPolicies = pgTable("oid_agent_policy", {
+  agentId: uuid("agent_id").primaryKey().references(() => agentProfiles.id, { onDelete: "cascade" }),
+  training: boolean("training").notNull().default(false),
+  ranked: boolean("ranked").notNull().default(false),
+  forumMessages: boolean("forum_messages").notNull().default(false),
+  customTopics: boolean("custom_topics").notNull().default(false),
+  revision: integer("revision").notNull().default(1),
+  updatedAt: time("updated_at").notNull().defaultNow()
+});
+
+export const agentOperations = pgTable("oid_agent_operation", {
+  operationId: text("operation_id").primaryKey(),
+  ownerId: uuid("owner_id").notNull().references(() => owners.id, { onDelete: "cascade" }),
+  agentId: uuid("agent_id").references(() => agentProfiles.id, { onDelete: "cascade" }),
+  action: text("action").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  responseJson: jsonb("response_json"),
+  createdAt: time("created_at").notNull().defaultNow()
+}, (table) => [index("oid_agent_operation_owner_created_idx").on(table.ownerId, table.createdAt)]);
+
 export const authFlows = pgTable("oid_auth_flow", {
   id: uuid("id").primaryKey(),
   operationId: text("operation_id").notNull().unique(),

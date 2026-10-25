@@ -2,10 +2,10 @@
 
 Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
-**Status:** Awaiting review and explicit approval.
+**Status:** Approved for incremental implementation; see [approval.md](approval.md).
 **Normative delta source:** `specs/agent-access-and-permissions/spec.md` (proposed active delta).
 **Target main source after sync:** `openspec/specs/agent-access-and-permissions/spec.md`.
-**Execution status:** all 16 mandatory scenarios are `not_run`; no executable test or product file has been created.
+**Execution status:** all 16 mandatory scenarios are initially `not_run`; implementation and actual evidence are recorded separately.
 
 ## Intent
 

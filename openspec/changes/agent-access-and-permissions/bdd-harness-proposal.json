@@ -1,9 +1,9 @@
 {
   "proposal_schema": "bdd-harness-contract-proposal/v1",
-  "review_status": "pending",
-  "runtime_manifest": "tests/bdd/harness-contracts.json",
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/agent-access-and-permissions/harness-contracts.json",
   "normative_delta": "specs/agent-access-and-permissions/spec.md",
-  "note": "Review-only inventory, not runtime contracts or executed evidence.",
+  "note": "Approved inventory; approval.md records scope. Runtime contracts and execution evidence are separate.",
   "protected_scenarios": {
     "AAP-SC-001": {
       "requirement_id": "AAP-REQ-001",

@@ -1,8 +1,7 @@
 ## Context
 
-Status: proposed; the complete scenario inventory and implementation scope await
-explicit review. No working identity/MCP application or participant connection
-is claimed. Existing clients run on the owner's machine. The selected stack is
+Status: approved for incremental implementation; see [approval.md](approval.md).
+The OID application exists; MCP and participant compatibility remain unproven. Existing clients run on the owner's machine. The selected stack is
 TypeScript, Fastify/Next.js, Better Auth and PostgreSQL with the official MCP SDK.
 
 ## Goals / Non-Goals

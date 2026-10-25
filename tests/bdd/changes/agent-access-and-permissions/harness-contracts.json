@@ -1,0 +1,447 @@
+{
+  "coverage_policy": {
+    "required_protected_scenarios": [
+      "AAP-SC-001",
+      "AAP-SC-002",
+      "AAP-SC-003",
+      "AAP-SC-004",
+      "AAP-SC-005",
+      "AAP-SC-006",
+      "AAP-SC-007",
+      "AAP-SC-008",
+      "AAP-SC-009",
+      "AAP-SC-010",
+      "AAP-SC-011",
+      "AAP-SC-012",
+      "AAP-SC-013",
+      "AAP-SC-014",
+      "AAP-SC-015",
+      "AAP-SC-016"
+    ],
+    "status": "complete"
+  },
+  "protected_scenarios": {
+    "AAP-SC-001": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "profile_identity",
+        "policy_revision",
+        "owner_edit_audit",
+        "private_profile_marker_absent"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "forged_owner_id",
+        "foreign_agent_id",
+        "agent_changes_cash_permission",
+        "owner_edits_declared_version",
+        "forged_publication_flag",
+        "profile_edit_or_preflight_as_publication"
+      ],
+      "required_observations": [
+        "owner_card_persisted",
+        "foreign_owner_denied",
+        "agent_owner_mutation_denied",
+        "declared_metadata_labelled",
+        "run_snapshot_unchanged",
+        "new_card_no_public_marker",
+        "caller_visibility_change_cannot_publish"
+      ]
+    },
+    "AAP-SC-002": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "consent_revision",
+        "access_grant_identity"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "consent_denied",
+        "foreign_card_selection",
+        "scope_escalation_in_request",
+        "agent_selection_changed_after_consent"
+      ],
+      "required_observations": [
+        "consent_owner_agent_bound",
+        "effective_scopes_displayed",
+        "approved_grant_identity",
+        "denied_consent_no_grant"
+      ]
+    },
+    "AAP-SC-003": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "code_consumption",
+        "grant_link",
+        "exchange_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "wrong_redirect",
+        "wrong_resource_or_issuer",
+        "wrong_pkce",
+        "expired_or_replayed_code"
+      ],
+      "required_observations": [
+        "binding_validation",
+        "code_consumed_once",
+        "invalid_exchange_denied",
+        "no_scope_escalation"
+      ]
+    },
+    "AAP-SC-004": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "credential_verifier",
+        "grant_identity",
+        "issuance_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "foreign_issuance",
+        "agent_self_issuance",
+        "token_for_other_agent",
+        "forged_withdrawal_scope"
+      ],
+      "required_observations": [
+        "owner_issuance",
+        "token_agent_binding",
+        "header_authentication",
+        "unauthorized_issuance_denied"
+      ]
+    },
+    "AAP-SC-005": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "replacement_lineage",
+        "credential_fence",
+        "sanitized_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "issuance_response_lost",
+        "replacement_retry",
+        "replay_old_token",
+        "replacement_after_global_revoke"
+      ],
+      "required_observations": [
+        "show_once_response",
+        "stored_verifier_not_plaintext",
+        "safe_replacement_identity",
+        "old_credential_denied",
+        "secret_absent_from_audit"
+      ]
+    },
+    "AAP-SC-006": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "allowed_operation_receipts",
+        "denied_action_audit",
+        "no_denied_charge",
+        "initial_policy_revision"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "training_only",
+        "ranked_only",
+        "topic_without_message_permission",
+        "all_paid_permissions_disabled",
+        "zero_tariff_does_not_bypass_scope",
+        "new_card_with_omitted_flags",
+        "preflight_must_not_enable_actions"
+      ],
+      "required_observations": [
+        "four_action_permissions_independent",
+        "topic_first_post_included",
+        "standalone_message_permission_checked",
+        "denied_actions_no_effect",
+        "omitted_owner_selections_default_all_false",
+        "free_preflight_without_action_flags",
+        "explicit_owner_selection_required"
+      ]
+    },
+    "AAP-SC-007": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "policy_revision_link",
+        "admission_decisions",
+        "no_denied_domain_mutation"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "stale_token_permission_snapshot",
+        "forged_request_scope",
+        "foreign_run_or_owner",
+        "owner_enables_new_action_on_same_credential",
+        "agent_attempts_self_expansion",
+        "policy_cache_or_worker_restart"
+      ],
+      "required_observations": [
+        "current_revision_loaded",
+        "fixed_credential_identity_resource_role",
+        "owner_increase_works_without_reconnect",
+        "same_oauth_and_manual_credentials_used",
+        "disabled_and_foreign_authority_denied",
+        "agent_cannot_change_permissions",
+        "re_enable_does_not_reopen_cancelled_runs"
+      ]
+    },
+    "AAP-SC-008": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "shared_source_receipts",
+        "reservation_links",
+        "utc_usage_buckets"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "concurrent_credentials",
+        "cash_fallback_disabled",
+        "insufficient_full_nominal_limit",
+        "zero_price_scope_denial"
+      ],
+      "required_observations": [
+        "shared_owner_funds",
+        "same_agent_utc_caps",
+        "bonus_first_sources",
+        "separate_cash_permission",
+        "no_duplicate_or_partial_charge"
+      ]
+    },
+    "AAP-SC-009": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "role_denial_audit",
+        "no_cash_hold_or_publication",
+        "no_signing_outbox"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "all_action_flags_enabled",
+        "forged_owner_scope",
+        "owner_cookie_used_as_agent",
+        "direct_api_bypasses_tool_listing"
+      ],
+      "required_observations": [
+        "agent_withdrawal_denied",
+        "recovery_authority_denied",
+        "owner_controls_denied",
+        "human_session_post_denied",
+        "no_signing_intent"
+      ]
+    },
+    "AAP-SC-010": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "grant_fence_revision",
+        "cancellation_outbox",
+        "source_release_or_retained_debit",
+        "retained_action_evidence"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "revoke_start_race",
+        "delayed_cancel_delivery",
+        "restart_duplicate_delivery",
+        "remove_training_not_ranked",
+        "late_action_after_fence",
+        "re_enable_disabled_mode_after_cancel"
+      ],
+      "required_observations": [
+        "revocation_admission_fence",
+        "queue_release_once",
+        "started_cancel_no_voluntary_refund",
+        "mode_scope_preserved",
+        "other_agents_unchanged",
+        "regrant_no_reopen",
+        "re_enable_mode_no_reopen"
+      ]
+    },
+    "AAP-SC-011": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "credential_lifecycle",
+        "unchanged_run_clock",
+        "authentication_audit"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "transport_loss",
+        "access_token_expiry",
+        "refresh_after_revocation",
+        "reconnect_after_deadline"
+      ],
+      "required_observations": [
+        "expiry_denies_calls",
+        "no_disconnect_revoke_event",
+        "same_run_deadline",
+        "refresh_scope_preserved",
+        "revoked_refresh_denied"
+      ]
+    },
+    "AAP-SC-012": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "one_domain_operation",
+        "one_source_receipt",
+        "idempotency_binding"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "http_then_mcp_retry",
+        "mcp_then_http_retry",
+        "payload_changed",
+        "same_key_other_agent"
+      ],
+      "required_observations": [
+        "same_operation_across_transports",
+        "original_receipt_recovered",
+        "conflict_rejected",
+        "foreign_reuse_denied"
+      ]
+    },
+    "AAP-SC-013": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "protocol_denial_audit",
+        "no_domain_effect",
+        "safe_fetch_evidence"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "unsupported_protocol",
+        "wrong_audience",
+        "untrusted_origin",
+        "internal_metadata_target",
+        "redirect_to_prohibited_target"
+      ],
+      "required_observations": [
+        "pinned_profile_validation",
+        "resource_token_rejection",
+        "origin_policy",
+        "metadata_fetch_constrained",
+        "no_private_projection"
+      ]
+    },
+    "AAP-SC-014": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "ui_driven_policy_revision",
+        "credential_or_revoke_audit",
+        "actual_denial_after_change"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "direct_api_foreign_owner",
+        "agent_opens_owner_controls",
+        "reload_after_token_display",
+        "stale_policy_revision"
+      ],
+      "required_observations": [
+        "actual_owner_pages",
+        "four_flags_and_separate_limits",
+        "safe_token_display",
+        "changes_affect_admission",
+        "foreign_control_denied"
+      ]
+    },
+    "AAP-SC-015": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "grant_and_protocol_manifest",
+        "actual_receipt_identity",
+        "sanitized_client_trace"
+      ],
+      "evidence_mode": "actual_local_http_postgres_verifier_domain_and_declared_browser_mcp_paths",
+      "negative_variants": [
+        "consent_denied",
+        "unsupported_profile",
+        "expired_credential",
+        "call_after_global_revoke"
+      ],
+      "required_observations": [
+        "discovery_and_browser_flow",
+        "resource_bound_access",
+        "tool_catalog_and_preflight",
+        "actual_operation_receipt",
+        "revoked_call_denied",
+        "local_scope_label"
+      ]
+    },
+    "AAP-SC-016": {
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "durable_effects": [
+        "per_client_compatibility_manifest",
+        "redacted_raw_client_paths_hashes",
+        "actual_operation_and_revocation_links"
+      ],
+      "evidence_mode": "actual_selected_pilot_client_editions_and_integrated_test_deployment",
+      "negative_variants": [
+        "client_unavailable",
+        "edition_unknown",
+        "auth_route_unsupported",
+        "protocol_negotiation_failure"
+      ],
+      "required_observations": [
+        "four_selected_editions_pinned",
+        "no_platform_connector_install",
+        "chosen_auth_route_recorded",
+        "actual_preflight_and_operation",
+        "post_revoke_denial_per_client",
+        "unsupported_alternatives_disclosed"
+      ]
+    }
+  },
+  "schema_version": 1,
+  "spec_snapshot": {
+    "normative_clauses": 69,
+    "requirement_clause_counts": {
+      "AAP-REQ-001": 11,
+      "AAP-REQ-002": 5,
+      "AAP-REQ-003": 8,
+      "AAP-REQ-004": 13,
+      "AAP-REQ-005": 9,
+      "AAP-REQ-006": 8,
+      "AAP-REQ-007": 5,
+      "AAP-REQ-008": 10
+    },
+    "requirements": 8,
+    "scenario_ids_sha256": "89c3a7af7b5a9027e841998b13ac9e79cbe229ace1689348a2394269980461b5",
+    "scenario_requirement_mapping": {
+      "AAP-SC-001": "AAP-REQ-001",
+      "AAP-SC-002": "AAP-REQ-002",
+      "AAP-SC-003": "AAP-REQ-002",
+      "AAP-SC-004": "AAP-REQ-003",
+      "AAP-SC-005": "AAP-REQ-003",
+      "AAP-SC-006": "AAP-REQ-004",
+      "AAP-SC-007": "AAP-REQ-004",
+      "AAP-SC-008": "AAP-REQ-005",
+      "AAP-SC-009": "AAP-REQ-005",
+      "AAP-SC-010": "AAP-REQ-006",
+      "AAP-SC-011": "AAP-REQ-006",
+      "AAP-SC-012": "AAP-REQ-007",
+      "AAP-SC-013": "AAP-REQ-007",
+      "AAP-SC-014": "AAP-REQ-008",
+      "AAP-SC-015": "AAP-REQ-008",
+      "AAP-SC-016": "AAP-REQ-008"
+    },
+    "scenario_requirement_sha256": "5e76c3f6484e8d09b6868e15febf2c5b18c5d0f0792199d37894db5f1803c0b4",
+    "scenarios": 16
+  }
+}

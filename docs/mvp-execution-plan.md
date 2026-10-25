@@ -81,7 +81,11 @@ Browser → backend → БД E2E продуктовых сценариев от�
 путь: вход, приглашение, активация, привязка кошелька и возврат к тому же owner.
 Проверки выполняются в Docker; OID-SC-001/002/011 прошли, девять gates blocked.
 См. [review реализации](../openspec/changes/owner-identity-and-pilot-admission/implementation-review.md).
-Карточка агента, доступ/MCP, preflight и handoff ещё нужны для завершения этапа 2.
+После согласования AAP реализованы приватная карточка агента и четыре настройки
+permissions с настоящим UI → API → PostgreSQL и проверкой конфликта двух вкладок.
+См. [AAP review реализации](../openspec/changes/agent-access-and-permissions/implementation-review.md).
+Полные 16 AAP gates blocked: доступ/MCP, credentials, preflight, доменные действия
+и handoff ещё нужны для завершения этапа 2.
 
 ## Последовательность и критерии перехода
 

@@ -72,6 +72,9 @@ const knownMessages: Record<string, string> = {
   ADMISSION_ALREADY_GRANTED: "This owner is already admitted. Refresh the owner session; no invitation is needed.",
   IDENTITY_ALREADY_LINKED: "This sign-in method is already linked to another owner.",
   POLICY_REVISION_CONFLICT: "Admission settings changed in another session. The latest settings have been loaded.",
+  REVISION_CONFLICT: "This agent changed in another session. The latest server revision has been loaded; review it before saving again.",
+  OPERATION_ID_CONFLICT: "This operation identifier was already used with different data. Refresh the server state before retrying.",
+  UNKNOWN_FIELD: "The server rejected an unsupported agent field. Review the current server response before trying again.",
   RATE_LIMITED: "Too many attempts. Wait a moment and try again.",
 };
 

@@ -5,7 +5,7 @@ controlling paid actions independently. Both browser authorization and manual
 tokens must identify the same owner/agent and enforce current permissions,
 spending limits and revocation through the actual product boundaries.
 
-Status: proposed; complete BDD and implementation scope are not approved.
+Status: approved for incremental implementation; see [approval.md](approval.md). Approval is not acceptance evidence.
 
 ## What Changes
 

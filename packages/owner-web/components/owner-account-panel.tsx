@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createSiweMessage } from "viem/siwe";
 import { ApiError, apiRequest, errorText, getCurrentOwner, IdentityConfig, newOperationId, OwnerProjection } from "@/lib/api";
@@ -201,6 +202,9 @@ export function OwnerAccountPanel() {
         <p className="eyebrow">Private owner settings</p>
         <h1>Owner account</h1>
         <p className="lede">Review the verified sign-in methods bound to this owner. Adding another method requires a fresh proof.</p>
+      </div>
+      <div className="button-row">
+        <Link className="button button-primary" data-testid="manage-agents" href="/agents">Manage agents</Link>
       </div>
       <div className="content-grid">
         <section className="card span-6" aria-labelledby="identity-title">

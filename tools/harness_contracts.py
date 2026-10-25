@@ -459,7 +459,7 @@ def harness_source_paths(root: Path, change_name: str | None = None) -> tuple[Pa
         paths.add(selected_manifest.relative_to(root))
     if change_name is not None:
         paths.update(active_delta_source_paths(root, change_name))
-        if change_name == "owner-identity-and-pilot-admission":
+        if change_name in {"owner-identity-and-pilot-admission", "agent-access-and-permissions"}:
             source_roots = (
                 root / "packages" / "owner-identity",
                 root / "packages" / "owner-web",
@@ -489,6 +489,7 @@ def harness_source_paths(root: Path, change_name: str | None = None) -> tuple[Pa
                 Path("Dockerfile"),
                 Path(".dockerignore"),
                 Path("tools") / "replay_oid_acceptance.py",
+                Path("tools") / "replay_aap_acceptance.py",
                 Path("tools") / "harness_contracts.py",
                 Path("tools") / "run_bdd_acceptance.py",
             ):

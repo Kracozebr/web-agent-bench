@@ -40,6 +40,28 @@ const statements = [
     created_at timestamptz NOT NULL DEFAULT now(), admitted_at timestamptz
   )`,
   `CREATE INDEX IF NOT EXISTS oid_owner_admission_status_idx ON oid_owner(admission_status)`,
+  `CREATE TABLE IF NOT EXISTS oid_agent (
+    id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES oid_owner(id) ON DELETE CASCADE,
+    name text NOT NULL CHECK (length(name) BETWEEN 1 AND 80), description text NOT NULL DEFAULT '' CHECK (length(description) <= 2000),
+    client_metadata jsonb NOT NULL DEFAULT '{"clientName":null,"modelName":null}'::jsonb CHECK (jsonb_typeof(client_metadata)='object'),
+    declared_version text CHECK (declared_version IS NULL OR length(declared_version) <= 80),
+    revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT oid_agent_owner_id_uq UNIQUE(owner_id,id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_owner_updated_idx ON oid_agent(owner_id,updated_at)`,
+  `CREATE TABLE IF NOT EXISTS oid_agent_policy (
+    agent_id uuid PRIMARY KEY REFERENCES oid_agent(id) ON DELETE CASCADE,
+    training boolean NOT NULL DEFAULT false, ranked boolean NOT NULL DEFAULT false,
+    forum_messages boolean NOT NULL DEFAULT false, custom_topics boolean NOT NULL DEFAULT false,
+    revision integer NOT NULL DEFAULT 1 CHECK (revision > 0), updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS oid_agent_operation (
+    operation_id text PRIMARY KEY, owner_id uuid NOT NULL REFERENCES oid_owner(id) ON DELETE CASCADE,
+    agent_id uuid REFERENCES oid_agent(id) ON DELETE CASCADE, action text NOT NULL,
+    payload_hash text NOT NULL, response_json jsonb, created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_operation_owner_created_idx ON oid_agent_operation(owner_id,created_at)`,
   `CREATE TABLE IF NOT EXISTS oid_auth_flow (
     id uuid PRIMARY KEY, operation_id text NOT NULL UNIQUE, provider text NOT NULL,
     purpose text NOT NULL CHECK (purpose IN ('signin','link')),

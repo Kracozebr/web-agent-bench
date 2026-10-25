@@ -3,9 +3,11 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { getAddress, verifyMessage } from "viem";
+import { registerAgentRoutes } from "./agents.js";
 import { createAuth, siweRequestFingerprint, withSiweRequest } from "./auth.js";
 import { loadConfig, getGoogleMode } from "./config.js";
 import { createDatabase } from "./db.js";
+import { HttpError } from "./http-error.js";
 import {
   admissions,
   authFlows,
@@ -30,12 +32,6 @@ const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 64 * 1024 });
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const hmac = (value: string) => createHmac("sha256", config.authSecret).update(value).digest("hex");
 const randomToken = () => randomBytes(32).toString("base64url");
-
-class HttpError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
-    super(message);
-  }
-}
 
 interface Authenticated {
   user: { id: string; email: string; name: string };
@@ -355,6 +351,18 @@ async function start() {
     }
   });
 
+  registerAgentRoutes(app, {
+    db,
+    requireOrigin,
+    rateLimit,
+    rateLimitMax: config.authRateLimitMax,
+    resolveOwner: async (request) => {
+      const session = await authenticated(request);
+      const context = await ownerFor(session);
+      return { owner: context.owner };
+    }
+  });
+
   app.get("/healthz", async (_request, reply) => {
     await db.execute(sql`SELECT 1`);
     return reply.send({ status: "ok" });
@@ -450,15 +458,45 @@ async function start() {
         }
         const flowSecret = randomToken();
         const flowHash = hmac(`auth-flow:${flowSecret}`);
-        const now = new Date();
-        const inserted = await db.insert(authFlows).values({
-          id: randomUUID(), operationId: randomUUID(), provider: "google", purpose,
-          ownerId: initiatingOwner?.owner.id ?? null,
-          authSessionId: initiatingSession?.session.id ?? null,
-          attemptHash: flowHash, startedAt: now,
-          expiresAt: new Date(now.getTime() + config.nonceTtlSeconds * 1000),
-          completedAt: null, outcome: null
-        }).returning();
+        const flowValues = () => {
+          const now = new Date();
+          return {
+            id: randomUUID(), operationId: randomUUID(), provider: "google", purpose,
+            ownerId: initiatingOwner?.owner.id ?? null,
+            authSessionId: initiatingSession?.session.id ?? null,
+            attemptHash: flowHash, startedAt: now,
+            expiresAt: new Date(now.getTime() + config.nonceTtlSeconds * 1000),
+            completedAt: null, outcome: null
+          };
+        };
+        const inserted = purpose === "link" && initiatingOwner
+          ? await db.transaction(async (tx) => {
+            // AICODE-NOTE: Serialize link starts per owner. Better Auth permits more than one
+            // provider account on a user, while oid_identity permits only one
+            // subject per provider and owner. Without this lock, concurrent
+            // starts can both pass the identity check and leave a partial
+            // Better Auth account binding when the second callback is rejected.
+            const ownerRows = await tx.execute(sql`SELECT admission_status FROM oid_owner WHERE id=${initiatingOwner!.owner.id} FOR UPDATE`);
+            const ownerRow = ownerRows[0] as { admission_status: string } | undefined;
+            if (!ownerRow || ownerRow.admission_status !== "admitted") {
+              throw new HttpError(403, "FORBIDDEN", "Admission is required before linking another identity");
+            }
+            const linkedGoogle = await tx.query.identities.findFirst({
+              where: and(eq(identities.ownerId, initiatingOwner!.owner.id), eq(identities.provider, "google"))
+            });
+            if (linkedGoogle) {
+              throw new HttpError(409, "IDENTITY_ALREADY_LINKED", "This owner already has a Google identity linked");
+            }
+            const pendingLink = await tx.query.authFlows.findFirst({ where: and(
+              eq(authFlows.ownerId, initiatingOwner!.owner.id), eq(authFlows.provider, "google"),
+              eq(authFlows.purpose, "link"), isNull(authFlows.completedAt), gt(authFlows.expiresAt, new Date())
+            ) });
+            if (pendingLink) {
+              throw new HttpError(409, "IDENTITY_LINK_IN_PROGRESS", "A Google identity link is already in progress for this owner");
+            }
+            return tx.insert(authFlows).values(flowValues()).returning();
+          })
+          : await db.insert(authFlows).values(flowValues()).returning();
         flow = inserted[0];
         if (!flow) throw new Error("Could not establish provider flow audit");
         const secure = config.nodeEnv === "production" ? "; Secure" : "";

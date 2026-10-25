@@ -41,6 +41,19 @@ The application now invokes the pinned verifier and enforces signed SIWE time
 bounds itself. The session foreign keys are retained; sign-out audits pending
 link operations rather than weakening relational integrity.
 
+The follow-up adds per-owner serialization of Google link starts: two actual
+link controls in separate browser tabs now produce one pending flow and one
+`409 IDENTITY_LINK_IN_PROGRESS`, with unchanged identity rows. This is a narrow
+concurrency check, not the complete OID-SC-006 conflict/preservation matrix.
+
+OID-SC-008 now records UI logout, SQL session invalidation, rejection of the
+original cookie after logout, expired-session rejection and denied origin/forged
+administrator HTTP probes. Expiry is prepared by an explicitly labelled private
+DB fixture affecting one fresh pending owner's session; outcomes use the separate
+read-only observer. Cookies are held in memory only. Replay derives these partial
+observations from the raw browser/SQL artifacts. Actual agent authority,
+revocation and financial boundaries remain blocked.
+
 ## Acceptance state
 
 The [active-delta report](../../../tests/bdd/changes/owner-identity-and-pilot-admission/acceptance-evidence.json)
@@ -55,7 +68,7 @@ blocked mandatory gates. A pytest skip is converted to `blocked` in this report.
 | OID-SC-004/005/010 | Actual agent-card, delegated credential, source balances and funding/withdrawal integration |
 | OID-SC-006 | Complete identity conflict/cross-session matrix and downstream preservation observations |
 | OID-SC-007 | Policy/admission race and preservation of actual agent/ledger histories |
-| OID-SC-008 | Complete expiry/foreign/agent authority matrix and actual agent-revocation boundary |
+| OID-SC-008 | Remaining foreign/actual-agent authority matrix and agent-revocation boundary; local expiry/logout/origin negatives observed |
 | OID-SC-009 | Actual delegated-agent authority and the complete revocation retry variant |
 | OID-SC-012 | Actual dedicated Google project/account and a selected real browser-wallet edition |
 

@@ -1,12 +1,12 @@
 ## 1. Review and feasibility
 
-- [ ] 1.1 Review all 8 requirements and 16 mandatory scenarios, confirmed initial-disabled/scope-removal/live permission-update rules and exact production/test boundaries; record explicit approval before test or product edits.
+- [x] 1.1 Review all 8 requirements and 16 mandatory scenarios, confirmed initial-disabled/scope-removal/live permission-update rules and exact production/test boundaries; record explicit approval before test or product edits.
 - [ ] 1.2 Pin actual pilot client editions and compatible MCP/SDK/Better Auth versions, protocol/discovery/registration profiles, token/grant lifetimes and numerical limits; demonstrate feasibility without promising every edition.
 - [ ] 1.3 Resolve the real owner identity/session dependency and shared forum/coordinator/billing/payment contracts; no trusted-ID bypass or stub product may stand in for missing capabilities.
 
 ## 2. Acceptance and persistence foundations
 
-- [ ] 2.1 Reuse shared active-delta harness work from benchmark-run-lifecycle and merge only approved AAP contracts/mappers; preserve baseline and other-capability inventories.
+- [x] 2.1 Reuse shared active-delta harness work from benchmark-run-lifecycle and merge only approved AAP contracts/mappers; preserve baseline and other-capability inventories.
 - [ ] 2.2 Add the reviewed HTTP/MCP/browser/actual-client adapters and sanitized evidence manifests; unavailable mandatory environments remain blocked.
 - [ ] 2.3 Add owner-bound agent cards, policy revisions, grant/credential and revocation/audit records with stable constraints, safe verifiers and restart identities.
 - [ ] 2.4 Implement private profile management and declaration labels using the real owner verifier; start with no shared public marker and reject caller visibility mutation; preserve BLP-REQ-011 originating-event authority, foreign isolation, financial settings and immutable run-version snapshots. Gate: AAP-SC-001 plus BLP-SC-016/017 integration.

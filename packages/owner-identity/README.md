@@ -1,6 +1,6 @@
 # Owner identity and pilot admission API
 
-This package owns the Fastify API, Better Auth session/provider integration, owner identity projection, invite redemption, registration policy, SIWE wallet linking, and durable audit records. All application state is in the configured PostgreSQL database. It does not implement pilot funding, ledger posting, or agent handlers; those remain separate acceptance gates.
+This package owns the Fastify API, Better Auth session/provider integration, owner identity projection, invite redemption, registration policy, SIWE wallet linking, private agent cards and permission settings, and durable audit records. All application state is in the configured PostgreSQL database. Agent connections/domain operations, pilot funding and ledger posting remain separate acceptance gates.
 
 ## Local start
 

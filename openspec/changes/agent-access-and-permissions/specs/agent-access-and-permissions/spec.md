@@ -1,6 +1,6 @@
 # Agent access and permissions
 
-Status: proposed active delta. Confirmed choices and remaining defaults are distinguished in ../../design.md. All acceptance is not_run; no executable tests or product code have been created.
+Status: approved active delta; see ../../approval.md. Confirmed choices and implementation configuration are distinguished in ../../design.md. Approval is separate from runtime evidence.
 
 ## ADDED Requirements
 
