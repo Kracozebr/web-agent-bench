@@ -72,7 +72,7 @@ environment gates за 436,94 секунды. Semantic audit прошёл; хе�
 После архивации BEF повторно прошли 332 Python-проверки (четыре платформенных
 пропуска); main audit — 20/20, replay сохранённых реальных capture работает без
 активного каталога change. Отчёт main: [acceptance-evidence.json](../tests/bdd/acceptance-evidence.json).
-Browser → backend → БД E2E продуктовых сценариев относятся к этапу 2; они пока не реализованы.
+На этом checkpoint Browser → backend → БД E2E продуктовых сценариев ещё не были реализованы; они относятся к этапу 2.
 
 25 октября владелец поручил перейти к этапу 2 с сабагентами GPT-6 Luna/xhigh.
 Подготовлен [review входа в продуктовый этап](stage2-entry-review.md): первый
@@ -87,6 +87,20 @@ permissions с настоящим UI → API → PostgreSQL и проверко�
 Добавлены ручной credential с однократным показом, безопасная замена, отзыв и
 настоящий header preflight. AAP-SC-004 passed; 15 остальных gates blocked:
 OAuth/MCP, доменные действия, lifecycle delivery и handoff ещё нужны для этапа 2.
+
+Следующий checkpoint, коммит `cedacce`: браузерное OAuth-согласие, настоящий
+code/PKCE exchange и modern MCP transport реализованы. AAP-SC-002/003/004 passed,
+13 остальных gates blocked. Ручная и OAuth credential одного агента проходят
+MCP preflight и отвергаются после revoke, включая рестарт API. Это не исполнение
+benchmark task; coordinator, общий ledger и evaluators отсутствуют.
+
+Подготовлен [review следующего пути](run-execution-entry-review.md): поэтапная
+реализация существующих BRL/TBB/BTS пакетов — 25/15/34 сценария соответственно.
+Review описывает launch intent, shared reservations/start/cancel, actual task
+effects/evaluation и предлагает денежные/rubric defaults. Approval этих трёх
+пакетов остаётся pending; прежнее OID/AAP approval не переносится автоматически.
+Первый срез — реальные ledger/intent/admission/cancel transactions; до validated
+task release и готовой среды нет start/debit или completed/graded result.
 
 ## Последовательность и критерии перехода
 
