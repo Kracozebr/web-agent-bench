@@ -16,12 +16,12 @@
     "--junitxml=artifacts/bdd-evidence/owner-identity-and-pilot-admission-pytest.xml"
   ],
   "exit_code": 0,
-  "finished_at_utc": "2026-10-25T15:29:57.568847Z",
+  "finished_at_utc": "2026-10-25T19:14:34.152694Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "a64aa38b8e9d83c0587a21ba4a5bf040da867047",
+  "git_commit": "b4dcc1a5437dc0eaf6fcbc494d59a00e9349be5f",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 12,
@@ -35,8 +35,8 @@
     "warnings": []
   },
   "harness_contract_sha256": "79a625c2377a509ea921e47517ed2a7d22cc47c4d1b5c548dc1b34e3f8800e9c",
-  "harness_sources_sha256": "5fbb117a36db63ba2a9bec88c111e807f3b451bae34356935c945589383cbdb6",
-  "harness_sources_sha256_after": "5fbb117a36db63ba2a9bec88c111e807f3b451bae34356935c945589383cbdb6",
+  "harness_sources_sha256": "828fb63ff29a7a9ff8970feef13bf00fd3658dd435f8ead5718b9438a3eb7785",
+  "harness_sources_sha256_after": "828fb63ff29a7a9ff8970feef13bf00fd3658dd435f8ead5718b9438a3eb7785",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/owner-identity-and-pilot-admission/specs/*/spec.md",
@@ -57,5 +57,5 @@
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-25T15:29:48.597395Z"
+  "started_at_utc": "2026-10-25T19:14:16.238680Z"
 }

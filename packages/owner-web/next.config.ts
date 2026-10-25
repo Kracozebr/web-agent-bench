@@ -12,6 +12,14 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
+        source: "/.well-known/oauth-authorization-server/api/auth",
+        destination: `${parsedApiOrigin.origin}/api/auth/.well-known/oauth-authorization-server`,
+      },
+      {
+        source: "/.well-known/oauth-protected-resource/api/agent",
+        destination: `${parsedApiOrigin.origin}/.well-known/oauth-protected-resource/api/agent`,
+      },
+      {
         source: "/api/:path*",
         destination: `${parsedApiOrigin.origin}/api/:path*`,
       },

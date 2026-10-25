@@ -5,6 +5,17 @@ owner API, and PostgreSQL. Its database observer uses a separate read-only
 connection. Browser cookies, invitation values, OAuth data, wallet signatures,
 and signing keys stay in process memory and are never written to evidence.
 
+Each capture creates a fresh `oid_acceptance_<run UUID>` database on the Docker
+PostgreSQL service. The existing `oid_owner` fixture role creates it and grants
+the independent `oid_observer` role SELECT-only access to new tables. The runner
+retains the database for inspection and records its name in provenance; it does
+not delete or reset the development database. This also isolates persisted JWKS:
+each capture uses its own random auth secret, which encrypts that run's JWT keys.
+The combined fixture raises auth, SIWE and credential request quotas to 120 per
+configured window so repeated UI status reads and the negative matrix fit in one
+capture. Provenance records these overrides. Product defaults are unchanged;
+this capture makes no production rate-limit acceptance claim.
+
 The local acceptance gate is separate from the external provider gate. OID-SC-012
 is recorded as `blocked` by this runner; it does not open Google or a browser
 wallet account. Missing downstream agent-access, billing, or ledger boundaries
@@ -31,9 +42,13 @@ runner also exercises private agent-card creation/edit and permission settings,
 including foreign-owner denial, idempotent retry and a two-tab revision race.
 The runner also exercises manual credential issuance, response loss/replacement,
 expiry, live policy reload and durable credential revoke across API restart.
-AAP-SC-004 passes only when its eight named observations/negatives derive from
-actual browser/HTTP/SQL evidence. Fifteen other full AAP gates remain blocked
-on OAuth, domain, lifecycle and client boundaries. Stop the dev
+The OAuth adapter uses an actual separate loopback callback listener, provider
+code/PKCE exchange, the official SDK pinned to protocol `2026-07-28`, and
+independent SQL observations of grants, code consumption and safe exchange
+audits. AAP-SC-002/003/004 can pass only when their approved observations and
+negative variants derive from the recorded browser/HTTP/SQL facts. Preflight
+alone cannot pass SC015; domain, lifecycle and actual-client boundaries remain
+separate mandatory gates. Stop the dev
 container before building/running production acceptance to avoid sharing writes
 to Next.js `.next`; restart it afterward.
 

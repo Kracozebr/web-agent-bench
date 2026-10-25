@@ -38,6 +38,20 @@ interface PendingOperation {
 interface AgentsResponse { agents: AgentCard[] }
 interface AgentResponse { agent: AgentCard }
 
+interface ConnectionProfile {
+  protocolVersion: string;
+  serverUrl: string;
+  resource: string;
+  issuer: string;
+  clientId: string;
+  redirectUri: string;
+  registration: string;
+  authorizationEndpointUrl: string;
+  tokenEndpointUrl: string;
+  authorizationServerMetadataUrl: string;
+  protectedResourceMetadataUrl: string;
+}
+
 type ManualCredentialStatus = "active" | "expired" | "replaced" | "revoked";
 
 interface ManualCredentialRecord {
@@ -248,12 +262,29 @@ export function AgentManagementPanel() {
   const [editing, setEditing] = useState<Record<string, boolean>>({});
   const [credentialPanels, setCredentialPanels] = useState<Record<string, CredentialPanelState>>({});
   const [createDraft, setCreateDraft] = useState<AgentDraft>(emptyDraft);
+  const [connectionProfile, setConnectionProfile] = useState<ConnectionProfile | null>(null);
+  const [connectionProfileError, setConnectionProfileError] = useState("");
+  const [connectionProfileLoading, setConnectionProfileLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   const pendingOperations = useRef<Record<string, PendingOperation>>({});
   const credentialOperations = useRef(new Set<string>());
+
+  useEffect(() => {
+    let active = true;
+    void apiRequest<ConnectionProfile>("/api/identity/connection-profile", { referrerPolicy: "no-referrer" }).then((profile) => {
+      if (!active) return;
+      setConnectionProfile(profile);
+    }).catch((reason: unknown) => {
+      if (!active) return;
+      setConnectionProfileError(errorText(reason));
+    }).finally(() => {
+      if (active) setConnectionProfileLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
 
   const fetchAgents = useCallback(async () => {
     const response = await apiRequest<AgentsResponse>("/api/owner/agents");
@@ -724,6 +755,39 @@ export function AgentManagementPanel() {
       </div>
 
       <div className="notice">Cards and metadata are private to this owner. Client, model and version details are owner-declared and unverified. New cards begin with every action permission off.</div>
+
+      <section className="card stack-sm" aria-labelledby="connection-profile-title" data-testid="connection-profile">
+        <div className="section-heading">
+          <div>
+            <h2 id="connection-profile-title">Remote HTTP MCP connection</h2>
+            <p className="fine">This local profile accepts the registered client ID and exact redirect URI shown below; other client editions are unverified. Configure that registered MCP client with the server URL, then start authorization to choose an existing agent and review its current permissions in the browser.</p>
+          </div>
+        </div>
+        {connectionProfileLoading ? <p className="loading" role="status">Loading the configured connection profile…</p> : null}
+        {!connectionProfileLoading && connectionProfileError ? <p className="status-box status-error" role="alert">{connectionProfileError}</p> : null}
+        {connectionProfile ? (
+          <>
+            <dl className="kv-list">
+              <dt>Remote HTTP MCP URL</dt><dd data-testid="connection-profile-server-url"><code>{connectionProfile.serverUrl}</code></dd>
+              <dt>Protocol version</dt><dd data-testid="connection-profile-protocol">{connectionProfile.protocolVersion}</dd>
+              <dt>Protected resource</dt><dd data-testid="connection-profile-resource"><code>{connectionProfile.resource}</code></dd>
+              <dt>Registered client ID</dt><dd data-testid="connection-profile-client-id"><code>{connectionProfile.clientId}</code></dd>
+              <dt>Redirect URI</dt><dd data-testid="connection-profile-redirect-uri"><code>{connectionProfile.redirectUri}</code></dd>
+              <dt>Registration</dt><dd data-testid="connection-profile-registration">{connectionProfile.registration}</dd>
+            </dl>
+            <details className="stack-sm">
+              <summary>Discovery and authorization endpoints</summary>
+              <dl className="kv-list">
+                <dt>Issuer</dt><dd><code>{connectionProfile.issuer}</code></dd>
+                <dt>Authorization server metadata</dt><dd><code>{connectionProfile.authorizationServerMetadataUrl}</code></dd>
+                <dt>Protected resource metadata</dt><dd><code>{connectionProfile.protectedResourceMetadataUrl}</code></dd>
+                <dt>Authorization endpoint</dt><dd><code>{connectionProfile.authorizationEndpointUrl}</code></dd>
+                <dt>Token endpoint</dt><dd><code>{connectionProfile.tokenEndpointUrl}</code></dd>
+              </dl>
+            </details>
+          </>
+        ) : null}
+      </section>
 
       <section className="card" aria-labelledby="create-agent-title">
         <div className="section-heading">

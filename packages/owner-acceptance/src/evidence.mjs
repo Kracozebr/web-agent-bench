@@ -35,7 +35,9 @@ export function assertSecretFree(value, label = "evidence") {
       }
       return;
     }
-    if (typeof current === "string" && (SECRET_TEXT.test(current) || /\baap1_[A-Za-z0-9_-]{43}\b/.test(current))) {
+    if (typeof current === "string" && (SECRET_TEXT.test(current)
+      || /\baap1_[A-Za-z0-9_-]{43}\b/.test(current)
+      || /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(current))) {
       throw new Error(`${label} contains an unredacted credential-like value at ${path}`);
     }
   };

@@ -84,3 +84,15 @@ The Compose runtime passes these nonsecret configuration variables through.
 Credentials are bound to the configured public origin plus `/api/agent`.
 Issuance plaintext is never part of the image, secret files or evidence.
 See the approved change's [configuration profile](../../openspec/changes/agent-access-and-permissions/configuration.md).
+
+The browser OAuth/MCP slice pins Better Auth plugins 1.7.12 and official MCP SDK
+2.4.0 with modern protocol `2026-07-28`. Compose passes
+`OID_MCP_CLIENT_ID` and `OID_MCP_CLIENT_REDIRECT_URI`; its local defaults are
+`oid-local-mcp-client` and `http://127.0.0.1:38765/oauth/callback`.
+That callback belongs to a separate client listener, not the Next.js app.
+Only the configured preregistered public client is enabled; dynamic registration
+and remote client metadata are disabled. The connection endpoint is
+`http://127.0.0.1:3000/api/agent/mcp`. The acceptance runner owns the isolated
+loopback client listener and never writes its code, PKCE verifier or token to
+evidence. See [the pinned OAuth profile](../../openspec/changes/agent-access-and-permissions/oauth-profile.md)
+for the exact resource, scope, lifetimes and compatibility boundary.

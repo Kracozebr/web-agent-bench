@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { resolve } from "node:path";
 import { REPOSITORY_ROOT, EVIDENCE_ROOT, assertSecretFree, sha256 } from "./evidence.mjs";
 
-export async function saveAapEvidence({ browserData, databaseData, provenance, credentialData }) {
+export async function saveAapEvidence({ browserData, databaseData, provenance, credentialData, oauthData }) {
   const contractBytes = await readFile(resolve(REPOSITORY_ROOT, "tests/bdd/changes/agent-access-and-permissions/harness-contracts.json"));
   const contract = JSON.parse(contractBytes);
   const results = [];
@@ -15,13 +15,23 @@ export async function saveAapEvidence({ browserData, databaseData, provenance, c
     await mkdir(directory, { recursive: true });
     const hasCardObservation = ["AAP-SC-001", "AAP-SC-006", "AAP-SC-014"].includes(scenarioId);
     const hasCredentialObservation = Boolean(credentialData) && ["AAP-SC-004", "AAP-SC-005", "AAP-SC-007", "AAP-SC-009", "AAP-SC-010", "AAP-SC-011", "AAP-SC-014"].includes(scenarioId);
-    const observedBrowser = hasCardObservation ? { ...browserData, ...(hasCredentialObservation ? { credentials: credentialData.browserData } : {}) }
+    const hasOauthObservation = Boolean(oauthData) && ["AAP-SC-002", "AAP-SC-003", "AAP-SC-007", "AAP-SC-010", "AAP-SC-011", "AAP-SC-013", "AAP-SC-014", "AAP-SC-015"].includes(scenarioId);
+    let observedBrowser = hasCardObservation ? { ...browserData, ...(hasCredentialObservation ? { credentials: credentialData.browserData } : {}) }
       : hasCredentialObservation ? credentialData.browserData : { noScenarioSpecificMutationAttempted: true };
-    const observedDatabase = hasCardObservation ? { ...databaseData, ...(hasCredentialObservation ? { credentials: credentialData.databaseData } : {}) }
+    let observedDatabase = hasCardObservation ? { ...databaseData, ...(hasCredentialObservation ? { credentials: credentialData.databaseData } : {}) }
       : hasCredentialObservation ? credentialData.databaseData : { observer: databaseData.observer };
+    if (hasOauthObservation) {
+      if (["AAP-SC-002", "AAP-SC-003", "AAP-SC-015"].includes(scenarioId)) {
+        observedBrowser = oauthData.browserData;
+        observedDatabase = oauthData.databaseData;
+      } else {
+        observedBrowser = { ...observedBrowser, oauth: oauthData.browserData };
+        observedDatabase = { ...observedDatabase, oauth: oauthData.databaseData };
+      }
+    }
     const artifacts = [];
     for (const [name, payload, boundary] of [
-      ["browser.json", observedBrowser, "Actual private-card/credential controls and labelled direct HTTP verifier probes; no MCP or paid-domain pass claimed"],
+      ["browser.json", observedBrowser, "Actual private-card/credential/consent controls, SDK OAuth/MCP and labelled HTTP negatives; no paid-domain pass claimed"],
       ["database.json", observedDatabase, "Independent oid_observer SELECT-only PostgreSQL reads"],
       ["provenance.json", { ...provenance, contractSha256: sha256(contractBytes) }, "Source hashes, container runtime and unchanged approved AAP contract"],
     ]) {
@@ -31,16 +41,22 @@ export async function saveAapEvidence({ browserData, databaseData, provenance, c
       artifacts.push({ path: name, sha256: sha256(bytes), boundary, contentType: "application/json" });
     }
     const credentialPassed = scenarioId === "AAP-SC-004" && credentialData?.sc004Ready === true && provenance.sourceStableDuringRun === true;
-    const status = credentialPassed ? "passed" : "blocked";
+    const oauthPassed = provenance.sourceStableDuringRun === true && (
+      (scenarioId === "AAP-SC-002" && oauthData?.sc002Ready === true)
+      || (scenarioId === "AAP-SC-003" && oauthData?.sc003Ready === true));
+    const passed = credentialPassed || oauthPassed;
+    const status = passed ? "passed" : "blocked";
     const blockedReasonCode = !provenance.sourceStableDuringRun ? "source_inputs_changed_during_run"
+      : ["AAP-SC-002", "AAP-SC-003"].includes(scenarioId) ? "oauth_required_observations_incomplete"
       : scenarioId === "AAP-SC-016" ? "actual_client_matrix_unavailable" : "downstream_domain_unavailable";
     const notRun = () => ({ status: "not_run", reasonCode: blockedReasonCode });
-    const observation = () => credentialPassed ? { status: "observed", evidence: ["browser.json", "database.json"] } : notRun();
+    const observation = () => passed ? { status: "observed", evidence: ["browser.json", "database.json"] } : notRun();
     const manifest = { schemaVersion: "agent-access-acceptance/v1", specProfile: "active-delta", scenarioId, runId,
-      status, ...(credentialPassed ? {} : { blockedReasonCode }),
-      observationStatus: credentialPassed ? "complete" : "not_run", negativeVariantStatus: credentialPassed ? "complete" : "not_run",
-      statusDetail: credentialPassed ? "Actual browser manual issuance, header verifier and owner/resource isolation with independent persisted evidence."
-        : hasCardObservation || hasCredentialObservation ? "Card/credential observations are partial for this full scenario; actual OAuth, domain, lifecycle or client effects remain unavailable." : "This scenario's actual credential, domain or client boundary has not been implemented/executed.",
+      status, ...(passed ? {} : { blockedReasonCode }),
+      observationStatus: passed ? "complete" : "not_run", negativeVariantStatus: passed ? "complete" : "not_run",
+      statusDetail: oauthPassed ? "Real provider-managed browser consent/code exchange with SDK binding checks and independent PostgreSQL evidence."
+        : credentialPassed ? "Actual browser manual issuance, header verifier and owner/resource isolation with independent persisted evidence."
+        : hasCardObservation || hasCredentialObservation || hasOauthObservation ? "Observed local card/credential/OAuth facts are partial for this full scenario; domain, lifecycle or actual-client effects remain unavailable." : "This scenario's actual credential, domain or client boundary has not been implemented/executed.",
       observations: Object.fromEntries(row.required_observations.map((name) => [name, observation()])),
       negativeVariants: Object.fromEntries(row.negative_variants.map((name) => [name, observation()])), artifacts };
     assertSecretFree(manifest);
@@ -48,7 +64,7 @@ export async function saveAapEvidence({ browserData, databaseData, provenance, c
     let runs = [];
     try { runs = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8")).runs ?? []; } catch { /* First capture. */ }
     const index = { schemaVersion: "agent-access-evidence-index/v1", scenarioId, latestRunId: runId,
-      status, ...(credentialPassed ? {} : { blockedReasonCode }), runs: [...new Set([...runs, runId])] };
+      status, ...(passed ? {} : { blockedReasonCode }), runs: [...new Set([...runs, runId])] };
     const temporary = resolve(root, `.manifest-${randomUUID()}.tmp`);
     await writeFile(temporary, JSON.stringify(index, null, 2) + "\n", { flag: "wx" });
     await rename(temporary, resolve(root, "manifest.json"));

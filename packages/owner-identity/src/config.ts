@@ -18,6 +18,8 @@ export interface OwnerIdentityConfig {
   sessionTtlSeconds: number;
   invitationTtlSeconds: number;
   manualCredentialTtlSeconds: number;
+  mcpClientId: string;
+  mcpClientRedirectUri: string;
   agentCredentialRateLimitMax: number;
   agentPreflightRateLimitMax: number;
   authRateLimitMax: number;
@@ -69,6 +71,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
   if (!databaseUrl) throw new Error("OID_DATABASE_URL is required");
   if (!authSecret || authSecret.length < 32) throw new Error("OID_AUTH_SECRET must contain at least 32 characters");
 
+  const configuredMcpClientId = optional(env, "OID_MCP_CLIENT_ID");
+  const configuredMcpClientRedirectUri = optional(env, "OID_MCP_CLIENT_REDIRECT_URI");
+  if (env.NODE_ENV === "production" && (!configuredMcpClientId || !configuredMcpClientRedirectUri)) {
+    throw new Error("OID_MCP_CLIENT_ID and OID_MCP_CLIENT_REDIRECT_URI must be explicitly configured in production");
+  }
+  const mcpClientId = configuredMcpClientId ?? "oid-local-mcp-client";
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(mcpClientId)) {
+    throw new Error("OID_MCP_CLIENT_ID must be an 8-128 character fixed client identifier");
+  }
+  const mcpClientRedirectUri = configuredMcpClientRedirectUri ?? "http://127.0.0.1:38765/oauth/callback";
+  let parsedMcpRedirect: URL;
+  try {
+    parsedMcpRedirect = new URL(mcpClientRedirectUri);
+  } catch {
+    throw new Error("OID_MCP_CLIENT_REDIRECT_URI must be an absolute loopback callback URL");
+  }
+  if (parsedMcpRedirect.protocol !== "http:" || parsedMcpRedirect.hostname !== "127.0.0.1" ||
+    parsedMcpRedirect.port.length === 0 || parsedMcpRedirect.username || parsedMcpRedirect.password ||
+    parsedMcpRedirect.search || parsedMcpRedirect.hash || parsedMcpRedirect.pathname !== "/oauth/callback" ||
+    parsedMcpRedirect.href !== mcpClientRedirectUri) {
+    throw new Error("OID_MCP_CLIENT_REDIRECT_URI must be an exact http://127.0.0.1:<port>/oauth/callback URI");
+  }
+
   const googleClientId = optional(env, "OID_GOOGLE_CLIENT_ID");
   const googleClientSecret = optional(env, "OID_GOOGLE_CLIENT_SECRET");
   if (Boolean(googleClientId) !== Boolean(googleClientSecret)) {
@@ -109,6 +134,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     sessionTtlSeconds: integer(env, "OID_SESSION_TTL_SECONDS", 604800, 300, 31536000),
     invitationTtlSeconds: integer(env, "OID_INVITATION_TTL_SECONDS", 604800, 60, 2592000),
     manualCredentialTtlSeconds: integer(env, "OID_MANUAL_CREDENTIAL_TTL_SECONDS", 86400, 300, 2592000),
+    mcpClientId,
+    mcpClientRedirectUri,
     agentCredentialRateLimitMax: integer(env, "OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX", 30, 1, 1000),
     agentPreflightRateLimitMax: integer(env, "OID_AGENT_PREFLIGHT_RATE_LIMIT_MAX", 60, 1, 1000),
     authRateLimitMax: integer(env, "OID_AUTH_RATE_LIMIT_MAX", 10, 1, 1000),

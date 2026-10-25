@@ -14,6 +14,7 @@ def test_access_state_is_not_a_plaintext_access_token():
     {"nested": {"clientSecret": "opaque-value"}},
     {"unrelatedLabel": "aap1_" + "x" * 43},
     {"nested": ["Bearer opaque-value"]},
+    {"unrelatedLabel": "eyJ" + "a" * 30 + "." + "b" * 30 + "." + "c" * 30},
 ])
 def test_credential_material_is_rejected_regardless_of_container(payload):
     with pytest.raises(AssertionError):

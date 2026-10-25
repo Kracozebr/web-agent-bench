@@ -4,7 +4,8 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { beginScenarioRun, publishScenarioIndex, sha256, writeJsonArtifact, writeManifest } from "./evidence.mjs";
+import pg from "pg";
+import { assertSecretFree, beginScenarioRun, publishScenarioIndex, sha256, writeJsonArtifact, writeManifest } from "./evidence.mjs";
 import { attachSafeBrowserCapture, currentOwner, waitForPath } from "./browser-support.mjs";
 import { startGoogleFixtureServer } from "./google-fixture-server.mjs";
 import { OwnerDatabaseObserver } from "./observer.mjs";
@@ -17,6 +18,7 @@ import { runGoogleLinkStartRace } from "./link-start-race.mjs";
 import { runAapCardCases } from "./aap-cases.mjs";
 import { saveAapEvidence } from "./aap-evidence.mjs";
 import { runAapCredentialCases } from "./credential-cases.mjs";
+import { runAapOauthCases } from "./oauth-cases.mjs";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(packageRoot, "../..");
@@ -40,6 +42,38 @@ let browser;
 let phase = "startup";
 let apiChild;
 let apiEnvironment;
+let databaseIsolation;
+
+async function isolateAcceptanceDatabase() {
+  const ownerUrl = new URL(process.env.OID_DATABASE_URL);
+  const observerUrl = new URL(process.env.OID_OBSERVER_DATABASE_URL);
+  if (ownerUrl.hostname !== "postgres" || observerUrl.hostname !== "postgres"
+    || ownerUrl.username !== "oid_owner" || observerUrl.username !== "oid_observer") {
+    throw new Error("Acceptance database creation requires the declared Docker fixture roles and host");
+  }
+  const databaseName = `oid_acceptance_${runId.replaceAll("-", "")}`;
+  if (!/^oid_acceptance_[a-f0-9]{32}$/.test(databaseName)) throw new Error("Invalid acceptance database identity");
+  const admin = new pg.Client({ connectionString: ownerUrl.href });
+  await admin.connect();
+  try {
+    await admin.query(`CREATE DATABASE "${databaseName}" TEMPLATE template0`);
+  } finally { await admin.end(); }
+  ownerUrl.pathname = `/${databaseName}`;
+  observerUrl.pathname = `/${databaseName}`;
+  const setup = new pg.Client({ connectionString: ownerUrl.href });
+  await setup.connect();
+  try {
+    await setup.query(`GRANT CONNECT ON DATABASE "${databaseName}" TO oid_observer`);
+    await setup.query("GRANT USAGE ON SCHEMA public TO oid_observer");
+    await setup.query("ALTER DEFAULT PRIVILEGES FOR ROLE oid_owner IN SCHEMA public GRANT SELECT ON TABLES TO oid_observer");
+  } finally { await setup.end(); }
+  // AICODE-NOTE: Each run randomizes the auth secret. Persisted JWT private keys
+  // are encrypted with that secret, so reusing another run's JWKS breaks login.
+  // Keep the whole fixture DB isolated and retained; never delete shared keys.
+  process.env.OID_DATABASE_URL = ownerUrl.href;
+  process.env.OID_OBSERVER_DATABASE_URL = observerUrl.href;
+  databaseIsolation = { databaseName, runId, createdForCapture: true, retainedForInspection: true };
+}
 
 function requireLoopbackOrigin(value, name) {
   const url = new URL(value);
@@ -108,6 +142,9 @@ async function startRuntime() {
   if (!process.env.OID_DATABASE_URL || !process.env.OID_OBSERVER_DATABASE_URL) throw new Error("OID_DATABASE_URL and OID_OBSERVER_DATABASE_URL are required");
   if (!process.env.OID_CHROMIUM_EXECUTABLE) throw new Error("OID_CHROMIUM_EXECUTABLE is required");
 
+  phase = "isolated_acceptance_database";
+  await isolateAcceptanceDatabase();
+
   phase = "local_google_fixture";
   fixture = await startGoogleFixtureServer({ host: "127.0.0.1", port: 0, clientId, clientSecret, publicOrigin });
   const preload = resolve(packageRoot, "src/google-fetch-preload.mjs");
@@ -124,6 +161,7 @@ async function startRuntime() {
     OID_REGISTRATION_MODE: "closed",
     OID_AUTH_RATE_LIMIT_MAX: "120",
     OID_SIWE_RATE_LIMIT_MAX: "120",
+    OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX: "120",
     NODE_ENV: "development",
   };
   // Keep acceptance rate buckets and cookies isolated across independent runs.
@@ -185,12 +223,22 @@ async function googleLogin(context, scenarioId, subject) {
   captureApi.action("click", "sign-in-google");
   const callback = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/auth/callback/google", { timeout: 30000 }).catch(() => null);
   await page.getByTestId("sign-in-google").click();
-  if (!(await callback)) {
+  const callbackResponse = await callback;
+  if (!callbackResponse) {
     console.error(JSON.stringify({ event: "oid_callback_missing", scenarioId,
       responses: capture.responses.filter((row) => row.path.startsWith("/api/")).slice(-8) }));
     throw new Error("Google callback route did not complete");
   }
-  await waitForPath(page, ["/account", "/activate", "/sign-in"], 25000);
+  try {
+    await waitForPath(page, ["/account", "/activate", "/sign-in"], 25000);
+  } catch (error) {
+    const location = callbackResponse.headers().location;
+    console.error(JSON.stringify({ event: "oid_callback_navigation_incomplete", scenarioId,
+      callbackStatus: callbackResponse.status(), pagePath: new URL(page.url()).pathname,
+      callbackLocationPath: location ? new URL(location, publicOrigin).pathname : null,
+      responses: capture.responses.filter((row) => row.path.startsWith("/api/")).slice(-8) }));
+    throw error;
+  }
   const owner = await waitOwner(page, "authenticated", 5000).catch(() => waitOwner(page, "anonymous", 5000));
   return { page, capture, captureApi, fixtureRoute, owner };
 }
@@ -574,6 +622,13 @@ async function main() {
       observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
       databaseUrl: process.env.OID_DATABASE_URL, restartApi: restartOwnerApi });
 
+    phase = "browser_oauth_consent_and_mcp";
+    const oauthData = await runAapOauthCases({ page: ownerLogin.page, ownerId,
+      adminPage: admin.page, newContext, publicOrigin,
+      login: (context, subject) => googleLogin(context, "AAP-SC-002", subject),
+      observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
+      databaseUrl: process.env.OID_DATABASE_URL, restartApi: restartOwnerApi });
+
     const operations = [
       issueOperation, sc009IssueOperation, activationOperation, revokeOperation, ...policyOperations, walletResult.linkOperationId,
       ...failedFlows.flatMap((row) => row.capture.authOperations.map((operation) => operation.operationId)),
@@ -614,6 +669,9 @@ async function main() {
     const sourceHashesAfter = await collectSourceHashes();
     const sourceStableDuringRun = JSON.stringify(sourceHashesBefore) === JSON.stringify(sourceHashesAfter);
     const provenance = {
+      databaseIsolation,
+      acceptanceRateOverrides: { authRequestsPerWindow: 120, siweRequestsPerWindow: 120,
+        credentialRequestsPerWindow: 120, productionRateLimitAcceptanceClaimed: false },
       runId,
       node: process.version,
       playwright: "1.56.1",
@@ -638,7 +696,7 @@ async function main() {
       inputHashesBefore: sourceHashesBefore,
       inputHashesAfter: sourceHashesAfter,
     };
-    const aapSaved = await saveAapEvidence({ ...aap, credentialData, provenance });
+    const aapSaved = await saveAapEvidence({ ...aap, credentialData, oauthData, provenance });
     const googleMatrixRows = await observer.snapshot({ subjects: googleMatrix.subjects, operationIds: googleMatrix.operations });
     const sc001 = await saveCompleteScenario("OID-SC-001", { trials: googleMatrix.trials, callerEmailEndpoint: googleMatrix.callerEmailEndpoint }, googleMatrixRows, provenance);
     const siweMatrixRows = await observer.snapshot({ ownerIds: [siweMatrix.ownerId], subjectHashes: siweMatrix.subjectHashes, operationIds: siweMatrix.operations, nonceHashes: siweMatrix.nonceHashes });
@@ -685,12 +743,12 @@ async function main() {
     const blocked = [];
     const blockers = {
       "OID-SC-003": ["bonus_ledger_boundary_unavailable", "Actual two-owner invitation race, lost response, backend restart and original-operation retry were observed; the downstream no-bonus ledger boundary is unavailable."],
-      "OID-SC-004": ["downstream_private_handlers_unavailable", "Participant card, delegated-token, and funding handlers are not exposed by this local application."],
-      "OID-SC-005": ["agent_and_ledger_boundary_unavailable", "Agent IDs, balances, bonus, deposit, and withdrawal surfaces are unavailable."],
+      "OID-SC-004": ["downstream_private_handlers_unavailable", "Local cards and delegated credentials exist; the full private-handler and funding matrix is not proven."],
+      "OID-SC-005": ["ledger_boundary_unavailable", "Local agent IDs exist; balance, bonus, deposit, withdrawal and downstream identity-preservation boundaries remain unavailable."],
       "OID-SC-006": ["remaining_identity_conflict_matrix_not_run", "Two real concurrent Google link controls produced one pending flow and one conflict with unchanged identities; existing-identity collision, foreign-session substitution and downstream preservation remain untested."],
       "OID-SC-007": ["policy_race_and_ledger_boundary_not_run", "Policy controls were exercised, but race and existing agent/ledger preservation are not proven."],
-      "OID-SC-008": ["agent_credential_and_revocation_boundary_unavailable", "UI logout, persisted session invalidation, old-cookie rejection, expired-session denial and origin/forged-admin negatives were observed; actual agent authority and revocation boundaries remain unavailable."],
-      "OID-SC-010": ["downstream_aap_and_funding_handlers_unavailable", "AAP/agent-card, delegated credential, bonus, and funding handlers are unavailable."],
+      "OID-SC-008": ["downstream_revocation_boundary_unavailable", "UI logout, persisted session invalidation, old-cookie rejection, expired-session denial and origin/forged-admin negatives were observed; full session-to-agent-domain authority and cancellation integration remain unproven."],
+      "OID-SC-010": ["downstream_funding_handlers_unavailable", "Local AAP cards and delegated credentials exist; the full pending-owner, bonus and funding matrix remains unproven."],
       "OID-SC-012": ["external_google_and_wallet_gate_not_run", "No external Google account or selected browser wallet was used."],
     };
     const blockedSnapshot = await observer.snapshot();
@@ -706,7 +764,8 @@ async function main() {
       status: finalStatus,
       scenarios: [sc001, sc002, sc009, saved, ...blocked],
       counts: { passed: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "passed").length, blocked: [sc001, sc002, sc009, saved, ...blocked].filter((row) => row.status === "blocked").length, failed: 0 },
-      aap: { privateCardAndPolicyObserved: true, manualCredentialObserved: credentialData.sc004Ready === true, scenarios: aapSaved },
+      aap: { privateCardAndPolicyObserved: true, manualCredentialObserved: credentialData.sc004Ready === true,
+        browserConsentObserved: oauthData.sc002Ready === true, oauthExchangeObserved: oauthData.sc003Ready === true, scenarios: aapSaved },
       observations: { adminOAuth: true, invitationIssuedInUI: true, invitationSecretExcludedFromList: true, inviteVerifierMatches: true, ownerActivationViaUI: true, independentReadOnlyPostgresRows: true },
       blockedReason: "Unsupported downstream boundaries, remaining scenario-specific negative matrices, and external OID-SC-012 compatibility remain blocked.",
     }, null, 2));
@@ -720,6 +779,13 @@ async function main() {
 }
 
 main().catch((error) => {
+  let safeDiagnostic;
+  try {
+    if (error?.safeDiagnostic && typeof error.safeDiagnostic === "object") {
+      assertSecretFree(error.safeDiagnostic, "failureDiagnostic");
+      safeDiagnostic = error.safeDiagnostic;
+    }
+  } catch { /* Never expose a diagnostic that fails the secret filter. */ }
   const safeCode = typeof error?.code === "string" && /^[A-Z0-9_]+$/.test(error.code) ? error.code : undefined;
   const stackFrames = String(error?.stack ?? "").split("\n")
     .filter((line) => line.includes("/src/") || line.includes("\\src\\"))
@@ -730,6 +796,7 @@ main().catch((error) => {
     phase,
     errorName: error instanceof Error ? error.name : "Error",
     ...(safeCode ? { errorCode: safeCode } : {}),
+    ...(safeDiagnostic ? { safeDiagnostic } : {}),
     stackFrames,
     messageOmitted: true,
   }));

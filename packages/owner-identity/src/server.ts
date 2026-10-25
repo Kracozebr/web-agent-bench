@@ -12,6 +12,7 @@ import {
   admissions,
   authFlows,
   auditEvents,
+  agentOauthAuthorizations,
   authAccount,
   authUser,
   identities,
@@ -167,6 +168,72 @@ async function auditSiweOutcome(opId: string, success: boolean, reason?: string)
       metadata: { provider: "wallet", purpose: "signin", ...(reason ? { reason } : {}) }
     });
   });
+}
+
+async function auditOAuthCodeExchange(request: FastifyRequest, response: Response): Promise<Response> {
+  const code = asRecord(request.body).code;
+  if (typeof code !== "string" || code.length < 1 || code.length > 512) return response;
+  const authorizationCodeHash = createHash("sha256").update(code).digest("base64url");
+  const authorization = await db.query.agentOauthAuthorizations.findFirst({
+    where: eq(agentOauthAuthorizations.authorizationCodeHash, authorizationCodeHash)
+  });
+  if (!authorization) return response;
+
+  let tokenValid = false;
+  if (response.ok) {
+    try {
+      const responseBody = asRecord(await response.clone().json());
+      const accessToken = responseBody.access_token;
+      if (typeof accessToken === "string" && accessToken.length <= 8192) {
+        const verified = await auth.api.verifyJWT({ body: { token: accessToken, issuer: `${config.publicOrigin}/api/auth` } });
+        const claims = asRecord(verified.payload);
+        const audience = claims.aud;
+        const resourceMatches = audience === authorization.resource ||
+          (Array.isArray(audience) && audience.length === 1 && audience[0] === authorization.resource);
+        tokenValid = Boolean(verified.payload && resourceMatches && claims.iss === `${config.publicOrigin}/api/auth` &&
+          claims.sub === authorization.authUserId && claims.azp === authorization.clientId && claims.scope === "agent:operate" &&
+          claims.oid_owner_id === authorization.ownerId && claims.oid_agent_id === authorization.agentId &&
+          claims.oid_grant_id === authorization.grantId && claims.oid_access_generation === authorization.accessGeneration &&
+          claims.oid_role === "agent");
+      }
+    } catch {
+      tokenValid = false;
+    }
+  }
+
+  if (response.ok && !tokenValid) {
+    return new Response(JSON.stringify({ error: "invalid_grant" }), {
+      status: 502,
+      headers: { "content-type": "application/json", "cache-control": "no-store" }
+    });
+  }
+
+  const eventType = tokenValid ? "agent.oauth.code_exchanged" : "agent.oauth.code_exchange_rejected";
+  const eventOperationId = tokenValid ? `oauth-exchange:${authorization.id}` : `oauth-exchange-rejected:${authorization.id}:${randomUUID()}`;
+  await db.transaction(async (tx) => {
+    const current = await tx.query.agentOauthAuthorizations.findFirst({
+      where: eq(agentOauthAuthorizations.id, authorization.id)
+    });
+    if (!current || current.status !== "approved" || current.authorizationCodeHash !== authorizationCodeHash) return;
+    const existing = tokenValid ? await tx.query.auditEvents.findFirst({
+      where: and(eq(auditEvents.eventType, eventType), eq(auditEvents.operationId, eventOperationId))
+    }) : undefined;
+    if (existing) return;
+    await tx.insert(auditEvents).values({
+      id: randomUUID(), eventType, operationId: eventOperationId,
+      actorOwnerId: current.ownerId, subjectOwnerId: current.ownerId,
+      invitationId: null, policyRevision: current.policyRevision,
+      metadata: {
+        authorizationId: current.id,
+        agentId: current.agentId,
+        grantId: current.grantId,
+        clientId: current.clientId,
+        resource: current.resource
+      },
+      createdAt: new Date()
+    });
+  });
+  return response;
 }
 
 async function sessionFromAuthResponse(response: Response): Promise<Authenticated | null> {
@@ -340,12 +407,29 @@ function parseSiwe(message: string) {
 }
 
 async function start() {
+  app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (request, body, done) => {
+    try {
+      const parsed: Record<string, string | string[]> = Object.create(null) as Record<string, string | string[]>;
+      const bodyText = typeof body === "string" ? body : body.toString("utf8");
+      for (const [key, value] of new URLSearchParams(bodyText)) {
+        const prior = parsed[key];
+        if (prior === undefined) parsed[key] = value;
+        else if (Array.isArray(prior)) prior.push(value);
+        else parsed[key] = [prior, value];
+      }
+      done(null, parsed);
+    } catch (error) {
+      done(error as Error);
+    }
+  });
   await app.register(cookie);
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Cache-Control", "no-store");
-    if (request.url.startsWith("/api/") && request.method !== "GET" && request.method !== "HEAD" && !request.url.startsWith("/api/auth/")) {
+    const pathname = new URL(request.url, config.publicOrigin).pathname;
+    if (pathname.startsWith("/api/") && request.method !== "GET" && request.method !== "HEAD" &&
+      !pathname.startsWith("/api/auth/") && pathname !== "/api/agent/mcp") {
       try { await requireOrigin(request); }
       catch (error) { return responseError(reply, error); }
     }
@@ -353,6 +437,8 @@ async function start() {
 
   registerAgentRoutes(app, {
     db,
+    auth,
+    config,
     requireOrigin,
     rateLimit,
     rateLimitMax: config.authRateLimitMax,
@@ -386,6 +472,35 @@ async function start() {
     }
   }));
 
+  app.get("/api/identity/connection-profile", async (_request, reply) => reply.send({
+    protocolVersion: "2026-07-28",
+    serverUrl: `${config.publicOrigin}/api/agent/mcp`,
+    resource: `${config.publicOrigin}/api/agent`,
+    issuer: `${config.publicOrigin}/api/auth`,
+    clientId: config.mcpClientId,
+    redirectUri: config.mcpClientRedirectUri,
+    registration: "pre-registered",
+    authorizationEndpointUrl: `${config.publicOrigin}/api/auth/oauth2/authorize`,
+    tokenEndpointUrl: `${config.publicOrigin}/api/auth/oauth2/token`,
+    authorizationServerMetadataUrl: `${config.publicOrigin}/.well-known/oauth-authorization-server/api/auth`,
+    protectedResourceMetadataUrl: `${config.publicOrigin}/.well-known/oauth-protected-resource/api/agent`
+  }));
+
+  app.get("/.well-known/oauth-protected-resource/api/agent", async (_request, reply) => reply.send({
+    resource: `${config.publicOrigin}/api/agent`,
+    authorization_servers: [`${config.publicOrigin}/api/auth`],
+    scopes_supported: ["agent:operate"],
+    bearer_methods_supported: ["header"]
+  }));
+
+  app.get("/.well-known/oauth-authorization-server/api/auth", async (request, reply) => {
+    const metadata = await auth.api.getOAuthServerConfig({
+      request: new Request(new URL(request.url, config.publicOrigin)),
+      asResponse: false
+    });
+    return reply.header("Cache-Control", "public, max-age=15").send(metadata);
+  });
+
   app.all("/api/auth/*", async (request, reply) => {
     const group = request.url.includes("/siwe/") ? "auth-siwe" : "auth";
     let flow: typeof authFlows.$inferSelect | undefined;
@@ -413,7 +528,13 @@ async function start() {
         "/api/auth/siwe/verify": ["POST"],
         "/api/auth/get-session": ["GET"],
         "/api/auth/sign-out": ["POST"],
-        "/api/auth/error": ["GET"]
+        "/api/auth/error": ["GET"],
+        "/api/auth/.well-known/oauth-authorization-server": ["GET"],
+        "/api/auth/jwks": ["GET"],
+        "/api/auth/oauth2/authorize": ["GET", "POST"],
+        "/api/auth/oauth2/continue": ["POST"],
+        "/api/auth/oauth2/consent": ["POST"],
+        "/api/auth/oauth2/token": ["POST"]
       };
       if (!allowedMethods[endpoint]?.includes(method)) throw new HttpError(404, "NOT_FOUND", "Authentication endpoint is not enabled");
       const isSiwe = endpoint.startsWith("/api/auth/siwe/");
@@ -566,12 +687,26 @@ async function start() {
         headers.set(key, Array.isArray(value) ? value.join(", ") : String(value));
       }
       const requestMethod = request.method.toUpperCase();
-      const body = requestMethod === "GET" || requestMethod === "HEAD" || request.body === undefined ? undefined : JSON.stringify(request.body);
-      if (body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
+      let body: string | undefined;
+      if (requestMethod !== "GET" && requestMethod !== "HEAD" && request.body !== undefined) {
+        const mediaType = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+        if (mediaType === "application/x-www-form-urlencoded") {
+          const params = new URLSearchParams();
+          for (const [key, value] of Object.entries(asRecord(request.body))) {
+            if (typeof value === "string") params.set(key, value);
+            else if (Array.isArray(value)) for (const item of value) if (typeof item === "string") params.append(key, item);
+          }
+          body = params.toString();
+        } else {
+          body = JSON.stringify(request.body);
+          if (!headers.has("content-type")) headers.set("content-type", "application/json");
+        }
+      }
       const authRequest = new Request(`${config.publicOrigin}${request.url}`, { method: requestMethod, headers, ...(body === undefined ? {} : { body }) });
       authFlowResult = isSiwe && siweContextHash
         ? await withSiweRequest({ purpose: "signin", contextHash: siweContextHash }, () => auth.handler(authRequest))
         : await auth.handler(authRequest);
+      if (endpoint === "/api/auth/oauth2/token") authFlowResult = await auditOAuthCodeExchange(request, authFlowResult);
 
       let outputBody = Buffer.from(await authFlowResult.clone().arrayBuffer());
       let jsonBody: Record<string, unknown> | undefined;

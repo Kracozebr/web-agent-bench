@@ -1,6 +1,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod";
+import { withOAuthSelection, type OAuthSelectionContext } from "./auth.js";
+import type { createAuth } from "./auth.js";
+import type { OwnerIdentityConfig } from "./config.js";
 import type { OwnerDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
 import {
@@ -10,6 +16,9 @@ import {
   agentAccessGrants,
   agentManualCredentials,
   agentCancellationOutbox,
+  agentOauthAuthorizations,
+  oauthClients,
+  owners,
   auditEvents
 } from "./schema.js";
 
@@ -41,11 +50,13 @@ export interface AgentCard {
 }
 
 export interface AgentOwnerContext {
-  owner: { id: string; admissionStatus: string };
+  owner: { id: string; authUserId: string; admissionStatus: string };
 }
 
 export interface AgentRouteDependencies {
   db: OwnerDatabase;
+  auth: ReturnType<typeof createAuth>;
+  config: OwnerIdentityConfig;
   resolveOwner(request: FastifyRequest): Promise<AgentOwnerContext>;
   requireOrigin(request: FastifyRequest): Promise<void>;
   rateLimit(request: FastifyRequest, group: string, limit: number): Promise<void>;
@@ -55,6 +66,98 @@ export interface AgentRouteDependencies {
   manualCredentialTtlSeconds: number;
   agentResource: string;
   agentPreflightUrl: string;
+}
+
+interface VerifiedOAuthRequest {
+  query: string;
+  queryHash: string;
+  clientId: string;
+  redirectUri: string;
+  resource: string;
+  scopes: string[];
+  state: string;
+}
+
+async function parseOAuthQuery(value: unknown, dependencies: AgentRouteDependencies): Promise<VerifiedOAuthRequest> {
+  if (typeof value !== "string" || value.length < 1 || value.length > 8192) {
+    throw new HttpError(400, "INVALID_OAUTH_QUERY", "The signed OAuth request is missing or too large");
+  }
+  const query = value.startsWith("?") ? value.slice(1) : value;
+  if (!query || !(await verifyOAuthQueryParams(query, dependencies.config.authSecret))) {
+    throw new HttpError(400, "INVALID_OAUTH_QUERY", "The signed OAuth request is invalid or expired");
+  }
+  const params = new URLSearchParams(query);
+  const resources = params.getAll("resource");
+  const scopeValue = params.get("scope") ?? "";
+  const scopes = scopeValue.split(/\s+/).filter(Boolean);
+  const clientId = params.get("client_id") ?? "";
+  const redirectUri = params.get("redirect_uri") ?? "";
+  const state = params.get("state") ?? "";
+  const challenge = params.get("code_challenge") ?? "";
+  const nonceValues = params.getAll("nonce");
+  if (params.get("response_type") !== "code" || params.getAll("response_type").length !== 1 ||
+    params.getAll("client_id").length !== 1 || clientId !== dependencies.config.mcpClientId ||
+    params.getAll("redirect_uri").length !== 1 || redirectUri !== dependencies.config.mcpClientRedirectUri ||
+    params.get("code_challenge_method") !== "S256" || params.getAll("code_challenge_method").length !== 1 ||
+    params.getAll("code_challenge").length !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(challenge) ||
+    !state || state.length > 512 || params.getAll("state").length !== 1 || resources.length !== 1 || resources[0] !== dependencies.agentResource ||
+    params.getAll("scope").length !== 1 || scopes.length !== 1 || scopes[0] !== "agent:operate") {
+    throw new HttpError(400, "OAUTH_REQUEST_NOT_SUPPORTED", "Only the registered public client, exact loopback callback, S256 PKCE, agent resource, and agent:operate scope are supported");
+  }
+  if (nonceValues.length > 1 || (nonceValues[0] !== undefined && (nonceValues[0].length < 1 || nonceValues[0].length > 512))) {
+    throw new HttpError(400, "OAUTH_REQUEST_NOT_SUPPORTED", "OAuth nonce must be a single value no longer than 512 characters");
+  }
+  const queryHash = createHash("sha256").update(JSON.stringify({
+    responseType: "code", clientId, redirectUri, state,
+    codeChallenge: challenge, codeChallengeMethod: "S256",
+    resource: resources[0], scopes, ...(nonceValues[0] ? { nonce: nonceValues[0] } : {})
+  })).digest("hex");
+  return {
+    query,
+    queryHash,
+    clientId,
+    redirectUri,
+    resource: resources[0]!,
+    scopes,
+    state
+  };
+}
+
+function providerHeaders(request: FastifyRequest): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (value === undefined || ["host", "content-length", "connection", "transfer-encoding"].includes(key.toLowerCase())) continue;
+    headers.set(key, Array.isArray(value) ? value.join(", ") : String(value));
+  }
+  headers.set("content-type", "application/json");
+  return headers;
+}
+
+async function callOAuthProvider(request: FastifyRequest, dependencies: AgentRouteDependencies, endpoint: "continue" | "consent", body: Record<string, unknown>, selection: OAuthSelectionContext): Promise<Response> {
+  const providerRequest = new Request(`${dependencies.config.publicOrigin}/api/auth/oauth2/${endpoint}`, {
+    method: "POST", headers: providerHeaders(request), body: JSON.stringify(body)
+  });
+  return withOAuthSelection(selection, () => dependencies.auth.handler(providerRequest));
+}
+
+async function validatedProviderRedirect(response: Response, expectedOrigin: string, expectedPath: string): Promise<string> {
+  if (!response.ok) {
+    throw new HttpError(502, "OAUTH_PROVIDER_REDIRECT_MISSING", "The OAuth provider did not return the expected redirect");
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = record(await response.json(), "OAuth provider response");
+  } catch {
+    throw new HttpError(502, "OAUTH_PROVIDER_REDIRECT_MISSING", "The OAuth provider did not return the expected redirect");
+  }
+  if (body.redirect !== true || typeof body.url !== "string") {
+    throw new HttpError(502, "OAUTH_PROVIDER_REDIRECT_MISSING", "The OAuth provider did not return the expected redirect");
+  }
+  const url = new URL(body.url, expectedOrigin);
+  if (url.origin !== expectedOrigin || url.pathname !== expectedPath || url.username || url.password || url.hash) {
+    throw new HttpError(502, "OAUTH_PROVIDER_REDIRECT_INVALID", "The OAuth provider returned an unexpected redirect destination");
+  }
+  return url.toString();
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -351,7 +454,406 @@ function validAgentId(value: string): boolean {
 
 const uuidError = () => new HttpError(404, "AGENT_NOT_FOUND", "Agent was not found");
 
+interface AgentPrincipal {
+  ownerId: string;
+  agentId: string;
+  grantId: string;
+  credentialId: string;
+  resource: string;
+  role: string;
+  accessGeneration: number;
+  accessRevision: number;
+  policyRevision: number;
+  permissions: PermissionSet;
+}
+
+function bearerChallenge(dependencies: AgentRouteDependencies): string {
+  const metadataUrl = `${dependencies.config.publicOrigin}/.well-known/oauth-protected-resource/api/agent`;
+  return `Bearer resource_metadata="${metadataUrl}", scope="agent:operate"`;
+}
+
+async function resolveAgentPrincipal(dependencies: AgentRouteDependencies, bearer: string): Promise<AgentPrincipal | undefined> {
+  const now = new Date();
+  const manual = /^aap1_[A-Za-z0-9_-]{43}$/.test(bearer);
+  if (manual) {
+    const tokenHash = createHash("sha256").update(bearer).digest("hex");
+    const rows = await dependencies.db.select({
+      credentialId: agentManualCredentials.id,
+      grantId: agentAccessGrants.id,
+      ownerId: agentAccessGrants.ownerId,
+      agentId: agentAccessGrants.agentId,
+      resource: agentAccessGrants.resource,
+      role: agentAccessGrants.role,
+      grantGeneration: agentAccessGrants.accessGeneration,
+      grantExpiresAt: agentAccessGrants.expiresAt,
+      grantRevokedAt: agentAccessGrants.revokedAt,
+      source: agentAccessGrants.source,
+      accessGeneration: agentProfiles.accessGeneration,
+      accessRevision: agentProfiles.accessRevision,
+      accessRevokedAt: agentProfiles.accessRevokedAt,
+      admissionStatus: owners.admissionStatus,
+      training: agentPolicies.training,
+      ranked: agentPolicies.ranked,
+      forumMessages: agentPolicies.forumMessages,
+      customTopics: agentPolicies.customTopics,
+      policyRevision: agentPolicies.revision
+    }).from(agentManualCredentials)
+      .innerJoin(agentAccessGrants, eq(agentManualCredentials.grantId, agentAccessGrants.id))
+      .innerJoin(agentProfiles, eq(agentAccessGrants.agentId, agentProfiles.id))
+      .innerJoin(agentPolicies, eq(agentProfiles.id, agentPolicies.agentId))
+      .innerJoin(owners, eq(agentAccessGrants.ownerId, owners.id))
+      .where(and(eq(agentManualCredentials.verifierHash, tokenHash), eq(agentAccessGrants.source, "manual")))
+      .limit(1);
+    const row = rows[0];
+    if (!row || row.role !== "agent" || row.admissionStatus !== "admitted" || row.grantRevokedAt || row.accessRevokedAt ||
+      row.grantGeneration !== row.accessGeneration || row.grantExpiresAt <= now || row.resource !== dependencies.agentResource) return undefined;
+    return {
+      ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, credentialId: row.credentialId,
+      resource: row.resource, role: row.role, accessGeneration: row.accessGeneration, accessRevision: row.accessRevision,
+      policyRevision: row.policyRevision,
+      permissions: { training: row.training, ranked: row.ranked, forumMessages: row.forumMessages, customTopics: row.customTopics }
+    };
+  }
+
+  if (bearer.length > 8192 || bearer.split(".").length !== 3) return undefined;
+  let payload: Record<string, unknown>;
+  try {
+    const verified = await dependencies.auth.api.verifyJWT({ body: { token: bearer, issuer: `${dependencies.config.publicOrigin}/api/auth` } });
+    if (!verified.payload) return undefined;
+    payload = verified.payload as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const audience = payload.aud;
+  const resourceMatches = audience === dependencies.agentResource ||
+    (Array.isArray(audience) && audience.length === 1 && audience[0] === dependencies.agentResource);
+  const generation = payload.oid_access_generation;
+  const ownerId = payload.oid_owner_id;
+  const agentId = payload.oid_agent_id;
+  const grantId = payload.oid_grant_id;
+  if (!resourceMatches || payload.iss !== `${dependencies.config.publicOrigin}/api/auth` ||
+    payload.azp !== dependencies.config.mcpClientId || payload.scope !== "agent:operate" || payload.oid_role !== "agent" ||
+    typeof payload.sub !== "string" || typeof ownerId !== "string" || typeof agentId !== "string" || typeof grantId !== "string" ||
+    typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1) return undefined;
+
+  const rows = await dependencies.db.select({
+    ownerId: agentAccessGrants.ownerId,
+    agentId: agentAccessGrants.agentId,
+    grantId: agentAccessGrants.id,
+    oauthClientId: agentAccessGrants.oauthClientId,
+    resource: agentAccessGrants.resource,
+    role: agentAccessGrants.role,
+    grantGeneration: agentAccessGrants.accessGeneration,
+    grantExpiresAt: agentAccessGrants.expiresAt,
+    grantRevokedAt: agentAccessGrants.revokedAt,
+    accessGeneration: agentProfiles.accessGeneration,
+    accessRevision: agentProfiles.accessRevision,
+    accessRevokedAt: agentProfiles.accessRevokedAt,
+    admissionStatus: owners.admissionStatus,
+    authUserId: owners.authUserId,
+    authorizationId: agentOauthAuthorizations.id,
+    authorizationStatus: agentOauthAuthorizations.status,
+    authorizationCodeHash: agentOauthAuthorizations.authorizationCodeHash,
+    authorizationGeneration: agentOauthAuthorizations.accessGeneration,
+    authorizationClientId: agentOauthAuthorizations.clientId,
+    authorizationResource: agentOauthAuthorizations.resource,
+    training: agentPolicies.training,
+    ranked: agentPolicies.ranked,
+    forumMessages: agentPolicies.forumMessages,
+    customTopics: agentPolicies.customTopics,
+    policyRevision: agentPolicies.revision
+  }).from(agentAccessGrants)
+    .innerJoin(agentOauthAuthorizations, eq(agentOauthAuthorizations.grantId, agentAccessGrants.id))
+    .innerJoin(agentProfiles, eq(agentAccessGrants.agentId, agentProfiles.id))
+    .innerJoin(agentPolicies, eq(agentProfiles.id, agentPolicies.agentId))
+    .innerJoin(owners, eq(agentAccessGrants.ownerId, owners.id))
+    .where(and(eq(agentAccessGrants.id, grantId), eq(agentAccessGrants.source, "oauth"), eq(agentOauthAuthorizations.status, "approved")))
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.ownerId !== ownerId || row.agentId !== agentId || row.authUserId !== payload.sub ||
+    row.oauthClientId !== dependencies.config.mcpClientId || row.authorizationClientId !== dependencies.config.mcpClientId ||
+    row.resource !== dependencies.agentResource || row.authorizationResource !== row.resource || row.role !== "agent" ||
+    row.authorizationCodeHash === null || row.admissionStatus !== "admitted" || row.grantRevokedAt || row.accessRevokedAt ||
+    row.grantGeneration !== row.accessGeneration || row.grantGeneration !== generation || row.authorizationGeneration !== generation ||
+    row.grantExpiresAt <= now) return undefined;
+  return {
+    ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, credentialId: row.grantId,
+    resource: row.resource, role: row.role, accessGeneration: row.accessGeneration, accessRevision: row.accessRevision,
+    policyRevision: row.policyRevision,
+    permissions: { training: row.training, ranked: row.ranked, forumMessages: row.forumMessages, customTopics: row.customTopics }
+  };
+}
+
 export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRouteDependencies) {
+  app.all("/api/agent/mcp", { bodyLimit: 64 * 1024 }, async (request, reply) => {
+    if (request.method !== "POST") return reply.code(405).header("Allow", "POST").send({ error: "method_not_allowed" });
+    const host = request.headers.host?.toLowerCase();
+    const configuredApiHost = dependencies.config.apiHost.toLowerCase();
+    const allowedHosts = new Set([
+      new URL(dependencies.config.publicOrigin).host.toLowerCase(),
+      `127.0.0.1:${dependencies.config.apiPort}`,
+      `localhost:${dependencies.config.apiPort}`,
+      `[::1]:${dependencies.config.apiPort}`,
+      ...(configuredApiHost === "0.0.0.0" || configuredApiHost === "::" ? [] : [`${configuredApiHost}:${dependencies.config.apiPort}`])
+    ]);
+    if (!host || !allowedHosts.has(host)) return reply.code(421).send({ error: "misdirected_request" });
+    const origin = request.headers.origin;
+    if (origin && origin !== dependencies.config.publicOrigin) return reply.code(403).send({ error: "origin_not_allowed" });
+    const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType !== "application/json") return reply.code(415).send({ error: "unsupported_media_type" });
+    const authorization = request.headers.authorization;
+    const match = typeof authorization === "string" ? /^Bearer ([^\s]{1,8192})$/.exec(authorization) : null;
+    if (!match) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
+
+    await dependencies.rateLimit(request, "agent-preflight-ip", dependencies.preflightRateLimitMax);
+    const principal = await resolveAgentPrincipal(dependencies, match[1]!);
+    if (!principal) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
+    await dependencies.rateLimit(request, `agent-preflight-${principal.credentialId}`, dependencies.preflightRateLimitMax);
+
+    const outputSchema = z.object({
+      status: z.enum(["allowed", "denied"]),
+      operationId: z.string(),
+      policyVersion: z.number().int(),
+      accessGeneration: z.number().int()
+    });
+    const mcpHandler = createMcpHandler(() => {
+      const server = new McpServer({ name: "Web3 Agent Bench", version: "1.0.0" }, {
+        supportedProtocolVersions: ["2026-07-28"],
+        maxToolInputElements: 8
+      });
+      server.registerTool("identity.preflight", {
+        title: "Check agent connection",
+        description: "Check this fixed agent connection and report the current policy revision. This free check does not authorize a paid or public action.",
+        inputSchema: z.object({
+          agentId: z.string().uuid(),
+          operationId: z.string().regex(/^[A-Za-z0-9_-]{12,128}$/)
+        }),
+        outputSchema
+      }, async ({ agentId, operationId }) => {
+        const result = {
+          status: agentId === principal.agentId ? "allowed" as const : "denied" as const,
+          operationId,
+          policyVersion: principal.policyRevision,
+          accessGeneration: principal.accessGeneration
+        };
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result };
+      });
+      return server;
+    }, { legacy: "reject", responseMode: "json", keepAliveMs: 0, maxRequestBodySize: 64 * 1024 });
+
+    const headers = new Headers();
+    for (const key of ["accept", "authorization", "content-type", "mcp-protocol-version", "mcp-method", "mcp-name", "mcp-session-id", "last-event-id", "origin", "user-agent"]) {
+      const value = request.headers[key];
+      if (typeof value === "string") headers.set(key, value);
+    }
+    const webRequest = new Request(new URL(request.url, dependencies.config.publicOrigin), {
+      method: "POST", headers, body: JSON.stringify(request.body)
+    });
+    try {
+      const response = await mcpHandler.fetch(webRequest, { parsedBody: request.body });
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.set("Cache-Control", "no-store");
+      responseHeaders.forEach((value, key) => reply.header(key, value));
+      return reply.code(response.status).send(Buffer.from(await response.arrayBuffer()));
+    } finally {
+      await mcpHandler.close().catch(() => undefined);
+    }
+  });
+
+  app.post("/api/owner/agents/oauth-select", async (request, reply) => {
+    await dependencies.rateLimit(request, "agent-oauth-consent", dependencies.rateLimitMax);
+    await dependencies.requireOrigin(request);
+    const context = await admittedOwner(request, dependencies);
+    const body = record(request.body, "body");
+    rejectUnknownKeys(body, ["operationId", "oauth_query", "agentId"]);
+    const operationId = parseOperationId(body.operationId);
+    const agentId = typeof body.agentId === "string" ? body.agentId : "";
+    if (!validAgentId(agentId)) throw uuidError();
+    const signed = await parseOAuthQuery(body.oauth_query, dependencies);
+    const auth = await dependencies.resolveOwner(request);
+    const session = await dependencies.auth.api.getSession({ headers: providerHeaders(request) });
+    if (!session || session.user.id !== auth.owner.authUserId) throw new HttpError(401, "UNAUTHORIZED", "An authenticated owner session is required");
+    const client = await dependencies.db.query.oauthClients.findFirst({ where: eq(oauthClients.clientId, signed.clientId) });
+    if (!client || client.disabled || client.clientId !== dependencies.config.mcpClientId) {
+      throw new HttpError(400, "OAUTH_CLIENT_NOT_REGISTERED", "The OAuth client is not registered");
+    }
+    const now = new Date();
+    const flowId = randomUUID();
+    const grantId = randomUUID();
+    const selection: OAuthSelectionContext = {
+      authUserId: session.user.id, authSessionId: session.session.id,
+      ownerId: context.owner.id, agentId, grantId
+    };
+    await dependencies.db.transaction(async (tx) => {
+      const profile = await lockOwnedProfile(tx, agentId, context.owner.id);
+      if (profile.accessRevokedAt) throw new HttpError(403, "AGENT_ACCESS_REVOKED", "Agent access was globally revoked; create a fresh agent access grant before authorizing this client");
+      const policy = await tx.query.agentPolicies.findFirst({ where: eq(agentPolicies.agentId, agentId) });
+      if (!policy) throw uuidError();
+      await tx.insert(agentOauthAuthorizations).values({
+        id: flowId, operationId, queryHash: signed.queryHash, ownerId: context.owner.id,
+        authUserId: session.user.id, authSessionId: session.session.id, agentId, grantId,
+        clientId: signed.clientId, resource: signed.resource, redirectUri: signed.redirectUri,
+        scopes: signed.scopes, accessGeneration: profile.accessGeneration,
+        policyRevision: policy.revision, authorizationCodeHash: null, status: "selected", createdAt: now,
+        expiresAt: new Date(now.getTime() + 600_000), completedAt: null
+      });
+    });
+    try {
+      const providerResponse = await callOAuthProvider(request, dependencies, "continue", { postLogin: true, oauth_query: signed.query }, selection);
+      const redirectUrl = await validatedProviderRedirect(providerResponse, dependencies.config.publicOrigin, "/owner/agents/oauth-consent");
+      return reply.header("Cache-Control", "no-store").send({ redirectUrl });
+    } catch (error) {
+      await dependencies.db.transaction(async (tx) => {
+        const failedAt = new Date();
+        const changed = await tx.update(agentOauthAuthorizations).set({ status: "failed", completedAt: failedAt })
+          .where(and(eq(agentOauthAuthorizations.id, flowId), eq(agentOauthAuthorizations.status, "selected")))
+          .returning({ agentId: agentOauthAuthorizations.agentId, ownerId: agentOauthAuthorizations.ownerId, policyRevision: agentOauthAuthorizations.policyRevision });
+        if (changed[0]) {
+          await auditAccess(tx, "agent.oauth.selection_failed", `oauth-selection-failed:${flowId}`, changed[0].ownerId,
+            changed[0].agentId, changed[0].policyRevision, { authorizationId: flowId, clientId: signed.clientId, reason: "provider_continuation_failed" });
+        }
+      }).catch(() => undefined);
+      throw error;
+    }
+  });
+
+  app.post("/api/owner/agents/oauth-consent-context", async (request, reply) => {
+    await dependencies.rateLimit(request, "agent-oauth-consent", dependencies.rateLimitMax);
+    await dependencies.requireOrigin(request);
+    const context = await admittedOwner(request, dependencies);
+    const body = record(request.body, "body");
+    rejectUnknownKeys(body, ["oauth_query"]);
+    const signed = await parseOAuthQuery(body.oauth_query, dependencies);
+    const session = await dependencies.auth.api.getSession({ headers: providerHeaders(request) });
+    const flow = await dependencies.db.query.agentOauthAuthorizations.findFirst({ where: eq(agentOauthAuthorizations.queryHash, signed.queryHash) });
+    if (!session || !flow || flow.ownerId !== context.owner.id || flow.authUserId !== session.user.id ||
+      flow.authSessionId !== session.session.id || flow.clientId !== signed.clientId || flow.resource !== signed.resource ||
+      flow.redirectUri !== signed.redirectUri) {
+      throw new HttpError(403, "OAUTH_FLOW_MISMATCH", "This OAuth request is not bound to the current owner session");
+    }
+    if (flow.status !== "selected" || flow.completedAt) throw new HttpError(409, "OAUTH_FLOW_COMPLETED", "This OAuth request has already been decided");
+    if (flow.expiresAt <= new Date()) throw new HttpError(410, "OAUTH_FLOW_EXPIRED", "This OAuth authorization request has expired");
+    const rows = await dependencies.db.select({ profile: agentProfiles, policy: agentPolicies })
+      .from(agentProfiles).innerJoin(agentPolicies, eq(agentProfiles.id, agentPolicies.agentId))
+      .where(and(eq(agentProfiles.id, flow.agentId), eq(agentProfiles.ownerId, context.owner.id))).limit(1);
+    const row = rows[0];
+    if (!row) throw uuidError();
+    if (row.profile.accessRevokedAt || row.profile.accessGeneration !== flow.accessGeneration) {
+      throw new HttpError(409, "AGENT_ACCESS_CHANGED", "Agent access changed after this OAuth request began; restart authorization");
+    }
+    const client = await dependencies.db.query.oauthClients.findFirst({ where: eq(oauthClients.clientId, flow.clientId) });
+    return reply.header("Cache-Control", "no-store").send({
+      flowId: flow.id,
+      client: { clientId: flow.clientId, name: client?.name ?? "Registered MCP client" },
+      resource: flow.resource,
+      scopes: flow.scopes,
+      agent: {
+        id: row.profile.id,
+        name: row.profile.name,
+        permissions: { training: row.policy.training, ranked: row.policy.ranked, forumMessages: row.policy.forumMessages, customTopics: row.policy.customTopics },
+        policyRevision: row.policy.revision
+      },
+      expiresAt: flow.expiresAt.toISOString()
+    });
+  });
+
+  app.post("/api/owner/agents/oauth-consent", async (request, reply) => {
+    await dependencies.rateLimit(request, "agent-oauth-consent", dependencies.rateLimitMax);
+    await dependencies.requireOrigin(request);
+    const context = await admittedOwner(request, dependencies);
+    const body = record(request.body, "body");
+    rejectUnknownKeys(body, ["operationId", "flowId", "oauth_query", "accept", "expectedPolicyRevision"]);
+    const operationId = parseOperationId(body.operationId);
+    const flowId = typeof body.flowId === "string" && validAgentId(body.flowId) ? body.flowId : "";
+    if (!flowId) throw new HttpError(400, "INVALID_OAUTH_FLOW", "flowId must be a UUID");
+    if (typeof body.accept !== "boolean") throw new HttpError(400, "INVALID_DECISION", "accept must be a boolean");
+    const expectedPolicyRevision = parseRevision(body.expectedPolicyRevision, "expectedPolicyRevision");
+    const signed = await parseOAuthQuery(body.oauth_query, dependencies);
+    const session = await dependencies.auth.api.getSession({ headers: providerHeaders(request) });
+    if (!session) throw new HttpError(401, "UNAUTHORIZED", "An authenticated owner session is required");
+    const flow = await dependencies.db.query.agentOauthAuthorizations.findFirst({ where: eq(agentOauthAuthorizations.id, flowId) });
+    if (!flow || flow.ownerId !== context.owner.id || flow.authUserId !== session.user.id || flow.authSessionId !== session.session.id ||
+      flow.queryHash !== signed.queryHash || flow.clientId !== signed.clientId || flow.resource !== signed.resource ||
+      flow.redirectUri !== signed.redirectUri) {
+      throw new HttpError(403, "OAUTH_FLOW_MISMATCH", "This OAuth decision does not match the selected owner, agent, session, and signed request");
+    }
+    if (flow.status !== "selected" || flow.completedAt) throw new HttpError(409, "OAUTH_FLOW_COMPLETED", "This OAuth request has already been decided");
+    if (flow.expiresAt <= new Date()) throw new HttpError(410, "OAUTH_FLOW_EXPIRED", "This OAuth authorization request has expired");
+    const selection: OAuthSelectionContext = {
+      authUserId: session.user.id, authSessionId: session.session.id,
+      ownerId: context.owner.id, agentId: flow.agentId, grantId: flow.grantId
+    };
+    await dependencies.db.transaction(async (tx) => {
+      const locked = await lockOwnedProfile(tx, flow.agentId, context.owner.id);
+      const lockedFlow = await tx.execute(sql`SELECT id FROM oid_agent_oauth_authorization WHERE id=${flow.id} FOR UPDATE`);
+      if (lockedFlow.length !== 1) throw new HttpError(410, "OAUTH_FLOW_EXPIRED", "OAuth flow no longer exists");
+      const currentFlow = await tx.query.agentOauthAuthorizations.findFirst({ where: eq(agentOauthAuthorizations.id, flow.id) });
+      const policy = await tx.query.agentPolicies.findFirst({ where: eq(agentPolicies.agentId, flow.agentId) });
+      if (!currentFlow || currentFlow.status !== "selected" || currentFlow.expiresAt <= new Date() || !policy ||
+        currentFlow.authSessionId !== session.session.id || currentFlow.queryHash !== signed.queryHash) {
+        throw new HttpError(409, "OAUTH_FLOW_COMPLETED", "OAuth flow changed while consent was being recorded");
+      }
+      if (policy.revision !== expectedPolicyRevision) throw new HttpError(409, "POLICY_CHANGED", "Agent permissions changed; review the updated policy before deciding");
+      if (locked.accessRevokedAt || locked.accessGeneration !== flow.accessGeneration) {
+        throw new HttpError(409, "AGENT_ACCESS_CHANGED", "Agent access changed after this OAuth request began; restart authorization");
+      }
+      const now = new Date();
+      if (body.accept) {
+        await tx.insert(agentAccessGrants).values({
+          id: flow.grantId, ownerId: context.owner.id, agentId: flow.agentId,
+          operationId: `oauth-${flow.id}`, source: "oauth", oauthClientId: flow.clientId,
+          resource: flow.resource, role: "agent", accessGeneration: locked.accessGeneration,
+          createdAt: now, expiresAt: new Date(now.getTime() + 3600_000), revokedAt: null, revocationReason: null
+        });
+      }
+      const changed = await tx.update(agentOauthAuthorizations).set({
+        status: body.accept ? "approved" : "denied", policyRevision: policy.revision, completedAt: now
+      })
+        .where(and(eq(agentOauthAuthorizations.id, flow.id), eq(agentOauthAuthorizations.status, "selected")))
+        .returning({ id: agentOauthAuthorizations.id });
+      if (changed.length !== 1) throw new HttpError(409, "OAUTH_FLOW_COMPLETED", "OAuth flow was already decided");
+      await auditAccess(tx, body.accept ? "agent.oauth.consent_approved" : "agent.oauth.consent_denied",
+        `oauth-consent:${flow.id}`, context.owner.id, flow.agentId, policy.revision, {
+          authorizationId: flow.id, grantId: body.accept ? flow.grantId : null,
+          clientId: flow.clientId, resource: flow.resource, scopes: flow.scopes,
+          decision: body.accept ? "approved" : "denied"
+        });
+    });
+    if (!body.accept) {
+      const providerResponse = await callOAuthProvider(request, dependencies, "consent", { oauth_query: signed.query, accept: false }, selection);
+      const redirectUrl = await validatedProviderRedirect(providerResponse, new URL(flow.redirectUri).origin, new URL(flow.redirectUri).pathname);
+      const callback = new URL(redirectUrl);
+      const errors = callback.searchParams.getAll("error");
+      const states = callback.searchParams.getAll("state");
+      const issuers = callback.searchParams.getAll("iss");
+      const descriptions = callback.searchParams.getAll("error_description");
+      if (errors.length !== 1 || errors[0] !== "access_denied" || states.length !== 1 || states[0] !== signed.state ||
+        descriptions.length !== 1 || descriptions[0] !== "User denied access" ||
+        (issuers.length > 0 && (issuers.length !== 1 || issuers[0] !== `${dependencies.config.publicOrigin}/api/auth`)) ||
+        [...callback.searchParams.keys()].some((key) => !["error", "error_description", "state", "iss"].includes(key))) {
+        throw new HttpError(502, "OAUTH_CALLBACK_INVALID", "The OAuth provider returned an invalid denial callback");
+      }
+      return reply.header("Cache-Control", "no-store").send({ redirectUrl });
+    }
+    const providerResponse = await callOAuthProvider(request, dependencies, "consent", { oauth_query: signed.query, accept: true }, selection);
+    const redirectUrl = await validatedProviderRedirect(providerResponse, new URL(flow.redirectUri).origin, new URL(flow.redirectUri).pathname);
+    const callback = new URL(redirectUrl);
+    const codes = callback.searchParams.getAll("code");
+    const states = callback.searchParams.getAll("state");
+    const issuers = callback.searchParams.getAll("iss");
+    if (codes.length !== 1 || !codes[0] || states.length !== 1 || states[0] !== signed.state ||
+      (issuers.length > 0 && (issuers.length !== 1 || issuers[0] !== `${dependencies.config.publicOrigin}/api/auth`)) ||
+      [...callback.searchParams.keys()].some((key) => !["code", "state", "iss"].includes(key))) {
+      throw new HttpError(502, "OAUTH_CALLBACK_INVALID", "The OAuth provider returned a callback with unexpected parameters");
+    }
+    const authorizationCodeHash = createHash("sha256").update(codes[0]!).digest("base64url");
+    const boundCode = await dependencies.db.update(agentOauthAuthorizations).set({ authorizationCodeHash })
+      .where(and(eq(agentOauthAuthorizations.id, flow.id), eq(agentOauthAuthorizations.status, "approved"), isNull(agentOauthAuthorizations.authorizationCodeHash)))
+      .returning({ id: agentOauthAuthorizations.id });
+    if (boundCode.length !== 1) throw new HttpError(409, "OAUTH_CODE_ALREADY_BOUND", "The OAuth authorization code is already bound to another flow");
+    return reply.header("Cache-Control", "no-store").send({ redirectUrl });
+  });
+
   app.get("/api/owner/agents", async (request, reply) => {
     const context = await admittedOwner(request, dependencies);
     const rows = await dependencies.db.select({ profile: agentProfiles, policy: agentPolicies })
@@ -806,62 +1308,28 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
   app.get("/api/agent/preflight", async (request, reply) => {
     await dependencies.rateLimit(request, "agent-preflight-ip", dependencies.preflightRateLimitMax);
     const authorization = request.headers.authorization;
-    const match = typeof authorization === "string" ? /^Bearer (aap1_[A-Za-z0-9_-]{43})$/.exec(authorization) : null;
+    const match = typeof authorization === "string" ? /^Bearer ([^\s]{1,8192})$/.exec(authorization) : null;
     if (!match) throw new HttpError(401, "UNAUTHORIZED", "A valid agent bearer credential is required");
-
-    const tokenHash = createHash("sha256").update(match[1]!).digest("hex");
-    const rows = await dependencies.db.select({
-      credentialId: agentManualCredentials.id,
-      ownerId: agentAccessGrants.ownerId,
-      agentId: agentAccessGrants.agentId,
-      resource: agentAccessGrants.resource,
-      role: agentAccessGrants.role,
-      grantGeneration: agentAccessGrants.accessGeneration,
-      grantExpiresAt: agentAccessGrants.expiresAt,
-      grantRevokedAt: agentAccessGrants.revokedAt,
-      accessGeneration: agentProfiles.accessGeneration,
-      accessRevision: agentProfiles.accessRevision,
-      accessRevokedAt: agentProfiles.accessRevokedAt,
-      policyRevision: agentPolicies.revision,
-      training: agentPolicies.training,
-      ranked: agentPolicies.ranked,
-      forumMessages: agentPolicies.forumMessages,
-      customTopics: agentPolicies.customTopics
-    }).from(agentManualCredentials)
-      .innerJoin(agentAccessGrants, eq(agentManualCredentials.grantId, agentAccessGrants.id))
-      .innerJoin(agentProfiles, eq(agentAccessGrants.agentId, agentProfiles.id))
-      .innerJoin(agentPolicies, eq(agentProfiles.id, agentPolicies.agentId))
-      .where(eq(agentManualCredentials.verifierHash, tokenHash))
-      .limit(1);
-    const row = rows[0];
-    if (!row) throw new HttpError(401, "UNAUTHORIZED", "A valid agent bearer credential is required");
-    await dependencies.rateLimit(request, `agent-preflight-${row.credentialId}`, dependencies.preflightRateLimitMax);
-    const now = new Date();
-    if (row.role !== "agent" || row.grantRevokedAt || row.accessRevokedAt ||
-      row.grantGeneration !== row.accessGeneration || row.grantExpiresAt <= now) {
-      throw new HttpError(401, "UNAUTHORIZED", "The agent bearer credential is expired or revoked");
-    }
+    const principal = await resolveAgentPrincipal(dependencies, match[1]!);
+    if (!principal) throw new HttpError(401, "UNAUTHORIZED", "The agent bearer credential is expired or revoked");
+    await dependencies.rateLimit(request, `agent-preflight-${principal.credentialId}`, dependencies.preflightRateLimitMax);
 
     const requestedAgent = request.headers["x-agent-id"];
     const requestedResource = request.headers["x-agent-resource"];
-    if (typeof requestedAgent !== "string" || requestedAgent !== row.agentId ||
-      row.resource !== dependencies.agentResource ||
-      typeof requestedResource !== "string" || requestedResource !== row.resource) {
+    if (typeof requestedAgent !== "string" || requestedAgent !== principal.agentId ||
+      principal.resource !== dependencies.agentResource ||
+      typeof requestedResource !== "string" || requestedResource !== principal.resource) {
       throw new HttpError(403, "FORBIDDEN", "The credential is not bound to the requested agent and resource");
     }
     return reply.header("Cache-Control", "no-store").send({
       allowed: true,
-      agentId: row.agentId,
-      resource: row.resource,
-      role: row.role,
-      accessRevision: row.accessRevision,
-      policyRevision: row.policyRevision,
-      permissions: {
-        training: row.training,
-        ranked: row.ranked,
-        forumMessages: row.forumMessages,
-        customTopics: row.customTopics
-      }
+      agentId: principal.agentId,
+      resource: principal.resource,
+      role: principal.role,
+      accessRevision: principal.accessRevision,
+      accessGeneration: principal.accessGeneration,
+      policyRevision: principal.policyRevision,
+      permissions: principal.permissions
     });
   });
 }

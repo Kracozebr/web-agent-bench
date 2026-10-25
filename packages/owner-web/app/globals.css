@@ -113,6 +113,18 @@ td code, code { font-family: var(--font-mono); font-size: 11px; }
 .loading { padding: 32px; color: var(--ink-soft); text-align: center; }
 .auth-card { width: min(100%, 570px); margin: 0 auto; }
 .auth-card .page-heading { margin-bottom: 22px; }
+.oauth-consent-shell { width: min(100%, 700px); margin: 0 auto; }
+.oauth-consent-card { display: grid; gap: 20px; }
+.oauth-consent-form { gap: 20px; }
+.oauth-consent-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.oauth-consent-context { display: grid; gap: 18px; }
+.oauth-consent-context h2, .oauth-consent-context h3 { margin-bottom: 0; }
+.oauth-consent-details { gap: 22px; }
+.oauth-consent-scopes { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.oauth-consent-scopes li { padding: 4px 9px; border: 1px solid var(--line); border-radius: 8px; background: #f9faff; }
+.oauth-consent-permissions { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.oauth-consent-permissions li { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; }
+.oauth-consent-permissions strong { font-size: 12px; }
 .auth-actions { display: grid; gap: 11px; }
 .auth-actions .button { width: 100%; min-height: 46px; }
 .admin-form-row { display: grid; grid-template-columns: minmax(180px, 1fr) auto; align-items: end; gap: 12px; }

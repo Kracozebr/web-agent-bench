@@ -8,15 +8,15 @@
 
 - [x] 2.1 Reuse shared active-delta harness work from benchmark-run-lifecycle and merge only approved AAP contracts/mappers; preserve baseline and other-capability inventories.
 - [ ] 2.2 Add the reviewed HTTP/MCP/browser/actual-client adapters and sanitized evidence manifests; unavailable mandatory environments remain blocked.
-- [ ] 2.3 Add owner-bound agent cards, policy revisions, grant/credential and revocation/audit records with stable constraints, safe verifiers and restart identities.
+- [x] 2.3 Add owner-bound agent cards, policy revisions, grant/credential and revocation/audit records with stable constraints, safe verifiers and restart identities.
 - [ ] 2.4 Implement private profile management and declaration labels using the real owner verifier; start with no shared public marker and reject caller visibility mutation; preserve BLP-REQ-011 originating-event authority, foreign isolation, financial settings and immutable run-version snapshots. Gate: AAP-SC-001 plus BLP-SC-016/017 integration.
 
 ## 3. Connection routes
 
-- [ ] 3.1 Implement browser consent for a selected existing agent with bounded scopes/resource/client binding and denial without grant issuance.
-- [ ] 3.2 Integrate the selected OAuth/profile discovery, code exchange, PKCE and credential checks; reject substituted, expired and replayed bindings through the real verifier.
+- [x] 3.1 Implement browser consent for a selected existing agent with bounded scopes/resource/client binding and denial without grant issuance.
+- [x] 3.2 Integrate the selected OAuth/profile discovery, code exchange, PKCE and credential checks; reject substituted, expired and replayed bindings through the real verifier.
 - [x] 3.3 Implement owner-issued manual credentials with explicit scope/expiry, show-once secret handling, verifier storage and safe issuance-response-loss replacement.
-- [ ] 3.4 Connect both credential routes to one domain principal and real remote MCP transport without requiring a platform connector install.
+- [x] 3.4 Connect both credential routes to one domain principal and real remote MCP transport without requiring a platform connector install.
 
 ## 4. Domain authorization and money
 
@@ -37,6 +37,6 @@
 ## 6. Evidence and closeout
 
 - [ ] 6.1 Execute all approved local environment scenarios with real HTTP/PostgreSQL/browser/credential verification and actual product integrations, including response loss, races, restart and secret-absence checks.
-- [ ] 6.2 Execute the actual local browser/OAuth/MCP flow with labelled scope; do not report it as live Google or third-party-client compatibility.
+- [x] 6.2 Execute the actual local browser/OAuth/MCP flow with labelled scope; do not report it as live Google or third-party-client compatibility.
 - [ ] 6.3 Execute the mandatory actual-client matrix for the selected Claude, Codex, OpenClaw and Hermes editions, recording protocol/auth method, preflight, real operation and post-revocation denial; missing clients block this gate.
 - [ ] 6.4 Complete semantic audit, JUnit, source/contract/Git hashes, sanitized raw evidence and read-only replay checks; sync/archive only after all approved mandatory gates pass.

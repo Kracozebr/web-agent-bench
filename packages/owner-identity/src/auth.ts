@@ -1,13 +1,14 @@
 import { randomBytes, randomUUID, createHash, createHmac } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { betterAuth } from "better-auth";
+import { mcp } from "@better-auth/mcp";
 import { google, verifyGoogleIdToken } from "better-auth/social-providers";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
-import { siwe } from "better-auth/plugins";
+import { jwt, siwe } from "better-auth/plugins";
 import { verifyMessage } from "viem";
 import type { OwnerIdentityConfig } from "./config.js";
 import type { OwnerDatabase } from "./db.js";
-import { authSchema, siweChallenges } from "./schema.js";
+import { agentAccessGrants, agentOauthAuthorizations, agentProfiles, authSchema, owners, siweChallenges } from "./schema.js";
 import { and, eq, gt, isNull } from "drizzle-orm";
 
 interface SiweRequestContext {
@@ -16,6 +17,14 @@ interface SiweRequestContext {
 }
 
 const siweRequestContext = new AsyncLocalStorage<SiweRequestContext>();
+export interface OAuthSelectionContext {
+  authUserId: string;
+  authSessionId: string;
+  ownerId: string;
+  agentId: string;
+  grantId: string;
+}
+const oauthSelectionContext = new AsyncLocalStorage<OAuthSelectionContext>();
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
 function siweNonce(message: string): string | undefined {
@@ -26,8 +35,14 @@ export function withSiweRequest<T>(context: SiweRequestContext, fn: () => T): T 
   return siweRequestContext.run(context, fn);
 }
 
+export function withOAuthSelection<T>(context: OAuthSelectionContext, fn: () => T): T {
+  return oauthSelectionContext.run(context, fn);
+}
+
 export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase) {
   const publicUrl = new URL(config.publicOrigin);
+  const agentResource = `${config.publicOrigin}/api/agent`;
+  const issuer = `${config.publicOrigin}/api/auth`;
   const googleProvider = config.googleClientId && config.googleClientSecret
     ? google({ clientId: config.googleClientId, clientSecret: config.googleClientSecret, prompt: "select_account" }) : undefined;
   return betterAuth({
@@ -35,6 +50,7 @@ export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase) {
     baseURL: config.publicOrigin,
     basePath: "/api/auth",
     secret: config.authSecret,
+    logger: { disabled: true },
     database: drizzleAdapter(db, { provider: "pg", schema: authSchema }),
     trustedOrigins: [config.publicOrigin],
     session: { expiresIn: config.sessionTtlSeconds, updateAge: 3600 },
@@ -75,7 +91,63 @@ export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase) {
         path: "/"
       }
     },
-    plugins: [siwe({
+    plugins: [jwt({ jwt: { issuer, audience: agentResource } }), mcp({
+      resource: agentResource,
+      scopes: ["agent:operate"],
+      loginPage: "/owner/agents/oauth-select",
+      consentPage: "/owner/agents/oauth-consent",
+      allowUnauthenticatedClientRegistration: false,
+      allowDynamicClientRegistration: false,
+      grantTypes: ["authorization_code"],
+      codeExpiresIn: 600,
+      accessTokenExpiresIn: 3600,
+      refreshTokenReuseInterval: 0,
+      postLogin: {
+        page: "/owner/agents/oauth-select",
+        shouldRedirect: ({ user, session, isContinuation }: { user: { id: string }; session: { id: string }; isContinuation: boolean }) => {
+          const selection = oauthSelectionContext.getStore();
+          const boundSelection = Boolean(isContinuation && selection && selection.authUserId === user.id && selection.authSessionId === session.id);
+          return !boundSelection;
+        },
+        consentReferenceId: ({ user, session }: { user: { id: string }; session: { id: string } }) => {
+          const selection = oauthSelectionContext.getStore();
+          if (!selection) return undefined;
+          if (selection.authUserId !== user.id || selection.authSessionId !== session.id) throw new Error("OAuth agent selection context is mismatched");
+          return selection.grantId;
+        }
+      },
+      customAccessTokenClaims: async ({ user, referenceId }: { user?: { id: string } | null; referenceId?: string }) => {
+        if (!user?.id || !referenceId) throw new Error("OAuth token has no authenticated owner or agent grant reference");
+        const grant = await db.query.agentAccessGrants.findFirst({ where: and(
+          eq(agentAccessGrants.id, referenceId), eq(agentAccessGrants.source, "oauth"),
+          isNull(agentAccessGrants.revokedAt), gt(agentAccessGrants.expiresAt, new Date())
+        ) });
+        if (!grant) throw new Error("OAuth agent grant is not active");
+        const authorization = await db.query.agentOauthAuthorizations.findFirst({ where: and(
+          eq(agentOauthAuthorizations.grantId, grant.id),
+          eq(agentOauthAuthorizations.status, "approved"),
+          eq(agentOauthAuthorizations.authUserId, user.id)
+        ) });
+        if (!authorization || authorization.ownerId !== grant.ownerId || authorization.agentId !== grant.agentId ||
+          authorization.clientId !== grant.oauthClientId || authorization.resource !== grant.resource ||
+          authorization.accessGeneration !== grant.accessGeneration || !authorization.authorizationCodeHash) {
+          throw new Error("OAuth agent consent is missing or no longer bound to this grant");
+        }
+        const profile = await db.query.agentProfiles.findFirst({ where: eq(agentProfiles.id, grant.agentId) });
+        const owner = await db.query.owners.findFirst({ where: eq(owners.id, grant.ownerId) });
+        if (!profile || !owner || owner.authUserId !== user.id || owner.admissionStatus !== "admitted" ||
+          profile.ownerId !== grant.ownerId || profile.accessGeneration !== grant.accessGeneration || profile.accessRevokedAt) {
+          throw new Error("OAuth agent grant owner or generation binding is no longer valid");
+        }
+        return {
+          oid_owner_id: grant.ownerId,
+          oid_agent_id: grant.agentId,
+          oid_grant_id: grant.id,
+          oid_access_generation: grant.accessGeneration,
+          oid_role: grant.role
+        };
+      }
+    }), siwe({
       domain: publicUrl.host,
       anonymous: true,
       getNonce: async () => {

@@ -27,6 +27,63 @@ const statements = [
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS oid_auth_verification_identifier_idx ON oid_auth_verification(identifier)`,
+  `CREATE TABLE IF NOT EXISTS oid_oauth_client (
+    id text PRIMARY KEY, client_id text NOT NULL UNIQUE, client_secret text, client_discovery_id text,
+    disabled boolean DEFAULT false, skip_consent boolean, enable_end_session boolean, subject_type text,
+    scopes text[], client_credentials_scopes text[] NOT NULL DEFAULT '{}', user_id text REFERENCES oid_auth_user(id) ON DELETE CASCADE,
+    created_at timestamptz, updated_at timestamptz, name text, uri text, icon text, contacts text[], tos text, policy text,
+    software_id text, software_version text, software_statement text, redirect_uris text[] NOT NULL,
+    post_logout_redirect_uris text[], backchannel_logout_uri text, backchannel_logout_session_required boolean,
+    token_endpoint_auth_method text, application_type text, jwks text, jwks_uri text, grant_types text[], response_types text[],
+    require_pkce boolean, dpop_bound_access_tokens boolean DEFAULT false, reference_id text, metadata jsonb
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_client_user_idx ON oid_oauth_client(user_id)`,
+  `CREATE TABLE IF NOT EXISTS oid_oauth_resource (
+    id text PRIMARY KEY, identifier text NOT NULL UNIQUE, name text NOT NULL, access_token_ttl integer, refresh_token_ttl integer,
+    signing_algorithm text, signing_key_id text, allowed_scopes text[], custom_claims jsonb,
+    dpop_bound_access_tokens_required boolean DEFAULT false, disabled boolean DEFAULT false,
+    created_at timestamptz, updated_at timestamptz, policy_version integer DEFAULT 1, metadata jsonb
+  )`,
+  `CREATE TABLE IF NOT EXISTS oid_oauth_client_resource (
+    id text PRIMARY KEY, client_id text NOT NULL REFERENCES oid_oauth_client(client_id) ON DELETE CASCADE,
+    resource_id text NOT NULL REFERENCES oid_oauth_resource(identifier) ON DELETE CASCADE,
+    metadata jsonb, created_at timestamptz, CONSTRAINT oid_oauth_client_resource_pair_uq UNIQUE(client_id,resource_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS oid_oauth_refresh_token (
+    id text PRIMARY KEY, token text NOT NULL UNIQUE, client_id text NOT NULL REFERENCES oid_oauth_client(client_id),
+    session_id text REFERENCES oid_auth_session(id) ON DELETE SET NULL, user_id text NOT NULL REFERENCES oid_auth_user(id),
+    reference_id text, authorization_code_id text, resources text[], requested_user_info_claims text[],
+    expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL, revoked timestamptz, rotated_at timestamptz,
+    rotation_replay_response text, rotation_replay_expires_at timestamptz, auth_time timestamptz, confirmation jsonb, scopes text[] NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_refresh_client_idx ON oid_oauth_refresh_token(client_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_refresh_session_idx ON oid_oauth_refresh_token(session_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_refresh_user_idx ON oid_oauth_refresh_token(user_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_refresh_code_idx ON oid_oauth_refresh_token(authorization_code_id)`,
+  `CREATE TABLE IF NOT EXISTS oid_oauth_access_token (
+    id text PRIMARY KEY, token text UNIQUE, client_id text NOT NULL REFERENCES oid_oauth_client(client_id),
+    session_id text REFERENCES oid_auth_session(id) ON DELETE SET NULL, user_id text REFERENCES oid_auth_user(id), reference_id text,
+    authorization_code_id text, resources text[], requested_user_info_claims text[], refresh_id text REFERENCES oid_oauth_refresh_token(id),
+    expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL, revoked timestamptz, confirmation jsonb, scopes text[] NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_access_client_idx ON oid_oauth_access_token(client_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_access_session_idx ON oid_oauth_access_token(session_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_access_user_idx ON oid_oauth_access_token(user_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_access_code_idx ON oid_oauth_access_token(authorization_code_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_access_refresh_idx ON oid_oauth_access_token(refresh_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_access_reference_idx ON oid_oauth_access_token(reference_id)`,
+  `CREATE TABLE IF NOT EXISTS oid_oauth_consent (
+    id text PRIMARY KEY, client_id text NOT NULL REFERENCES oid_oauth_client(client_id), user_id text REFERENCES oid_auth_user(id),
+    reference_id text, resources text[], requested_user_info_claims text[], scopes text[] NOT NULL,
+    created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_consent_client_idx ON oid_oauth_consent(client_id)`,
+  `CREATE INDEX IF NOT EXISTS oid_oauth_consent_user_idx ON oid_oauth_consent(user_id)`,
+  `CREATE TABLE IF NOT EXISTS oid_oauth_client_assertion (id text PRIMARY KEY, expires_at timestamptz NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS oid_jwks (
+    id text PRIMARY KEY, public_key text NOT NULL, private_key text NOT NULL,
+    created_at timestamptz NOT NULL, expires_at timestamptz, alg text, crv text
+  )`,
   `CREATE TABLE IF NOT EXISTS oid_auth_wallet_address (
     id text PRIMARY KEY, user_id text NOT NULL REFERENCES oid_auth_user(id) ON DELETE CASCADE,
     address text NOT NULL, chain_id integer NOT NULL, is_primary boolean NOT NULL DEFAULT false,
@@ -70,17 +127,40 @@ const statements = [
   `CREATE INDEX IF NOT EXISTS oid_agent_operation_owner_created_idx ON oid_agent_operation(owner_id,created_at)`,
   `CREATE TABLE IF NOT EXISTS oid_agent_access_grant (
     id uuid PRIMARY KEY, owner_id uuid NOT NULL, agent_id uuid NOT NULL,
-    operation_id text NOT NULL UNIQUE, source text NOT NULL DEFAULT 'manual' CHECK (source='manual'),
+    operation_id text NOT NULL UNIQUE, source text NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','oauth')),
+    oauth_client_id text,
     resource text NOT NULL, role text NOT NULL DEFAULT 'agent' CHECK (role='agent'),
     access_generation integer NOT NULL CHECK (access_generation > 0),
     created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
-    revocation_reason text CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke')),
+    revocation_reason text CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke','consent_denied')),
     CONSTRAINT oid_agent_access_grant_owner_agent_fk FOREIGN KEY(owner_id,agent_id)
       REFERENCES oid_agent(owner_id,id) ON DELETE CASCADE
   )`,
+  `ALTER TABLE oid_agent_access_grant DROP CONSTRAINT IF EXISTS oid_agent_access_grant_source_check`,
+  `ALTER TABLE oid_agent_access_grant ADD CONSTRAINT oid_agent_access_grant_source_check CHECK (source IN ('manual','oauth'))`,
+  `ALTER TABLE oid_agent_access_grant DROP CONSTRAINT IF EXISTS oid_agent_access_grant_revocation_reason_check`,
+  `ALTER TABLE oid_agent_access_grant ADD CONSTRAINT oid_agent_access_grant_revocation_reason_check CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke','consent_denied'))`,
+  `ALTER TABLE oid_agent_access_grant ADD COLUMN IF NOT EXISTS oauth_client_id text`,
   `CREATE INDEX IF NOT EXISTS oid_agent_access_grant_agent_created_idx ON oid_agent_access_grant(agent_id,created_at)`,
   `CREATE INDEX IF NOT EXISTS oid_agent_access_grant_agent_generation_idx ON oid_agent_access_grant(agent_id,access_generation)`,
+  `CREATE TABLE IF NOT EXISTS oid_agent_oauth_authorization (
+    id uuid PRIMARY KEY, operation_id text NOT NULL UNIQUE, query_hash text NOT NULL UNIQUE,
+    owner_id uuid NOT NULL REFERENCES oid_owner(id) ON DELETE CASCADE,
+    auth_user_id text NOT NULL REFERENCES oid_auth_user(id) ON DELETE CASCADE,
+    auth_session_id text NOT NULL REFERENCES oid_auth_session(id) ON DELETE CASCADE,
+    agent_id uuid NOT NULL REFERENCES oid_agent(id) ON DELETE CASCADE, grant_id uuid NOT NULL UNIQUE,
+    client_id text NOT NULL, resource text NOT NULL, redirect_uri text NOT NULL, scopes text[] NOT NULL, authorization_code_hash text,
+    access_generation integer NOT NULL, policy_revision integer NOT NULL,
+    status text NOT NULL CHECK (status IN ('selected','approved','denied','failed')),
+    created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL, completed_at timestamptz
+  )`,
+  `ALTER TABLE oid_agent_oauth_authorization ADD COLUMN IF NOT EXISTS authorization_code_hash text`,
+  `ALTER TABLE oid_agent_oauth_authorization DROP CONSTRAINT IF EXISTS oid_agent_oauth_authorization_status_check`,
+  `ALTER TABLE oid_agent_oauth_authorization ADD CONSTRAINT oid_agent_oauth_authorization_status_check CHECK (status IN ('selected','approved','denied','failed'))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS oid_agent_oauth_authorization_code_hash_uq ON oid_agent_oauth_authorization(authorization_code_hash) WHERE authorization_code_hash IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_oauth_authorization_owner_idx ON oid_agent_oauth_authorization(owner_id,created_at)`,
+  `CREATE INDEX IF NOT EXISTS oid_agent_oauth_authorization_status_idx ON oid_agent_oauth_authorization(status,expires_at)`,
   `CREATE TABLE IF NOT EXISTS oid_agent_manual_credential (
     id uuid PRIMARY KEY, grant_id uuid NOT NULL UNIQUE REFERENCES oid_agent_access_grant(id) ON DELETE CASCADE,
     verifier_hash text NOT NULL UNIQUE, created_at timestamptz NOT NULL DEFAULT now()
@@ -181,6 +261,37 @@ async function main() {
     await client.begin(async (tx) => {
       await tx.unsafe("SELECT pg_advisory_xact_lock(824731201, 17)");
       for (const statement of statements) await tx.unsafe(statement);
+      const resource = `${config.publicOrigin}/api/agent`;
+      const now = new Date().toISOString();
+      await tx.unsafe(
+        `INSERT INTO oid_oauth_resource(id,identifier,name,access_token_ttl,allowed_scopes,disabled,created_at,updated_at,policy_version)
+         VALUES ('oid-agent-resource-v1',$1,'Web3 Agent Bench agent resource',3600,ARRAY['agent:operate'],false,$2::timestamptz,$2::timestamptz,1)
+         ON CONFLICT (identifier) DO NOTHING`, [resource, now]
+      );
+      await tx.unsafe(
+        `INSERT INTO oid_oauth_client(
+           id,client_id,disabled,skip_consent,subject_type,scopes,client_credentials_scopes,created_at,updated_at,name,
+           redirect_uris,token_endpoint_auth_method,application_type,grant_types,response_types,require_pkce
+         ) VALUES ('oid-local-mcp-client-v1',$1,false,false,'public',ARRAY['agent:operate'],'{}',$3::timestamptz,$3::timestamptz,'Local MCP Acceptance Client',
+           ARRAY[$2],'none','native',ARRAY['authorization_code'],ARRAY['code'],true)
+         ON CONFLICT (client_id) DO NOTHING`, [config.mcpClientId, config.mcpClientRedirectUri, now]
+      );
+      const clientCheck = await tx.unsafe(
+        `SELECT client_id FROM oid_oauth_client WHERE client_id=$1 AND redirect_uris=ARRAY[$2]::text[]
+           AND scopes=ARRAY['agent:operate']::text[] AND require_pkce=true AND disabled=false`,
+        [config.mcpClientId, config.mcpClientRedirectUri]
+      );
+      if (clientCheck.length !== 1) throw new Error("The registered MCP client does not match the configured client id, callback, scope, and PKCE policy");
+      const resourceCheck = await tx.unsafe(
+        "SELECT identifier FROM oid_oauth_resource WHERE identifier=$1 AND allowed_scopes @> ARRAY['agent:operate']::text[] AND disabled=false",
+        [resource]
+      );
+      if (resourceCheck.length !== 1) throw new Error("The registered OAuth resource does not match the configured agent resource and scope");
+      await tx.unsafe(
+        `INSERT INTO oid_oauth_client_resource(id,client_id,resource_id,created_at)
+         VALUES ('oid-local-mcp-client-resource-v1',$1,$2,$3::timestamptz) ON CONFLICT (client_id,resource_id) DO NOTHING`,
+        [config.mcpClientId, resource, now]
+      );
       await tx.unsafe(
         "INSERT INTO oid_registration_policy(id,mode,revision) VALUES (1,$1,1) ON CONFLICT (id) DO NOTHING",
         [config.registrationMode]

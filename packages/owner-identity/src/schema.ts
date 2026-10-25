@@ -74,12 +74,86 @@ export const authWalletAddress = pgTable("oid_auth_wallet_address", {
   index("oid_auth_wallet_user_idx").on(table.userId)
 ]);
 
+// Better Auth OAuth/MCP provider tables. These exact model names are consumed
+// by the pinned @better-auth/mcp plugin; secret-bearing token/code columns are
+// intentionally never exposed through the owner evidence APIs.
+export const oauthClients = pgTable("oid_oauth_client", {
+  id: text("id").primaryKey(), clientId: text("client_id").notNull().unique(), clientSecret: text("client_secret"),
+  clientDiscoveryId: text("client_discovery_id"), disabled: boolean("disabled").default(false), skipConsent: boolean("skip_consent"),
+  enableEndSession: boolean("enable_end_session"), subjectType: text("subject_type"), scopes: text("scopes").array(),
+  clientCredentialsScopes: text("client_credentials_scopes").array().notNull().default([]), userId: text("user_id").references(() => authUser.id, { onDelete: "cascade" }),
+  createdAt: time("created_at"), updatedAt: time("updated_at"), name: text("name"), uri: text("uri"), icon: text("icon"),
+  contacts: text("contacts").array(), tos: text("tos"), policy: text("policy"), softwareId: text("software_id"),
+  softwareVersion: text("software_version"), softwareStatement: text("software_statement"), redirectUris: text("redirect_uris").array().notNull(),
+  postLogoutRedirectUris: text("post_logout_redirect_uris").array(), backchannelLogoutUri: text("backchannel_logout_uri"),
+  backchannelLogoutSessionRequired: boolean("backchannel_logout_session_required"), tokenEndpointAuthMethod: text("token_endpoint_auth_method"),
+  applicationType: text("application_type"), jwks: text("jwks"), jwksUri: text("jwks_uri"), grantTypes: text("grant_types").array(),
+  responseTypes: text("response_types").array(), requirePKCE: boolean("require_pkce"), dpopBoundAccessTokens: boolean("dpop_bound_access_tokens").default(false),
+  referenceId: text("reference_id"), metadata: jsonb("metadata")
+}, (table) => [index("oid_oauth_client_user_idx").on(table.userId)]);
+
+export const oauthResources = pgTable("oid_oauth_resource", {
+  id: text("id").primaryKey(), identifier: text("identifier").notNull().unique(), name: text("name").notNull(),
+  accessTokenTtl: integer("access_token_ttl"), refreshTokenTtl: integer("refresh_token_ttl"), signingAlgorithm: text("signing_algorithm"),
+  signingKeyId: text("signing_key_id"), allowedScopes: text("allowed_scopes").array(), customClaims: jsonb("custom_claims"),
+  dpopBoundAccessTokensRequired: boolean("dpop_bound_access_tokens_required").default(false), disabled: boolean("disabled").default(false),
+  createdAt: time("created_at"), updatedAt: time("updated_at"), policyVersion: integer("policy_version").default(1), metadata: jsonb("metadata")
+});
+
+export const oauthClientResources = pgTable("oid_oauth_client_resource", {
+  id: text("id").primaryKey(), clientId: text("client_id").notNull().references(() => oauthClients.clientId, { onDelete: "cascade" }),
+  resourceId: text("resource_id").notNull().references(() => oauthResources.identifier, { onDelete: "cascade" }),
+  metadata: jsonb("metadata"), createdAt: time("created_at")
+}, (table) => [uniqueIndex("oid_oauth_client_resource_pair_uq").on(table.clientId, table.resourceId)]);
+
+export const oauthRefreshTokens = pgTable("oid_oauth_refresh_token", {
+  id: text("id").primaryKey(), token: text("token").notNull().unique(), clientId: text("client_id").notNull().references(() => oauthClients.clientId),
+  sessionId: text("session_id").references(() => authSession.id, { onDelete: "set null" }), userId: text("user_id").notNull().references(() => authUser.id),
+  referenceId: text("reference_id"), authorizationCodeId: text("authorization_code_id"), resources: text("resources").array(),
+  requestedUserInfoClaims: text("requested_user_info_claims").array(), expiresAt: time("expires_at").notNull(), createdAt: time("created_at").notNull(),
+  revoked: time("revoked"), rotatedAt: time("rotated_at"), rotationReplayResponse: text("rotation_replay_response"),
+  rotationReplayExpiresAt: time("rotation_replay_expires_at"), authTime: time("auth_time"), confirmation: jsonb("confirmation"), scopes: text("scopes").array().notNull()
+}, (table) => [index("oid_oauth_refresh_client_idx").on(table.clientId), index("oid_oauth_refresh_session_idx").on(table.sessionId), index("oid_oauth_refresh_user_idx").on(table.userId), index("oid_oauth_refresh_code_idx").on(table.authorizationCodeId)]);
+
+export const oauthAccessTokens = pgTable("oid_oauth_access_token", {
+  id: text("id").primaryKey(), token: text("token").unique(), clientId: text("client_id").notNull().references(() => oauthClients.clientId),
+  sessionId: text("session_id").references(() => authSession.id, { onDelete: "set null" }), userId: text("user_id").references(() => authUser.id),
+  referenceId: text("reference_id"), authorizationCodeId: text("authorization_code_id"), resources: text("resources").array(),
+  requestedUserInfoClaims: text("requested_user_info_claims").array(), refreshId: text("refresh_id").references(() => oauthRefreshTokens.id),
+  expiresAt: time("expires_at").notNull(), createdAt: time("created_at").notNull(), revoked: time("revoked"),
+  confirmation: jsonb("confirmation"), scopes: text("scopes").array().notNull()
+}, (table) => [index("oid_oauth_access_client_idx").on(table.clientId), index("oid_oauth_access_session_idx").on(table.sessionId), index("oid_oauth_access_user_idx").on(table.userId), index("oid_oauth_access_code_idx").on(table.authorizationCodeId), index("oid_oauth_access_refresh_idx").on(table.refreshId), index("oid_oauth_access_reference_idx").on(table.referenceId)]);
+
+export const oauthConsents = pgTable("oid_oauth_consent", {
+  id: text("id").primaryKey(), clientId: text("client_id").notNull().references(() => oauthClients.clientId),
+  userId: text("user_id").references(() => authUser.id), referenceId: text("reference_id"), resources: text("resources").array(),
+  requestedUserInfoClaims: text("requested_user_info_claims").array(), scopes: text("scopes").array().notNull(),
+  createdAt: time("created_at").notNull(), updatedAt: time("updated_at").notNull()
+}, (table) => [index("oid_oauth_consent_client_idx").on(table.clientId), index("oid_oauth_consent_user_idx").on(table.userId)]);
+
+export const oauthClientAssertions = pgTable("oid_oauth_client_assertion", {
+  id: text("id").primaryKey(), expiresAt: time("expires_at").notNull()
+});
+
+export const jwks = pgTable("oid_jwks", {
+  id: text("id").primaryKey(), publicKey: text("public_key").notNull(), privateKey: text("private_key").notNull(),
+  createdAt: time("created_at").notNull(), expiresAt: time("expires_at"), alg: text("alg"), crv: text("crv")
+});
+
 export const authSchema = {
   user: authUser,
   session: authSession,
   account: authAccount,
   verification: authVerification,
-  walletAddress: authWalletAddress
+  walletAddress: authWalletAddress,
+  oauthClient: oauthClients,
+  oauthResource: oauthResources,
+  oauthClientResource: oauthClientResources,
+  oauthRefreshToken: oauthRefreshTokens,
+  oauthAccessToken: oauthAccessTokens,
+  oauthConsent: oauthConsents,
+  oauthClientAssertion: oauthClientAssertions,
+  jwks
 };
 
 export const owners = pgTable("oid_owner", {
@@ -134,6 +208,7 @@ export const agentAccessGrants = pgTable("oid_agent_access_grant", {
   agentId: uuid("agent_id").notNull(),
   operationId: text("operation_id").notNull().unique(),
   source: text("source").notNull().default("manual"),
+  oauthClientId: text("oauth_client_id"),
   resource: text("resource").notNull(),
   role: text("role").notNull().default("agent"),
   accessGeneration: integer("access_generation").notNull(),
@@ -238,6 +313,19 @@ export const admissions = pgTable("oid_admission", {
   policyRevision: integer("policy_revision").notNull(),
   admittedAt: time("admitted_at").notNull().defaultNow()
 });
+
+export const agentOauthAuthorizations = pgTable("oid_agent_oauth_authorization", {
+  id: uuid("id").primaryKey(), operationId: text("operation_id").notNull().unique(), queryHash: text("query_hash").notNull().unique(),
+  ownerId: uuid("owner_id").notNull().references(() => owners.id, { onDelete: "cascade" }),
+  authUserId: text("auth_user_id").notNull().references(() => authUser.id, { onDelete: "cascade" }),
+  authSessionId: text("auth_session_id").notNull().references(() => authSession.id, { onDelete: "cascade" }),
+  agentId: uuid("agent_id").notNull().references(() => agentProfiles.id, { onDelete: "cascade" }),
+  grantId: uuid("grant_id").notNull().unique(), clientId: text("client_id").notNull(), resource: text("resource").notNull(),
+  redirectUri: text("redirect_uri").notNull(), scopes: text("scopes").array().notNull(), authorizationCodeHash: text("authorization_code_hash").unique(),
+  accessGeneration: integer("access_generation").notNull(),
+  policyRevision: integer("policy_revision").notNull(), status: text("status").notNull(),
+  createdAt: time("created_at").notNull().defaultNow(), expiresAt: time("expires_at").notNull(), completedAt: time("completed_at")
+}, (table) => [index("oid_agent_oauth_authorization_owner_idx").on(table.ownerId, table.createdAt), index("oid_agent_oauth_authorization_status_idx").on(table.status, table.expiresAt)]);
 
 export const invitationRedemptions = pgTable("oid_invitation_redemption", {
   invitationId: uuid("invitation_id").primaryKey().references(() => invitations.id),

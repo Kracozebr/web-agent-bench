@@ -1,4 +1,4 @@
-# Private cards, owner policy and manual credentials
+# Private cards, delegated connections and owner policy
 
 Status: approved incremental implementation, not full AAP acceptance.
 The [approval](approval.md) covers the existing sixteen scenarios. Their full
@@ -48,13 +48,13 @@ initially recorded sixteen blocked mandatory gates; pytest skips are mapped to b
 and the acceptance command deliberately exits nonzero. Partial card facts do not
 pass whole scenarios. The OID report remains three passed / nine blocked.
 
-## Remaining work
+## Remaining work after the initial card slice
 
-No OAuth/MCP server, browser consent, run/forum operation, ledger/cap or delivered
-cancellation effect is claimed. Historical run snapshots and BLP public-marker integration do not
-exist yet. Actual-client editions and OAuth/MCP protocol/TTL configuration are unpinned.
-These remain separate mandatory blockers for the fifteen unfinished AAP scenarios.
-The next slice is browser OAuth/MCP connection authority followed by actual
+At this initial checkpoint no OAuth/MCP server, browser consent, run/forum operation, ledger/cap or delivered
+cancellation effect was claimed. Historical run snapshots and BLP public-marker integration did not
+exist yet. Actual-client editions and OAuth/MCP protocol/TTL configuration were unpinned.
+These were separate mandatory blockers for the unfinished AAP scenarios.
+The next slice was browser OAuth/MCP connection authority followed by actual
 domain integration; no stub receipt can replace it.
 Sync/archive is not allowed in this state.
 
@@ -99,6 +99,69 @@ regression and shared tool/traceability tests pass (43 tests). Replay verifies
 48 AAP artifacts and 60 OID artifacts without product actions. OID remains
 three passed / nine blocked. Task 3.3 is complete; broader connection, revocation
 and lifecycle tasks remain open until their full boundaries exist.
+
+## Browser OAuth and MCP follow-up
+
+The [pinned local profile](oauth-profile.md) now runs Better Auth 1.7.12 with the
+official MCP SDK 2.4.0. An admitted owner selects an existing agent and reviews
+the client, resource, fixed delegation and current four-permission policy in the
+actual UI. The signed request stays in component memory and no-referrer POST
+bodies after URL scrubbing. A canonical request hash and the authenticated
+user/session bind one immutable selection. Grant creation and the approval audit
+commit together; denial creates no grant. Direct public provider continuation
+and consent endpoints remain closed.
+
+Better Auth owns code consumption, PKCE and signed token issuance. The shared
+HTTP/MCP verifier checks the exact issuer and agent-resource audience, then loads
+the current owner admission, grant, access generation, revocation and policy.
+The official stateless handler rejects legacy traffic and serves
+`identity.preflight` under protocol `2026-07-28`. Its bridge forwards both
+`mcp-method` and `mcp-name` as well as the version header; omitting these produced
+a real SDK 400 during integration. This slice releases only free preflight.
+
+Final Docker capture: `57bf70ef-7b29-48d3-b538-65bf8aa30c05`. Independent
+filesystem replay and BDD derivation verify AAP-SC-002, 003 and 004 as passed.
+Their immutable raw run IDs are respectively
+`9c174b17-9881-427a-bb78-302d3e45564d`,
+`6cb75e8c-fad8-4790-b535-5ee5a4e3cc43` and
+`84108708-3085-4678-b44e-fc2a56de2978`.
+Recorded negatives include denied consent, foreign selection, changed-agent
+consent input, expanded scope, substituted redirect/resource/PKCE/issuer,
+consumed-code replay and a labelled private code-expiry fixture. SQL observations
+prove grant linkage, absent consumed verification, safe exchange audit and no
+grant for denied consent. JWT access tokens need no opaque-provider access row;
+the verified claims and durable application grant establish the binding.
+
+The real SDK negotiated the modern protocol, listed `identity.preflight` and
+called it successfully with OAuth and a manual credential for the same agent.
+Both credentials were denied after the owner clicked revoke and remained denied
+after API restart. Independent SELECT-only snapshots observed the revoked grants
+and access fence. The cancellation outbox still represents pending intent only.
+
+Each acceptance run now creates and retains its own
+`oid_acceptance_<run UUID>` database. Random per-run auth secrets cannot decrypt
+another run's persisted JWKS; this caused a callback 500 during integration.
+Fresh databases isolate those keys and preserve the development database.
+The earlier fixture-created development key was repaired by adding a key under
+the stable secret while preserving its previous row. Provenance identifies the
+fixture database and explicitly records its 120-request auth/SIWE/credential
+quotas; this is no production rate-limit acceptance claim.
+
+Backend typecheck, frontend production build, 44 tool/traceability tests and the
+16-scenario semantic audit pass. Replay verifies 48 AAP and 60 OID artifacts
+without network or product mutations. Source inputs match before/after capture;
+the capture records a dirty precommit worktree. Secret scanning rejects raw JWTs
+and manual credential values in addition to credential-bearing fields.
+
+The [AAP report](../../../tests/bdd/changes/agent-access-and-permissions/acceptance-evidence.json)
+now records three passed and thirteen blocked mandatory gates; OID remains three
+passed and nine blocked. BDD skips are recorded as blocked and commands exit
+nonzero. SC015 remains blocked without an actual permitted domain operation;
+SC016 has no actual pilot-client edition evidence. Current task completion is
+8/25, including persistence, both connection routes and the labelled local flow.
+Next work is actual forum/run admission, shared billing and delivered lifecycle
+cancellation, followed by actual pilot-client compatibility. Sync/archive remain
+blocked by the unfinished mandatory gates.
 
 ## Reproduction
 
