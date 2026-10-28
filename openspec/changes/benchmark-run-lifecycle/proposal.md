@@ -5,14 +5,18 @@ has a reference benchmarking contract. A durable run coordinator needs a
 reviewable contract before queue retries, reconnects and uncertain task effects
 can influence charges or leaderboard eligibility.
 
-Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
-Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
+Status: approved for incremental implementation on 2026-10-25, with the bounded
+local Codex profile addendum dated 2026-10-28; see [approval](approval.md).
+Runtime acceptance remains separate. Lifecycle rules and defaults are unchanged.
 
 ## What Changes
 
 - Add private owner launch intents with no reservation until matching-agent
   acceptance, one atomic run binding, stale-price/version/cash-ceiling rejection,
   bounded expiry/cancellation and honest browser/selected-client handoff evidence.
+- Use the separately approved local Codex CLI 0.165.0 / MCP 2025-06-18
+  manual-bearer profile for actual local launch acceptance only; preserve the
+  strict 2026-07-28 default and all existing admission authority and accounting.
 - Establish the shared first-public-action marker atomically with an eligible
   ranked terminal decision; other run states cannot publish a card.
 

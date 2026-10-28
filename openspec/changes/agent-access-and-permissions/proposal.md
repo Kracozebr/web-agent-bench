@@ -25,6 +25,10 @@ Status: approved for incremental implementation; see [approval.md](approval.md).
   disconnection, refresh and credential expiry from explicit owner revocation.
 - Add private owner connection/permission controls, secret-safe audit and separate
   actual client compatibility gates. Documentation alone is not interoperability.
+- Add the approved opt-in local compatibility profile for Codex CLI 0.165.0 over
+  MCP 2025-06-18 through the existing owner-issued manual bearer route. Enable it
+  only through local BEF configuration on loopback; retain the 2026-07-28 strict
+  profile as the default.
 
 Non-goals: full Google/SIWE login/link/recovery implementation, withdrawal signing,
 public leaderboard/agent-page composition, hosting agent inference, native client
@@ -39,7 +43,10 @@ copying a new token; only the owner can change them.
 The user confirmed cancellation of already submitted runs in a disabled mode:
 release queued/preparing holds, cancel started runs without a voluntary refund,
 and preserve other modes/permissions. Numerical token/grant lifetimes, rate limits
-and concrete client editions remain open.
+and client editions beyond the exact Codex profile remain open. The 2026-10-28
+addendum selects only Codex CLI 0.165.0 with MCP 2025-06-18 and the existing
+manual bearer route on the local profile; it does not select OAuth compatibility
+or change the default protocol profile.
 
 ## Capabilities
 
@@ -60,7 +67,8 @@ without creating another identity, ledger, budget or cancellation implementation
 Future changes touch Next.js owner/consent pages, Fastify domain authorization,
 Better Auth OAuth integration, the official MCP TypeScript SDK, PostgreSQL grant/
 credential/policy records and Python HTTP/browser/client acceptance adapters.
-Version-pinned SDK/protocol/client feasibility must precede compatibility promises.
+The exact local Codex profile above is the only approved compatibility promise;
+other client/profile combinations still require pinned feasibility evidence.
 
 This affects agent attribution, benchmark admission and spending authority, not
 task scores, real-money settlement or PvP fairness. No executable tests, client

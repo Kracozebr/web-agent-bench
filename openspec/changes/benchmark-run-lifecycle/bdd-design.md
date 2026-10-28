@@ -23,6 +23,16 @@ reconnect, evidence recovery and mode-specific feedback at their real boundaries
 selection, mainnet custody/withdrawals, forum, PvP and full UI beyond the scoped launch/status flow. Local Anvil observations
 prove only the declared local EVM fixture. Eligibility output is not a published ranking.
 
+## Approved client-profile selection
+
+The existing BRL launch/client boundaries may use Codex CLI 0.165.0 with MCP
+2025-06-18 through the existing owner-issued manual bearer route, but only under
+the explicitly selected local BEF/loopback profile. The 2026-07-28 strict profile
+remains the default. This records the selected client configuration within the
+existing scenarios; it adds no scenario ID, assertion, negative variant or
+contract change. The configuration and this documentation do not mark a runtime
+gate as passed.
+
 ## Scenario design
 
 All gates below are mandatory `environment` gates. The semantic boundary enum is
@@ -89,6 +99,10 @@ coverage does not satisfy a gate: real adapter observations must be present.
   material ephemerally outside stored fixtures; never print/commit keys. Local
   Anvil unlocked test accounts stay behind the test executor; redact its startup
   output. No provider token or real wallet is required by these local scenarios.
+- For actual Codex launch observations, use only the approved local manual-bearer
+  profile and retain the strict 2026-07-28 default. The profile does not substitute
+  for BRL-SC-023/024 durable intent/run/charge observations or the complete browser,
+  reload/back, retry and client-action accounting required by BRL-SC-025.
 - Clock control is an internal test seam with explicit advancement observations,
   unavailable to participant routes. Use real processes/restarts/transactions for
   durability and race checks; do not substitute a Python reference state machine.
@@ -110,6 +124,8 @@ Approval authorizes only the 25 scenarios, their listed negative variants, the
 shared adapter/mappers, source-selection tooling changes and coordinator/API/
 database/local-test-executor scope in proposal/design/tasks. It does not authorize
 real funds, production signing, mainnet deployment or additional test assertions.
+The 2026-10-28 addendum selects one local Codex manual-bearer client profile within
+the existing launch/client scenarios without changing any scenario or assertion.
 New scenarios/changed assertions return this packet to review.
 
 **Decision:** approved on 2026-10-25; approval.md supersedes the historical review notes below.

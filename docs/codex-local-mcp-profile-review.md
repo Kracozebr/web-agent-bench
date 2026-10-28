@@ -1,8 +1,9 @@
-# Codex local MCP compatibility: proposed scope review
+# Codex local MCP compatibility: approved scope and evidence
 
-Status: proposal only. No server protocol or authorization change is implemented.
-This document records the observed blocker and the exact next review; it does
-not replace the normative active AAP/BRL deltas or their approval.
+Status: bounded scope approved on 2026-10-28; implementation and runtime acceptance remain separate.
+This document records the observations and approved profile. It is not evidence
+that the server supports the profile or that any AAP/BRL gate has passed. The
+active AAP/BRL deltas and approval addenda remain authoritative.
 
 ## Observed boundary
 
@@ -30,18 +31,19 @@ allowlisted error classes are stored.
 
 AAP design explicitly requires revising scope if selected clients need an
 additional protocol profile: `openspec/changes/agent-access-and-permissions/design.md`.
-The current unsupported-profile rejection is not a successful Codex handoff and
-must not be replaced by an SDK simulation or by echoing a newer protocol version.
+The captured default-profile rejection remains the expected default behavior; it
+is not a successful Codex handoff. The approved local profile is a separate,
+explicit compatibility path and still requires actual owner-bound acceptance.
 
-## Proposed bounded revision
+## Approved bounded revision
 
 1. Add an explicitly selected local-only compatibility profile for Codex CLI
    `0.165.0`, MCP `2025-06-18`, and the existing owner-issued manual bearer route.
    Keep the existing `2026-07-28` profile and its rejection behavior as the default.
-2. Gate compatibility by the local BEF configuration and loopback origin/host.
-   Permit only the declared version in that profile. Do not add an OAuth legacy
-   profile, broaden metadata fetches, trust client identity headers, or accept
-   other unsupported protocol versions.
+2. Gate compatibility by an explicit local BEF configuration and loopback
+   origin/host. Permit only the declared version in that profile. Do not add an
+   OAuth legacy profile, broaden metadata fetches, trust client identity headers,
+   or accept other unsupported protocol versions.
 3. Reuse the same current owner/agent/resource/grant checks, business permissions,
    spending limits, revocation and domain idempotency. Transport compatibility
    must not confer new authority, alter quote/debit rules or carry credentials
@@ -51,9 +53,9 @@ must not be replaced by an SDK simulation or by echoing a newer protocol version
    `agents.ts` and `server.ts`, plus local acceptance configuration and client
    captures. Task action/executor semantics and their minimum-action pins stay
    outside this revision.
-5. Before implementation, reconcile the AAP/BRL proposal/design, BDD design and
-   approval with the selected profile. Keep existing scenario IDs; present any
-   new or changed assertion for review before adding executable tests.
+5. Record the selected profile in the existing AAP/BRL proposal, design, BDD
+   design and approval documents. Keep existing scenario IDs and assertions;
+   this scope adds no scenario, variant or normative claim.
 
 ## Required actual acceptance
 
@@ -71,5 +73,6 @@ stale review still need their BRL-SC-025 observations; compatibility alone does
 not close that gate or justify a one-click claim. Platform-recovery refunds and
 trusted integrity findings remain separate unfinished lifecycle requirements.
 
-Decision requested: approve only this additional local manual-bearer profile,
-then revise the active planning artifacts and implement under their review.
+Approval record: the owner approved only this additional local manual-bearer
+profile on 2026-10-28; the AAP and BRL approval addenda record the scope. No
+runtime acceptance or scenario-gate pass is claimed here.

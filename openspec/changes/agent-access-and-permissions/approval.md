@@ -25,3 +25,21 @@ No approval for unrelated capability changes, real-funds operations or productio
 activation is inferred. New scenarios or changed assertions require renewed review.
 
 Approval authorizes implementation and acceptance; it is not evidence of a pass.
+
+## Addendum: local Codex manual-bearer compatibility profile
+
+Date: 2026-10-28.
+
+The owner approved the bounded revision recorded in
+[codex-local-mcp-profile-review.md](../../../docs/codex-local-mcp-profile-review.md):
+Codex CLI 0.165.0 using MCP 2025-06-18 through the existing owner-issued manual
+bearer route, explicitly enabled only for the local BEF loopback profile. The
+default remains MCP 2026-07-28 with legacy handling rejected. No OAuth legacy
+profile, other protocol version, client identity-header trust or authority change
+is approved. Existing owner/agent/resource/grant and current-policy checks,
+permissions, spending limits, revocation and domain idempotency remain unchanged.
+
+This addendum selects an implementation/acceptance profile within AAP-SC-013 and
+AAP-SC-016; it does not add or change scenario IDs, assertions, negative variants
+or runtime contracts. Approval is not acceptance evidence; all actual client and
+domain-operation gates remain independently required.

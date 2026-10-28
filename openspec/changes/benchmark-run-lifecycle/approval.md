@@ -30,3 +30,20 @@ remains unknown; no reference adapter or BEF probe substitutes for product proof
 
 Approval is separate from runtime acceptance. New scenarios or changed assertions
 require renewed review. Sync/archive require all mandatory gates to pass.
+
+## Addendum: local Codex launch profile
+
+Date: 2026-10-28.
+
+The owner approved the bounded local Codex manual-bearer profile recorded in
+[codex-local-mcp-profile-review.md](../../../docs/codex-local-mcp-profile-review.md):
+Codex CLI 0.165.0 using MCP 2025-06-18, through the existing owner-issued manual
+bearer route, only when explicitly enabled in the local BEF loopback profile. The
+default remains MCP 2026-07-28 with legacy handling rejected. No OAuth legacy
+profile, broader version support, trust in client identity headers, or change to
+authorization, admission, billing or lifecycle rules is approved.
+
+This selects a client configuration for existing BRL-SC-023/024/025 implementation
+and acceptance; it adds or changes no scenario IDs, assertions, negative variants
+or contracts. Approval does not pass a gate. The full launch, browser and 12-task
+runtime evidence remains required independently.

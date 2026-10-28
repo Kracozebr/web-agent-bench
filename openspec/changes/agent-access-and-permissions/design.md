@@ -1,6 +1,8 @@
 ## Context
 
-Status: approved for incremental implementation; see [approval.md](approval.md).
+Status: approved for incremental implementation; the 2026-10-28 addendum selects
+one bounded local Codex profile; see [approval.md](approval.md). Runtime acceptance
+remains separate.
 The OID application exists; MCP and participant compatibility remain unproven. Existing clients run on the owner's machine. The selected stack is
 TypeScript, Fastify/Next.js, Better Auth and PostgreSQL with the official MCP SDK.
 
@@ -88,6 +90,22 @@ package versions, discovery/client-registration strategy and transport profiles
 through a feasibility check. Do not compose duplicate provider plugins or enable
 legacy behavior silently to make an unsupported client appear supported.
 [Better Auth MCP](https://better-auth.com/docs/plugins/mcp).
+
+#### Approved local Codex manual-bearer profile
+
+The approved compatibility exception is limited to Codex CLI 0.165.0 advertising
+MCP 2025-06-18 through the existing owner-issued manual bearer route. It requires
+an explicitly selected local BEF profile and loopback origin/host. The default
+remains MCP 2026-07-28 with legacy protocol handling rejected; no OAuth legacy
+profile or other unsupported version is enabled. Select compatibility from
+trusted server configuration, never client identity headers, and use the SDK's
+supported handling rather than rewriting request/response protocol labels.
+The profile keeps the existing owner, agent, resource, grant and current-policy
+checks; it adds no authority and does not change billing or idempotency.
+
+This selects one actual client/profile combination for acceptance, not blanket
+Codex support. The observed startup failure and approval boundary are documented
+in [the local MCP profile review](../../../docs/codex-local-mcp-profile-review.md).
 
 Proposed verification covers authorization-code/PKCE binding, redirect and issuer/
 resource validation, single-use codes, expiry and consent. Required discovery and
@@ -203,6 +221,10 @@ denial after owner revocation. No actual credentials enter evidence. Unknown
 editions remain `unverified`; unavailable applications cannot be replaced with a
 generic SDK client pass. This gate does not require all editions or both routes
 in every client; record the actual supported method and any unsupported alternative.
+For Codex, the selected route is the 0.165.0 / 2025-06-18 local profile with the
+manual bearer header. This does not select OAuth compatibility for that edition
+or change the default rejection profile; the actual operation and post-revocation
+observations remain required before the client gate can pass.
 
 ## Risks / Trade-offs
 

@@ -1,7 +1,8 @@
 ## Context
 
-Status: approved for incremental implementation on 2026-10-25; see [approval](approval.md).
-Runtime acceptance remains separate. The reviewed rules and defaults are unchanged.
+Status: approved for incremental implementation on 2026-10-25, with the bounded
+local Codex profile addendum dated 2026-10-28; see [approval](approval.md).
+Runtime acceptance remains separate. Lifecycle rules and defaults are unchanged.
 
 ## Goals / Non-Goals
 
@@ -297,6 +298,16 @@ evidence alone cannot establish the one-to-two-action UX claim. Record all actua
 setup/client approval/copy-paste steps separately, with fallback labelled honestly.
 No platform-hosted model invocation or universal client handoff is introduced.
 
+The selected Codex launch client uses the separately approved local profile:
+CLI 0.165.0, MCP 2025-06-18, and the existing owner-issued manual bearer route,
+with explicit local BEF/loopback configuration. The default remains MCP
+2026-07-28 with legacy protocol handling rejected. This transport selection does
+not change launch intent creation, preflight, atomic admission, quote, reservation,
+deadline, cancellation, or idempotency behavior. The actual run must still use the
+normal owner/agent authorization and durable database transaction. Profile
+compatibility alone does not satisfy BRL-SC-023/024, and does not close the full
+browser/client observations in BRL-SC-025.
+
 | Surface | Purpose |
 | --- | --- |
 | `POST /api/runs` | Authenticated agent admission; idempotency key, mode and selection; server builds immutable quote/catalog identity. |
@@ -307,7 +318,8 @@ No platform-hosted model invocation or universal client handoff is introduced.
 | Executor prepare/execute/observe/evaluate/cleanup ports | Prepared environment identity, bounded action semantics, independent observations and versioned rubric outputs. Not public Anvil-admin access. |
 
 MCP will wrap the same domain operations in its own capability. This packet's
-tests do not establish Google login, MCP client compatibility or human presence.
+tests do not establish Google login, universal MCP client compatibility or human
+presence; the selected local Codex profile is only one actual-client configuration.
 Use real authentication verification with synthetic test identities/keys; no
 trusted owner/agent-ID headers or fake authentication bypass in public routes.
 Define request/result schemas, bounded sizes and stable error taxonomy during

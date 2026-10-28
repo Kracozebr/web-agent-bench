@@ -2,7 +2,9 @@
 
 Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
-**Status:** Approved for incremental implementation; see [approval.md](approval.md).
+**Status:** Approved for incremental implementation; the 2026-10-28 local Codex
+profile addendum is recorded in [approval.md](approval.md). Runtime gates remain
+separate.
 **Normative delta source:** `specs/agent-access-and-permissions/spec.md` (proposed active delta).
 **Target main source after sync:** `openspec/specs/agent-access-and-permissions/spec.md`.
 **Execution status:** all 16 mandatory scenarios are initially `not_run`; implementation and actual evidence are recorded separately.
@@ -12,6 +14,16 @@ Workflow: [docs/task-design.md](../../../docs/task-design.md)
 **Goal:** verify owner-bound browser/manual agent connections, independent permissions and actual shared domain/billing/revocation effects.
 
 **Non-goals:** full Google/SIWE identity linking, owner withdrawal proof, public profile/leaderboard composition, agent hosting or universal edition compatibility.
+
+## Approved client-profile selection
+
+The existing AAP client-compatibility coverage includes one selected local
+Codex profile: CLI 0.165.0, MCP 2025-06-18, and the existing owner-issued manual
+bearer route under explicit local BEF/loopback configuration. The default
+2026-07-28 profile continues to reject legacy protocol handling. This is a
+configuration choice inside the existing scenarios, not a new scenario,
+negative variant, assertion or contract change. It does not establish runtime
+compatibility or pass any gate.
 
 ## Scenario design
 
@@ -48,7 +60,7 @@ Every scenario is a mandatory `environment` gate. Scenarios 001–015 use actual
 - Synthetic identity setup must traverse the real server verifier; it does not claim live Google login or wallet linking. That upstream capability must exist before acceptance can pass.
 - Use private controlled clocks/fault seams for expiry, response loss and restart; retain real committed policy, operation, cancellation and funding identities.
 - AAP-SC-002/014/015 include browser paths. AAP-SC-015 uses an actual declared local MCP test client and the application OAuth flow, not a claim of external-client compatibility.
-- AAP-SC-016 requires pinned actual editions of Claude, Codex, OpenClaw and Hermes. Record each edition/platform/version, selected protocol/auth route, no platform connector install, tool discovery, free preflight, a real scoped test operation and denied call after global revocation. If a route is unsupported, state it; do not claim every client supports both routes.
+- AAP-SC-016 requires pinned actual editions of Claude, Codex, OpenClaw and Hermes. Record each edition/platform/version, selected protocol/auth route, no platform connector install, tool discovery, free preflight, a real scoped test operation and denied call after global revocation. For Codex, select only the approved 0.165.0 / 2025-06-18 local manual-bearer profile; other client routes remain unselected. If a route is unsupported, state it; do not claim every client supports both routes.
 - Pin exact compatible SDK/protocol/provider configuration before executing. Discovery/profile drift is a failed or blocked prerequisite, not permission to disable checks silently.
 - Observe ownership/grant/resource/scope bindings, policy revisions, source/budget receipts, cross-transport operation identities, revocation fences and actual domain effects. A denial must include absence of forbidden durable effects.
 - Evidence uses synthetic data, safe IDs and redacted raw paths/hashes; never include access/refresh/manual tokens, cookies, private keys or provider secrets. Secret inspection asserts absence without printing candidate secrets into evidence.
@@ -58,7 +70,7 @@ Every scenario is a mandatory `environment` gate. Scenarios 001–015 use actual
 
 ## Approval boundary
 
-Approval covers only these 16 scenarios/variants, named mappers/adapters, private profile/access/consent pages, shared domain authorization and actual integration boundaries in the proposal. It does not authorize production activation, real funds, full identity recovery, new assertions or PvP.
+Approval covers the same 16 scenarios/variants, named mappers/adapters, private profile/access/consent pages, shared domain authorization and actual integration boundaries in the proposal, plus the exact local Codex profile recorded in the 2026-10-28 addendum. No scenario, assertion or variant is added or changed. It does not authorize production activation, real funds, full identity recovery, OAuth legacy compatibility, universal client support, new assertions or PvP.
 
-**Decision:** pending.
-**Decision reference:** the user selected browser authorization and a revocable agent-bound manual token plus four independent action permissions, retaining separate limits/cash permission. Run-mode removal now cancels that mode's queued/preparing and active runs under the selected lifecycle rules, as confirmed by the user. Owner changes to business permissions also apply to existing valid connections without reconnect or token replacement, as confirmed by the user. Initial all-disabled permissions with free connection preflight are also user-confirmed; manual-token engineering defaults remain proposed; the complete inventory and implementation scope are not approved.
+**Decision:** approved; the bounded local Codex profile was added on 2026-10-28.
+**Decision reference:** the original approval and this addendum are recorded in [approval.md](approval.md). Existing decisions remain: browser authorization and a revocable agent-bound manual token, four independent action permissions, separate limits/cash permission, mode-scoped cancellation, current owner-managed permissions, and initial all-disabled permissions with free preflight. The addendum selects only Codex CLI 0.165.0 / MCP 2025-06-18 on the explicit local manual-bearer profile. Other compatibility routes and numerical token/grant limits remain unselected. All runtime gates remain separate.
