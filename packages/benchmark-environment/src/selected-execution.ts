@@ -37,6 +37,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 const ERC20_ABI = parseAbi([
   'function approve(address spender,uint256 amount) returns (bool)',
+  'function transfer(address to,uint256 amount) returns (bool)',
   'function allowance(address owner,address spender) view returns (uint256)',
   'function balanceOf(address account) view returns (uint256)',
   'event Approval(address indexed owner,address indexed spender,uint256 value)',
@@ -56,16 +57,25 @@ const SWAP_ROUTER_ABI = parseAbi([
   'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) payable returns (uint256 amountOut)',
 ] as const);
 const V3_POOL_ABI = parseAbi([
+  'function token0() view returns (address)',
+  'function token1() view returns (address)',
+  'function fee() view returns (uint24)',
   'function slot0() view returns (uint160 sqrtPriceX96,int24 tick,uint16 observationIndex,uint16 observationCardinality,uint16 observationCardinalityNext,uint8 feeProtocol,bool unlocked)',
   'function liquidity() view returns (uint128)',
   'event Swap(address indexed sender,address indexed recipient,int256 amount0,int256 amount1,uint160 sqrtPriceX96,uint128 liquidity,int24 tick)',
 ] as const);
 
+export type PinnedV3FeeTier = 500 | 3000;
+
 export type SelectedExecutionAction =
-  | { kind: 'approve'; amountUnits: string; gasLimit: string }
+  | { kind: 'approve'; tokenAssetId: 'WETH' | 'USDC'; amountUnits: string; gasLimit: string }
+  | { kind: 'transfer'; amountUnits: string; recipient: Address; gasLimit: string }
   | { kind: 'wrap'; amountWei: string; gasLimit: string }
   | { kind: 'unwrap'; amountWei: string; gasLimit: string }
-  | { kind: 'swap'; amountInWei: string; amountOutMinimumUsdcUnits: string; recipient: Address; gasLimit: string };
+  | {
+    kind: 'swap'; inputAssetId: 'WETH' | 'USDC'; outputAssetId: 'WETH' | 'USDC';
+    amountInUnits: string; amountOutMinimumUnits: string; recipient: Address; gasLimit: string; feeTier?: PinnedV3FeeTier;
+  };
 export type SelectedAction = SelectedExecutionAction;
 
 export type ParticipantAuth = {
@@ -90,8 +100,10 @@ export type ExecutionSnapshot = {
   payerNativeWei: string;
   payerWethUnits: string;
   payerUsdcUnits: string;
+  recipientWethUnits: string;
   recipientUsdcUnits: string;
   wethRouterAllowance: string;
+  usdcRouterAllowance: string;
   poolWethUnits: string;
   poolUsdcUnits: string;
   poolLiquidity: string;
@@ -156,13 +168,14 @@ export type ExecutionMeasurement = {
   fee: {
     modeledGasFeeUsdcUnits: string;
     baseL1Fee: 'unmodelled';
-    principalAsset: 'ETH' | 'WETH' | null;
+    principalAsset: 'ETH' | 'WETH' | 'USDC' | null;
     selectedPrincipalUnits: string;
     principalUnits: string;
   };
   taskEvaluationInputs: {
     expenseBudgetUsdcUnits: string;
     recipient: Address | null;
+    allowanceAssetId: 'WETH' | 'USDC';
     allowanceAfterUnits: string;
     nativeEthReserveWei: string;
     allowanceCleanupExpected: boolean;
@@ -198,18 +211,45 @@ export type SelectedExecutionRuntime = {
 };
 
 const actionSchemas = {
-  approve: z.object({ amountUnits: z.string().regex(UINT_DECIMAL), gasLimit: z.string().regex(UINT_DECIMAL) }).strict(),
-  wrap: z.object({ amountWei: z.string().regex(UINT_DECIMAL), gasLimit: z.string().regex(UINT_DECIMAL) }).strict(),
-  unwrap: z.object({ amountWei: z.string().regex(UINT_DECIMAL), gasLimit: z.string().regex(UINT_DECIMAL) }).strict(),
-  swap: z.object({
-    amountInWei: z.string().regex(UINT_DECIMAL),
-    amountOutMinimumUsdcUnits: z.string().regex(UINT_DECIMAL),
-    recipient: z.string().regex(ADDRESS),
+  approve: z.object({
+    tokenAssetId: z.enum(['WETH', 'USDC']).optional(),
+    amountUnits: z.string().regex(UINT_DECIMAL),
     gasLimit: z.string().regex(UINT_DECIMAL),
   }).strict(),
+  transfer: z.object({ amountUnits: z.string().regex(UINT_DECIMAL), recipient: z.string().regex(ADDRESS), gasLimit: z.string().regex(UINT_DECIMAL) }).strict(),
+  wrap: z.object({ amountWei: z.string().regex(UINT_DECIMAL), gasLimit: z.string().regex(UINT_DECIMAL) }).strict(),
+  unwrap: z.object({ amountWei: z.string().regex(UINT_DECIMAL), gasLimit: z.string().regex(UINT_DECIMAL) }).strict(),
+  swap: z.union([
+    z.object({
+      inputAssetId: z.enum(['WETH', 'USDC']),
+      outputAssetId: z.enum(['WETH', 'USDC']),
+      feeTier: z.union([z.literal(500), z.literal(3000)]).optional(),
+      amountInUnits: z.string().regex(UINT_DECIMAL),
+      amountOutMinimumUnits: z.string().regex(UINT_DECIMAL),
+      recipient: z.string().regex(ADDRESS),
+      gasLimit: z.string().regex(UINT_DECIMAL),
+    }).strict(),
+    // Preserve the original WETH->USDC tool input for already deployed probe
+    // drivers. New callers select both assets and use denomination-neutral units.
+    z.object({
+      feeTier: z.union([z.literal(500), z.literal(3000)]).optional(),
+      amountInWei: z.string().regex(UINT_DECIMAL),
+      amountOutMinimumUsdcUnits: z.string().regex(UINT_DECIMAL),
+      recipient: z.string().regex(ADDRESS),
+      gasLimit: z.string().regex(UINT_DECIMAL),
+    }).strict(),
+  ]),
 } as const;
 const balancesQuerySchema = z.object({}).strict();
-const quoteQuerySchema = z.object({ amountInWei: z.string().regex(UINT_DECIMAL) }).strict();
+const quoteFeeTierQuerySchema = z.preprocess((value) => {
+  if (value === '500') return 500;
+  if (value === '3000') return 3000;
+  return value;
+}, z.union([z.literal(500), z.literal(3000)]));
+const quoteQuerySchema = z.union([
+  z.object({ inputAssetId: z.enum(['WETH', 'USDC']), feeTier: quoteFeeTierQuerySchema.optional(), amountInUnits: z.string().regex(UINT_DECIMAL) }).strict(),
+  z.object({ feeTier: quoteFeeTierQuerySchema.optional(), amountInWei: z.string().regex(UINT_DECIMAL) }).strict(),
+]);
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -244,20 +284,58 @@ function decimalValue(value: string): bigint {
   return parsed;
 }
 
+function assetAddress(manifest: RuntimeManifest, assetId: 'WETH' | 'USDC'): Address {
+  return assetId === 'WETH' ? manifest.contracts.weth.address as Address : manifest.contracts.usdc.address as Address;
+}
+
+export function swapRouteAddresses(
+  manifest: RuntimeManifest,
+  inputAssetId: 'WETH' | 'USDC',
+  outputAssetId: 'WETH' | 'USDC',
+  feeTier: PinnedV3FeeTier = 500,
+): { tokenIn: Address; tokenOut: Address; fee: PinnedV3FeeTier; poolAddress: Address; poolCodeHash: string } {
+  if (inputAssetId === outputAssetId) throw new Error('selected_swap_route_not_permitted');
+  const tokenIn = assetAddress(manifest, inputAssetId);
+  const tokenOut = assetAddress(manifest, outputAssetId);
+  const pinnedPair = new Set([manifest.swap.tokenIn.toLowerCase(), manifest.swap.tokenOut.toLowerCase()]);
+  if (!pinnedPair.has(tokenIn.toLowerCase()) || !pinnedPair.has(tokenOut.toLowerCase()) || tokenIn.toLowerCase() === tokenOut.toLowerCase()) {
+    throw new Error('selected_swap_route_not_permitted');
+  }
+  const pool = feeTier === 500 ? manifest.contracts.pool
+    : feeTier === 3000 ? manifest.contracts.pool3000 : undefined;
+  if (!pool || pool.fee !== feeTier || pool.token0.toLowerCase() !== manifest.contracts.weth.address.toLowerCase() ||
+      pool.token1.toLowerCase() !== manifest.contracts.usdc.address.toLowerCase()) {
+    throw new Error('selected_swap_route_not_permitted');
+  }
+  return { tokenIn, tokenOut, fee: feeTier, poolAddress: pool.address as Address, poolCodeHash: pool.codeHash };
+}
+
+function maximumSwapInput(manifest: RuntimeManifest, inputAssetId: 'WETH' | 'USDC'): bigint {
+  return inputAssetId === 'WETH'
+    ? BigInt(manifest.swap.maxAmountIn)
+    : BigInt(manifest.funding.maxUsdcUnitsPerGeneration);
+}
+
 function validateHardBounds(action: SelectedAction, manifest: RuntimeManifest): void {
   const maxGas = BigInt(manifest.swap.maxTransactionGas);
   const gasLimit = decimalValue(action.gasLimit);
   if (gasLimit === 0n || gasLimit > maxGas) throw new Error('gas_limit_outside_manifest_bound');
   if (action.kind === 'approve') {
     decimalValue(action.amountUnits); // zero is allowed for an explicitly selected allowance cleanup.
+  } else if (action.kind === 'transfer') {
+    const amount = decimalValue(action.amountUnits);
+    if (amount > BigInt(manifest.funding.maxUsdcUnitsPerGeneration)) throw new Error('transfer_amount_outside_fixture_bound');
+    if (action.recipient.toLowerCase() === ZERO_ADDRESS.toLowerCase()) throw new Error('recipient_must_be_nonzero');
   } else if (action.kind === 'wrap' || action.kind === 'unwrap') {
     const amount = decimalValue(action.amountWei);
     if (amount === 0n) throw new Error('amount_must_be_positive');
     if (amount > BigInt(manifest.funding.nativeEthWeiPerGeneration)) throw new Error('conversion_amount_outside_fixture_bound');
   } else {
-    const amountIn = decimalValue(action.amountInWei);
-    decimalValue(action.amountOutMinimumUsdcUnits); // preserve the caller's exact minOut, including zero.
-    if (amountIn === 0n || amountIn > BigInt(manifest.swap.maxAmountIn)) throw new Error('swap_amount_outside_manifest_bound');
+    const { inputAssetId, outputAssetId } = action;
+    swapRouteAddresses(manifest, inputAssetId, outputAssetId, action.feeTier ?? 500);
+    const amountIn = decimalValue(action.amountInUnits);
+    decimalValue(action.amountOutMinimumUnits); // preserve the caller's exact minOut, including zero.
+    if (amountIn === 0n || amountIn > maximumSwapInput(manifest, inputAssetId)) throw new Error('swap_amount_outside_manifest_bound');
     if (action.recipient.toLowerCase() === ZERO_ADDRESS.toLowerCase()) throw new Error('recipient_must_be_nonzero');
   }
   // Task goals such as reserve, expense budget, recipient success, allowance
@@ -269,7 +347,11 @@ export function parseSelectedAction(kind: SelectedAction['kind'], value: unknown
   switch (kind) {
     case 'approve': {
       const parsed = actionSchemas.approve.safeParse(value);
-      return parsed.success ? { kind, ...parsed.data } : null;
+      return parsed.success ? { kind, tokenAssetId: parsed.data.tokenAssetId ?? 'WETH', amountUnits: parsed.data.amountUnits, gasLimit: parsed.data.gasLimit } : null;
+    }
+    case 'transfer': {
+      const parsed = actionSchemas.transfer.safeParse(value);
+      return parsed.success ? { kind, ...parsed.data, recipient: parsed.data.recipient.toLowerCase() as Address } : null;
     }
     case 'wrap': {
       const parsed = actionSchemas.wrap.safeParse(value);
@@ -281,9 +363,32 @@ export function parseSelectedAction(kind: SelectedAction['kind'], value: unknown
     }
     case 'swap': {
       const parsed = actionSchemas.swap.safeParse(value);
+      if (!parsed.success) return null;
+      if ('inputAssetId' in parsed.data) {
+        if (parsed.data.inputAssetId === parsed.data.outputAssetId) return null;
+        return {
+          kind,
+          inputAssetId: parsed.data.inputAssetId,
+          outputAssetId: parsed.data.outputAssetId,
+          feeTier: parsed.data.feeTier ?? 500,
+          amountInUnits: parsed.data.amountInUnits,
+          amountOutMinimumUnits: parsed.data.amountOutMinimumUnits,
+          recipient: parsed.data.recipient.toLowerCase() as Address,
+          gasLimit: parsed.data.gasLimit,
+        };
+      }
       // Address casing is not part of the selected destination. Canonicalize
       // hex casing so any valid 20-byte address spelling is accepted by viem.
-      return parsed.success ? { kind, ...parsed.data, recipient: parsed.data.recipient.toLowerCase() as Address } : null;
+      return {
+        kind,
+        feeTier: parsed.data.feeTier ?? 500,
+        inputAssetId: 'WETH',
+        outputAssetId: 'USDC',
+        amountInUnits: parsed.data.amountInWei,
+        amountOutMinimumUnits: parsed.data.amountOutMinimumUsdcUnits,
+        recipient: parsed.data.recipient.toLowerCase() as Address,
+        gasLimit: parsed.data.gasLimit,
+      };
     }
   }
 }
@@ -320,25 +425,53 @@ function safeAction(action: SelectedAction, manifest: RuntimeManifest): Record<s
   switch (action.kind) {
     case 'approve': return {
       kind: action.kind,
-      token: manifest.contracts.weth.address,
+      tokenAssetId: action.tokenAssetId,
+      token: assetAddress(manifest, action.tokenAssetId),
       spender: manifest.contracts.swapRouter02.address,
       amountUnits: action.amountUnits,
       gasLimit: action.gasLimit,
     };
-    case 'wrap': return { kind: action.kind, amountWei: action.amountWei, gasLimit: action.gasLimit };
-    case 'unwrap': return { kind: action.kind, amountWei: action.amountWei, gasLimit: action.gasLimit };
-    case 'swap': return {
+    case 'transfer': return {
       kind: action.kind,
-      route: 'uniswap-v3-exactInputSingle',
-      router: manifest.contracts.swapRouter02.address,
-      tokenIn: manifest.swap.tokenIn,
-      tokenOut: manifest.swap.tokenOut,
-      fee: manifest.swap.fee,
-      amountInWei: action.amountInWei,
-      amountOutMinimumUsdcUnits: action.amountOutMinimumUsdcUnits,
+      token: manifest.contracts.usdc.address,
+      amountUnits: action.amountUnits,
       recipient: action.recipient,
       gasLimit: action.gasLimit,
     };
+    case 'wrap': return { kind: action.kind, amountWei: action.amountWei, gasLimit: action.gasLimit };
+    case 'unwrap': return { kind: action.kind, amountWei: action.amountWei, gasLimit: action.gasLimit };
+    case 'swap': {
+      const route = swapRouteAddresses(manifest, action.inputAssetId, action.outputAssetId, action.feeTier ?? 500);
+      // Keep the historical idempotency hash for the legacy WETH->USDC fee-500
+      // request. Existing operations can still be replayed after an API upgrade.
+      if (route.fee === 500 && action.inputAssetId === 'WETH' && action.outputAssetId === 'USDC') return {
+        kind: action.kind,
+        route: 'uniswap-v3-exactInputSingle',
+        router: manifest.contracts.swapRouter02.address,
+        tokenIn: manifest.swap.tokenIn,
+        tokenOut: manifest.swap.tokenOut,
+        fee: manifest.swap.fee,
+        amountInWei: action.amountInUnits,
+        amountOutMinimumUsdcUnits: action.amountOutMinimumUnits,
+        recipient: action.recipient,
+        gasLimit: action.gasLimit,
+      };
+      return {
+        kind: action.kind,
+        route: 'uniswap-v3-exactInputSingle',
+        router: manifest.contracts.swapRouter02.address,
+        inputAssetId: action.inputAssetId,
+        outputAssetId: action.outputAssetId,
+        tokenIn: route.tokenIn,
+        tokenOut: route.tokenOut,
+        fee: route.fee,
+        ...(route.fee === 3000 ? { poolAddress: route.poolAddress, poolCodeHash: route.poolCodeHash } : {}),
+        amountInUnits: action.amountInUnits,
+        amountOutMinimumUnits: action.amountOutMinimumUnits,
+        recipient: action.recipient,
+        gasLimit: action.gasLimit,
+      };
+    }
   }
 }
 
@@ -455,17 +588,20 @@ async function readSnapshot(
   payer: Address,
   recipient: Address,
   blockNumber: bigint,
+  selectedPoolAddress: Address = manifest.contracts.pool.address as Address,
 ): Promise<ExecutionSnapshot> {
   const weth = manifest.contracts.weth.address as Address;
   const usdc = manifest.contracts.usdc.address as Address;
   const router = manifest.contracts.swapRouter02.address as Address;
-  const pool = manifest.contracts.pool.address as Address;
-  const [native, payerWeth, payerUsdc, recipientUsdc, allowance, poolWeth, poolUsdc, poolLiquidity, poolSlot0] = await Promise.all([
+  const pool = selectedPoolAddress;
+  const [native, payerWeth, payerUsdc, recipientWeth, recipientUsdc, wethAllowance, usdcAllowance, poolWeth, poolUsdc, poolLiquidity, poolSlot0] = await Promise.all([
     client.getBalance({ address: payer, blockNumber }),
     client.readContract({ address: weth, abi: WETH_ABI, functionName: 'balanceOf', args: [payer], blockNumber }),
     client.readContract({ address: usdc, abi: ERC20_ABI, functionName: 'balanceOf', args: [payer], blockNumber }),
+    client.readContract({ address: weth, abi: WETH_ABI, functionName: 'balanceOf', args: [recipient], blockNumber }),
     client.readContract({ address: usdc, abi: ERC20_ABI, functionName: 'balanceOf', args: [recipient], blockNumber }),
     client.readContract({ address: weth, abi: ERC20_ABI, functionName: 'allowance', args: [payer, router], blockNumber }),
+    client.readContract({ address: usdc, abi: ERC20_ABI, functionName: 'allowance', args: [payer, router], blockNumber }),
     client.readContract({ address: weth, abi: WETH_ABI, functionName: 'balanceOf', args: [pool], blockNumber }),
     client.readContract({ address: usdc, abi: ERC20_ABI, functionName: 'balanceOf', args: [pool], blockNumber }),
     client.readContract({ address: pool, abi: V3_POOL_ABI, functionName: 'liquidity', blockNumber }),
@@ -476,8 +612,10 @@ async function readSnapshot(
     payerNativeWei: native.toString(),
     payerWethUnits: payerWeth.toString(),
     payerUsdcUnits: payerUsdc.toString(),
+    recipientWethUnits: recipientWeth.toString(),
     recipientUsdcUnits: recipientUsdc.toString(),
-    wethRouterAllowance: allowance.toString(),
+    wethRouterAllowance: wethAllowance.toString(),
+    usdcRouterAllowance: usdcAllowance.toString(),
     poolWethUnits: poolWeth.toString(),
     poolUsdcUnits: poolUsdc.toString(),
     poolLiquidity: poolLiquidity.toString(),
@@ -486,8 +624,13 @@ async function readSnapshot(
 }
 
 type QuoteObservation = {
-  amountInWei: string;
-  amountOutUsdcUnits: string;
+  feeTier: PinnedV3FeeTier;
+  poolAddress: Address;
+  poolCodeHash: string;
+  inputAssetId: 'WETH' | 'USDC';
+  outputAssetId: 'WETH' | 'USDC';
+  amountInUnits: string;
+  amountOutUnits: string;
   sqrtPriceX96After: string;
   initializedTicksCrossed: string;
   gasEstimate: string;
@@ -501,28 +644,37 @@ async function quoteAtBlock(
   manifest: RuntimeManifest,
   amountIn: bigint,
   blockNumber: bigint,
+  inputAssetId: 'WETH' | 'USDC' = 'WETH',
+  outputAssetId: 'WETH' | 'USDC' = inputAssetId === 'WETH' ? 'USDC' : 'WETH',
+  feeTier: PinnedV3FeeTier = 500,
 ): Promise<QuoteObservation | null> {
   try {
+    const route = swapRouteAddresses(manifest, inputAssetId, outputAssetId, feeTier);
     const result = await client.readContract({
       address: manifest.contracts.quoterV2.address as Address,
       abi: QUOTER_V2_ABI,
       functionName: 'quoteExactInputSingle',
       args: [{
-        tokenIn: manifest.contracts.weth.address as Address,
-        tokenOut: manifest.contracts.usdc.address as Address,
+        tokenIn: route.tokenIn,
+        tokenOut: route.tokenOut,
         amountIn,
-        fee: manifest.swap.fee,
+        fee: route.fee,
         sqrtPriceLimitX96: 0n,
       }],
       blockNumber,
     }) as readonly [bigint, bigint, number, bigint];
     const [slot0, liquidity] = await Promise.all([
-      client.readContract({ address: manifest.contracts.pool.address as Address, abi: V3_POOL_ABI, functionName: 'slot0', blockNumber }) as Promise<readonly [bigint, number, number, number, number, number, boolean]>,
-      client.readContract({ address: manifest.contracts.pool.address as Address, abi: V3_POOL_ABI, functionName: 'liquidity', blockNumber }),
+      client.readContract({ address: route.poolAddress, abi: V3_POOL_ABI, functionName: 'slot0', blockNumber }) as Promise<readonly [bigint, number, number, number, number, number, boolean]>,
+      client.readContract({ address: route.poolAddress, abi: V3_POOL_ABI, functionName: 'liquidity', blockNumber }),
     ]);
     return {
-      amountInWei: amountIn.toString(),
-      amountOutUsdcUnits: result[0].toString(),
+      feeTier,
+      poolAddress: route.poolAddress,
+      poolCodeHash: route.poolCodeHash,
+      inputAssetId,
+      outputAssetId,
+      amountInUnits: amountIn.toString(),
+      amountOutUnits: result[0].toString(),
       sqrtPriceX96After: result[1].toString(),
       initializedTicksCrossed: result[2].toString(),
       gasEstimate: result[3].toString(),
@@ -544,11 +696,21 @@ function transactionCall(action: SelectedAction, manifest: RuntimeManifest, paye
   switch (action.kind) {
     case 'approve':
       return {
-        to: weth,
+        to: assetAddress(manifest, action.tokenAssetId),
         data: encodeFunctionData({
           abi: ERC20_ABI,
           functionName: 'approve',
           args: [manifest.contracts.swapRouter02.address as Address, decimalValue(action.amountUnits)],
+        }),
+        value: 0n,
+      };
+    case 'transfer':
+      return {
+        to: manifest.contracts.usdc.address as Address,
+        data: encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: 'transfer',
+          args: [action.recipient, decimalValue(action.amountUnits)],
         }),
         value: 0n,
       };
@@ -565,25 +727,28 @@ function transactionCall(action: SelectedAction, manifest: RuntimeManifest, paye
         value: 0n,
       };
     case 'swap':
+      {
+      const route = swapRouteAddresses(manifest, action.inputAssetId, action.outputAssetId, action.feeTier ?? 500);
       return {
         to: manifest.contracts.swapRouter02.address as Address,
         data: encodeFunctionData({
           abi: SWAP_ROUTER_ABI,
           functionName: 'exactInputSingle',
           args: [{
-            tokenIn: manifest.swap.tokenIn as Address,
-            tokenOut: manifest.swap.tokenOut as Address,
-            fee: manifest.swap.fee,
+            tokenIn: route.tokenIn,
+            tokenOut: route.tokenOut,
+            fee: route.fee,
             recipient: action.recipient,
-            amountIn: decimalValue(action.amountInWei),
+            amountIn: decimalValue(action.amountInUnits),
             // Keep the selected threshold exactly as submitted. The quote is
             // evidence only; maxSlippageBps never rewrites this value.
-            amountOutMinimum: decimalValue(action.amountOutMinimumUsdcUnits),
+            amountOutMinimum: decimalValue(action.amountOutMinimumUnits),
             sqrtPriceLimitX96: 0n,
           }],
         }),
         value: 0n,
       };
+      }
   }
 }
 
@@ -596,6 +761,19 @@ function decodeApproval(receipt: TransactionReceipt, token: Address, owner: Addr
       return args.owner.toLowerCase() === owner.toLowerCase() && args.spender.toLowerCase() === spender.toLowerCase() && args.value === amount;
     } catch { return false; }
   });
+}
+
+function decodeTransfer(receipt: TransactionReceipt, token: Address, from: Address, to: Address, amount: bigint): boolean {
+  const matches = receipt.logs.filter((log) => {
+    if (log.address.toLowerCase() !== token.toLowerCase()) return false;
+    try {
+      const event = decodeEventLog({ abi: ERC20_ABI, eventName: 'Transfer', topics: log.topics, data: log.data }) as { args: unknown };
+      const args = event.args as { from: Address; to: Address; value: bigint };
+      return args.from.toLowerCase() === from.toLowerCase() &&
+        args.to.toLowerCase() === to.toLowerCase() && args.value === amount;
+    } catch { return false; }
+  });
+  return matches.length === 1;
 }
 
 function decodeWethEvent(receipt: TransactionReceipt, weth: Address, eventName: 'Deposit' | 'Withdrawal', owner: Address, amount: bigint): boolean {
@@ -615,7 +793,8 @@ function decodeWethEvent(receipt: TransactionReceipt, weth: Address, eventName: 
 }
 
 function decodeSwap(receipt: TransactionReceipt, manifest: RuntimeManifest, action: Extract<SelectedAction, { kind: 'swap' }>, payer: Address): { amountIn: bigint; amountOut: bigint } | null {
-  const pool = manifest.contracts.pool.address.toLowerCase();
+  const route = swapRouteAddresses(manifest, action.inputAssetId, action.outputAssetId, action.feeTier ?? 500);
+  const pool = route.poolAddress.toLowerCase();
   const poolSwap = receipt.logs.filter((log) => log.address.toLowerCase() === pool).flatMap((log) => {
     try {
       const event = decodeEventLog({ abi: V3_POOL_ABI, eventName: 'Swap', topics: log.topics, data: log.data }) as { args: unknown };
@@ -626,11 +805,13 @@ function decodeSwap(receipt: TransactionReceipt, manifest: RuntimeManifest, acti
   const swap = poolSwap[0]!;
   const router = manifest.contracts.swapRouter02.address.toLowerCase();
   if (swap.sender.toLowerCase() !== router || swap.recipient.toLowerCase() !== action.recipient.toLowerCase()) return null;
-  const selectedMaximumInput = BigInt(action.amountInWei);
-  if (swap.amount0 <= 0n || swap.amount0 > selectedMaximumInput || swap.amount1 >= 0n) return null;
-  const amountIn = swap.amount0;
-  const amountOut = -swap.amount1;
-  if (amountOut < BigInt(action.amountOutMinimumUsdcUnits)) return null;
+  const amountInSigned = action.inputAssetId === 'WETH' ? swap.amount0 : swap.amount1;
+  const amountOutSigned = action.outputAssetId === 'WETH' ? swap.amount0 : swap.amount1;
+  const selectedMaximumInput = BigInt(action.amountInUnits);
+  if (amountInSigned <= 0n || amountInSigned > selectedMaximumInput || amountOutSigned >= 0n) return null;
+  const amountIn = amountInSigned;
+  const amountOut = -amountOutSigned;
+  if (amountOut < BigInt(action.amountOutMinimumUnits)) return null;
 
   const transferMatches = (token: Address, from: Address, to: Address, amount: bigint): number => receipt.logs.filter((log) => {
     if (log.address.toLowerCase() !== token.toLowerCase()) return false;
@@ -640,10 +821,9 @@ function decodeSwap(receipt: TransactionReceipt, manifest: RuntimeManifest, acti
       return args.from.toLowerCase() === from.toLowerCase() && args.to.toLowerCase() === to.toLowerCase() && args.value === amount;
     } catch { return false; }
   }).length;
-  const weth = manifest.contracts.weth.address as Address;
-  const usdc = manifest.contracts.usdc.address as Address;
-  const poolAddress = manifest.contracts.pool.address as Address;
-  if (transferMatches(weth, payer, poolAddress, amountIn) !== 1 || transferMatches(usdc, poolAddress, action.recipient, amountOut) !== 1) return null;
+  const poolAddress = route.poolAddress;
+  if (transferMatches(route.tokenIn, payer, poolAddress, amountIn) !== 1 ||
+      transferMatches(route.tokenOut, poolAddress, action.recipient, amountOut) !== 1) return null;
   return { amountIn, amountOut };
 }
 
@@ -651,8 +831,10 @@ type ExecutionDeltas = {
   payerNativeWei: string;
   payerWethUnits: string;
   payerUsdcUnits: string;
+  recipientWethUnits: string;
   recipientUsdcUnits: string;
   wethRouterAllowance: string;
+  usdcRouterAllowance: string;
   poolWethUnits: string;
   poolUsdcUnits: string;
   poolLiquidity: string;
@@ -664,8 +846,10 @@ function deltas(before: ExecutionSnapshot, after: ExecutionSnapshot): ExecutionD
     payerNativeWei: (BigInt(after.payerNativeWei) - BigInt(before.payerNativeWei)).toString(),
     payerWethUnits: (BigInt(after.payerWethUnits) - BigInt(before.payerWethUnits)).toString(),
     payerUsdcUnits: (BigInt(after.payerUsdcUnits) - BigInt(before.payerUsdcUnits)).toString(),
+    recipientWethUnits: (BigInt(after.recipientWethUnits) - BigInt(before.recipientWethUnits)).toString(),
     recipientUsdcUnits: (BigInt(after.recipientUsdcUnits) - BigInt(before.recipientUsdcUnits)).toString(),
     wethRouterAllowance: (BigInt(after.wethRouterAllowance) - BigInt(before.wethRouterAllowance)).toString(),
+    usdcRouterAllowance: (BigInt(after.usdcRouterAllowance) - BigInt(before.usdcRouterAllowance)).toString(),
     poolWethUnits: (BigInt(after.poolWethUnits) - BigInt(before.poolWethUnits)).toString(),
     poolUsdcUnits: (BigInt(after.poolUsdcUnits) - BigInt(before.poolUsdcUnits)).toString(),
     poolLiquidity: (BigInt(after.poolLiquidity) - BigInt(before.poolLiquidity)).toString(),
@@ -673,7 +857,7 @@ function deltas(before: ExecutionSnapshot, after: ExecutionSnapshot): ExecutionD
   };
 }
 
-function validateActionEffects(
+export function validateActionEffects(
   action: SelectedAction,
   receipt: TransactionReceipt,
   before: ExecutionSnapshot,
@@ -681,23 +865,34 @@ function validateActionEffects(
   payer: Address,
   manifest: RuntimeManifest,
 ): boolean {
-  if (receipt.status !== 'success' || receipt.from.toLowerCase() !== payer.toLowerCase()) return false;
   const effect = deltas(before, after);
   const gasCost = receipt.gasUsed * receipt.effectiveGasPrice;
+  if (receipt.from.toLowerCase() !== payer.toLowerCase()) return false;
+  if (receipt.status === 'reverted') {
+    return BigInt(effect.payerNativeWei) === -gasCost &&
+      Object.entries(before).every(([key, value]) => key === 'payerNativeWei' || after[key as keyof ExecutionSnapshot] === value);
+  }
+  if (receipt.status !== 'success') return false;
   if (action.kind === 'approve') {
-    return receipt.to?.toLowerCase() === manifest.contracts.weth.address.toLowerCase() &&
+    const token = assetAddress(manifest, action.tokenAssetId);
+    const selectedAllowance = action.tokenAssetId === 'WETH' ? after.wethRouterAllowance : after.usdcRouterAllowance;
+    const selectedAllowanceDelta = action.tokenAssetId === 'WETH' ? effect.wethRouterAllowance : effect.usdcRouterAllowance;
+    const otherAllowanceDelta = action.tokenAssetId === 'WETH' ? effect.usdcRouterAllowance : effect.wethRouterAllowance;
+    return receipt.to?.toLowerCase() === token.toLowerCase() &&
       BigInt(effect.payerNativeWei) === -gasCost &&
       BigInt(effect.payerWethUnits) === 0n && BigInt(effect.payerUsdcUnits) === 0n &&
-      BigInt(effect.wethRouterAllowance) === BigInt(action.amountUnits) - BigInt(before.wethRouterAllowance) &&
+      BigInt(selectedAllowanceDelta) === BigInt(action.amountUnits) - BigInt(action.tokenAssetId === 'WETH' ? before.wethRouterAllowance : before.usdcRouterAllowance) &&
+      BigInt(otherAllowanceDelta) === 0n && BigInt(selectedAllowance) === BigInt(action.amountUnits) &&
+      BigInt(effect.recipientWethUnits) === 0n && BigInt(effect.recipientUsdcUnits) === 0n &&
       BigInt(effect.poolWethUnits) === 0n && BigInt(effect.poolUsdcUnits) === 0n &&
-      BigInt(after.wethRouterAllowance) === BigInt(action.amountUnits) &&
-      decodeApproval(receipt, manifest.contracts.weth.address as Address, payer, manifest.contracts.swapRouter02.address as Address, BigInt(action.amountUnits));
+      decodeApproval(receipt, token, payer, manifest.contracts.swapRouter02.address as Address, BigInt(action.amountUnits));
   }
   if (action.kind === 'wrap') {
     const amount = BigInt(action.amountWei);
     return receipt.to?.toLowerCase() === manifest.contracts.weth.address.toLowerCase() &&
       BigInt(effect.payerWethUnits) === amount && BigInt(effect.payerNativeWei) === -(amount + gasCost) &&
-      BigInt(effect.payerUsdcUnits) === 0n && BigInt(effect.wethRouterAllowance) === 0n &&
+      BigInt(effect.payerUsdcUnits) === 0n && BigInt(effect.wethRouterAllowance) === 0n && BigInt(effect.usdcRouterAllowance) === 0n &&
+      BigInt(effect.recipientUsdcUnits) === 0n &&
       BigInt(effect.poolWethUnits) === 0n && BigInt(effect.poolUsdcUnits) === 0n &&
       decodeWethEvent(receipt, manifest.contracts.weth.address as Address, 'Deposit', payer, amount);
   }
@@ -705,24 +900,56 @@ function validateActionEffects(
     const amount = BigInt(action.amountWei);
     return receipt.to?.toLowerCase() === manifest.contracts.weth.address.toLowerCase() &&
       BigInt(effect.payerWethUnits) === -amount && BigInt(effect.payerNativeWei) === amount - gasCost &&
-      BigInt(effect.payerUsdcUnits) === 0n && BigInt(effect.wethRouterAllowance) === 0n &&
+      BigInt(effect.payerUsdcUnits) === 0n && BigInt(effect.wethRouterAllowance) === 0n && BigInt(effect.usdcRouterAllowance) === 0n &&
+      BigInt(effect.recipientUsdcUnits) === 0n &&
       BigInt(effect.poolWethUnits) === 0n && BigInt(effect.poolUsdcUnits) === 0n &&
       decodeWethEvent(receipt, manifest.contracts.weth.address as Address, 'Withdrawal', payer, amount);
+  }
+  if (action.kind === 'transfer') {
+    const amount = BigInt(action.amountUnits);
+    const recipient = action.recipient.toLowerCase();
+    const recipientIsPayer = recipient === payer.toLowerCase();
+    const recipientIsPool = recipient === manifest.contracts.pool.address.toLowerCase();
+    return receipt.to?.toLowerCase() === manifest.contracts.usdc.address.toLowerCase() &&
+      BigInt(effect.payerNativeWei) === -gasCost &&
+      BigInt(effect.payerWethUnits) === 0n &&
+      BigInt(effect.payerUsdcUnits) === (recipientIsPayer ? 0n : -amount) &&
+      BigInt(effect.recipientUsdcUnits) === (recipientIsPayer ? 0n : amount) &&
+      BigInt(effect.recipientWethUnits) === 0n &&
+      BigInt(effect.wethRouterAllowance) === 0n &&
+      BigInt(effect.usdcRouterAllowance) === 0n &&
+      BigInt(effect.poolWethUnits) === 0n &&
+      BigInt(effect.poolUsdcUnits) === (recipientIsPool ? amount : 0n) &&
+      decodeTransfer(receipt, manifest.contracts.usdc.address as Address, payer, action.recipient, amount);
   }
   if (receipt.to?.toLowerCase() !== manifest.contracts.swapRouter02.address.toLowerCase()) return false;
   const swap = decodeSwap(receipt, manifest, action, payer);
   if (!swap) return false;
   const recipientIsPayer = action.recipient.toLowerCase() === payer.toLowerCase();
-  const expectedPayerUsdcDelta = recipientIsPayer ? swap.amountOut : 0n;
-  const beforeAllowance = BigInt(before.wethRouterAllowance);
+  const inputIsWeth = action.inputAssetId === 'WETH';
+  const outputIsWeth = action.outputAssetId === 'WETH';
+  const expectedPayerWethDelta = (inputIsWeth ? -swap.amountIn : 0n) +
+    (recipientIsPayer && outputIsWeth ? swap.amountOut : 0n);
+  const expectedPayerUsdcDelta = (!inputIsWeth ? -swap.amountIn : 0n) +
+    (recipientIsPayer && !outputIsWeth ? swap.amountOut : 0n);
+  const expectedRecipientWethDelta = (outputIsWeth ? swap.amountOut : 0n) -
+    (recipientIsPayer && inputIsWeth ? swap.amountIn : 0n);
+  const expectedRecipientUsdcDelta = (!outputIsWeth ? swap.amountOut : 0n) -
+    (recipientIsPayer && !inputIsWeth ? swap.amountIn : 0n);
+  const beforeAllowance = BigInt(inputIsWeth ? before.wethRouterAllowance : before.usdcRouterAllowance);
   const expectedAllowanceAfter = beforeAllowance === MAX_UINT256 ? MAX_UINT256 : beforeAllowance - swap.amountIn;
+  const afterInputAllowance = BigInt(inputIsWeth ? after.wethRouterAllowance : after.usdcRouterAllowance);
+  const otherAllowanceDelta = BigInt(inputIsWeth ? effect.usdcRouterAllowance : effect.wethRouterAllowance);
+  const expectedPoolWethDelta = inputIsWeth ? swap.amountIn : -swap.amountOut;
+  const expectedPoolUsdcDelta = inputIsWeth ? -swap.amountOut : swap.amountIn;
   return beforeAllowance >= swap.amountIn &&
-    BigInt(effect.payerWethUnits) === -swap.amountIn &&
+    BigInt(effect.payerWethUnits) === expectedPayerWethDelta &&
     BigInt(effect.payerUsdcUnits) === expectedPayerUsdcDelta &&
-    BigInt(effect.recipientUsdcUnits) === swap.amountOut &&
-    BigInt(after.wethRouterAllowance) === expectedAllowanceAfter &&
+    BigInt(effect.recipientWethUnits) === expectedRecipientWethDelta &&
+    BigInt(effect.recipientUsdcUnits) === expectedRecipientUsdcDelta &&
+    afterInputAllowance === expectedAllowanceAfter && otherAllowanceDelta === 0n &&
     BigInt(effect.payerNativeWei) === -gasCost &&
-    BigInt(effect.poolWethUnits) === swap.amountIn && BigInt(effect.poolUsdcUnits) === -swap.amountOut;
+    BigInt(effect.poolWethUnits) === expectedPoolWethDelta && BigInt(effect.poolUsdcUnits) === expectedPoolUsdcDelta;
 }
 
 export function principalAccountingForMeasurement(
@@ -730,7 +957,8 @@ export function principalAccountingForMeasurement(
   receiptStatus: 'success' | 'reverted',
 ): { selectedPrincipalUnits: string; principalUnits: string } {
   const selectedPrincipalUnits = action.kind === 'wrap' || action.kind === 'unwrap' ? action.amountWei
-    : action.kind === 'swap' ? action.amountInWei : '0';
+    : action.kind === 'swap' ? action.amountInUnits
+      : action.kind === 'transfer' ? action.amountUnits : '0';
   return {
     selectedPrincipalUnits,
     principalUnits: receiptStatus === 'success' ? selectedPrincipalUnits : '0',
@@ -751,7 +979,7 @@ function measurementFor(
   const gasCostWei = receipt.gasUsed * receipt.effectiveGasPrice;
   const modeledGasFeeUsdcUnits = gasCostWei * BigInt(manifest.feePolicy.ethUsdcRateNumerator) /
     BigInt(manifest.feePolicy.ethUsdcRateDenominator);
-  const principalAsset = action.kind === 'wrap' ? 'ETH' : action.kind === 'unwrap' ? 'WETH' : action.kind === 'swap' ? 'WETH' : null;
+  const principalAsset = action.kind === 'wrap' ? 'ETH' : action.kind === 'unwrap' ? 'WETH' : action.kind === 'swap' ? action.inputAssetId : action.kind === 'transfer' ? 'USDC' : null;
   const { selectedPrincipalUnits, principalUnits } = principalAccountingForMeasurement(action, receipt.status);
   return {
     receipt: {
@@ -782,7 +1010,7 @@ function measurementFor(
     before,
     after,
     effects: deltas(before, after),
-    quote: quote ? { ...quote } : null,
+    quote: quote ? { ...quote, feeTier: quote.feeTier.toString() } : null,
     fee: {
       modeledGasFeeUsdcUnits: modeledGasFeeUsdcUnits.toString(),
       baseL1Fee: 'unmodelled',
@@ -792,11 +1020,16 @@ function measurementFor(
     },
     taskEvaluationInputs: {
       expenseBudgetUsdcUnits: manifest.taskGoal.expenseBudgetUsdcUnits,
-      recipient: action.kind === 'swap' ? recipient : null,
-      allowanceAfterUnits: after.wethRouterAllowance,
+      recipient: action.kind === 'swap' || action.kind === 'transfer' ? recipient : null,
+      allowanceAssetId: action.kind === 'approve' ? action.tokenAssetId : action.kind === 'swap' ? action.inputAssetId : 'WETH',
+      allowanceAfterUnits: action.kind === 'approve'
+        ? action.tokenAssetId === 'WETH' ? after.wethRouterAllowance : after.usdcRouterAllowance
+        : action.kind === 'swap'
+          ? action.inputAssetId === 'WETH' ? after.wethRouterAllowance : after.usdcRouterAllowance
+          : after.wethRouterAllowance,
       nativeEthReserveWei: manifest.taskGoal.nativeEthReserveWei,
       allowanceCleanupExpected: manifest.taskGoal.allowanceCleanupExpected,
-      selectedMinimumOutputUnits: action.kind === 'swap' ? action.amountOutMinimumUsdcUnits : null,
+      selectedMinimumOutputUnits: action.kind === 'swap' ? action.amountOutMinimumUnits : null,
     },
   };
 }
@@ -823,7 +1056,7 @@ async function requireActiveGeneration(client: PoolClient, auth: ParticipantAuth
 }
 
 function actionRecipient(action: SelectedAction, payer: Address): Address {
-  return action.kind === 'swap' ? action.recipient : payer;
+  return action.kind === 'swap' || action.kind === 'transfer' ? action.recipient : payer;
 }
 
 function localTxUrl(dependencies: SelectedExecutionDependencies, auth: ParticipantAuth): string {
@@ -963,7 +1196,10 @@ async function exactReceiptAndMeasurement(
     baseFeePerGasWei: minedBlock.baseFeePerGas.toString(),
     transactions: payerBlockTransactions,
   };
-  const after = await readSnapshot(client, runtime.manifest, auth.payer, actionRecipient(action, auth.payer), receiptBlock);
+  const selectedPool = action.kind === 'swap'
+    ? swapRouteAddresses(runtime.manifest, action.inputAssetId, action.outputAssetId, action.feeTier ?? 500).poolAddress
+    : runtime.manifest.contracts.pool.address as Address;
+  const after = await readSnapshot(client, runtime.manifest, auth.payer, actionRecipient(action, auth.payer), receiptBlock, selectedPool);
   const measurement = measurementFor(action, runtime.manifest, observedTransaction, receipt, before, after, quote, actionRecipient(action, auth.payer), payerBlock);
   return { receipt, after, measurement, effectsValid: validateActionEffects(action, receipt, before, after, auth.payer, runtime.manifest) };
 }
@@ -1016,10 +1252,13 @@ export async function observePersistedSelectedExecution(input: {
   const prestateBlock = await observer.getBlock({ blockNumber: beforeBlockNumber });
   if (!prestateBlock.hash) throw new Error('persisted_execution_prestate_block_unavailable');
   const recipient = actionRecipient(input.action, input.payer);
-  const observedBefore = await readSnapshot(observer, input.manifest, input.payer, recipient, beforeBlockNumber);
+  const selectedPool = input.action.kind === 'swap'
+    ? swapRouteAddresses(input.manifest, input.action.inputAssetId, input.action.outputAssetId, input.action.feeTier ?? 500).poolAddress
+    : input.manifest.contracts.pool.address as Address;
+  const observedBefore = await readSnapshot(observer, input.manifest, input.payer, recipient, beforeBlockNumber, selectedPool);
   if (canonicalJson(observedBefore) !== canonicalJson(input.before)) throw new Error('persisted_execution_prestate_mismatch');
   const quote = input.action.kind === 'swap'
-    ? await quoteAtBlock(observer, input.manifest, BigInt(input.action.amountInWei), beforeBlockNumber)
+    ? await quoteAtBlock(observer, input.manifest, BigInt(input.action.amountInUnits), beforeBlockNumber, input.action.inputAssetId, input.action.outputAssetId, input.action.feeTier ?? 500)
     : null;
   const result = await exactReceiptAndMeasurement(
     observer,
@@ -1084,13 +1323,17 @@ async function resolveExistingOperation(
   }
   const observer = localObserver(auth);
   const quote = pending.action.kind === 'swap'
-    ? await quoteAtBlock(observer, runtime.manifest, BigInt(pending.action.amountInWei), BigInt(pending.before.blockNumber))
+    ? await quoteAtBlock(observer, runtime.manifest, BigInt(pending.action.amountInUnits), BigInt(pending.before.blockNumber), pending.action.inputAssetId, pending.action.outputAssetId, pending.action.feeTier ?? 500)
     : null;
   try {
     const result = await exactReceiptAndMeasurement(observer, runtime, auth, pending.action, operation.transactionHash, pending.intent, pending.before, quote);
-    if (result.receipt.status === 'reverted') {
+    if (result.receipt.status === 'reverted' && result.effectsValid) {
       await withTransaction(client, () => dependencies.persistence.finish(client, operation.operationId, operation.transactionHash!, 'reverted', result.measurement));
       return reply.send({ outcome: 'reverted', operationId: operation.operationId, ...result.measurement });
+    }
+    if (result.receipt.status === 'reverted') {
+      await withTransaction(client, () => dependencies.persistence.markUnknown(client, operation.operationId, operation.transactionHash!, result.measurement));
+      return reply.code(502).send({ error: 'execution_effects_unverified', operationId: operation.operationId, transactionHash: operation.transactionHash });
     }
     if (!result.effectsValid) {
       await withTransaction(client, () => dependencies.persistence.markUnknown(client, operation.operationId, operation.transactionHash!, result.measurement));
@@ -1134,7 +1377,10 @@ async function executeNewAction(
         return reply.code(400).send({ error: 'selected_recipient_must_be_eoa', operationId: operation.operationId });
       }
     }
-    const before = await readSnapshot(observer, runtime.manifest, auth.payer, recipient, beforeBlock);
+    const selectedPool = action.kind === 'swap'
+      ? swapRouteAddresses(runtime.manifest, action.inputAssetId, action.outputAssetId, action.feeTier ?? 500).poolAddress
+      : runtime.manifest.contracts.pool.address as Address;
+    const before = await readSnapshot(observer, runtime.manifest, auth.payer, recipient, beforeBlock, selectedPool);
     const gasLimit = BigInt(action.gasLimit);
     const maxPriorityFeePerGas = BigInt(runtime.manifest.feePolicy.priorityFeeWei);
     const maxFeePerGas = BigInt(runtime.manifest.feePolicy.baseFeeWei) + maxPriorityFeePerGas;
@@ -1145,7 +1391,7 @@ async function executeNewAction(
       return reply.code(422).send({ error: 'insufficient_native_for_selected_transaction', operationId: operation.operationId });
     }
     const quote = action.kind === 'swap'
-      ? await quoteAtBlock(observer, runtime.manifest, BigInt(action.amountInWei), beforeBlock)
+      ? await quoteAtBlock(observer, runtime.manifest, BigInt(action.amountInUnits), beforeBlock, action.inputAssetId, action.outputAssetId, action.feeTier ?? 500)
       : null;
     await withTransaction(client, () => dependencies.persistence.saveSelectedInputAndPrestate(client, operation.operationId, action, before));
 
@@ -1327,6 +1573,10 @@ export async function registerSelectedExecutionRoutes(
       runtime.manifest.contracts.pool.token1.toLowerCase() !== runtime.manifest.contracts.usdc.address.toLowerCase()) {
     throw new Error('selected_execution_manifest_inconsistent');
   }
+  if (runtime.manifest.contracts.pool3000) {
+    try { swapRouteAddresses(runtime.manifest, 'WETH', 'USDC', 3000); }
+    catch { throw new Error('selected_execution_manifest_inconsistent'); }
+  }
   app.get<{ Params: { envId: string } }>('/tools/:envId/balances', async (request, reply) => {
     const auth = await authorizeParticipant(runtime, request, reply);
     if (!auth) return;
@@ -1346,16 +1596,19 @@ export async function registerSelectedExecutionRoutes(
     }
   });
 
-  app.get<{ Params: { envId: string }; Querystring: { amountInWei?: string } }>('/tools/:envId/quote', async (request, reply) => {
+  app.get<{ Params: { envId: string }; Querystring: { inputAssetId?: 'WETH' | 'USDC'; feeTier?: PinnedV3FeeTier; amountInUnits?: string; amountInWei?: string } }>('/tools/:envId/quote', async (request, reply) => {
     const auth = await authorizeParticipant(runtime, request, reply);
     if (!auth) return;
     const parsedQuery = quoteQuerySchema.safeParse(request.query);
     if (!parsedQuery.success || hasReadRequestBody(request)) return reply.code(400).send({ error: 'invalid_quote_amount' });
-    const amountText = parsedQuery.data.amountInWei;
+    const inputAssetId = 'inputAssetId' in parsedQuery.data ? parsedQuery.data.inputAssetId : 'WETH';
+    const outputAssetId = inputAssetId === 'WETH' ? 'USDC' : 'WETH';
+    const amountText = 'inputAssetId' in parsedQuery.data ? parsedQuery.data.amountInUnits : parsedQuery.data.amountInWei;
+    const feeTier = parsedQuery.data.feeTier ?? 500;
     let amountIn: bigint;
     try {
       amountIn = decimalValue(amountText);
-      if (amountIn === 0n || amountIn > BigInt(runtime.manifest.swap.maxAmountIn)) throw new Error('quote_amount_outside_bound');
+      if (amountIn === 0n || amountIn > maximumSwapInput(runtime.manifest, inputAssetId)) throw new Error('quote_amount_outside_bound');
     } catch {
       return reply.code(400).send({ error: 'quote_amount_outside_hard_bounds' });
     }
@@ -1364,16 +1617,16 @@ export async function registerSelectedExecutionRoutes(
         await withTransaction(client, () => requireActiveGeneration(client, auth));
         const observer = localObserver(auth);
         const blockNumber = await observer.getBlockNumber();
-        const quote = await quoteAtBlock(observer, runtime.manifest, amountIn, blockNumber);
+        const quote = await quoteAtBlock(observer, runtime.manifest, amountIn, blockNumber, inputAssetId, outputAssetId, feeTier);
         return reply.send({
           boundary: 'local-chain-readonly-proxy',
           envId: auth.envId,
           generationId: auth.generationId,
           route: 'uniswap-v3-exactInputSingle',
-          tokenIn: runtime.manifest.swap.tokenIn,
-          tokenOut: runtime.manifest.swap.tokenOut,
-          fee: runtime.manifest.swap.fee,
-          requestedAmountInWei: amountText,
+          inputAssetId,
+          outputAssetId,
+          ...swapRouteAddresses(runtime.manifest, inputAssetId, outputAssetId, feeTier),
+          requestedAmountInUnits: amountText,
           blockNumber: blockNumber.toString(),
           quoteStatus: quote ? 'observed' : 'unknown',
           quote,
@@ -1385,6 +1638,7 @@ export async function registerSelectedExecutionRoutes(
   });
 
   await selectedActionRoute(app, runtime, dependencies, 'approve');
+  await selectedActionRoute(app, runtime, dependencies, 'transfer');
   await selectedActionRoute(app, runtime, dependencies, 'wrap');
   await selectedActionRoute(app, runtime, dependencies, 'unwrap');
   await selectedActionRoute(app, runtime, dependencies, 'swap');

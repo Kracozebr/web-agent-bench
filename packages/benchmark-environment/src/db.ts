@@ -237,24 +237,32 @@ export async function insertOperation(pool: pg.Pool, input: {
   idempotencyKey: string;
   requestHash: string;
   kind: string;
-}): Promise<{ operationId: string; status: string; requestHash: string; isNew: boolean }> {
+  paymentResponseMode?: 'combined' | 'deferred_delivery';
+}): Promise<{ operationId: string; status: string; requestHash: string; paymentResponseMode: 'combined' | 'deferred_delivery'; isNew: boolean }> {
   const operationId = randomUUID();
+  const paymentResponseMode = input.paymentResponseMode ?? 'combined';
   const result = await pool.query(
-    `INSERT INTO bef_operation(operation_id, env_id, generation_id, participant_id, idempotency_key_sha256, request_sha256, operation_kind, status, offer_selection_eligible)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment', $8)
+    `INSERT INTO bef_operation(operation_id, env_id, generation_id, participant_id, idempotency_key_sha256, request_sha256,
+       operation_kind, status, offer_selection_eligible, payment_response_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment', $8, $9)
      ON CONFLICT (env_id, generation_id, participant_id, idempotency_key_sha256) DO NOTHING
-     RETURNING operation_id, status, request_sha256`,
-    [operationId, input.envId, input.generationId, input.participantId, sha256(input.idempotencyKey), input.requestHash, input.kind, input.kind === 'purchase'],
+     RETURNING operation_id, status, request_sha256, payment_response_mode`,
+    [operationId, input.envId, input.generationId, input.participantId, sha256(input.idempotencyKey), input.requestHash,
+      input.kind, input.kind === 'purchase', paymentResponseMode],
   );
-  if (result.rowCount) return { operationId, status: result.rows[0].status as string, requestHash: result.rows[0].request_sha256 as string, isNew: true };
+  if (result.rowCount) return {
+    operationId, status: result.rows[0].status as string, requestHash: result.rows[0].request_sha256 as string,
+    paymentResponseMode: result.rows[0].payment_response_mode as 'combined' | 'deferred_delivery', isNew: true,
+  };
   const existing = await pool.query(
-    `SELECT operation_id, status, request_sha256 FROM bef_operation
+    `SELECT operation_id, status, request_sha256, payment_response_mode FROM bef_operation
      WHERE env_id=$1 AND generation_id=$2 AND participant_id=$3 AND idempotency_key_sha256=$4`,
     [input.envId, input.generationId, input.participantId, sha256(input.idempotencyKey)],
   );
-  const row = existing.rows[0] as { operation_id: string; status: string; request_sha256: string } | undefined;
+  const row = existing.rows[0] as { operation_id: string; status: string; request_sha256: string; payment_response_mode: 'combined' | 'deferred_delivery' } | undefined;
   if (!row) throw new Error('Idempotency operation disappeared during concurrent lookup');
-  return { operationId: row.operation_id, status: row.status, requestHash: row.request_sha256, isNew: false };
+  return { operationId: row.operation_id, status: row.status, requestHash: row.request_sha256,
+    paymentResponseMode: row.payment_response_mode, isNew: false };
 }
 
 export const runTokenHash = (token: string) => sha256(token);

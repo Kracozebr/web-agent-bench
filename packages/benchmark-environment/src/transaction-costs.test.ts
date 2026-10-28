@@ -130,6 +130,19 @@ test('pinned conversion uses direct USDC-base-units-per-wei rational', () => {
   assert.equal(modeledGasFeeUsdcUnits('102832', '1004980019', POLICY), '247292');
 });
 
+test('USDC transfer principal stays separate from receipt-backed gas expense', async () => {
+  const client = new MemoryCostClient('participant');
+  const key: CostIdentity = { ...identity(), selectedPrincipalAsset: 'USDC', selectedPrincipalUnits: '777' };
+  await insertUnknownTransactionCost(client, key);
+  await finalizeTransactionCost(client, key, observation('success'));
+
+  assert.equal(client.row?.selected_principal_asset, 'USDC');
+  assert.equal(client.row?.selected_principal_units, '777');
+  assert.equal(client.row?.observed_principal_units, '777');
+  assert.equal(client.row?.gas_cost_wei, '103344105313808');
+  assert.equal(client.row?.modeled_gas_fee_usdc_units, modeledGasFeeUsdcUnits('102832', '1004980019', POLICY));
+});
+
 test('unknown cost row keeps every cost null until a bound receipt is observed', async () => {
   const client = new MemoryCostClient('participant');
   await insertUnknownTransactionCost(client, identity());

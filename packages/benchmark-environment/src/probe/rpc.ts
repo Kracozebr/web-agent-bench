@@ -35,6 +35,8 @@ export type RpcReceipt = {
   blockHash: string;
   from: string;
   to: string | null;
+  gasUsed?: string;
+  effectiveGasPrice?: string;
   logs: Array<{ address: string; topics: string[]; data: string; logIndex?: string }>;
 };
 
@@ -48,7 +50,7 @@ export type SelectedExecutionTransactionEvidence = {
   environmentId: string;
   operationId: string;
   variantId: string;
-  kind: 'approve' | 'wrap' | 'unwrap' | 'swap';
+  kind: 'approve' | 'transfer' | 'wrap' | 'unwrap' | 'swap';
   transactionHash: string;
   expectedFrom: string;
   expectedTo: string;
@@ -61,6 +63,7 @@ export type SelectedExecutionTransactionEvidence = {
 
 const SELECTED_EXECUTION_CALLS = {
   approve: { signature: 'approve(address,uint256)', argumentBytes: 64 },
+  transfer: { signature: 'transfer(address,uint256)', argumentBytes: 64 },
   wrap: { signature: 'deposit()', argumentBytes: 0 },
   unwrap: { signature: 'withdraw(uint256)', argumentBytes: 32 },
   swap: {
@@ -69,7 +72,7 @@ const SELECTED_EXECUTION_CALLS = {
   },
 } as const;
 
-// AICODE-NOTE: Only SC007's four static contract calls can opt into calldata evidence; x402 EIP-3009 payloads stay on the public projection.
+// AICODE-NOTE: Only exact selected-execution calls can opt into calldata evidence; x402 EIP-3009 payloads stay on the public projection.
 function isSelectedExecutionCalldata(
   kind: SelectedExecutionTransactionEvidence['kind'],
   input: unknown,
@@ -298,7 +301,7 @@ export class ReadOnlyRpcEvidence {
     const selectedExecution = input.selectedExecutionTransaction;
     if (selectedExecution) {
       const validSelectedContext = input.endpointBoundary === 'local-chain-readonly-proxy'
-        && ['approve', 'wrap', 'unwrap', 'swap'].includes(selectedExecution.kind)
+        && ['approve', 'transfer', 'wrap', 'unwrap', 'swap'].includes(selectedExecution.kind)
         && selectedExecution.environmentId.length > 0
         && selectedExecution.operationId.length > 0
         && selectedExecution.variantId.length > 0

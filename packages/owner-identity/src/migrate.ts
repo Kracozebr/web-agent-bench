@@ -1,6 +1,13 @@
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
 import { migrateLedger } from "./ledger-migrate.js";
+import { migrateRuns } from "./run-migrate.js";
+import { migrateTaskStore } from "./task-store-migrate.js";
+import { migrateTaskActions } from "./task-action-migrate.js";
+import { migrateTaskResults } from "./task-result-migrate.js";
+import { migrateTaskExecutionBindings } from "./task-execution-binding-migrate.js";
+import { migrateTaskPreparations } from "./task-preparation-migrate.js";
+import { migrateTaskObservations } from "./task-observation-migrate.js";
 
 const statements = [
   `CREATE TABLE IF NOT EXISTS oid_auth_user (
@@ -263,6 +270,13 @@ async function main() {
       await tx.unsafe("SELECT pg_advisory_xact_lock(824731201, 17)");
       for (const statement of statements) await tx.unsafe(statement);
       await migrateLedger(tx);
+      await migrateRuns(tx);
+      await migrateTaskStore(tx);
+      await migrateTaskActions(tx);
+      await migrateTaskResults(tx);
+      await migrateTaskExecutionBindings(tx);
+      await migrateTaskPreparations(tx);
+      await migrateTaskObservations(tx);
       const resource = `${config.publicOrigin}/api/agent`;
       const now = new Date().toISOString();
       await tx.unsafe(

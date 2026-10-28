@@ -188,7 +188,7 @@ export async function createRpcProxy(): Promise<FastifyInstance> {
   const isSource = config.mode === 'source';
   const allowedMethods = isSource ? new Set<string>(manifest.source.allowedMethods) : LOCAL_READ_METHODS;
   const contractSet = new Set([
-    ...Object.values(manifest.contracts).flatMap((contract) => 'address' in contract && typeof contract.address === 'string' ? [contract.address.toLowerCase()] : []),
+    ...Object.values(manifest.contracts).flatMap((contract) => contract && typeof contract === 'object' && 'address' in contract && typeof contract.address === 'string' ? [contract.address.toLowerCase()] : []),
     manifest.contracts.usdc.implementation.toLowerCase(),
   ]);
   let forwardedItems = 0;

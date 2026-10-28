@@ -28,7 +28,7 @@ export type CostIdentity = {
   payerRole: CostRole;
   manifestSha256: string;
   feePolicy: FeePolicySnapshot;
-  selectedPrincipalAsset: 'ETH' | 'WETH' | null;
+  selectedPrincipalAsset: 'ETH' | 'WETH' | 'USDC' | null;
   selectedPrincipalUnits: string | null;
 };
 
@@ -170,7 +170,7 @@ function validateIdentity(identity: CostIdentity): void {
       fail('transaction_cost_facilitator_principal_invalid');
     }
   } else if (identity.selectedPrincipalUnits === null || !DECIMAL.test(identity.selectedPrincipalUnits) ||
-      (identity.selectedPrincipalAsset !== null && !['ETH', 'WETH'].includes(identity.selectedPrincipalAsset))) {
+      (identity.selectedPrincipalAsset !== null && !['ETH', 'WETH', 'USDC'].includes(identity.selectedPrincipalAsset))) {
     fail('transaction_cost_participant_principal_invalid');
   }
 }

@@ -162,9 +162,11 @@ function safeTransportErrorName(error: unknown): 'AbortError' | 'TimeoutError' |
 }
 
 function isPrivateAdminSetupRequest(boundary: HttpBoundary, method: string, rawUrl: string): boolean {
-  if (boundary !== 'private-admin-http' || method.toUpperCase() !== 'POST') return false;
+  if (boundary !== 'private-admin-http') return false;
   try {
-    return /^\/internal\/admin\/environments\/[^/]+\/(?:reset|generations)$/.test(new URL(rawUrl).pathname);
+    const path = new URL(rawUrl).pathname;
+    return (method.toUpperCase() === 'POST' && /^\/internal\/admin\/environments\/[^/]+\/(?:reset|generations)$/.test(path)) ||
+      (method.toUpperCase() === 'PUT' && /^\/internal\/admin\/environments\/[^/]+\/preparations\/[0-9a-f-]{36}$/i.test(path));
   } catch {
     return false;
   }
@@ -264,6 +266,10 @@ export class HttpEvidenceTransport {
       throw new Error('probe_http_response_too_large');
     }
     const bodyText = rawBody.toString('utf8');
+    if (input.includeRawResponseBytes && response.ok && isPrivateAdminSetupRequest(input.boundary, input.method, input.url) &&
+      !new URL(input.url).pathname.endsWith('/reset')) {
+      throw new Error('probe_http_raw_setup_response_forbidden');
+    }
     const containsSecret = responseContainsRequestSecret(rawBody, headers, this.secretValues);
     if (input.includeRawResponseBytes && response.ok && containsSecret) {
       throw new Error('probe_http_raw_response_contains_secret');

@@ -54,15 +54,25 @@ export async function startApi(): Promise<void> {
     return reply.code(code >= 400 && code < 600 ? code : 500).send({ error: code >= 500 ? 'internal_request_failure' : 'invalid_request' });
   });
 
+  const executionPersistence = new PostgresExecutionPersistence({
+    manifestSha256: runtime.loadedManifest.sha256,
+    feePolicy: runtime.manifest.feePolicy,
+    routePools: [
+      { feeTier: 500, address: runtime.manifest.contracts.pool.address, codeHash: runtime.manifest.contracts.pool.codeHash },
+      ...(runtime.manifest.contracts.pool3000 ? [{
+        feeTier: 3000 as const,
+        address: runtime.manifest.contracts.pool3000.address,
+        codeHash: runtime.manifest.contracts.pool3000.codeHash,
+      }] : []),
+    ],
+  });
+
   registerParticipantDenialAudit(app, runtime);
-  await registerAdminRoutes(app, runtime);
+  await registerAdminRoutes(app, runtime, executionPersistence);
   await registerToolRoutes(app, runtime, protocols);
   await registerSelectedExecutionRoutes(app, runtime, {
     signerStore: runtime.signerStore,
-    persistence: new PostgresExecutionPersistence({
-      manifestSha256: runtime.loadedManifest.sha256,
-      feePolicy: runtime.manifest.feePolicy,
-    }),
+    persistence: executionPersistence,
     transactionRpcUrls: new Map([...runtime.envs].map(([envId, environment]) => [envId, environment.adminRpcUrl])),
   });
   await app.listen({ port: runtime.config.port, host: runtime.config.bindAddress });

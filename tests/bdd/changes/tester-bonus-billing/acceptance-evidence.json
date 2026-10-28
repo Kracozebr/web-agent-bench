@@ -16,12 +16,12 @@
     "--junitxml=artifacts/bdd-evidence/tester-bonus-billing-pytest.xml"
   ],
   "exit_code": 0,
-  "finished_at_utc": "2026-10-25T20:35:39.396549Z",
+  "finished_at_utc": "2026-10-26T07:42:40.503969Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "9ee92115abfb86f45fcf61b1f76e9c31e6fb39d5",
+  "git_commit": "4ef9f4478514590c8cef512c4f3ec6196a48e0f3",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 15,
@@ -60,5 +60,5 @@
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-25T20:35:29.825088Z"
+  "started_at_utc": "2026-10-26T07:42:28.373278Z"
 }

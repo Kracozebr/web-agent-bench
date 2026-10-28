@@ -3,7 +3,7 @@ import { HTTPFacilitatorClient, x402HTTPResourceServer, x402ResourceServer } fro
 import { ExactEvmScheme } from '@x402/evm/exact/server';
 import type { RuntimeEnvironment } from './runtime.js';
 import type { RuntimeManifest } from './manifest.js';
-import { selectedPinnedOffer } from './offers.js';
+import { selectedPinnedResourceOffer } from './offers.js';
 
 export type FacilitatorRequestScope = {
   operationId: string;
@@ -45,32 +45,41 @@ export async function createPaymentProtocol(
   });
   const server = new x402ResourceServer(facilitator)
     .register(manifest.x402.network, new ExactEvmScheme());
-  const route = `POST /tools/${environment.id}/purchase`;
+  const purchaseRoute = `POST /tools/${environment.id}/purchase`;
+  const payRoute = `POST /tools/${environment.id}/pay`;
+  const accepts = {
+    scheme: manifest.x402.scheme,
+    network: manifest.x402.network,
+    payTo: environment.facilitatorAddress,
+    price: (context: { adapter: { getBody?: () => unknown } }) => {
+      const body = context.adapter.getBody?.();
+      const selected = selectedPinnedResourceOffer(manifest, body);
+      if (!selected) throw new Error('unlisted_resource_or_offer');
+      return { asset: manifest.x402.asset, amount: selected.offer.amount };
+    },
+    maxTimeoutSeconds: manifest.x402.maxTimeoutSeconds,
+    extra: {
+      assetTransferMethod: manifest.x402.assetTransferMethod,
+      paymentFlow: 'authorization',
+      name: manifest.x402.eip712Domain.name,
+      version: manifest.x402.eip712Domain.version,
+    },
+  };
+  const resourceConfig = {
+    accepts,
+    description: 'Pinned local benchmark resource',
+    mimeType: 'application/json',
+    serviceName: 'web-agent-bench-bef-local',
+    unpaidResponseBody: async () => ({ contentType: 'application/json', body: { error: 'payment_required' } }),
+  };
   const http = new x402HTTPResourceServer(server, {
-    [route]: {
-      accepts: {
-        scheme: manifest.x402.scheme,
-        network: manifest.x402.network,
-        payTo: environment.facilitatorAddress,
-        price: (context) => {
-          const body = context.adapter.getBody?.();
-          const offer = selectedPinnedOffer(manifest, body);
-          if (!offer) throw new Error('unlisted_offer');
-          return { asset: manifest.x402.asset, amount: offer.amount };
-        },
-        maxTimeoutSeconds: manifest.x402.maxTimeoutSeconds,
-        extra: {
-          assetTransferMethod: manifest.x402.assetTransferMethod,
-          paymentFlow: 'authorization',
-          name: manifest.x402.eip712Domain.name,
-          version: manifest.x402.eip712Domain.version,
-        },
-      },
+    [purchaseRoute]: {
+      ...resourceConfig,
       resource: `http://localhost/tools/${environment.id}/purchase`,
-      description: 'Pinned local benchmark resource',
-      mimeType: 'application/json',
-      serviceName: 'web-agent-bench-bef-local',
-      unpaidResponseBody: async () => ({ contentType: 'application/json', body: { error: 'payment_required' } }),
+    },
+    [payRoute]: {
+      ...resourceConfig,
+      resource: `http://localhost/tools/${environment.id}/pay`,
     },
   });
   await http.initialize();

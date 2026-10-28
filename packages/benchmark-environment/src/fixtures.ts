@@ -65,6 +65,7 @@ export type FixtureFailurePhase =
   | 'pin_funding_timestamp'
   | 'reset_donor_balance'
   | 'send_transfer'
+  | 'persist_transaction_hash'
   | 'stop_impersonating'
   | 'wait_receipt'
   | 'validate_receipt'
@@ -213,6 +214,7 @@ export async function fundGenerationFixture(
   manifest: RuntimeManifest,
   environment: FixtureEnvironment,
   payerAddress: Address,
+  options: { onTransactionHash?: (transactionHash: Hex) => Promise<void> } = {},
 ): Promise<FixtureResult> {
   const amount = BigInt(manifest.funding.maxUsdcUnitsPerGeneration);
   if (amount <= 0n || amount > BigInt(manifest.funding.maxUsdcUnitsPerGeneration)) throw new Error('Generation fixture amount exceeds its manifest bound');
@@ -256,6 +258,11 @@ export async function fundGenerationFixture(
       maxFeePerGas: BigInt(manifest.feePolicy.baseFeeWei) + BigInt(manifest.feePolicy.priorityFeeWei),
       maxPriorityFeePerGas: BigInt(manifest.feePolicy.priorityFeeWei),
     }));
+    // AICODE-NOTE: Preparation callers persist this original hash before receipt
+    // polling. If observation is interrupted, reconcile this hash read-only; never resend.
+    if (options.onTransactionHash) {
+      await atFixturePhase('persist_transaction_hash', () => options.onTransactionHash!(transactionHash!));
+    }
   } finally {
     if (impersonated) {
       const stopped = await atFixturePhase('stop_impersonating', () => adminRpc(environment.adminRpcUrl, 'anvil_stopImpersonatingAccount', [donor]));
@@ -324,6 +331,51 @@ export async function fundGenerationFixture(
     payerNativeBalance: payerNativeBalance.toString(),
     receiptObservation,
     fixtureHash,
+  };
+}
+
+/**
+ * Read only the original fixture transaction after an interrupted preparation.
+ * This never submits a transfer and never restores a generation's capability.
+ */
+export async function observeOriginalGenerationFixtureReceipt(
+  manifest: RuntimeManifest,
+  environment: FixtureEnvironment,
+  payerAddress: Address,
+  transactionHash: Hex,
+): Promise<{ transactionHash: Hex; blockHash: Hex; amountUnits: string; receiptObservation: ReceiptObservation }> {
+  const publicClient = createPublicClient({
+    chain: base,
+    transport: http(environment.observerRpcUrl, { timeout: 15_000, retryCount: 0 }),
+  });
+  const { receipt, observation: receiptObservation } = await atFixturePhase(
+    'wait_receipt',
+    () => pollForOriginalReceipt(publicClient, transactionHash),
+  );
+  if (receipt.status !== 'success' || !receipt.blockHash || receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase()) {
+    throw new GenerationFixtureFailure('validate_receipt');
+  }
+  const donor = manifest.funding.donor as Address;
+  const token = manifest.contracts.usdc.address as Address;
+  const amount = BigInt(manifest.funding.maxUsdcUnitsPerGeneration);
+  const transferObserved = receipt.logs.some((log) => {
+    if (log.address.toLowerCase() !== token.toLowerCase()) return false;
+    try {
+      const decoded = decodeEventLog({ abi: transferAbi, eventName: 'Transfer', data: log.data, topics: log.topics }) as { args: unknown };
+      const args = decoded.args as unknown as { from: Address; to: Address; value: bigint };
+      return args.from.toLowerCase() === donor.toLowerCase()
+        && args.to.toLowerCase() === payerAddress.toLowerCase()
+        && args.value === amount;
+    } catch {
+      return false;
+    }
+  });
+  if (!transferObserved) throw new GenerationFixtureFailure('validate_effects');
+  return {
+    transactionHash,
+    blockHash: receipt.blockHash,
+    amountUnits: amount.toString(),
+    receiptObservation,
   };
 }
 

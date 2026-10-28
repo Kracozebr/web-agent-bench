@@ -1,0 +1,2225 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import pg from 'pg';
+import { assertSecretFree, sha256 } from './evidence.mjs';
+import { createCard, issueThroughUi } from './credential-cases.mjs';
+
+const { Pool } = pg;
+const ROOT = '/workspace';
+const EVIDENCE_ROOT = 'artifacts/runs/genuine-s1-owner-run';
+const SEQUENCE_EVIDENCE_ROOT = 'artifacts/runs/genuine-training-sequence-owner-run';
+const SUPPORTED_TASKS = new Set(['S1', 'S2', 'S4', 'M1']);
+const evidenceRootForTask = (taskId = 'S1') => {
+  demand(SUPPORTED_TASKS.has(taskId), 'unsupported_genuine_task');
+  return taskId === 'S1' ? EVIDENCE_ROOT : 'artifacts/runs/genuine-' + taskId.toLowerCase() + '-owner-run';
+};
+const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
+const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
+const PIN = Object.freeze({
+  validation: { path: 'artifacts/runs/bts-difficulty-v2-release-validation/382d65b5-fd03-4ba1-95e5-ccde5e35d737/validation.json', sha256: '5b12c392d4f1db240c5bc5fae2fc0a74d0359f521e271eb9fb529c18b2e94943' },
+  cases: { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/8f478f5f-edda-47f8-85b2-35fa2f455a4c/candidate-cases.json', sha256: 'b50836aa76611fe826e4c31e3fcc20f3cedb6e2e05485c0c59d11c79c0462156' },
+  release: { path: 'artifacts/runs/bts-difficulty-v2-release-candidates/6e63f0a7-6bc8-4512-a544-d57ef4f8bb63/candidate-release.json', sha256: 'c7ad713ad931b1ec2cf623912230a07776a4da8fea06c3b53443dc64a2f8e8b5' },
+  minimum: { path: 'artifacts/runs/bts-v2-minimum-action-review/1a25da07-3301-400c-ab6d-c6e96f81da2d/review.json', sha256: 'e67cbc3a81c96491edfbdc7cea15dd47aa0498c4dcdd75c2374b8ffc5e06a77d' },
+  references: { path: 'artifacts/runs/bts-v2-reference-verification/34182407-1f19-4d9c-9dc1-1a4e31a466a7/verification.json', sha256: '18bb2a9dc5b81b6e163223e2842d01e828c32bbb1623c00a419f1be6fba594d8' },
+});
+const HEX_HASH = /^[0-9a-f]{64}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const delay = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const fail = (code) => Object.assign(new Error(code), { code });
+
+function demand(condition, code) {
+  if (!condition) throw fail(code);
+}
+
+function safeErrorCode(error, fallback = 'genuine_s1_case_failed') {
+  const code = typeof error?.code === 'string' ? error.code : '';
+  return /^[A-Za-z0-9_]{1,96}$/.test(code) ? code : fallback;
+}
+
+function validRelative(path) {
+  return typeof path === 'string' && path.length > 0 && path.length <= 512 && path.trim() === path &&
+    !isAbsolute(path) && !path.includes('\\') && !path.includes(':') &&
+    path.split('/').every((part) => part && part !== '.' && part !== '..');
+}
+
+async function safeBytes(repositoryRoot, path, expectedHash = null, maxBytes = 16 * 1024 * 1024) {
+  demand(validRelative(path) && (expectedHash === null || HEX_HASH.test(expectedHash)), 'release_source_path_invalid');
+  const root = await realpath(repositoryRoot);
+  const actual = await realpath(resolve(root, path));
+  const rel = relative(root, actual);
+  demand(rel && !isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + sep), 'release_source_path_escape');
+  const handle = await open(actual, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = await handle.stat();
+    demand(before.isFile() && before.size > 0 && before.size <= maxBytes, 'release_source_file_invalid');
+    const bytes = Buffer.alloc(before.size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (!result.bytesRead) break;
+      offset += result.bytesRead;
+    }
+    const after = await handle.stat();
+    demand(offset === before.size && after.size === before.size && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs,
+      'release_source_changed_during_read');
+    const content = bytes.subarray(0, offset);
+    const actualHash = digest(content);
+    demand(expectedHash === null || actualHash.toLowerCase() === expectedHash.toLowerCase(), 'release_source_hash_mismatch');
+    return { bytes: content, sha256: actualHash };
+  } finally { await handle.close(); }
+}
+
+function pinRows(value, code) {
+  demand(Array.isArray(value) && value.length > 0 && value.length <= 4096, code);
+  const byPath = new Map();
+  for (const row of value) {
+    demand(row && validRelative(row.path) && HEX_HASH.test(String(row.sha256)), code);
+    const previous = byPath.get(row.path);
+    demand(previous === undefined || previous === row.sha256.toLowerCase(), 'release_source_pin_conflict');
+    byPath.set(row.path, row.sha256.toLowerCase());
+  }
+  return Array.from(byPath, ([path, sha256Value]) => ({ path, sha256: sha256Value })).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function verifyPinRows(repositoryRoot, rows) {
+  for (const row of rows) await safeBytes(repositoryRoot, row.path, row.sha256);
+  return digest(Buffer.from(JSON.stringify(rows)));
+}
+
+function bindMinimumReview(manifest, minimum, taskRelease) {
+  const bound = structuredClone(manifest);
+  bound.difficultyReviewEvidence = { path: minimum.path, sha256: minimum.sha256, boundary: BOUNDARY };
+  bound.policyHash = taskRelease.taskPolicyHash(bound);
+  bound.benchmarkHash = taskRelease.taskBenchmarkHash(bound);
+  const { manifestHash: omitted, ...unhashed } = bound;
+  void omitted;
+  bound.manifestHash = taskRelease.sha256CanonicalTaskJson(unhashed);
+  return taskRelease.TaskReleaseManifestSchema.parse(bound);
+}
+
+async function validateAndActivatePinnedRelease({ repositoryRoot, databaseUrl }) {
+  const pinnedDocuments = {};
+  for (const [name, row] of Object.entries(PIN)) {
+    const read = await safeBytes(repositoryRoot, row.path, row.sha256);
+    pinnedDocuments[name] = JSON.parse(read.bytes.toString('utf8'));
+  }
+  const validation = pinnedDocuments.validation;
+  const candidateCases = pinnedDocuments.cases;
+  const capturedRelease = pinnedDocuments.release;
+  const minimumReview = pinnedDocuments.minimum;
+  const referenceReview = pinnedDocuments.references;
+  demand(validation.schemaVersion === 'bts-difficulty-v2-offline-release-validation/v1' &&
+    validation.status === 'validated_candidate' && validation.sourceUnchanged === true &&
+    validation.manifestBinding?.boundManifestHash && validation.claims?.productReleaseActivated === false &&
+    validation.claims?.ownerRunAcceptance === false && validation.claims?.taskGrade === false,
+  'pinned_release_validation_not_authoritative');
+  demand(capturedRelease.schemaVersion === 'bts-task-release-candidate-capture/v2' &&
+    capturedRelease.captureId === '6e63f0a7-6bc8-4512-a544-d57ef4f8bb63' &&
+    capturedRelease.classification === 'full_inventory_candidate_not_validated_or_activated_release',
+  'pinned_release_candidate_invalid');
+  demand(candidateCases.schemaVersion === 'bts-difficulty-v2-case-candidates/v1' &&
+    candidateCases.participantToolProtocol === 'separate_payment_delivery_v2' && Array.isArray(candidateCases.cases) &&
+    candidateCases.cases.length === 20, 'pinned_case_candidate_invalid');
+  const sourceRows = pinRows(validation.sourceInputs, 'validation_source_inventory_invalid');
+  const releaseRows = pinRows(capturedRelease.sourceInputs, 'release_source_inventory_invalid');
+  const minimumRows = pinRows(minimumReview.sourceInputs, 'minimum_source_inventory_invalid');
+  const referenceRows = pinRows(referenceReview.sourceInputs, 'reference_source_inventory_invalid');
+  const mergedPins = new Map();
+  for (const row of [...sourceRows, ...releaseRows, ...minimumRows, ...referenceRows]) {
+    const prior = mergedPins.get(row.path);
+    demand(prior === undefined || prior === row.sha256, 'release_source_pin_conflict');
+    mergedPins.set(row.path, row.sha256);
+  }
+  for (const row of Object.values(PIN)) {
+    const prior = mergedPins.get(row.path);
+    demand(prior === undefined || prior === row.sha256, 'release_artifact_pin_conflict');
+    mergedPins.set(row.path, row.sha256);
+  }
+  const currentPins = Array.from(mergedPins, ([path, sha256Value]) => ({ path, sha256: sha256Value })).sort((a, b) => a.path.localeCompare(b.path));
+  const sourceInputPinSetSha256 = await verifyPinRows(repositoryRoot, currentPins);
+  const localPolicy = await safeBytes(repositoryRoot, POLICY_PATH);
+  const { TaskCaseSchema, TaskReleaseManifestSchema, canonicalTaskJson, sha256CanonicalTaskJson,
+    taskPolicyHash, taskBenchmarkHash, validateTaskReleaseCandidate } = await import('../../owner-identity/dist/task-release.js');
+  const { verifyRetainedTaskFeasibility } = await import('../../owner-identity/dist/task-feasibility-evidence.js');
+  const { verifyTaskReferenceEvidenceV2 } = await import('../../owner-identity/dist/task-reference-evidence-v2.js');
+  const { verifyDifficultyEvidenceV2 } = await import('../../owner-identity/dist/task-difficulty-evidence-v2.js');
+  const { createDatabase } = await import('../../owner-identity/dist/db.js');
+  const { loadConfig } = await import('../../owner-identity/dist/config.js');
+  const { activatePostgresTaskReleaseCandidate, createPostgresTaskReleaseQuerySource } = await import('../../owner-identity/dist/task-store.js');
+
+  const original = TaskReleaseManifestSchema.parse(capturedRelease.manifest);
+  const { manifestHash: originalHashOmitted, ...originalWithoutHash } = original;
+  void originalHashOmitted;
+  demand(sha256CanonicalTaskJson(originalWithoutHash) === original.manifestHash &&
+    original.manifestHash === validation.manifestBinding.originalManifestHash, 'original_manifest_hash_mismatch');
+  demand(minimumReview.candidate?.path === PIN.cases.path && minimumReview.candidate?.sha256 === PIN.cases.sha256 &&
+    minimumReview.executionIdentityHash === original.executionIdentityHash && referenceReview.executionIdentityHash === original.executionIdentityHash,
+  'review_case_or_identity_binding_mismatch');
+  const parsedCases = candidateCases.cases.map((value) => TaskCaseSchema.parse(value));
+  demand(parsedCases.length === 20 && [...SUPPORTED_TASKS].every((taskId) =>
+    parsedCases.filter((taskCase) => taskCase.taskId === taskId && taskCase.mode === 'training').length === 1),
+    'case_inventory_invalid');
+  const byKey = new Map(parsedCases.map((taskCase) => [taskCase.taskId + ':' + taskCase.mode, taskCase]));
+  demand([...original.cases.training, ...original.cases.ranked].length === 20 &&
+    [...original.cases.training, ...original.cases.ranked].every((taskCase) => {
+      const candidate = byKey.get(taskCase.taskId + ':' + taskCase.mode);
+      return candidate && canonicalTaskJson(candidate) === canonicalTaskJson(taskCase);
+    }), 'release_case_binding_mismatch');
+  const bound = bindMinimumReview(original, PIN.minimum, { taskPolicyHash, taskBenchmarkHash,
+    sha256CanonicalTaskJson, TaskReleaseManifestSchema });
+  demand(bound.participantToolProtocol === 'separate_payment_delivery_v2' &&
+    bound.manifestHash === validation.manifestBinding.boundManifestHash &&
+    bound.difficultyReviewEvidence.path === PIN.minimum.path && bound.difficultyReviewEvidence.sha256 === PIN.minimum.sha256,
+  'bound_manifest_pin_mismatch');
+  const policyHash = localPolicy.sha256;
+  const dbConfig = loadConfig({ ...process.env, OID_DATABASE_URL: databaseUrl });
+  const { db, client } = createDatabase(dbConfig);
+  const taskReleaseSource = createPostgresTaskReleaseQuerySource(db);
+  const verifiedReferences = [];
+  let difficultyEvidence = null;
+  const verifier = {
+    verifyFeasibility: (evidence, identity, expectedIdentityHash, participantToolProtocol) =>
+      verifyRetainedTaskFeasibility({ repositoryRoot, evidence, executionIdentity: identity, expectedIdentityHash,
+        participantToolProtocol, profilePolicy: { path: POLICY_PATH, sha256: policyHash } }),
+    verifyReferencePath: async ({ evidence, taskCase, executionIdentityHash }) => {
+      const result = await verifyTaskReferenceEvidenceV2({ repositoryRoot, identity: bound.executionIdentity,
+        profilePolicy: { path: POLICY_PATH, sha256: policyHash }, evidence, taskCase, executionIdentityHash });
+      verifiedReferences.push({ taskCase, result });
+      return result;
+    },
+    verifyDifficultyReview: async (evidence, cases, executionIdentityHash) => {
+      difficultyEvidence = await verifyDifficultyEvidenceV2({ repositoryRoot, evidence, cases, executionIdentityHash,
+        identity: bound.executionIdentity, profilePolicy: { path: POLICY_PATH, sha256: policyHash },
+        caseCandidate: PIN.cases, verifiedReferences, costPolicy: bound.costPolicy });
+      return difficultyEvidence;
+    },
+  };
+  try {
+    const activation = await activatePostgresTaskReleaseCandidate(db, bound, verifier);
+    demand(activation.status === 'validated' && activation.release.manifest.manifestHash === bound.manifestHash &&
+      verifiedReferences.length === 20 && difficultyEvidence?.status === 'approved', 'full_release_verifier_blocked');
+    const active = await taskReleaseSource.getActiveAdmissionRelease('training');
+    demand(active?.releaseIdentity === bound.releaseIdentity && active.manifestHash === bound.manifestHash,
+      'active_release_database_binding_mismatch');
+    return {
+      status: 'activated_in_isolated_acceptance_database', releaseIdentity: bound.releaseIdentity,
+      manifestHash: bound.manifestHash, candidatePath: PIN.release.path, candidateSha256: PIN.release.sha256,
+      environmentManifestSha256: bound.executionIdentity.environmentManifestSha256,
+      validationPath: PIN.validation.path, validationSha256: PIN.validation.sha256,
+      sourceInputCount: currentPins.length, sourceInputPinSetSha256, feasibilityStatus: 'verified',
+      semanticReferenceCount: verifiedReferences.length, difficultyStatus: difficultyEvidence.status,
+      participantToolProtocol: bound.participantToolProtocol, precision: bound.pricing.precision,
+      trainingPriceUnits: bound.pricing.openTrainingPriceUnits,
+      trainingTasks: bound.cases.training.map((taskCase) => ({ taskId: taskCase.taskId, taskWeight: taskCase.taskWeight,
+        taskDeadlineSeconds: taskCase.taskDeadlineSeconds })),
+    };
+  } finally { await client.end({ timeout: 5 }); }
+}
+
+function pgRows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  return [];
+}
+
+function sortedJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortedJsonValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([key, child]) => [key, sortedJsonValue(child)]));
+}
+
+function eventPayloadHash(value) {
+  return digest(Buffer.from(JSON.stringify(sortedJsonValue(value))));
+}
+
+function exactUsdcUnits(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/.exec(value);
+  if (!match) return null;
+  return BigInt(match[1]) * 1_000_000n + BigInt((match[2] ?? '').padEnd(6, '0') || '0');
+}
+
+function projectAcceptedEvent(row) {
+  let payload = row.payload_json;
+  try { if (typeof payload === 'string') payload = JSON.parse(payload); } catch { payload = null; }
+  return { eventId: row.event_id, runId: row.run_id, sequence: row.sequence, source: row.source,
+    eventType: row.event_type, payloadHash: row.payload_hash, payload,
+    intentId: row.intent_id, ownerId: row.owner_id, agentId: row.agent_id, manifestHash: row.manifest_hash,
+    mode: row.run_mode, taskIds: row.run_task_ids };
+}
+
+function acceptedEventMatches(snapshot, expected) {
+  const events = snapshot.acceptanceEvents;
+  if (!Array.isArray(events) || events.length !== 1) return false;
+  const event = events[0];
+  const payload = event.payload;
+  const expectedTaskIds = expected.taskIds ?? [expected.taskId ?? 'S1'];
+  return Boolean(payload && typeof payload === 'object' && !Array.isArray(payload) &&
+    event.source === 'agent' && event.eventType === 'run.accepted' && event.runId === expected.runId &&
+    event.intentId === expected.intentId && event.ownerId === expected.ownerId && event.agentId === expected.agentId &&
+    event.manifestHash === expected.manifestHash && event.mode === 'training' &&
+    Array.isArray(event.taskIds) && JSON.stringify(event.taskIds) === JSON.stringify(expectedTaskIds) &&
+    payload.intentId === expected.intentId && payload.operationId === expected.acceptOperationId &&
+    payload.mode === 'training' && Array.isArray(payload.taskIds) && JSON.stringify(payload.taskIds) === JSON.stringify(expectedTaskIds) &&
+    typeof event.payloadHash === 'string' && event.payloadHash.toLowerCase() === eventPayloadHash(payload).toLowerCase());
+}
+
+async function readonlyTransaction(pool, callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const identity = await client.query('SELECT current_user AS role,current_database() AS database_name,current_setting(\'transaction_read_only\') AS readonly');
+    if (identity.rows[0]?.role !== 'oid_observer' || identity.rows[0]?.readonly !== 'on') throw fail('identity_observer_role_invalid');
+    const value = await callback((statement, parameters = []) => client.query(statement, parameters));
+    await client.query('COMMIT');
+    return value;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
+}
+
+async function readRunSnapshot(pool, target) {
+  return readonlyTransaction(pool, async (query) => {
+    const run = await query(`SELECT r.id::text,r.intent_id::text,r.owner_id::text,r.agent_id::text,r.mode,r.task_ids,
+        r.release_identity,r.manifest_hash,r.benchmark_hash,r.policy_hash,r.quote_price_units::text,r.cash_ceiling_units::text,
+        r.status,r.environment_id,r.started_at,r.finished_at,r.overall_deadline,r.cancellation_reason,r.cancellation_evidence_hash,
+        r.successor_preparation_policy_version,r.successor_preparation_timeout_seconds,
+        i.status AS intent_status,i.operation_id AS intent_operation_id,i.cash_ceiling_units::text AS intent_cash_ceiling_units,
+        i.successor_preparation_policy_version AS intent_successor_preparation_policy_version,
+        i.successor_preparation_timeout_seconds AS intent_successor_preparation_timeout_seconds
+      FROM oid_benchmark_run r JOIN oid_run_launch_intent i ON i.id=r.intent_id WHERE r.id=$1`, [target.runId]);
+    const tasks = await query(`SELECT task_index,task_id,status,started_at,finished_at,deadline_at,accepted_action_sequence::text,
+        action_cutoff_sequence::text,reconciled_action_sequence::text,closure_status,closure_id::text,closure_reason,closed_at
+      FROM oid_run_task WHERE run_id=$1 ORDER BY task_index`, [target.runId]);
+    const actions = await query(`SELECT a.id::text,a.task_index,a.action_sequence::text,a.operation_id,a.action_kind,a.command_json,a.payload_hash,
+        a.accepted_at,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,r.tool_response_hash,
+        r.tool_response_json
+      FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+      WHERE a.run_id=$1 ORDER BY a.action_sequence`, [target.runId]);
+    const execution = await query(`SELECT b.task_index,b.env_id,b.generation_id::text,b.manifest_hash,b.application_source_hash,
+        b.participant_id,b.payer_address,
+        i.preparation_id::text,i.lease_id::text,i.case_id,i.case_hash,i.initial_state_sha256,l.state AS lease_state
+      FROM oid_task_execution_binding b
+      LEFT JOIN oid_task_preparation_intent i ON i.run_id=b.run_id AND i.task_index=b.task_index
+      LEFT JOIN oid_task_environment_lease l ON l.preparation_id=i.preparation_id AND l.lease_id=i.lease_id
+      WHERE b.run_id=$1 ORDER BY b.task_index`, [target.runId]);
+    const preparations = await query(`SELECT i.task_index,i.preparation_id::text,i.lease_id::text,i.environment_id,i.task_id,
+        i.case_id,i.case_hash,i.initial_state_sha256,i.environment_manifest_sha256,i.application_source_hash,
+        l.state AS lease_state,o.status AS preparation_status,o.generation_id::text AS observed_generation_id,
+        o.baseline_state_sha256
+      FROM oid_task_preparation_intent i LEFT JOIN oid_task_environment_lease l
+        ON l.preparation_id=i.preparation_id AND l.lease_id=i.lease_id
+      LEFT JOIN LATERAL (SELECT status,generation_id,baseline_state_sha256 FROM oid_task_preparation_observation
+        WHERE preparation_id=i.preparation_id ORDER BY revision DESC LIMIT 1) o ON true
+      WHERE i.run_id=$1 ORDER BY i.task_index`, [target.runId]);
+    const evaluation = await query(`SELECT task_index,task_id,manifest_hash,case_hash,input_hash,result_hash,evaluator_source_hash,result_json
+      FROM oid_run_task_evaluation WHERE run_id=$1 ORDER BY task_index`, [target.runId]);
+    const runEvents = await query(`SELECT e.id::text AS event_id,e.run_id::text,e.sequence::text,e.source,e.event_type,
+        e.payload_hash,e.payload_json,r.intent_id::text,r.owner_id::text,r.agent_id::text,r.manifest_hash,r.mode AS run_mode,r.task_ids AS run_task_ids
+      FROM oid_run_event e JOIN oid_benchmark_run r ON r.id=e.run_id
+      WHERE e.run_id=$1 AND e.event_type IN ('run.accepted','run.started','task.activated','task.terminalized','run.completed') ORDER BY e.sequence`, [target.runId]);
+    const projectedEvents = pgRows(runEvents).map(projectAcceptedEvent);
+    return { identity: identityless(await query('SELECT current_user AS role,current_setting(\'transaction_read_only\') AS readonly')),
+      run: pgRows(run).map(projectRun), tasks: pgRows(tasks), actions: pgRows(actions).map(projectAction),
+      execution: pgRows(execution), preparations: pgRows(preparations), evaluation: pgRows(evaluation).map(projectEvaluation),
+      runEvents: projectedEvents, acceptanceEvents: projectedEvents.filter((event) => event.eventType === 'run.accepted') };
+  });
+}
+
+function identityless(rowsValue) {
+  const row = pgRows(rowsValue)[0] ?? {};
+  return { role: row.role, readOnly: row.readonly };
+}
+
+function projectRun(row) {
+  return { ...row, runId: row.id, intentId: row.intent_id };
+}
+
+function projectAction(row) {
+  let response = null;
+  try { response = typeof row.tool_response_json === 'string' ? JSON.parse(row.tool_response_json) : row.tool_response_json; } catch { /* No body projection. */ }
+  return { actionId: row.id, taskIndex: row.task_index, actionSequence: row.action_sequence, operationId: row.operation_id, kind: row.action_kind,
+    command: row.command_json, commandSha256: row.payload_hash, acceptedAt: row.accepted_at,
+    receiptRevision: row.receipt_revision, receiptStatus: row.receipt_status, evidenceHash: row.evidence_hash,
+    evidencePath: row.evidence_path, transactionHash: row.transaction_hash, toolResponseHash: row.tool_response_hash,
+    toolResponseStatus: response && typeof response === 'object' ? response.status ?? null : null };
+}
+
+function projectEvaluation(row) {
+  let result = null;
+  try { result = typeof row.result_json === 'string' ? JSON.parse(row.result_json) : row.result_json; } catch { /* Hash facts remain. */ }
+  return { taskIndex: row.task_index, taskId: row.task_id, manifestHash: row.manifest_hash, caseHash: row.case_hash,
+    inputHash: row.input_hash, resultHash: row.result_hash, evaluatorSourceHash: row.evaluator_source_hash,
+    resultStatus: result?.status ?? null, resultCredit: result?.credit ?? null };
+}
+
+async function checkBonusGrant(pool, grantId, ownerId, operationId) {
+  return readonlyTransaction(pool, async (query) => {
+    const grant = await query(`SELECT id::text,owner_id::text,amount_units::text,issued_by_owner_id::text,reason,operation_id,created_at,expires_at
+      FROM oid_bonus_grant WHERE id=$1 AND owner_id=$2 AND operation_id=$3`, [grantId, ownerId, operationId]);
+    const ledger = await query(`SELECT id::text,entry_type,source_kind,amount_units::text,available_delta_units::text,
+        reserved_delta_units::text,bonus_grant_id::text,operation_id FROM oid_ledger_entry
+      WHERE owner_id=$1 AND bonus_grant_id=$2 ORDER BY created_at,id`, [ownerId, grantId]);
+    return { role: 'oid_observer', grant: pgRows(grant), ledgerEntries: pgRows(ledger) };
+  });
+}
+
+async function agentRequest({ publicOrigin, path, method = 'GET', bearer, body }) {
+  let response;
+  try {
+    response = await fetch(new URL(path, publicOrigin), {
+      method, redirect: 'error', signal: AbortSignal.timeout(15_000),
+      headers: { authorization: 'Bearer ' + bearer, origin: publicOrigin, ...(body ? { 'content-type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch { throw fail('agent_http_transport_unknown'); }
+  let payload = {};
+  try { payload = await response.json(); } catch { /* Retain status only. */ }
+  return { status: response.status, payload };
+}
+
+async function waitForActiveTask({ publicOrigin, bearer, runId, observerPool, taskId = 'S1', taskIndex = 0, timeoutMs = 180_000 }) {
+  const end = Date.now() + timeoutMs;
+  let latestRun = null;
+  while (Date.now() < end) {
+    const response = await agentRequest({ publicOrigin, path: '/api/agent/runs/' + runId + '/current-task', bearer });
+    if (response.status === 200 && response.payload?.task) {
+      const task = response.payload.task;
+      demand(task.runId === runId && task.taskIndex === taskIndex && task.taskId === taskId && task.mode === 'training', 'issued_task_binding_mismatch');
+      return task;
+    }
+    if (response.status >= 400 && response.status !== 404 && response.status !== 409 && response.status !== 503) {
+      throw fail(typeof response.payload?.error?.code === 'string' ? response.payload.error.code : 'current_task_http_denied');
+    }
+    const snapshot = await readRunSnapshot(observerPool, { runId });
+    latestRun = snapshot.run[0] ?? null;
+    if (latestRun && ['cancelled', 'failed', 'expired', 'unknown', 'disqualified'].includes(latestRun.status)) throw fail('run_terminal_before_task_issue');
+    await delay(1000);
+  }
+  const error = fail('strict_preparation_or_task_issue_timeout');
+  error.safeDiagnostic = { lastObservedRunStatus: latestRun?.status ?? null };
+  throw error;
+}
+
+async function waitForActionResolution({ publicOrigin, bearer, runId, actionId, observerPool, timeoutMs = 180_000 }) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const api = await agentRequest({ publicOrigin, path: '/api/agent/runs/' + runId + '/actions/' + actionId, bearer });
+    const snapshot = await readRunSnapshot(observerPool, { runId });
+    const action = snapshot.actions.find((row) => row.actionId === actionId);
+    if (action && ['observed', 'rejected_before_execution', 'unknown'].includes(action.receiptStatus)) {
+      // The GET can precede the receipt commit seen by the independent observer.
+      // Poll reads until both surfaces agree; never resend the participant action.
+      const apiMatches = api.status === 200 && api.payload?.actionId === actionId &&
+        api.payload?.runId === runId && api.payload?.status === action.receiptStatus &&
+        api.payload?.receiptRevision === action.receiptRevision &&
+        (api.payload?.toolResponse == null ? action.toolResponseHash === null
+          : eventPayloadHash(api.payload.toolResponse) === action.toolResponseHash);
+      if (action.receiptStatus === 'unknown' || apiMatches) {
+        return { apiStatus: api.status, apiPayload: api.payload, action, snapshot };
+      }
+    }
+    await delay(750);
+  }
+  const snapshot = await readRunSnapshot(observerPool, { runId });
+  return { apiStatus: null, action: snapshot.actions.find((row) => row.actionId === actionId) ?? null, snapshot, timedOut: true };
+}
+
+async function waitForClosedTask(pool, runId, taskIndex = 0, timeoutMs = 90_000) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const snapshot = await readRunSnapshot(pool, { runId });
+    const task = snapshot.tasks.find((row) => row.task_index === taskIndex);
+    if (task?.closure_status === 'closed' && task.action_cutoff_sequence !== null &&
+      BigInt(task.reconciled_action_sequence ?? 0) >= BigInt(task.action_cutoff_sequence)) return snapshot;
+    await delay(750);
+  }
+  return readRunSnapshot(pool, { runId });
+}
+
+function answerFromPublicS2Read(task, body) {
+  demand(task.participantToolProtocol === 'separate_payment_delivery_v2' && body?.resourceId === task.conditions.resourceId &&
+    body?.readHandle?.kind === 'offer' && Array.isArray(body.offers), 's2_public_offer_unavailable');
+  const offer = body.offers.find((entry) => entry?.id === task.conditions.offerId);
+  const payment = offer?.payment;
+  const asset = task.execution?.assets?.find((entry) => entry.address?.toLowerCase() === payment?.asset?.toLowerCase());
+  demand(payment?.network === 'eip155:8453' && asset?.assetId === 'USDC' && payment?.transferMethod === 'eip3009' &&
+    /^\d+$/.test(payment.amount) && /^0x[0-9a-f]{40}$/i.test(payment.payTo ?? ''), 's2_public_payment_profile_unsupported');
+  // AICODE-NOTE: The client uses the published Base USDC/x402-v2 profile here.
+  // Quantities, payee, resource and selected offer come only from its agent-visible read.
+  return { amountUnits: payment.amount, network: payment.network, assetId: asset.assetId,
+    recipient: payment.payTo, scheme: payment.scheme, resourceId: body.resourceId,
+    offerId: offer.id, version: '2', authFields: [
+      { name: 'assetTransferMethod', value: payment.transferMethod }, { name: 'paymentFlow', value: 'authorization' },
+      { name: 'name', value: 'USD Coin' }, { name: 'version', value: '2' },
+    ] };
+}
+
+async function createObserverPorts({ repositoryRoot, runId, environmentId, taskId = 'S1', taskIndex = 0 }) {
+  let password = (await readFile('/run/secrets/bef_database_observer_password', 'utf8')).trim();
+  demand(password.length >= 16 && !/[\r\n\u0000]/.test(password), 'bef_observer_credential_unavailable');
+  const databaseUrl = new URL('postgres://bef_observer@host.docker.internal:' + (process.env.BEF_DATABASE_HOST_PORT || '55432') + '/bef');
+  databaseUrl.password = password;
+  const befPool = new Pool({ connectionString: databaseUrl.href, max: 2, application_name: 'genuine-s1-bef-observer' });
+  password = '';
+  const postgresPort = {
+    environmentId,
+    async withRepeatableRead(callback) {
+      const client = await befPool.connect();
+      try {
+        await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+        const rows = await client.query('SELECT current_user AS role,current_setting(\'transaction_read_only\') AS readonly');
+        if (rows.rows[0]?.role !== 'bef_observer' || rows.rows[0]?.readonly !== 'on') throw fail('bef_observer_role_invalid');
+        const result = await callback(async (statement, parameters = []) => {
+          const value = await client.query(statement, parameters);
+          return value.rows;
+        });
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    },
+    async readFenceProof({ preparationId, generationId }) {
+      return postgresPort.withRepeatableRead(async (query) => {
+        const rows = await query(`SELECT g.generation_id::text,g.env_id,g.status AS generation_status,g.fenced_at::text,
+            p.preparation_id::text,p.status AS preparation_status,p.fence_confirmed_at::text,
+            p.generation_id::text AS preparation_generation_id,p.public_pins_sha256,p.manifest_sha256,
+            trim(e.manifest_sha256) AS environment_manifest_sha256
+          FROM public.bef_generation g
+          JOIN public.bef_preparation p ON p.env_id=g.env_id AND p.generation_id=g.generation_id
+          JOIN public.bef_environment e ON e.env_id=g.env_id
+          WHERE g.env_id=$1 AND g.generation_id=$2::uuid AND p.preparation_id=$3::uuid`,
+        [environmentId, generationId, preparationId]);
+        return pgRows(rows);
+      });
+    },
+    async readPreparedProof({ preparationId, generationId }) {
+      return postgresPort.withRepeatableRead(async (query) => {
+        const rows = await query(`SELECT g.generation_id::text,g.env_id,g.status AS generation_status,
+            p.preparation_id::text,p.status AS preparation_status,p.generation_id::text AS preparation_generation_id,
+            p.public_pins_sha256,p.manifest_sha256,trim(e.manifest_sha256) AS environment_manifest_sha256
+          FROM public.bef_generation g
+          JOIN public.bef_preparation p ON p.env_id=g.env_id AND p.generation_id=g.generation_id
+          JOIN public.bef_environment e ON e.env_id=g.env_id
+          WHERE g.env_id=$1 AND g.generation_id=$2::uuid AND p.preparation_id=$3::uuid`,
+        [environmentId, generationId, preparationId]);
+        return pgRows(rows);
+      });
+    },
+  };
+  const rpcUrl = 'http://host.docker.internal:' + (process.env.BEF_LOCAL_RPC_A_HOST_PORT || '18545');
+  let rpcId = 0;
+  const rpcPort = {
+    environmentId,
+    async request(method, params) {
+      if (!new Set(['eth_blockNumber', 'eth_call', 'eth_chainId', 'eth_getBalance', 'eth_getBlockByNumber',
+        'eth_getCode', 'eth_getLogs', 'eth_getTransactionByHash', 'eth_getTransactionCount', 'eth_getTransactionReceipt']).has(method)) {
+        throw fail('rpc_method_not_allowlisted');
+      }
+      let response;
+      try {
+        response = await fetch(rpcUrl, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
+          headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }) });
+      } catch { throw fail('rpc_observation_transport_unavailable'); }
+      if (!response.ok) throw fail('rpc_observation_http_unavailable');
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > 4 * 1024 * 1024) throw fail('rpc_observation_response_oversized');
+      let payload;
+      try { payload = JSON.parse(bytes.toString('utf8')); } catch { throw fail('rpc_observation_response_invalid'); }
+      if (payload?.jsonrpc !== '2.0' || payload.id !== rpcId || payload.error || !Object.prototype.hasOwnProperty.call(payload, 'result')) {
+        throw fail('rpc_observation_result_unavailable');
+      }
+      return payload.result;
+    },
+  };
+  const evidenceSink = {
+    async write(packet) {
+      const bytes = Buffer.from(JSON.stringify(packet));
+      demand(bytes.length <= 8 * 1024 * 1024, 'observation_packet_oversized');
+      assertSecretFree(packet, 'genuine-s1-observation-packet');
+      const observationRoot = 'artifacts/runs/owner-identity-bef-task-coordinator/observation';
+      const directory = resolve(repositoryRoot, observationRoot);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const name = runId + '-' + taskId.toLowerCase() + '-' + taskIndex + '-observer-packet.json';
+      const path = resolve(directory, name);
+      await writeFile(path, Buffer.concat([bytes, Buffer.from('\n')]), { flag: 'wx', mode: 0o600 });
+      return { path: observationRoot + '/' + name, sha256: sha256(Buffer.concat([bytes, Buffer.from('\n')])), boundary: BOUNDARY };
+    },
+  };
+  return { postgresByEnvironment: { [environmentId]: postgresPort }, rpcByEnvironment: { [environmentId]: rpcPort }, evidenceSink,
+    close: () => befPool.end() };
+}
+
+async function readOwnerRunCompletionState(observerPool, { runId, ownerId }) {
+  return readonlyTransaction(observerPool, async (query) => {
+    const run = pgRows(await query(`SELECT id::text,owner_id::text,mode,status,finished_at,quote_price_units::text
+      FROM oid_benchmark_run WHERE id=$1 AND owner_id=$2`, [runId, ownerId]));
+    const tasks = pgRows(await query(`SELECT task_index,task_id,status,finished_at FROM oid_run_task
+      WHERE run_id=$1 ORDER BY task_index`, [runId]));
+    const completionEvents = pgRows(await query(`SELECT id::text,sequence::text,source,event_type,payload_hash,payload_json,created_at::text
+      FROM oid_run_event WHERE run_id=$1 AND event_type='run.completed' ORDER BY sequence`, [runId]));
+    const terminalizationEvents = pgRows(await query(`SELECT id::text,sequence::text,source,event_type,payload_hash,payload_json
+      FROM oid_run_event WHERE run_id=$1 AND event_type='task.terminalized' ORDER BY sequence`, [runId]));
+    const evaluations = pgRows(await query(`SELECT task_index,task_id,input_hash,result_hash,evaluator_source_hash,result_json
+      FROM oid_run_task_evaluation WHERE run_id=$1 ORDER BY task_index`, [runId])).map((row) => {
+      let result = null;
+      try { result = typeof row.result_json === 'string' ? JSON.parse(row.result_json) : row.result_json; } catch { /* Hashes remain usable. */ }
+      return { task_index: row.task_index, task_id: row.task_id, input_hash: row.input_hash, result_hash: row.result_hash,
+        evaluator_source_hash: row.evaluator_source_hash, result_status: result?.status ?? null, outcome: result?.outcome ?? null,
+        credit: result?.credit ?? null };
+    });
+    const claims = pgRows(await query(`SELECT claim_id::text,status,released_at::text FROM oid_run_dispatch_claim WHERE run_id=$1`, [runId]));
+    const slots = pgRows(await query(`SELECT run_id::text,agent_id::text,claim_id::text,state,released_at::text
+      FROM oid_run_execution_slot WHERE run_id=$1`, [runId]));
+    const reservations = pgRows(await query(`SELECT id::text,source_kind,bonus_grant_id::text,cash_provenance,amount_units::text,state
+      FROM oid_run_reservation WHERE run_id=$1 ORDER BY id`, [runId]));
+    const budgetHolds = pgRows(await query(`SELECT run_id::text,mode,utc_day,amount_units::text,state
+      FROM oid_run_budget_hold WHERE run_id=$1 ORDER BY run_id`, [runId]));
+    const operationIds = ['runacc_' + runId.replaceAll('-', ''), 'rundeb_' + runId.replaceAll('-', ''),
+      'runrel_' + runId.replaceAll('-', '')];
+    const ledger = pgRows(await query(`SELECT id::text,entry_type,source_kind,operation_id,amount_units::text,
+        available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,reason
+      FROM oid_ledger_entry WHERE owner_id=$1 AND operation_id=ANY($2::text[]) ORDER BY operation_id,id`, [ownerId, operationIds]));
+    const ownerLedger = pgRows(await query(`SELECT id::text,entry_type,source_kind,operation_id,amount_units::text,
+        available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,bonus_grant_id::text,reason
+      FROM oid_ledger_entry WHERE owner_id=$1 ORDER BY created_at,id`, [ownerId]));
+    const projection = { run: run[0] ?? null, tasks, evaluations, terminalizationEvents, completionEvents, claims, slots, reservations, budgetHolds, ledger,
+      ownerLedgerSha256: digest(Buffer.from(JSON.stringify(ownerLedger))), ownerLedgerCount: ownerLedger.length,
+      ownerRefundCount: ownerLedger.filter((row) => row.entry_type === 'refund').length };
+    const money = { reservations, budgetHolds, ledger, ownerLedger };
+    return { ...projection, moneySha256: digest(Buffer.from(JSON.stringify(money))),
+      stateSha256: digest(Buffer.from(JSON.stringify(projection))) };
+  });
+}
+
+async function readOwnerTrainingFeedback(ownerPage, runId, expectedResult) {
+  try {
+    const response = await ownerPage.request.get('/api/owner/runs/' + encodeURIComponent(runId) + '/results', { timeout: 15_000 });
+    if (response.status() !== 200) return { status: 'unknown', httpStatus: response.status(), reasonCode: 'owner_feedback_http_unavailable' };
+    let body;
+    try { body = await response.json(); } catch { return { status: 'unknown', httpStatus: response.status(), reasonCode: 'owner_feedback_body_invalid' }; }
+    if (!body || body.status !== 'available' || !Array.isArray(body.tasks)) {
+      return { status: 'unknown', httpStatus: response.status(), reasonCode: 'owner_feedback_projection_unavailable' };
+    }
+    const matching = body.tasks.filter((item) => item && item.taskId === expectedResult.taskId);
+    if (matching.length !== 1) return { status: 'unknown', httpStatus: response.status(), reasonCode: 'owner_feedback_task_missing_or_ambiguous' };
+    const actual = matching[0];
+    const actualCredit = actual.credit ?? null;
+    const expectedCredit = expectedResult.credit ?? null;
+    return { status: 'observed', httpStatus: response.status(), taskId: expectedResult.taskId, taskStatus: actual.status,
+      outcome: actual.outcome, credit: actualCredit,
+      consistentWithInternalEvaluation: actual.status === expectedResult.status && actual.outcome === expectedResult.outcome &&
+        JSON.stringify(actualCredit) === JSON.stringify(expectedCredit) };
+  } catch (error) {
+    return { status: 'unknown', reasonCode: safeErrorCode(error, 'owner_feedback_unavailable') };
+  }
+}
+
+async function readOwnerTrainingFeedbackTasks(ownerPage, runId, expectedResults) {
+  try {
+    const response = await ownerPage.request.get('/api/owner/runs/' + encodeURIComponent(runId) + '/results', { timeout: 15_000 });
+    if (response.status() !== 200) return { status: 'unknown', httpStatus: response.status(), reasonCode: 'owner_feedback_http_unavailable' };
+    const body = await response.json().catch(() => null);
+    if (!body || body.status !== 'available' || !Array.isArray(body.tasks)) {
+      return { status: 'unknown', httpStatus: response.status(), reasonCode: 'owner_feedback_projection_unavailable' };
+    }
+    const taskIds = expectedResults.map((item) => item.taskId);
+    if (new Set(taskIds).size !== taskIds.length || body.tasks.length !== expectedResults.length) {
+      return { status: 'unknown', httpStatus: response.status(), reasonCode: 'owner_feedback_task_set_mismatch' };
+    }
+    const tasks = expectedResults.map((expected) => {
+      const matches = body.tasks.filter((item) => item && item.taskId === expected.taskId);
+      if (matches.length !== 1) return { taskId: expected.taskId, consistentWithInternalEvaluation: false };
+      const actual = matches[0];
+      return { taskId: expected.taskId, status: actual.status, outcome: actual.outcome, credit: actual.credit ?? null,
+        consistentWithInternalEvaluation: actual.status === expected.status && actual.outcome === expected.outcome &&
+          JSON.stringify(actual.credit ?? null) === JSON.stringify(expected.credit ?? null) };
+    });
+    return { status: 'observed', httpStatus: response.status(), tasks,
+      consistentWithInternalEvaluation: tasks.every((item) => item.consistentWithInternalEvaluation) };
+  } catch (error) {
+    return { status: 'unknown', reasonCode: safeErrorCode(error, 'owner_feedback_unavailable') };
+  }
+}
+
+async function verifyTrainingSuccessorActivation({ input, record, observerPool, runId, task, oldOverallDeadline,
+  release, priorTaskResult, predecessorTerminalization, dispatchIdentity }) {
+  const timestampMillis = (value) => value instanceof Date ? value.getTime() : Date.parse(value ?? '');
+  demand(task.taskIndex === 1 && task.taskId === 'S2' && task.mode === 'training', 'successor_public_task_binding_mismatch');
+  const snapshot = await readRunSnapshot(observerPool, { runId });
+  const run = snapshot.run[0];
+  const successor = snapshot.tasks.find((item) => item.task_index === 1);
+  const predecessor = snapshot.tasks.find((item) => item.task_index === 0);
+  const execution = snapshot.execution.find((item) => item.task_index === 1);
+  const preparation = snapshot.preparations.find((item) => item.task_index === 1);
+  const activatedEvents = snapshot.runEvents.filter((event) => event.eventType === 'task.activated');
+  const activationEvent = activatedEvents[0];
+  const payload = activationEvent?.payload;
+  const taskCase = release.trainingTasks.find((entry) => entry.taskId === 'S2');
+  const startedEvents = snapshot.runEvents.filter((event) => event.eventType === 'run.started');
+  const allTerminalizationEvents = snapshot.runEvents.filter((event) => event.eventType === 'task.terminalized');
+  const terminalizationEvents = allTerminalizationEvents.filter((event) =>
+    event.payload?.taskIndex === 0);
+  const finishedAt = timestampMillis(predecessorTerminalization?.finishedAt ?? '');
+  const activatedAt = timestampMillis(payload?.activatedAt ?? '');
+  const previousDeadline = timestampMillis(oldOverallDeadline ?? '');
+  const currentDeadline = timestampMillis(run?.overall_deadline ?? '');
+  const interval = activatedAt - finishedAt;
+  const expectedDeadline = previousDeadline + interval;
+  const expectedTaskDeadline = Math.min(activatedAt + Number(taskCase?.taskDeadlineSeconds) * 1000, expectedDeadline);
+  const expectedInterval = payload?.preparationIntervalMilliseconds;
+  const activationConditions = [
+    ["run?.status === 'running'", () => Boolean(run?.status === 'running')],
+    ["run.started_at", () => Boolean(run.started_at)],
+    ["startedEvents.length === 1", () => Boolean(startedEvents.length === 1)],
+    ["JSON.stringify(run.task_ids) === JSON.stringify(['S1', 'S2'])", () => Boolean(JSON.stringify(run.task_ids) === JSON.stringify(['S1', 'S2']))],
+    ["snapshot.tasks.length === 2", () => Boolean(snapshot.tasks.length === 2)],
+    ["snapshot.preparations.length === 2", () => Boolean(snapshot.preparations.length === 2)],
+    ["snapshot.preparations[0].task_index === 0", () => Boolean(snapshot.preparations[0].task_index === 0)],
+    ["snapshot.preparations[1].task_index === 1", () => Boolean(snapshot.preparations[1].task_index === 1)],
+    ["snapshot.execution.length === 2", () => Boolean(snapshot.execution.length === 2)],
+    ["snapshot.execution[0].task_index === 0", () => Boolean(snapshot.execution[0].task_index === 0)],
+    ["snapshot.execution[1].task_index === 1", () => Boolean(snapshot.execution[1].task_index === 1)],
+    ["snapshot.evaluation.length === 1", () => Boolean(snapshot.evaluation.length === 1)],
+    ["snapshot.evaluation[0].taskIndex === 0", () => Boolean(snapshot.evaluation[0].taskIndex === 0)],
+    ["allTerminalizationEvents.length === 1", () => Boolean(allTerminalizationEvents.length === 1)],
+    ['predecessor terminalization outcome agrees with reconstructed result', () => predecessorTerminalization.outcome === priorTaskResult.outcome],
+    ['predecessor terminalization closure agrees with persisted task', () => predecessorTerminalization.closureId === predecessor.closure_id],
+    ['start, predecessor terminalization and successor activation have authoritative event order', () =>
+      BigInt(startedEvents[0].sequence) < BigInt(terminalizationEvents[0].sequence) &&
+      BigInt(terminalizationEvents[0].sequence) < BigInt(activationEvent.sequence)],
+    ["startedEvents[0].source === 'coordinator'", () => Boolean(startedEvents[0].source === 'coordinator')],
+    ["startedEvents[0].runId === runId", () => Boolean(startedEvents[0].runId === runId)],
+    ["startedEvents[0].payload?.taskId === 'S1'", () => Boolean(startedEvents[0].payload?.taskId === 'S1')],
+    ["startedEvents[0].payload?.environmentId === predecessorTerminalization.environmentId", () => Boolean(startedEvents[0].payload?.environmentId === predecessorTerminalization.environmentId)],
+    ["timestampMillis(startedEvents[0].payload?.overallDeadline ?? '') === timestampMillis(oldOverallDeadline)", () => Boolean(timestampMillis(startedEvents[0].payload?.overallDeadline ?? '') === timestampMillis(oldOverallDeadline))],
+    ["predecessor?.status === (priorTaskResult.outcome === 'failed' ? 'failed' : 'completed')", () => Boolean(predecessor?.status === (priorTaskResult.outcome === 'failed' ? 'failed' : 'completed'))],
+    ["predecessor?.finished_at", () => Boolean(predecessor?.finished_at)],
+    ["timestampMillis(predecessor.finished_at) === finishedAt", () => Boolean(timestampMillis(predecessor.finished_at) === finishedAt)],
+    ["terminalizationEvents.length === 1", () => Boolean(terminalizationEvents.length === 1)],
+    ["successor?.task_id === 'S2'", () => Boolean(successor?.task_id === 'S2')],
+    ["successor.status === 'active'", () => Boolean(successor.status === 'active')],
+    ["successor.started_at", () => Boolean(successor.started_at)],
+    ["execution", () => Boolean(execution)],
+    ["preparation", () => Boolean(preparation)],
+    ["preparation.task_id === 'S2'", () => Boolean(preparation.task_id === 'S2')],
+    ["preparation.preparation_status === 'ready'", () => Boolean(preparation.preparation_status === 'ready')],
+    ["preparation.lease_state === 'leased'", () => Boolean(preparation.lease_state === 'leased')],
+    ["preparation.observed_generation_id === execution.generation_id", () => Boolean(preparation.observed_generation_id === execution.generation_id)],
+    ["preparation.environment_id === execution.env_id", () => Boolean(preparation.environment_id === execution.env_id)],
+    ["preparation.case_id === execution.case_id", () => Boolean(preparation.case_id === execution.case_id)],
+    ["preparation.case_hash === execution.case_hash", () => Boolean(preparation.case_hash === execution.case_hash)],
+    ["task.caseHash === execution.case_hash", () => Boolean(task.caseHash === execution.case_hash)],
+    ["preparation.initial_state_sha256 === execution.initial_state_sha256", () => Boolean(preparation.initial_state_sha256 === execution.initial_state_sha256)],
+    ["run.environment_id === preparation.environment_id", () => Boolean(run.environment_id === preparation.environment_id)],
+    ["execution.preparation_id === preparation.preparation_id", () => Boolean(execution.preparation_id === preparation.preparation_id)],
+    ["execution.lease_id === preparation.lease_id", () => Boolean(execution.lease_id === preparation.lease_id)],
+    ["execution.lease_state === 'leased'", () => Boolean(execution.lease_state === 'leased')],
+    ["UUID.test(preparation.preparation_id)", () => Boolean(UUID.test(preparation.preparation_id))],
+    ["UUID.test(preparation.lease_id)", () => Boolean(UUID.test(preparation.lease_id))],
+    ["UUID.test(execution.generation_id)", () => Boolean(UUID.test(execution.generation_id))],
+    ["activatedEvents.length === 1", () => Boolean(activatedEvents.length === 1)],
+    ["activationEvent.source === 'coordinator'", () => Boolean(activationEvent.source === 'coordinator')],
+    ["activationEvent.payloadHash === eventPayloadHash(payload)", () => Boolean(activationEvent.payloadHash === eventPayloadHash(payload))],
+    ["payload?.runId === runId", () => Boolean(payload?.runId === runId)],
+    ["payload.fromTaskIndex === 0", () => Boolean(payload.fromTaskIndex === 0)],
+    ["payload.toTaskIndex === 1", () => Boolean(payload.toTaskIndex === 1)],
+    ["payload.fromTaskId === 'S1'", () => Boolean(payload.fromTaskId === 'S1')],
+    ["payload.toTaskId === 'S2'", () => Boolean(payload.toTaskId === 'S2')],
+    ["payload.successorPreparationPolicyVersion === 'local-bef-successor-preparation/v1'", () => Boolean(payload.successorPreparationPolicyVersion === 'local-bef-successor-preparation/v1')],
+    ["payload.successorPreparationTimeoutSeconds === 180", () => Boolean(payload.successorPreparationTimeoutSeconds === 180)],
+    ["run.successor_preparation_policy_version === payload.successorPreparationPolicyVersion", () => Boolean(run.successor_preparation_policy_version === payload.successorPreparationPolicyVersion)],
+    ["Number(run.successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds", () => Boolean(Number(run.successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds)],
+    ["run.intent_successor_preparation_policy_version === payload.successorPreparationPolicyVersion", () => Boolean(run.intent_successor_preparation_policy_version === payload.successorPreparationPolicyVersion)],
+    ["Number(run.intent_successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds", () => Boolean(Number(run.intent_successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds)],
+    ["Number.isFinite(finishedAt)", () => Boolean(Number.isFinite(finishedAt))],
+    ["Number.isFinite(activatedAt)", () => Boolean(Number.isFinite(activatedAt))],
+    ["Number.isFinite(previousDeadline)", () => Boolean(Number.isFinite(previousDeadline))],
+    ["interval >= 0", () => Boolean(interval >= 0)],
+    ["interval <= 180_000", () => Boolean(interval <= 180_000)],
+    ["expectedInterval === interval", () => Boolean(expectedInterval === interval)],
+    ["timestampMillis(payload.predecessorFinishedAt) === finishedAt", () => Boolean(timestampMillis(payload.predecessorFinishedAt) === finishedAt)],
+    ["timestampMillis(payload.previousOverallDeadline) === previousDeadline", () => Boolean(timestampMillis(payload.previousOverallDeadline) === previousDeadline)],
+    ["timestampMillis(payload.overallDeadline) === expectedDeadline", () => Boolean(timestampMillis(payload.overallDeadline) === expectedDeadline)],
+    ["currentDeadline === expectedDeadline", () => Boolean(currentDeadline === expectedDeadline)],
+    ["Number.isSafeInteger(Number(taskCase?.taskDeadlineSeconds))", () => Boolean(Number.isSafeInteger(Number(taskCase?.taskDeadlineSeconds)))],
+    ["timestampMillis(payload.taskDeadline) === expectedTaskDeadline", () => Boolean(timestampMillis(payload.taskDeadline) === expectedTaskDeadline)],
+    ["timestampMillis(successor.deadline_at) === expectedTaskDeadline", () => Boolean(timestampMillis(successor.deadline_at) === expectedTaskDeadline)],
+    ["payload.predecessorReceipt?.inputHash === predecessorTerminalization.inputHash", () => Boolean(payload.predecessorReceipt?.inputHash === predecessorTerminalization.inputHash)],
+    ["payload.predecessorReceipt?.resultHash === predecessorTerminalization.resultHash", () => Boolean(payload.predecessorReceipt?.resultHash === predecessorTerminalization.resultHash)],
+    ["payload.predecessorReceipt?.closureId === predecessorTerminalization.closureId", () => Boolean(payload.predecessorReceipt?.closureId === predecessorTerminalization.closureId)],
+    ["payload.predecessorReceipt?.outcome === predecessorTerminalization.outcome", () => Boolean(payload.predecessorReceipt?.outcome === predecessorTerminalization.outcome)],
+    ["payload.predecessorReceipt?.preparationId === predecessorTerminalization.preparationId", () => Boolean(payload.predecessorReceipt?.preparationId === predecessorTerminalization.preparationId)],
+    ["payload.predecessorReceipt?.leaseId === predecessorTerminalization.leaseId", () => Boolean(payload.predecessorReceipt?.leaseId === predecessorTerminalization.leaseId)],
+    ["payload.predecessorReceipt?.generationId === predecessorTerminalization.generationId", () => Boolean(payload.predecessorReceipt?.generationId === predecessorTerminalization.generationId)],
+    ["payload.predecessorReceipt?.fenceEvidenceHash === predecessorTerminalization.fenceEvidenceHash", () => Boolean(payload.predecessorReceipt?.fenceEvidenceHash === predecessorTerminalization.fenceEvidenceHash)],
+    ["payload.preparation?.preparationId === preparation.preparation_id", () => Boolean(payload.preparation?.preparationId === preparation.preparation_id)],
+    ["payload.preparation?.leaseId === preparation.lease_id", () => Boolean(payload.preparation?.leaseId === preparation.lease_id)],
+    ["payload.preparation?.environmentId === preparation.environment_id", () => Boolean(payload.preparation?.environmentId === preparation.environment_id)],
+    ["payload.preparation?.generationId === execution.generation_id", () => Boolean(payload.preparation?.generationId === execution.generation_id)],
+    ["payload.preparation?.environmentManifestSha256 === preparation.environment_manifest_sha256", () => Boolean(payload.preparation?.environmentManifestSha256 === preparation.environment_manifest_sha256)],
+    ["payload.preparation?.applicationSourceHash === preparation.application_source_hash", () => Boolean(payload.preparation?.applicationSourceHash === preparation.application_source_hash)],
+    ["payload.binding?.runId === runId", () => Boolean(payload.binding?.runId === runId)],
+    ["payload.binding?.taskIndex === 1", () => Boolean(payload.binding?.taskIndex === 1)],
+    ["payload.binding?.generationId === execution.generation_id", () => Boolean(payload.binding?.generationId === execution.generation_id)],
+    ["payload.binding?.envId === execution.env_id", () => Boolean(payload.binding?.envId === execution.env_id)],
+    ["payload.binding?.manifestHash === preparation.environment_manifest_sha256", () => Boolean(payload.binding?.manifestHash === preparation.environment_manifest_sha256)],
+    ["payload.binding?.applicationSourceHash === preparation.application_source_hash", () => Boolean(payload.binding?.applicationSourceHash === preparation.application_source_hash)],
+    ["payload.binding?.participantId === (execution.participant_id ?? null)", () => Boolean(payload.binding?.participantId === (execution.participant_id ?? null))],
+    ["payload.binding?.payerAddress === (execution.payer_address?.toLowerCase() ?? null)", () => Boolean(payload.binding?.payerAddress === (execution.payer_address?.toLowerCase() ?? null))],
+  ];
+  const failedConditions = activationConditions.filter(([, check]) => {
+    try { return !check(); } catch { return true; }
+  }).map(([condition]) => condition);
+  if (failedConditions.length) {
+    const error = fail('successor_activation_event_or_deadline_readback_mismatch');
+    error.safeDiagnostic = { failedConditions };
+    throw error;
+  }
+  const dispatch = await readOwnerRunCompletionState(observerPool, { runId, ownerId: run.owner_id });
+  demand(dispatch.claims.length === 1 && dispatch.claims[0].status === 'claimed' &&
+    dispatch.claims[0].claim_id === dispatchIdentity?.claimId && dispatch.slots.length === 1 &&
+    dispatch.slots[0].state === 'running' && dispatch.slots[0].run_id === dispatchIdentity.slotRunId &&
+    dispatch.slots[0].agent_id === dispatchIdentity.slotAgentId && dispatch.slots[0].claim_id === dispatchIdentity.slotClaimId,
+  'successor_dispatch_claim_or_slot_changed');
+
+  const { postgresByEnvironment, close } = await createObserverPorts({ repositoryRoot: input.repoRoot, runId,
+    environmentId: preparation.environment_id, taskId: 'S2', taskIndex: 1 });
+  try {
+    const rows = await postgresByEnvironment[preparation.environment_id].readPreparedProof({
+      preparationId: preparation.preparation_id, generationId: execution.generation_id });
+    const bef = rows[0];
+    demand(rows.length === 1 && bef.preparation_id === preparation.preparation_id &&
+      bef.generation_id === execution.generation_id && bef.env_id === preparation.environment_id &&
+      bef.preparation_status === 'ready' && bef.generation_status === 'active' &&
+      bef.environment_manifest_sha256 === release.environmentManifestSha256,
+    'successor_bef_preparation_readback_mismatch');
+    const originalFence = predecessorTerminalization;
+    const oldObserver = await createObserverPorts({ repositoryRoot: input.repoRoot, runId,
+      environmentId: originalFence.environmentId, taskId: 'S1', taskIndex: 0 });
+    let oldFence;
+    try {
+      const oldRows = await oldObserver.postgresByEnvironment[originalFence.environmentId].readFenceProof({
+        preparationId: originalFence.preparationId, generationId: originalFence.generationId });
+      oldFence = oldRows[0];
+      demand(oldRows.length === 1 && oldFence.generation_status === 'fenced' && oldFence.preparation_status === 'fenced' &&
+        oldFence.preparation_generation_id === originalFence.generationId,
+      'predecessor_generation_fence_changed_after_successor_activation');
+    } finally { await oldObserver.close(); }
+    const verified = { taskIndex: 1, taskId: 'S2', preparationId: preparation.preparation_id,
+      leaseId: preparation.lease_id, environmentId: preparation.environment_id, generationId: execution.generation_id,
+      binding: { manifestHash: execution.manifest_hash, applicationSourceHash: execution.application_source_hash },
+      predecessorFinishedAt: new Date(finishedAt).toISOString(), activatedAt: new Date(activatedAt).toISOString(),
+      preparationIntervalMilliseconds: interval, previousOverallDeadline: new Date(previousDeadline).toISOString(),
+      overallDeadline: new Date(expectedDeadline).toISOString(), taskDeadline: new Date(expectedTaskDeadline).toISOString(),
+      policyVersion: payload.successorPreparationPolicyVersion, policyTimeoutSeconds: payload.successorPreparationTimeoutSeconds,
+      activationEventSequence: activationEvent.sequence, predecessorTerminalizationEventSequence: terminalizationEvents[0].sequence,
+      dispatchClaimId: dispatch.claims[0].claim_id, slotRunId: dispatch.slots[0].run_id,
+      slotAgentId: dispatch.slots[0].agent_id, slotClaimId: dispatch.slots[0].claim_id,
+      runStartedEvents: startedEvents.length, activationEvents: activatedEvents.length,
+      ownerPreparationStatus: preparation.preparation_status, ownerLeaseStatus: preparation.lease_state,
+      befPreparationStatus: bef.preparation_status, befGenerationStatus: bef.generation_status,
+      predecessorGenerationStatus: oldFence.generation_status,
+      oldGenerationFenceStillAuthoritative: predecessorTerminalization.generationId !== execution.generation_id };
+    record('server_successor_activation_and_independent_owner_bef_readback', 'verified', verified);
+    return verified;
+  } finally { await close(); }
+}
+
+async function observeWorkerTrainingTask(context, issuedTask) {
+  const { input, output, record, observerPool, runId, taskIndex, taskId, created, taskReleaseSource, evidenceSource } = context;
+  const until = Date.now() + 180_000;
+  let snapshot;
+  let terminalTask;
+  while (Date.now() < until) {
+    snapshot = await readRunSnapshot(observerPool, { runId });
+    terminalTask = snapshot.tasks.find((entry) => entry.task_index === taskIndex);
+    const evaluation = snapshot.evaluation.find((entry) => entry.taskIndex === taskIndex);
+    const preparation = snapshot.preparations.find((entry) => entry.task_index === taskIndex);
+    if (['completed', 'failed'].includes(terminalTask?.status) && evaluation?.resultStatus === 'known' &&
+        preparation?.lease_state === 'fenced' && preparation.preparation_status === 'fenced') break;
+    demand(!['cancelled', 'expired', 'unknown', 'disqualified'].includes(snapshot.run[0]?.status),
+      'worker_training_run_terminal_without_known_task');
+    await delay(500);
+  }
+  demand(['completed', 'failed'].includes(terminalTask?.status), 'automatic_worker_task_completion_timeout');
+  const rawRows = await readonlyTransaction(observerPool, async (query) => pgRows(await query(`
+    SELECT e.input_hash,e.result_hash,e.result_json,b.bundle_hash,b.bundle_json,l.fence_evidence
+    FROM oid_run_task_evaluation e JOIN oid_run_task_observation_bundle b ON b.run_id=e.run_id AND b.task_index=e.task_index
+    JOIN oid_task_preparation_intent i ON i.run_id=e.run_id AND i.task_index=e.task_index
+    JOIN oid_task_environment_lease l ON l.preparation_id=i.preparation_id AND l.lease_id=i.lease_id
+    WHERE e.run_id=$1 AND e.task_index=$2`, [runId, taskIndex])));
+  demand(rawRows.length === 1, 'automatic_worker_durable_result_missing');
+  const raw = rawRows[0];
+  const parse = (value) => typeof value === 'string' ? JSON.parse(value) : value;
+  const result = parse(raw.result_json);
+  const bundle = parse(raw.bundle_json);
+  const fence = parse(raw.fence_evidence);
+  const execution = snapshot.execution.find((entry) => entry.task_index === taskIndex);
+  demand(result?.status === 'known' && result.taskId === taskId && raw.result_hash === eventPayloadHash(result) &&
+    raw.bundle_hash === eventPayloadHash(bundle) && bundle.binding.runId === runId && bundle.binding.taskId === taskId &&
+    bundle.binding.environmentId === issuedTask.environmentId && execution?.env_id === issuedTask.environmentId &&
+    bundle.execution.generationId === execution.generation_id && fence?.confirmed === true &&
+    fence.preparationId === execution.preparation_id && fence.leaseId === execution.lease_id &&
+    fence.generationId === execution.generation_id && fence.environmentId === execution.env_id,
+  'automatic_worker_result_binding_mismatch');
+  await safeBytes(input.repoRoot, fence.evidence.path, fence.evidence.sha256);
+  const { reconstructTaskEvaluation, getTaskEvaluatorBuildHash } = await import('../../owner-identity/dist/task-result-service.js');
+  const reconstruction = await reconstructTaskEvaluation({ db: created.db, taskReleaseSource, evidenceSource,
+    evaluatorSourceHash: await getTaskEvaluatorBuildHash() }, { runId, taskIndex });
+  demand(reconstruction.diverged === false && reconstruction.original.inputHash === raw.input_hash &&
+    reconstruction.original.resultHash === raw.result_hash, 'automatic_worker_retained_evidence_reconstruction_mismatch');
+  const observers = await createObserverPorts({ repositoryRoot: input.repoRoot, runId, environmentId: execution.env_id, taskId, taskIndex });
+  try {
+    const proof = await observers.postgresByEnvironment[execution.env_id].readFenceProof({
+      preparationId: execution.preparation_id, generationId: execution.generation_id });
+    demand(proof.length === 1 && proof[0].generation_status === 'fenced' && proof[0].preparation_status === 'fenced' &&
+      proof[0].preparation_generation_id === execution.generation_id && proof[0].env_id === execution.env_id,
+    'automatic_worker_independent_fence_readback_mismatch');
+  } finally { await observers.close(); }
+  output.taskEvaluations ??= [];
+  output.taskEvaluations.push({ taskIndex, taskId, result, inputHash: raw.input_hash, resultHash: raw.result_hash,
+    sealedBundleHash: raw.bundle_hash, producer: 'server_worker' });
+  output.taskGenerationFences ??= [];
+  output.taskGenerationFences.push({ status: 'verified', taskIndex, taskId, preparationId: fence.preparationId,
+    leaseId: fence.leaseId, generationId: fence.generationId, environmentId: fence.environmentId,
+    fenceEvidence: fence.evidence, producer: 'server_worker', independentObserverRole: 'bef_observer' });
+  output.internalTaskEvaluationRecorded = true;
+  record('automatic_worker_evaluation_fence_and_readonly_reconstruction', 'verified', {
+    taskIndex, taskId, resultHash: raw.result_hash, sealedBundleHash: raw.bundle_hash, resultStatus: result.status,
+    harnessEvaluationWrites: false, harnessFenceWrites: false });
+  const state = await readOwnerRunCompletionState(observerPool, { runId, ownerId: snapshot.run[0].owner_id });
+  demand(state.moneySha256 === output.automaticInitialMoneySha256 && state.ownerRefundCount === 0,
+    'automatic_worker_changed_single_run_charge');
+  if (taskIndex < snapshot.run[0].task_ids.length - 1) {
+    const events = snapshot.runEvents.filter((event) => event.eventType === 'task.terminalized' && event.payload?.taskIndex === taskIndex);
+    const payload = events[0]?.payload;
+    const finishedMilliseconds = terminalTask.finished_at instanceof Date ? terminalTask.finished_at.getTime() : Date.parse(terminalTask.finished_at ?? '');
+    const finish = output.participantActions.find((entry) => entry.taskIndex === taskIndex && entry.kind === 'finish');
+    demand(events.length === 1 && events[0].source === 'coordinator' && events[0].payloadHash === eventPayloadHash(payload) && payload?.runId === runId &&
+      payload.taskId === taskId && payload.inputHash === raw.input_hash && payload.resultHash === raw.result_hash &&
+      payload.outcome === result.outcome && payload.status === terminalTask.status &&
+      payload.closureId === terminalTask.closure_id && payload.closureId === finish?.closureId &&
+      payload.closureId === reconstruction.original.closureId && Number.isFinite(finishedMilliseconds) &&
+      Date.parse(payload.finishedAt ?? '') === finishedMilliseconds &&
+      payload.preparationId === fence.preparationId && payload.leaseId === fence.leaseId &&
+      payload.generationId === fence.generationId && payload.fenceEvidenceHash === fence.evidence.sha256,
+    'automatic_worker_nonfinal_terminalization_mismatch');
+    output.predecessorTerminalization = { status: 'verified', taskIndex, taskId, finishedAt: payload.finishedAt,
+      terminalStatus: terminalTask.status, terminalizationEventId: events[0].eventId,
+      terminalizationEventHash: events[0].payloadHash, closureId: payload.closureId, outcome: payload.outcome,
+      inputHash: raw.input_hash, resultHash: raw.result_hash, preparationId: fence.preparationId, leaseId: fence.leaseId,
+      generationId: fence.generationId, environmentId: fence.environmentId, fenceEvidenceHash: fence.evidence.sha256,
+      moneyStateSha256: state.moneySha256, observedFromWorker: true };
+    return { terminalization: { observedFromWorker: true } };
+  }
+  await verifyWorkerTrainingCompletionUi({ input, output, record, state, snapshot });
+  return { terminalization: null };
+}
+
+async function verifyWorkerTrainingCompletionUi({ input, output, record, state, snapshot }) {
+  const run = snapshot.run[0];
+  const expected = output.taskEvaluations;
+  const reservation = state.reservations[0];
+  const debitOperation = 'rundeb_' + run.id.replaceAll('-', '');
+  const reserveOperation = 'runacc_' + run.id.replaceAll('-', '');
+  const debitRows = state.ledger.filter((entry) => entry.entry_type === 'debit' && entry.operation_id === debitOperation);
+  const reserveRows = state.ledger.filter((entry) => entry.entry_type === 'reserve' && entry.operation_id === reserveOperation);
+  demand(run.status === 'completed' && state.tasks.length === expected.length && state.evaluations.length === expected.length &&
+    state.tasks.every((task, index) => task.task_index === index && task.task_id === expected[index].taskId &&
+      task.status === (expected[index].result.outcome === 'failed' ? 'failed' : 'completed')) &&
+    state.completionEvents.length === 1 && state.terminalizationEvents.length === expected.length - 1 &&
+    state.claims.length === 1 && state.claims[0].status === 'released' && state.claims[0].claim_id === output.dispatchIdentity.claimId &&
+    state.slots.length === 0 && state.reservations.length === 1 && state.reservations[0].state === 'debited' &&
+    state.reservations[0].amount_units === run.quote_price_units && state.budgetHolds.length === 1 &&
+    state.budgetHolds[0].state === 'charged' && state.budgetHolds[0].amount_units === run.quote_price_units &&
+    debitRows.length === 1 && debitRows[0].amount_units === run.quote_price_units && debitRows[0].source_kind === reservation.source_kind &&
+    reserveRows.length === 1 && reserveRows[0].amount_units === run.quote_price_units && reserveRows[0].source_kind === reservation.source_kind &&
+    state.ownerRefundCount === 0 &&
+    state.moneySha256 === output.automaticInitialMoneySha256, 'automatic_worker_completion_state_mismatch');
+  const completed = state.completionEvents[0];
+  const payload = typeof completed.payload_json === 'string' ? JSON.parse(completed.payload_json) : completed.payload_json;
+  const finishedMilliseconds = state.run.finished_at instanceof Date ? state.run.finished_at.getTime() : Date.parse(state.run.finished_at ?? '');
+  demand(completed.source === 'coordinator' && completed.payload_hash === eventPayloadHash(payload) && payload?.runId === run.id &&
+    (expected.length === 1 || BigInt(completed.sequence) > BigInt(output.successorActivation.activationEventSequence)) &&
+    payload.mode === 'training' && JSON.stringify(payload.taskIds) === JSON.stringify(run.task_ids) &&
+    Number.isFinite(finishedMilliseconds) && Date.parse(payload.finishedAt ?? '') === finishedMilliseconds &&
+    Array.isArray(payload.tasks) && payload.tasks.length === expected.length && payload.tasks.every((proof, index) => {
+      const evaluation = expected[index];
+      const fence = output.taskGenerationFences.find((entry) => entry.taskIndex === index);
+      const finish = output.participantActions.find((entry) => entry.taskIndex === index && entry.kind === 'finish');
+      return proof.taskIndex === index && proof.taskId === evaluation.taskId && proof.closureId === finish?.closureId &&
+        proof.inputHash === evaluation.inputHash && proof.resultHash === evaluation.resultHash &&
+        proof.preparationId === fence?.preparationId && proof.leaseId === fence?.leaseId &&
+        proof.generationId === fence?.generationId && proof.fenceEvidenceHash === fence?.fenceEvidence.sha256;
+    }), 'automatic_worker_completion_payload_mismatch');
+  await input.ownerPage.goto('/runs', { waitUntil: 'domcontentloaded' });
+  const card = input.ownerPage.getByTestId('owner-run-' + run.id);
+  await card.waitFor({ state: 'visible', timeout: 15_000 });
+  demand((await card.getByTestId('owner-run-status-' + run.id).innerText()).trim() === 'completed', 'automatic_worker_completed_run_ui_missing');
+  const responsePromise = input.ownerPage.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/owner/runs/' + run.id + '/results' && response.request().method() === 'GET', { timeout: 15_000 });
+  await card.getByTestId('run-feedback-load-' + run.id).click();
+  const response = await responsePromise;
+  const uiTasks = [];
+  for (const evaluation of expected) {
+    const result = evaluation.result;
+    const row = card.getByTestId('run-feedback-task-' + run.id + '-' + evaluation.taskId);
+    await row.waitFor({ state: 'visible', timeout: 15_000 });
+    const text = (await row.innerText()).replace(/\s+/g, ' ').trim();
+    demand(response.status() === 200 && text.includes(result.outcome) &&
+      text.includes('Credit ' + result.credit.numerator + '/' + result.credit.denominator), 'automatic_worker_result_ui_mismatch');
+    uiTasks.push({ taskId: evaluation.taskId, outcome: result.outcome, credit: result.credit });
+  }
+  const resultsApi = await readOwnerTrainingFeedbackTasks(input.ownerPage, run.id, expected.map((entry) => entry.result));
+  demand(resultsApi.status === 'observed' && resultsApi.consistentWithInternalEvaluation, 'automatic_worker_results_api_mismatch');
+  output.ownerTrainingFeedbackUi = { status: 'verified', browserHttpStatus: response.status(), runStatus: 'completed', tasks: uiTasks,
+    resultsApi, classification: 'owner_button_to_results_api_and_worker_persisted_evaluation' };
+  output.trainingRunCompletion = { status: 'verified', runStatus: 'completed', finishedAt: payload.finishedAt,
+    completionEventId: completed.id, completionEventPayloadHash: completed.payload_hash, dispatchClaimStatus: 'released',
+    remainingExecutionSlots: 0, chargeQuoteUnits: run.quote_price_units, ownerRefundCount: state.ownerRefundCount,
+    debitEntryId: debitRows[0].id, debitOperationId: debitOperation, debitEntryCount: debitRows.length,
+    moneyStateUnchangedByCompletion: true, completionReplayVerified: false, completionReplayScope: 'not_run_readonly_worker_capture' };
+  output.completionBridge = { classification: 'automatic_server_worker_lifecycle_with_readonly_harness_verification',
+    automaticWorkerEvaluation: true, actualServerWorkerSuccessorAdvancement: expected.length > 1 && output.successorActivation?.taskIndex === 1,
+    harnessObservationSealWrites: false, harnessEvaluationWrites: false, harnessFenceWrites: false, harnessCompletionWrites: false };
+  output.automaticWorkerEvaluationVerified = true;
+  record('automatic_worker_completion_and_owner_results_ui', 'verified', output.ownerTrainingFeedbackUi);
+}
+
+async function submitLinkedTrainingAction(context, command, expectsTransaction) {
+  const { input, output, record, observerPool, bearer, runId, taskIndex, taskId } = context;
+  const operationId = randomUUID();
+  let admitted;
+  let transportUnknown = false;
+  try {
+    admitted = await agentRequest({ publicOrigin: input.publicOrigin,
+      path: '/api/agent/runs/' + runId + '/tasks/' + taskIndex + '/actions', method: 'POST', bearer,
+      body: { operationId, command } });
+  } catch (error) {
+    if (safeErrorCode(error) !== 'agent_http_transport_unknown') throw error;
+    transportUnknown = true;
+    admitted = { status: 0, payload: {} };
+  }
+  const fact = { taskIndex, taskId, kind: command.kind, operationId, command, httpStatus: admitted.status, transportUnknown };
+  output.participantActions.push(fact);
+  let actionId = admitted.payload?.actionId;
+  if (!UUID.test(actionId)) {
+    const rows = await readonlyTransaction(observerPool, async (query) => pgRows(await query(
+      'SELECT id::text FROM oid_run_task_action WHERE run_id=$1 AND task_index=$2 AND operation_id=$3', [runId, taskIndex, operationId])));
+    actionId = rows[0]?.id ?? null;
+  }
+  demand(UUID.test(actionId), 'linked_action_admission_unknown_do_not_retry');
+  fact.actionId = actionId;
+  const resolved = await waitForActionResolution({ publicOrigin: input.publicOrigin, bearer, runId, actionId, observerPool });
+  fact.receiptStatus = resolved.action?.receiptStatus ?? 'unknown';
+  fact.transactionHash = resolved.action?.transactionHash ?? null;
+  fact.evidence = resolved.action?.evidencePath && resolved.action?.evidenceHash
+    ? { path: resolved.action.evidencePath, sha256: resolved.action.evidenceHash } : null;
+  demand(resolved.action?.receiptStatus === 'observed', resolved.action?.receiptStatus === 'unknown'
+    ? 'linked_action_effect_unknown_do_not_retry' : 'linked_action_not_observed');
+  demand(resolved.action.kind === command.kind && eventPayloadHash(resolved.action.command) === eventPayloadHash(command) &&
+    (expectsTransaction ? /^0x[0-9a-f]{64}$/i.test(resolved.action.transactionHash ?? '') : resolved.action.transactionHash === null),
+  'linked_action_receipt_binding_mismatch');
+  record('linked_participant_action_and_durable_receipt', 'observed', { taskIndex, taskId, kind: command.kind,
+    actionId, transactionHash: fact.transactionHash, evidence: fact.evidence });
+  return resolved;
+}
+
+async function performM1PublicPaymentAndRetrieval(context, task, inspected) {
+  const conditions = task.conditions;
+  const body = inspected.apiPayload?.toolResponse;
+  const scope = conditions.paymentScope;
+  demand(inspected.action?.receiptStatus === 'observed' && body?.freeInspection === true && body.deliveryState === 'not_delivered' &&
+    body.readHandle?.kind === 'offer' && body.operationId === body.readHandle.operationId &&
+    body.resourceId === conditions.component.resourceId && HEX_HASH.test(body.resourceSha256) && Array.isArray(body.offers),
+  'm1_agent_visible_offer_unavailable');
+  const offers = body.offers.filter((offer) => offer?.id === scope.offerId);
+  const terms = offers[0]?.payment;
+  const asset = task.execution.assets.find((entry) => entry.assetId === scope.assetId);
+  demand(offers.length === 1 && typeof scope.scheme === 'string' && scope.network === 'eip155:8453' &&
+    /^0x[0-9a-f]{40}$/i.test(scope.recipient ?? '') && /^0x[0-9a-f]{40}$/i.test(asset?.address ?? '') &&
+    /^0x[0-9a-f]{40}$/i.test(terms?.asset ?? '') && terms?.scheme === scope.scheme && terms.network === scope.network && scope.assetId === 'USDC' &&
+    terms.asset?.toLowerCase() === asset?.address?.toLowerCase() && terms.payTo?.toLowerCase() === scope.recipient?.toLowerCase() &&
+    terms.transferMethod === 'eip3009' && /^[1-9][0-9]{0,77}$/.test(terms.amount ?? '') &&
+    BigInt(terms.amount) <= BigInt(conditions.expenseBudgetUsdcUnits), 'm1_public_offer_terms_or_budget_mismatch');
+  // AICODE-NOTE: The actor obtains terms from its own scoped read; neither an
+  // unknown payment nor an ambiguous admission causes a new payment operation.
+  const paid = await submitLinkedTrainingAction(context, { kind: 'pay', resourceId: body.resourceId,
+    offerId: offers[0].id, offerReadActionId: inspected.action.actionId }, true);
+  const receipt = paid.apiPayload?.toolResponse;
+  demand(receipt?.status === 'payment_confirmed' && UUID.test(receipt.operationId) && receipt.deliveryHandle === receipt.operationId &&
+    receipt.payment?.transactionHash?.toLowerCase() === paid.action.transactionHash?.toLowerCase() &&
+    receipt.payment.receiptStatus === 'success' && receipt.payment.amount === terms.amount &&
+    receipt.payment.asset?.toLowerCase() === terms.asset.toLowerCase() && receipt.payment.network === terms.network &&
+    receipt.payment.payTo?.toLowerCase() === terms.payTo.toLowerCase(), 'm1_public_payment_receipt_mismatch');
+  const retrieved = await submitLinkedTrainingAction(context, { kind: 'retrieve', payActionId: paid.action.actionId }, false);
+  const delivery = retrieved.apiPayload?.toolResponse;
+  demand(delivery?.operationId === receipt.operationId && delivery.resourceId === body.resourceId &&
+    delivery.contentType === body.contentType && delivery.contentHash === body.resourceSha256 &&
+    typeof delivery.contentBytes === 'string', 'm1_public_delivery_metadata_mismatch');
+  const bytes = Buffer.from(delivery.contentBytes, 'base64');
+  demand(bytes.length > 0 && bytes.length <= 1024 * 1024 && bytes.toString('base64') === delivery.contentBytes &&
+    sha256(bytes) === body.resourceSha256 && eventPayloadHash(JSON.parse(bytes.toString('utf8'))) === eventPayloadHash(delivery.content),
+  'm1_public_delivery_content_mismatch');
+  context.output.m1PublicPurchase = { inspectActionId: inspected.action.actionId, payActionId: paid.action.actionId,
+    retrieveActionId: retrieved.action.actionId, purchaseOperationId: receipt.operationId, resourceId: body.resourceId,
+    offerId: offers[0].id, amountUnits: terms.amount, network: terms.network, assetId: scope.assetId,
+    recipient: terms.payTo, transactionHash: paid.action.transactionHash, contentSha256: body.resourceSha256, decodedBytes: bytes.length,
+    admissionFeeIsSeparate: true, newPaymentOperationRetries: 0 };
+}
+
+async function captureAndEvaluateTrainingTask(context) {
+  const { input, output, record, observerPool, bearer, runId, taskIndex, taskId, intentId,
+    createIntentOperationId, acceptOperationId, selectedTaskIds, agentId, created, taskReleaseSource,
+    evidenceSource, sequenceMode, beforeAction } = context;
+  const task = await waitForActiveTask({ publicOrigin: input.publicOrigin, bearer, runId, observerPool, taskId, taskIndex });
+  const activeSnapshot = await readRunSnapshot(observerPool, { runId });
+  demand(activeSnapshot.run.length === 1 && activeSnapshot.run[0].status === 'running' && activeSnapshot.run[0].overall_deadline,
+    'training_run_start_clock_unavailable');
+  if (taskIndex === 0) output.runInitial.overallDeadline = activeSnapshot.run[0].overall_deadline;
+  if (input.automaticWorkerEvaluation && taskIndex === 0) {
+    const initial = await readOwnerRunCompletionState(observerPool, { runId, ownerId: activeSnapshot.run[0].owner_id });
+    demand(initial.claims.length === 1 && initial.claims[0].status === 'claimed' && initial.slots.length === 1 &&
+      initial.slots[0].claim_id === initial.claims[0].claim_id && initial.run.status === 'running', 'automatic_worker_initial_dispatch_missing');
+    output.dispatchIdentity = { runId, claimId: initial.claims[0].claim_id, slotRunId: initial.slots[0].run_id,
+      slotAgentId: initial.slots[0].agent_id, slotClaimId: initial.slots[0].claim_id };
+    output.automaticInitialMoneySha256 = initial.moneySha256;
+  }
+  if (beforeAction) await beforeAction(task);
+  const conditions = task.conditions;
+  let command;
+  if (taskId === 'S1') {
+    demand(conditions?.tokenAssetId === 'USDC' && conditions?.sender === 'participant' &&
+      /^0x[0-9a-f]{40}$/i.test(conditions.recipient ?? '') && /^\d+$/.test(String(conditions.exactPrincipalUnits)) &&
+      /^\d+$/.test(String(conditions.nativeReserveWei)), 'issued_s1_conditions_malformed');
+    command = { kind: 'transfer', amountUnits: String(conditions.exactPrincipalUnits), recipient: conditions.recipient, gasLimit: '100000' };
+  } else if (taskId === 'S2') {
+    demand(typeof conditions?.resourceId === 'string' && typeof conditions?.offerId === 'string', 'issued_s2_conditions_malformed');
+    command = { kind: 'inspect_offer', resourceId: conditions.resourceId };
+  } else if (taskId === 'M1') {
+    demand(input.automaticWorkerEvaluation === true && task.participantToolProtocol === 'separate_payment_delivery_v2' &&
+      typeof conditions?.component?.resourceId === 'string' && typeof conditions.paymentScope?.offerId === 'string' &&
+      /^[1-9][0-9]{0,77}$/.test(conditions.expenseBudgetUsdcUnits ?? ''), 'issued_m1_conditions_unsupported');
+    command = { kind: 'inspect_offer', resourceId: conditions.component.resourceId };
+  } else {
+    const router = task.execution?.contracts?.find((entry) => entry.contractId === 'swapRouter02');
+    demand(conditions?.tokenAssetId === 'USDC' && conditions?.owner === 'participant' &&
+      router?.address?.toLowerCase() === conditions.spender?.toLowerCase(), 'issued_s4_conditions_unsupported');
+    command = { kind: 'approve', tokenAssetId: conditions.tokenAssetId, amountUnits: '0', gasLimit: '100000' };
+  }
+  const disclosure = { runId, taskIndex, taskId, caseHash: task.caseHash, environmentId: task.environmentId, conditions };
+  if (!Array.isArray(output.taskDisclosures)) output.taskDisclosures = [];
+  output.taskDisclosures.push(disclosure);
+  if (!sequenceMode) output.taskDisclosure = disclosure;
+  record('strict_preparation_start_and_agent_task_disclosure', 'verified', { taskIndex, taskId, environmentId: task.environmentId });
+
+  const actionOperationId = randomUUID();
+  const actionResult = await agentRequest({ publicOrigin: input.publicOrigin,
+    path: '/api/agent/runs/' + runId + '/tasks/' + taskIndex + '/actions', method: 'POST', bearer,
+    body: { operationId: actionOperationId, command } });
+  const actionFact = { taskIndex, taskId, kind: command.kind, operationId: actionOperationId, command, httpStatus: actionResult.status };
+  output.participantActions.push(actionFact);
+  let actionId = actionResult.payload?.actionId;
+  if (!UUID.test(actionId)) {
+    const byOperation = await readonlyTransaction(observerPool, async (query) => pgRows(await query(
+      'SELECT id::text FROM oid_run_task_action WHERE run_id=$1 AND operation_id=$2', [runId, actionOperationId])));
+    actionId = byOperation[0]?.id ?? null;
+  }
+  demand(UUID.test(actionId), 'action_admission_identity_unknown_do_not_retry');
+  actionFact.actionId = actionId;
+  const resolved = await waitForActionResolution({ publicOrigin: input.publicOrigin, bearer, runId, actionId, observerPool });
+  actionFact.receiptStatus = resolved.action?.receiptStatus ?? 'unknown';
+  actionFact.transactionHash = resolved.action?.transactionHash ?? null;
+  actionFact.evidence = resolved.action?.evidencePath && resolved.action?.evidenceHash
+    ? { path: resolved.action.evidencePath, sha256: resolved.action.evidenceHash } : null;
+  if (!resolved.action || !['observed', 'rejected_before_execution'].includes(resolved.action.receiptStatus)) {
+    throw fail(resolved.action?.receiptStatus === 'unknown' ? 'action_result_unknown_do_not_retry' : 'action_resolution_timeout');
+  }
+  if (resolved.action.receiptStatus === 'observed') {
+    demand(resolved.action.kind === command.kind && eventPayloadHash(resolved.action.command) === eventPayloadHash(command) &&
+      (command.kind === 'inspect_offer' ? resolved.action.transactionHash === null : /^0x[0-9a-f]{64}$/i.test(resolved.action.transactionHash ?? '')),
+    'observed_action_database_binding_mismatch');
+    record('agent_task_action_dispatch_and_durable_receipt', 'observed', { taskIndex, taskId, actionId,
+      transactionHash: resolved.action.transactionHash, evidenceHash: resolved.action.evidenceHash,
+      evidencePath: resolved.action.evidencePath });
+  } else record('agent_task_action_dispatch_and_durable_receipt', 'rejected_before_execution', { taskIndex, taskId, actionId });
+
+  if (taskId === 'M1') await performM1PublicPaymentAndRetrieval(context, task, resolved);
+
+  const answer = taskId === 'S2' && resolved.action.receiptStatus === 'observed'
+    ? answerFromPublicS2Read(task, resolved.apiPayload?.toolResponse) : undefined;
+  const finishOperationId = randomUUID();
+  const finish = await agentRequest({ publicOrigin: input.publicOrigin,
+    path: '/api/agent/runs/' + runId + '/tasks/' + taskIndex + '/finish', method: 'POST', bearer,
+    body: { operationId: finishOperationId, ...(answer ? { answer } : {}) } });
+  const finishFact = { taskIndex, taskId, kind: 'finish', operationId: finishOperationId, httpStatus: finish.status };
+  output.participantActions.push(finishFact);
+  const closed = await waitForClosedTask(observerPool, runId, taskIndex);
+  const closedTask = closed.tasks.find((row) => row.task_index === taskIndex);
+  demand(closedTask?.closure_status === 'closed' && BigInt(closedTask.reconciled_action_sequence ?? 0) >= BigInt(closedTask.action_cutoff_sequence ?? -1),
+    'finish_cutoff_or_reconciliation_unconfirmed');
+  finishFact.closureId = closedTask.closure_id;
+  finishFact.closureStatus = closedTask.closure_status;
+  record('agent_finish_and_authoritative_cutoff', 'verified', { taskIndex, taskId, closureId: closedTask.closure_id,
+    actionCutoffSequence: closedTask.action_cutoff_sequence, reconciledActionSequence: closedTask.reconciled_action_sequence });
+
+  if (input.automaticWorkerEvaluation) return observeWorkerTrainingTask(context, task);
+
+  const environmentId = closed.run[0]?.environment_id;
+  demand(environmentId === task.environmentId && environmentId === 'bef-env-a', 'execution_environment_binding_mismatch');
+  const { postgresByEnvironment, rpcByEnvironment, evidenceSink, close } = await createObserverPorts({
+    repositoryRoot: input.repoRoot, runId: output.captureId, environmentId, taskId, taskIndex });
+  try {
+    const collectorModule = await import('../../owner-identity/dist/bef-' + taskId.toLowerCase() + '-observation-collector.js');
+    const collect = collectorModule['collectBef' + taskId + 'TaskObservationCandidate'];
+    demand(typeof collect === 'function', 'task_observer_not_connected');
+    const { sealTaskObservationBundle } = await import('../../owner-identity/dist/task-observation-store.js');
+    const { recordTaskEvaluation, getTaskEvaluatorBuildHash, reconstructTaskEvaluation } = await import('../../owner-identity/dist/task-result-service.js');
+    const deps = { db: created.db, taskReleaseSource, repositoryRoot: input.repoRoot,
+      postgresByEnvironment, rpcByEnvironment, evidenceSink };
+    const collection = await collect(deps, { runId, taskIndex });
+    const collectionFact = collection.status === 'candidate'
+      ? { status: collection.status, classification: collection.classification, evidence: collection.evidence }
+      : { status: collection.status, reasonCode: collection.reasonCode };
+    if (!Array.isArray(output.taskObservationCollections)) output.taskObservationCollections = [];
+    output.taskObservationCollections.push({ taskIndex, taskId, ...collectionFact });
+    if (!sequenceMode) output.observationCollection = collectionFact;
+    demand(collection.status === 'candidate' && collection.classification === 'run_bound_observations_candidate_not_grade',
+      collection.status === 'unavailable' ? 'observer_' + collection.reasonCode : 'observer_candidate_unavailable');
+    const requiredCoverage = taskId === 'S2' ? ['transfers', 'payments', 'stateMutations', 'allowances', 'deliveries', 'answers']
+      : taskId === 'S4' ? ['transfers', 'balances', 'allowances'] : ['transfers', 'balances'];
+    demand(requiredCoverage.every((domain) => collection.candidate.observations?.coverage?.[domain] === 'complete'),
+      'observer_required_task_coverage_incomplete');
+    const latestClosed = await readRunSnapshot(observerPool, { runId });
+    const latestRun = latestClosed.run[0];
+    const latestTask = latestClosed.tasks.find((row) => row.task_index === taskIndex);
+    const validatedRelease = latestRun && await taskReleaseSource.getValidatedReleaseRecord(latestRun.release_identity, latestRun.manifest_hash);
+    const taskCase = validatedRelease?.manifest?.cases?.training?.find((entry) => entry.taskId === taskId);
+    const observationCutoff = collection.candidate.observationCutoffSequence;
+    const acceptedCutoff = Number(latestTask?.action_cutoff_sequence);
+    const reconciledCutoff = Number(latestTask?.reconciled_action_sequence);
+    demand(['running', 'completed'].includes(latestRun?.status) && latestRun.manifest_hash === output.release.manifestHash &&
+      latestRun.intent_status === 'accepted' && latestRun.intent_operation_id === createIntentOperationId &&
+      acceptedEventMatches(latestClosed, { runId, intentId, taskIds: selectedTaskIds, ownerId: input.ownerId, agentId,
+        manifestHash: output.release.manifestHash, acceptOperationId }) &&
+      latestTask?.closure_status === 'closed' && latestTask.closure_id === closedTask.closure_id &&
+      Number.isSafeInteger(acceptedCutoff) && acceptedCutoff >= 0 && Number.isSafeInteger(reconciledCutoff) &&
+      reconciledCutoff >= acceptedCutoff && Number.isSafeInteger(observationCutoff) && observationCutoff >= 0 &&
+      validatedRelease?.manifestHash === latestRun.manifest_hash && taskCase && latestRun.owner_id === input.ownerId &&
+      latestRun.agent_id === agentId && latestRun.environment_id === task.environmentId,
+    'authoritative_task_evaluation_preflight_unavailable');
+    const { evaluateTaskRubric } = await import('../../owner-identity/dist/task-evaluator.js');
+    const preflight = evaluateTaskRubric({ taskCase, release: validatedRelease.manifest, run: {
+      ownerId: latestRun.owner_id, agentId: latestRun.agent_id, runId,
+      environmentId: latestRun.environment_id, releaseIdentity: latestRun.release_identity,
+      manifestHash: latestRun.manifest_hash, caseId: taskCase.caseId, caseHash: taskCase.caseHash,
+      rubricHash: taskCase.rubricHash, taskId, acceptedActionCutoffSequence: acceptedCutoff,
+      reconciledThroughActionSequence: reconciledCutoff, observationCutoffSequence: observationCutoff,
+      cutoffStatus: 'authoritative', cutoffEvidence: collection.candidate.cutoffEvidence,
+    }, observations: collection.candidate.observations });
+    const preflightFact = preflight.status === 'known'
+      ? { status: 'known', evidenceComplete: true }
+      : { status: 'blocked', reasonCodes: preflight.unknownReasons };
+    if (!Array.isArray(output.taskEvaluationPreflights)) output.taskEvaluationPreflights = [];
+    output.taskEvaluationPreflights.push({ taskIndex, taskId, ...preflightFact });
+    if (!sequenceMode) output.evaluationPreflight = preflightFact;
+    demand(preflight.status === 'known', 'authoritative_task_evaluation_inputs_incomplete');
+    const sealed = await sealTaskObservationBundle({ db: created.db, taskReleaseSource }, { runId, taskIndex }, collection.candidate);
+    demand(sealed.status === 'sealed', sealed.status === 'unavailable' ? 'observation_bundle_' + sealed.reasonCode : 'observation_bundle_not_sealed');
+    const evaluationDeps = { db: created.db, taskReleaseSource, evidenceSource,
+      evaluatorSourceHash: await getTaskEvaluatorBuildHash() };
+    const recorded = await recordTaskEvaluation(evaluationDeps, { runId, taskIndex });
+    const reconstructed = await reconstructTaskEvaluation(evaluationDeps, { runId, taskIndex });
+    demand(recorded.evaluation.result.status === 'known' && reconstructed.diverged === false &&
+      reconstructed.original.resultHash === recorded.evaluation.resultHash, 'internal_evaluation_readback_mismatch');
+    output.internalTaskEvaluationRecorded = true;
+    const feedback = await readOwnerTrainingFeedback(input.ownerPage, runId, recorded.evaluation.result);
+    const evaluationFact = { taskIndex, taskId, resultHash: recorded.evaluation.resultHash,
+      inputHash: recorded.evaluation.inputHash, sealedBundleHash: sealed.bundleHash, replayed: recorded.replayed,
+      status: recorded.evaluation.result.status, outcome: recorded.evaluation.result.outcome,
+      credit: recorded.evaluation.result.credit, retainedInputReconstructed: true,
+      evaluatorReadbackMatches: true, ownerFeedback: feedback };
+    if (!Array.isArray(output.taskEvaluations)) output.taskEvaluations = [];
+    output.taskEvaluations.push({ taskId, taskIndex, result: recorded.evaluation.result, resultHash: recorded.evaluation.resultHash,
+      inputHash: recorded.evaluation.inputHash, sealedBundleHash: sealed.bundleHash });
+    if (!sequenceMode) {
+      output.internalEvaluationBridge = { classification: 'internal_observation_seal_and_evaluator_bridge',
+        ownerFeedbackVisibility: feedback.status === 'observed' ? 'observed_through_owner_auth_api' : 'unknown',
+        sealedBundleHash: sealed.bundleHash, replayed: recorded.replayed, resultHash: recorded.evaluation.resultHash,
+        resultStatus: recorded.evaluation.result.status, resultCredit: recorded.evaluation.result.credit,
+        retainedInputReconstructed: true, evaluatorReadbackMatches: true };
+      output.ownerTrainingFeedback = feedback;
+    } else {
+      output.internalEvaluationBridge = { classification: 'internal_observation_seal_and_evaluator_bridge',
+        ownerFeedbackVisibility: feedback.status === 'observed' ? 'observed_through_owner_auth_api' : 'unknown',
+        sealedBundleHash: sealed.bundleHash, replayed: recorded.replayed, resultHash: recorded.evaluation.resultHash,
+        resultStatus: recorded.evaluation.result.status, resultCredit: recorded.evaluation.result.credit,
+        retainedInputReconstructed: true, evaluatorReadbackMatches: true };
+      if (!Array.isArray(output.internalEvaluationBridges)) output.internalEvaluationBridges = [];
+      output.internalEvaluationBridges.push({ ...evaluationFact, classification: 'internal_observation_seal_and_evaluator_bridge' });
+    }
+    record('independent_bef_postgres_rpc_observation_and_internal_evaluation_bridge', 'verified', {
+      taskIndex, taskId, classification: 'internal_observation_seal_and_evaluator_bridge',
+      sealedBundleHash: sealed.bundleHash, resultHash: recorded.evaluation.resultHash,
+      resultStatus: recorded.evaluation.result.status,
+    });
+    if (sequenceMode) {
+      if (!Array.isArray(output.ownerTrainingFeedbackTasks)) output.ownerTrainingFeedbackTasks = [];
+      output.ownerTrainingFeedbackTasks.push({ taskIndex, taskId, ...feedback });
+    }
+    record('owner_training_feedback_api_read', feedback.status, { taskIndex, taskId,
+      httpStatus: feedback.httpStatus ?? null, consistentWithInternalEvaluation: feedback.consistentWithInternalEvaluation ?? null,
+      reasonCode: feedback.reasonCode ?? null });
+    const fenceAndComplete = await fenceAndCompleteKnownS1({ input, output, record, observerPool, postgresByEnvironment,
+      created, taskReleaseSource, evidenceSource, sealed, collection, run: latestRun,
+      execution: latestClosed.execution.find((row) => row.task_index === taskIndex), recorded, taskIndex, sequenceMode });
+    return { task, closedTask, latestClosed, latestRun, collection, sealed, recorded, reconstructed, feedback,
+      terminalization: fenceAndComplete?.terminalization ?? null };
+  } finally { await close(); }
+}
+
+async function fenceAndCompleteKnownS1({ input, output, record, observerPool, postgresByEnvironment, created, taskReleaseSource,
+  evidenceSource, sealed, collection, run, execution, recorded, taskIndex = 0, sequenceMode = false }) {
+  const taskId = recorded.evaluation.result.taskId;
+  demand(SUPPORTED_TASKS.has(taskId) && run.task_ids[taskIndex] === taskId && taskIndex < run.task_ids.length,
+    'completion_task_identity_mismatch');
+  const preparationId = sealed.bundle.execution.preparationId;
+  const leaseId = sealed.bundle.execution.leaseId;
+  const generationId = sealed.bundle.execution.generationId;
+  const environmentId = run.environment_id;
+  demand(UUID.test(preparationId) && UUID.test(leaseId) && UUID.test(generationId) &&
+    environmentId === execution?.env_id && environmentId === 'bef-env-a', 'sealed_preparation_identity_invalid');
+  demand(collection.evidence?.path && HEX_HASH.test(collection.evidence.sha256), 'sealed_capture_reference_missing');
+  const packetBytes = await safeBytes(input.repoRoot, collection.evidence.path, collection.evidence.sha256, 8 * 1024 * 1024);
+  let packet;
+  try { packet = JSON.parse(packetBytes.bytes.toString('utf8')); } catch { throw fail('sealed_capture_packet_invalid'); }
+  const binding = sealed.bundle.binding;
+  demand(execution && packet?.schemaVersion === 'bts-' + taskId.toLowerCase() + '-run-observation-capture/v1' &&
+    packet.binding?.runId === run.id && packet.binding?.ownerId === run.owner_id && packet.binding?.agentId === run.agent_id &&
+    packet.binding?.taskId === taskId && packet.execution?.preparationId === preparationId &&
+    packet.execution?.leaseId === leaseId && packet.execution?.generationId === generationId &&
+    packet.execution?.environmentId === environmentId && packet.closure?.closureId === sealed.bundle.closure.closureId &&
+    binding?.runId === run.id && binding?.ownerId === run.owner_id && binding?.agentId === run.agent_id &&
+    binding?.taskId === taskId && binding?.environmentId === environmentId &&
+    binding?.releaseIdentity === run.release_identity && binding?.manifestHash === run.manifest_hash &&
+    binding?.caseId === execution.case_id && binding?.caseHash === execution.case_hash &&
+    execution.preparation_id === preparationId && execution.lease_id === leaseId &&
+    execution.generation_id === generationId && execution.lease_state === 'leased' &&
+    execution.initial_state_sha256 === sealed.bundle.execution.initialStateSha256,
+  'sealed_original_generation_binding_mismatch');
+
+  const { getTaskPreparation, fenceTaskPreparationWithEvidence } = await import('../../owner-identity/dist/task-preparation.js');
+  const preparation = await getTaskPreparation(created.db, preparationId);
+  demand(preparation && preparation.intent.preparationId === preparationId && preparation.intent.leaseId === leaseId &&
+    preparation.intent.runId === run.id && preparation.intent.taskIndex === taskIndex && preparation.intent.taskId === taskId &&
+    preparation.intent.environmentId === environmentId && preparation.intent.releaseIdentity === run.release_identity &&
+    preparation.intent.manifestHash === run.manifest_hash && preparation.intent.caseId === binding.caseId &&
+    preparation.intent.caseHash === binding.caseHash && preparation.intent.initialStateSha256 === sealed.bundle.execution.initialStateSha256 &&
+    preparation.observation.status === 'ready' && preparation.observation.generationId === generationId &&
+    preparation.leaseStatus === 'leased', 'owner_preparation_original_generation_mismatch');
+
+  const config = (await import('../../owner-identity/dist/config.js')).loadConfig({
+    ...process.env, OID_DATABASE_URL: input.databaseUrl,
+  });
+  demand(typeof config.localBefTaskCoordinatorConfigPath === 'string' && config.localBefTaskCoordinatorConfigPath.length > 0,
+    'private_coordinator_config_path_missing');
+  const fileConfig = await (await import('../../owner-identity/dist/bef-task-coordinator.js'))
+    .loadLocalBefTaskCoordinatorConfig(config.localBefTaskCoordinatorConfigPath, input.repoRoot);
+  demand(Array.isArray(fileConfig.environments) && fileConfig.environments.length > 0 &&
+    fileConfig.environments.every((item) => item && typeof item.envId === 'string' && item.x402Policy?.localAnvil),
+  'private_coordinator_environment_map_invalid');
+  const apiBaseByEnvironment = {};
+  const observerRpcByEnvironment = {};
+  const anvilManifestPinByEnvironment = {};
+  for (const item of fileConfig.environments) {
+    apiBaseByEnvironment[item.envId] = item.apiBaseUrl;
+    observerRpcByEnvironment[item.envId] = item.observerRpcUrl;
+    anvilManifestPinByEnvironment[item.envId] = {
+      manifestSha256: item.x402Policy.manifestSha256.toLowerCase(),
+      executionNetwork: item.x402Policy.localAnvil.executionNetwork,
+      hardFork: item.x402Policy.localAnvil.hardFork,
+      anvilVersion: item.x402Policy.localAnvil.anvilVersion,
+    };
+  }
+  demand(Object.hasOwn(apiBaseByEnvironment, environmentId) && Object.hasOwn(observerRpcByEnvironment, environmentId) &&
+    Object.hasOwn(anvilManifestPinByEnvironment, environmentId), 'original_bef_environment_not_configured');
+
+  let fenceArtifact = null;
+  const { mkdir: makeDirectory, realpath: resolveRealPath, writeFile: writeEvidenceFile } = await import('node:fs/promises');
+  const { resolve: resolvePath, relative: relativePath, sep: pathSeparator, isAbsolute: isPathAbsolute } = await import('node:path');
+  const evidenceSink = {
+    async write(value) {
+      demand(value?.kind === 'fence' && value.preparationId === preparationId && value.environmentId === environmentId,
+        'fence_evidence_identity_mismatch');
+      assertSecretFree(value, 'genuine-s1-fence-evidence');
+      const evidenceRoot = resolvePath(input.repoRoot, 'artifacts/runs/owner-identity-bef-task-coordinator/preparation');
+      await makeDirectory(evidenceRoot, { recursive: true, mode: 0o700 });
+      const realRoot = await resolveRealPath(evidenceRoot);
+      const repositoryReal = await realpath(input.repoRoot);
+      const relRoot = relativePath(repositoryReal, realRoot);
+      demand(relRoot && !isPathAbsolute(relRoot) && relRoot !== '..' && !relRoot.startsWith('..' + pathSeparator),
+        'fence_evidence_directory_escape');
+      const bytes = Buffer.from(JSON.stringify(value) + '\n', 'utf8');
+      demand(bytes.length <= 4 * 1024 * 1024, 'fence_evidence_oversized');
+      const name = preparationId + '-' + randomUUID() + '.json';
+      await writeEvidenceFile(resolvePath(realRoot, name), bytes, { flag: 'wx', mode: 0o600 });
+      fenceArtifact = { path: 'artifacts/runs/owner-identity-bef-task-coordinator/preparation/' + name,
+        sha256: digest(bytes), boundary: BOUNDARY };
+      return fenceArtifact;
+    },
+  };
+  let adminKey = fileConfig.adminKey;
+  const { BefTaskPreparationAdapter } = await import('../../owner-identity/dist/bef-task-preparation.js');
+  const preparationAdapter = new BefTaskPreparationAdapter({ apiBaseByEnvironment, observerRpcByEnvironment,
+    sourceRpcUrl: fileConfig.sourceRpcUrl, adminKey, anvilManifestPinByEnvironment,
+    releaseSource: taskReleaseSource, evidenceSink });
+  adminKey = '';
+  fileConfig.adminKey = '';
+  let fence;
+  try {
+    fence = await fenceTaskPreparationWithEvidence({ db: created.db, preparationAdapter }, preparationId, generationId);
+  } finally {
+    preparationAdapter.clearCredentials?.(preparationId);
+    adminKey = '';
+  }
+  demand(fence?.released === true && fence.evidenceHash === fenceArtifact?.sha256, 'original_generation_fence_unconfirmed');
+  const fencedPreparation = await getTaskPreparation(created.db, preparationId);
+  demand(fencedPreparation?.leaseStatus === 'fenced' && fencedPreparation.observation.status === 'fenced' &&
+    fencedPreparation.observation.generationId === generationId, 'owner_database_fence_readback_mismatch');
+  const befFenceRows = await postgresByEnvironment[environmentId].readFenceProof({ preparationId, generationId });
+  const befFence = befFenceRows[0];
+  demand(befFenceRows.length === 1 && befFence.generation_id === generationId && befFence.env_id === environmentId &&
+    befFence.generation_status === 'fenced' && befFence.fenced_at && befFence.preparation_id === preparationId &&
+    befFence.preparation_status === 'fenced' && befFence.fence_confirmed_at &&
+    befFence.preparation_generation_id === generationId &&
+    befFence.environment_manifest_sha256 === sealed.bundle.execution.environmentManifestHash,
+  'independent_bef_generation_fence_readback_mismatch');
+  const fenceFact = { status: 'verified', taskIndex, taskId, preparationId, leaseId, generationId, environmentId,
+    ownerLeaseStatus: fencedPreparation.leaseStatus, ownerPreparationStatus: fencedPreparation.observation.status,
+    generationStatus: befFence.generation_status, preparationStatus: befFence.preparation_status,
+    fenceEvidence: fenceArtifact, replayed: fence.replayed };
+  if (!Array.isArray(output.taskGenerationFences)) output.taskGenerationFences = [];
+  output.taskGenerationFences.push(fenceFact);
+  if (!sequenceMode) output.originalGenerationFence = fenceFact;
+  else if (taskIndex === 0) output.originalGenerationFence = fenceFact;
+  output.internalEvaluationBridge.ownerFeedbackVisibility = output.ownerTrainingFeedback?.status === 'observed'
+    ? 'observed_through_owner_auth_api' : 'unknown';
+  record('original_bef_generation_fence_and_independent_readback', 'verified', {
+    taskIndex, taskId, generationId, fenceEvidenceSha256: fenceArtifact.sha256, independentObserverRole: 'bef_observer',
+  });
+
+  const beforeCompletion = await readOwnerRunCompletionState(observerPool, { runId: run.id, ownerId: run.owner_id });
+  const expectedTaskStatus = recorded.evaluation.result.outcome === 'failed' ? 'failed' : 'completed';
+  demand(beforeCompletion.run?.mode === 'training' && beforeCompletion.run.status === 'running' &&
+    beforeCompletion.run.owner_id === run.owner_id && beforeCompletion.run.quote_price_units &&
+    beforeCompletion.completionEvents.length === 0 && beforeCompletion.claims.length === 1 && beforeCompletion.claims[0].status === 'claimed' &&
+    beforeCompletion.slots.length === 1 && beforeCompletion.slots[0].run_id === run.id &&
+    beforeCompletion.slots[0].agent_id === run.agent_id && beforeCompletion.slots[0].claim_id === beforeCompletion.claims[0].claim_id &&
+    beforeCompletion.reservations.length === 1 &&
+    beforeCompletion.reservations.every((row) => row.state === 'debited') && beforeCompletion.budgetHolds.length === 1 &&
+    beforeCompletion.budgetHolds[0].state === 'charged' && beforeCompletion.ownerRefundCount === 0 &&
+    beforeCompletion.ledger.every((row) => row.entry_type !== 'refund' && row.entry_type !== 'release'),
+  'training_run_precompletion_money_or_claim_state_mismatch');
+  const reservedUnits = beforeCompletion.reservations.reduce((sum, row) => sum + BigInt(row.amount_units), 0n);
+  demand(reservedUnits === BigInt(beforeCompletion.run.quote_price_units), 'training_run_charge_does_not_match_quote');
+  if (taskIndex === 0) {
+    output.dispatchIdentity = { runId: run.id, claimId: beforeCompletion.claims[0].claim_id,
+      slotRunId: beforeCompletion.slots[0].run_id, slotAgentId: beforeCompletion.slots[0].agent_id,
+      slotClaimId: beforeCompletion.slots[0].claim_id };
+  } else if (sequenceMode) {
+    demand(output.dispatchIdentity?.runId === run.id && beforeCompletion.claims[0]?.claim_id === output.dispatchIdentity.claimId &&
+      beforeCompletion.slots[0]?.run_id === output.dispatchIdentity.slotRunId &&
+      beforeCompletion.slots[0]?.agent_id === output.dispatchIdentity.slotAgentId &&
+      beforeCompletion.slots[0]?.claim_id === output.dispatchIdentity.slotClaimId,
+    'training_sequence_dispatch_identity_changed_between_tasks');
+  }
+
+  const terminalizeSuccessorPredecessor = sequenceMode && taskIndex === 0 && taskIndex < run.task_ids.length - 1;
+  if (terminalizeSuccessorPredecessor) {
+    demand(recorded.evaluation.result.status === 'known' && recorded.evaluation.result.mandatoryViolation === null,
+      'successor_predecessor_has_mandatory_violation');
+    const { finalizeKnownTrainingTask } = await import('../../owner-identity/dist/task-run-completion.js');
+    const finalized = await finalizeKnownTrainingTask({ db: created.db, taskReleaseSource, evidenceSource },
+      { runId: run.id, taskIndex });
+    demand(finalized.runId === run.id && finalized.taskIndex === taskIndex && finalized.taskId === taskId &&
+      finalized.status === expectedTaskStatus && finalized.replayed === false, 'known_training_predecessor_not_terminalized');
+    const afterTerminalization = await readOwnerRunCompletionState(observerPool, { runId: run.id, ownerId: run.owner_id });
+    const task = afterTerminalization.tasks.find((row) => row.task_index === taskIndex);
+    const terminalizationEvents = afterTerminalization.terminalizationEvents.filter((event) => {
+      const payload = typeof event.payload_json === 'string' ? JSON.parse(event.payload_json) : event.payload_json;
+      return payload?.taskIndex === taskIndex;
+    });
+    const terminalizationPayload = terminalizationEvents.length === 1
+      ? (typeof terminalizationEvents[0].payload_json === 'string'
+        ? JSON.parse(terminalizationEvents[0].payload_json) : terminalizationEvents[0].payload_json) : null;
+    demand(afterTerminalization.run?.status === 'running' && task?.task_id === taskId && task.status === expectedTaskStatus &&
+      task.finished_at && terminalizationEvents.length === 1 && terminalizationEvents[0].source === 'coordinator' &&
+      terminalizationEvents[0].payload_hash === eventPayloadHash(terminalizationPayload) &&
+      terminalizationPayload?.runId === run.id && terminalizationPayload.taskIndex === taskIndex &&
+      terminalizationPayload.taskId === taskId && terminalizationPayload.closureId === sealed.bundle.closure.closureId &&
+      terminalizationPayload.inputHash === recorded.evaluation.inputHash && terminalizationPayload.resultHash === recorded.evaluation.resultHash &&
+      terminalizationPayload.preparationId === preparationId && terminalizationPayload.leaseId === leaseId &&
+      terminalizationPayload.generationId === generationId && terminalizationPayload.fenceEvidenceHash === fenceArtifact.sha256 &&
+      afterTerminalization.completionEvents.length === 0 && afterTerminalization.claims.length === 1 &&
+      afterTerminalization.claims[0].status === 'claimed' && afterTerminalization.claims[0].claim_id === output.dispatchIdentity.claimId &&
+      afterTerminalization.slots.length === 1 && afterTerminalization.slots[0].run_id === output.dispatchIdentity.slotRunId &&
+      afterTerminalization.slots[0].agent_id === output.dispatchIdentity.slotAgentId &&
+      afterTerminalization.slots[0].claim_id === output.dispatchIdentity.slotClaimId &&
+      afterTerminalization.moneySha256 === beforeCompletion.moneySha256 && afterTerminalization.ownerRefundCount === 0,
+    'known_training_predecessor_terminalization_readback_mismatch');
+    output.predecessorTerminalization = { status: 'verified', taskIndex, taskId, terminalStatus: finalized.status,
+      finishedAt: finalized.finishedAt, terminalizationEventId: terminalizationEvents[0].id,
+      terminalizationEventHash: terminalizationEvents[0].payload_hash,
+      closureId: terminalizationPayload.closureId, outcome: terminalizationPayload.outcome,
+      inputHash: recorded.evaluation.inputHash, resultHash: recorded.evaluation.resultHash,
+      preparationId, leaseId, generationId, environmentId, fenceEvidenceHash: fenceArtifact.sha256,
+      runStatus: afterTerminalization.run.status, dispatchClaimStatus: afterTerminalization.claims[0].status,
+      remainingExecutionSlots: afterTerminalization.slots.length, moneyStateUnchanged: true,
+      moneyStateSha256: afterTerminalization.moneySha256,
+      originalGenerationFenceStatus: 'verified' };
+    record('known_training_predecessor_terminalization_and_readonly_owner_database', 'verified', {
+      taskIndex, taskId, terminalizationEvents: terminalizationEvents.length,
+      claimStatus: afterTerminalization.claims[0].status, slotsRemaining: afterTerminalization.slots.length,
+      moneyStateUnchanged: true,
+    });
+    return { terminalization: finalized, before: beforeCompletion, after: afterTerminalization };
+  }
+
+  const { completeKnownTrainingRun } = await import('../../owner-identity/dist/task-run-completion.js');
+  const completionDeps = { db: created.db, taskReleaseSource, evidenceSource };
+  const completion = await completeKnownTrainingRun(completionDeps, { runId: run.id });
+  demand(completion.status === 'completed' && completion.replayed === false, 'known_training_completion_not_committed');
+  const afterCompletion = await readOwnerRunCompletionState(observerPool, { runId: run.id, ownerId: run.owner_id });
+  const expectedResults = output.taskEvaluations?.length
+    ? output.taskEvaluations.map((item) => item.result)
+    : [{ taskId, status: recorded.evaluation.result.status, outcome: recorded.evaluation.result.outcome,
+      credit: recorded.evaluation.result.credit }];
+  const expectedTasks = run.task_ids.map((selectedTaskId, index) => {
+    const result = expectedResults.find((item) => item.taskId === selectedTaskId);
+    return { taskId: selectedTaskId, status: result?.outcome === 'failed' ? 'failed' : 'completed' };
+  });
+  if (sequenceMode) {
+    demand(output.predecessorTerminalization?.moneyStateSha256 === beforeCompletion.moneySha256 &&
+      beforeCompletion.reservations.length === 1 && beforeCompletion.reservations[0].amount_units === beforeCompletion.run.quote_price_units,
+    'training_sequence_charge_or_ledger_changed_between_tasks');
+  }
+  demand(afterCompletion.run?.status === 'completed' && afterCompletion.run.finished_at &&
+    afterCompletion.tasks.length === run.task_ids.length && afterCompletion.tasks.every((task, index) =>
+      task.task_index === index && task.task_id === expectedTasks[index]?.taskId && task.status === expectedTasks[index]?.status) &&
+    afterCompletion.evaluations.length === run.task_ids.length && afterCompletion.evaluations.every((evaluation, index) =>
+      evaluation.task_index === index && evaluation.task_id === run.task_ids[index] && evaluation.result_status === 'known') &&
+    afterCompletion.terminalizationEvents.length === run.task_ids.length - 1 && afterCompletion.terminalizationEvents.every((event, index) => {
+      const payload = typeof event.payload_json === 'string' ? JSON.parse(event.payload_json) : event.payload_json;
+      return event.source === 'coordinator' && payload?.runId === run.id && payload.taskIndex === index &&
+        payload.taskId === run.task_ids[index] && event.payload_hash === eventPayloadHash(payload);
+    }) && afterCompletion.completionEvents.length === 1 &&
+    afterCompletion.completionEvents[0].source === 'coordinator' && afterCompletion.claims.length === 1 &&
+    afterCompletion.claims[0].status === 'released' && afterCompletion.claims[0].released_at &&
+    afterCompletion.claims[0].claim_id === output.dispatchIdentity.claimId && afterCompletion.slots.length === 0 &&
+    afterCompletion.reservations.every((row) => row.state === 'debited') && afterCompletion.budgetHolds.length === 1 &&
+    afterCompletion.budgetHolds[0].state === 'charged' && afterCompletion.ownerRefundCount === 0 &&
+    afterCompletion.moneySha256 === beforeCompletion.moneySha256,
+  'known_training_completion_readback_mismatch');
+  const completedEvent = afterCompletion.completionEvents[0];
+  const completedPayload = typeof completedEvent.payload_json === 'string'
+    ? JSON.parse(completedEvent.payload_json) : completedEvent.payload_json;
+  demand(completedPayload?.runId === run.id && completedPayload.mode === 'training' &&
+    JSON.stringify(completedPayload.taskIds) === JSON.stringify(run.task_ids) &&
+    completedPayload.finishedAt === completion.finishedAt &&
+    completedEvent.payload_hash === eventPayloadHash(completedPayload) &&
+    Array.isArray(completedPayload.tasks) && completedPayload.tasks.length === run.task_ids.length &&
+    completedPayload.tasks.every((proof, index) => {
+      const evaluation = output.taskEvaluations.find((entry) => entry.taskIndex === index);
+      const originalFence = output.taskGenerationFences.find((entry) => entry.taskIndex === index);
+      const finish = output.participantActions.find((entry) => entry.taskIndex === index && entry.kind === 'finish');
+      return proof.taskIndex === index && proof.taskId === run.task_ids[index] &&
+        proof.closureId === finish?.closureId && proof.inputHash === evaluation?.inputHash &&
+        proof.resultHash === evaluation?.resultHash && proof.preparationId === originalFence?.preparationId &&
+        proof.leaseId === originalFence?.leaseId && proof.generationId === originalFence?.generationId &&
+        proof.fenceEvidenceHash === originalFence?.fenceEvidence?.sha256;
+    }), 'known_training_completion_payload_readback_mismatch');
+  const replay = await completeKnownTrainingRun(completionDeps, { runId: run.id });
+  const afterReplay = await readOwnerRunCompletionState(observerPool, { runId: run.id, ownerId: run.owner_id });
+  demand(replay.status === 'completed' && replay.replayed === true && replay.finishedAt === completion.finishedAt &&
+    afterReplay.stateSha256 === afterCompletion.stateSha256 && afterReplay.moneySha256 === afterCompletion.moneySha256 &&
+    afterReplay.completionEvents.length === 1, 'known_training_completion_replay_mismatch');
+  output.trainingRunCompletion = { status: 'verified', runStatus: afterReplay.run.status, finishedAt: completion.finishedAt,
+    completionEventId: afterReplay.completionEvents[0].id, completionEventPayloadHash: afterReplay.completionEvents[0].payload_hash,
+    taskStatus: afterReplay.tasks[taskIndex].status, taskStatuses: afterReplay.tasks.map((task) => ({ taskIndex: task.task_index,
+      taskId: task.task_id, status: task.status })), dispatchClaimStatus: afterReplay.claims[0].status,
+    dispatchClaimReleasedAt: afterReplay.claims[0].released_at, remainingExecutionSlots: afterReplay.slots.length,
+    reservationStates: afterReplay.reservations.map((row) => row.state), budgetHoldStates: afterReplay.budgetHolds.map((row) => row.state),
+    chargeQuoteUnits: beforeCompletion.run.quote_price_units, reservationUnits: reservedUnits.toString(),
+    ownerLedgerRowCount: afterReplay.ownerLedgerCount, ownerLedgerSha256: afterReplay.ownerLedgerSha256,
+    ownerRefundCount: afterReplay.ownerRefundCount,
+    moneyStateUnchangedByCompletion: beforeCompletion.moneySha256 === afterReplay.moneySha256,
+    completionReplayVerified: replay.replayed };
+  output.completionBridge = { classification: sequenceMode
+      ? 'internal_evaluation_fence_completion_bridge_with_real_worker_successor_advancement'
+      : 'internal_observer_evaluation_fence_and_training_completion_bridge_not_worker_action_dispatch',
+    status: 'completed', automaticWorkerEvaluation: false,
+    ...(!sequenceMode ? { automaticWorkerEvaluationOrAdvance: false } : {}),
+    actualServerWorkerSuccessorAdvancement: sequenceMode && output.successorActivation?.taskIndex === 1,
+    taskGradePublished: false,
+    taskGradePublicationScope: 'public_ranked_or_leaderboard_surface',
+    ownerFeedbackVisibility: output.internalEvaluationBridge.ownerFeedbackVisibility,
+    runCompletionService: 'completeKnownTrainingRun' };
+  record('known_training_completion_and_readonly_owner_database', 'verified', {
+    runStatus: afterReplay.run.status, completionEvents: afterReplay.completionEvents.length,
+    claimStatus: afterReplay.claims[0].status, slotsRemaining: afterReplay.slots.length,
+    moneyStateUnchanged: beforeCompletion.moneySha256 === afterReplay.moneySha256, replayed: replay.replayed,
+  });
+  await input.ownerPage.goto('/runs', { waitUntil: 'domcontentloaded' });
+  const runCard = input.ownerPage.getByTestId('owner-run-' + run.id);
+  await runCard.waitFor({ state: 'visible', timeout: 15_000 });
+  demand((await runCard.getByTestId('owner-run-status-' + run.id).innerText()).trim() === 'completed',
+    'completed_run_not_visible_in_owner_ui');
+  const feedbackResponse = input.ownerPage.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/owner/runs/' + run.id + '/results' &&
+    response.request().method() === 'GET', { timeout: 15_000 });
+  await runCard.getByTestId('run-feedback-load-' + run.id).click();
+  const feedbackHttp = await feedbackResponse;
+  const uiTaskResults = [];
+  for (const expected of expectedResults) {
+    const taskFeedback = runCard.getByTestId('run-feedback-task-' + run.id + '-' + expected.taskId);
+    await taskFeedback.waitFor({ state: 'visible', timeout: 15_000 });
+    const feedbackText = (await taskFeedback.innerText()).replace(/\s+/g, ' ').trim();
+    const expectedCredit = expected.credit;
+    const matches = expected.status === 'known' && expectedCredit && feedbackText.includes(expected.outcome) &&
+      feedbackText.includes('Credit ' + expectedCredit.numerator + '/' + expectedCredit.denominator);
+    demand(feedbackHttp.status() === 200 && matches, 'owner_result_ui_does_not_match_persisted_evaluation');
+    uiTaskResults.push({ taskId: expected.taskId, outcome: expected.outcome, credit: expectedCredit });
+  }
+  const feedbackApi = await readOwnerTrainingFeedbackTasks(input.ownerPage, run.id, expectedResults);
+  demand(feedbackApi.status === 'observed' && feedbackApi.consistentWithInternalEvaluation &&
+    feedbackApi.tasks.length === run.task_ids.length, 'owner_results_api_does_not_match_all_persisted_evaluations');
+  output.ownerTrainingFeedbackUi = sequenceMode
+    ? { status: 'verified', browserHttpStatus: feedbackHttp.status(), runStatus: 'completed',
+      tasks: uiTaskResults, resultsApi: feedbackApi, classification: 'owner_button_to_results_api_and_persisted_evaluation' }
+    : { status: 'verified', browserHttpStatus: feedbackHttp.status(), runStatus: 'completed', taskId,
+      outcome: recorded.evaluation.result.outcome, credit: recorded.evaluation.result.credit,
+      resultsApi: feedbackApi, classification: 'owner_button_to_results_api_and_persisted_evaluation' };
+  record('owner_training_result_ui_readback', 'verified', output.ownerTrainingFeedbackUi);
+}
+
+async function requestOwnerSnapshot(pool, ownerId, agentId) {
+  return readonlyTransaction(pool, async (query) => {
+    const owner = await query('SELECT id::text,admission_status FROM oid_owner WHERE id=$1', [ownerId]);
+    const agent = await query(`SELECT a.id::text,a.owner_id::text,p.training,p.ranked,p.revision AS policy_revision
+      FROM oid_agent a JOIN oid_agent_policy p ON p.agent_id=a.id WHERE a.id=$1 AND a.owner_id=$2`, [agentId, ownerId]);
+    return { owner: pgRows(owner), agent: pgRows(agent) };
+  });
+}
+
+async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, ownerId, agentId }) {
+  const form = ownerPage.getByTestId('financial-policy-form-' + agentId);
+  await form.waitFor({ state: 'visible', timeout: 15_000 });
+  const cap = async (name) => ({
+    amount: await ownerPage.getByTestId('financial-policy-' + name + '-limit-' + agentId).inputValue(),
+    unlimited: await ownerPage.getByTestId('financial-policy-' + name + '-unlimited-' + agentId).isChecked(),
+  });
+  const initial = {
+    allowCashShortfall: await ownerPage.getByTestId('financial-policy-cash-' + agentId).isChecked(),
+    operation: await cap('operation'), utcDay: await cap('utc-day'),
+    benchmark: await cap('benchmark'), forum: await cap('forum'),
+  };
+  demand(initial.allowCashShortfall === false &&
+    ['operation', 'utcDay', 'benchmark', 'forum'].every((key) => initial[key].amount === '0.000000' && !initial[key].unlimited),
+  'new_agent_financial_policy_default_mismatch');
+
+  const amount = '0.100000';
+  const forumAmount = '0.000000';
+  const cashSwitch = ownerPage.getByTestId('financial-policy-cash-' + agentId);
+  if (await cashSwitch.isChecked()) await cashSwitch.uncheck();
+  await ownerPage.getByTestId('financial-policy-operation-limit-' + agentId).fill(amount);
+  await ownerPage.getByTestId('financial-policy-utc-day-limit-' + agentId).fill(amount);
+  await ownerPage.getByTestId('financial-policy-benchmark-limit-' + agentId).fill(amount);
+  await ownerPage.getByTestId('financial-policy-forum-limit-' + agentId).fill(forumAmount);
+
+  const endpoint = '/api/owner/agents/' + encodeURIComponent(agentId) + '/financial-policy';
+  const requestPromise = ownerPage.waitForRequest((request) => new URL(request.url()).pathname === endpoint && request.method() === 'PUT',
+    { timeout: 15_000 }).catch(() => null);
+  const responsePromise = ownerPage.waitForResponse((response) => new URL(response.url()).pathname === endpoint &&
+    response.request().method() === 'PUT', { timeout: 15_000 }).catch(() => null);
+  await ownerPage.getByTestId('financial-policy-save-' + agentId).click();
+  const [request, response] = await Promise.all([requestPromise, responsePromise]);
+  demand(request, 'financial_policy_ui_request_unavailable');
+  let body;
+  try { body = request.postDataJSON(); } catch { throw fail('financial_policy_ui_request_invalid'); }
+  demand(typeof body?.operationId === 'string' && /^[A-Za-z0-9_-]{12,128}$/.test(body.operationId) &&
+    body.expectedRevision === 0 && body.allowCashShortfall === false &&
+    exactUsdcUnits(body.operationLimit) === 100_000n && exactUsdcUnits(body.utcDayLimit) === 100_000n &&
+    exactUsdcUnits(body.categoryLimits?.benchmark) === 100_000n && exactUsdcUnits(body.categoryLimits?.forum) === 0n,
+  'financial_policy_ui_request_binding_mismatch');
+
+  const persisted = await readonlyTransaction(observerPool, async (query) => {
+    const policy = await query(`SELECT owner_id::text,agent_id::text,revision,allow_cash_shortfall,
+        operation_limit_units::text,utc_day_limit_units::text,category_limits
+      FROM oid_agent_financial_policy WHERE owner_id=$1::uuid AND agent_id=$2::uuid`, [ownerId, agentId]);
+    const operation = await query(`SELECT id::text,actor_owner_id::text,subject_owner_id::text,operation_id,action,payload_hash,response_json
+      FROM oid_ledger_operation WHERE actor_owner_id=$1::uuid AND operation_id=$2 ORDER BY created_at,id`, [ownerId, body.operationId]);
+    const audit = await query(`SELECT id::text,event_type,operation_id,actor_owner_id::text,subject_owner_id::text,metadata
+      FROM oid_ledger_audit WHERE actor_owner_id=$1::uuid AND operation_id=$2
+        AND event_type='agent_financial_policy_updated' ORDER BY created_at,id`, [ownerId, body.operationId]);
+    return { policy: pgRows(policy), operation: pgRows(operation), audit: pgRows(audit) };
+  });
+  const policy = persisted.policy[0];
+  const operation = persisted.operation[0];
+  const audit = persisted.audit[0];
+  let categoryLimits = policy?.category_limits;
+  let responseJson = operation?.response_json;
+  let auditMetadata = audit?.metadata;
+  try { if (typeof categoryLimits === 'string') categoryLimits = JSON.parse(categoryLimits); } catch { categoryLimits = null; }
+  try { if (typeof responseJson === 'string') responseJson = JSON.parse(responseJson); } catch { responseJson = null; }
+  try { if (typeof auditMetadata === 'string') auditMetadata = JSON.parse(auditMetadata); } catch { auditMetadata = null; }
+  demand(persisted.policy.length === 1 && policy.owner_id === ownerId && policy.agent_id === agentId && policy.revision === 1 &&
+    policy.allow_cash_shortfall === false && BigInt(policy.operation_limit_units) === 100_000n &&
+    BigInt(policy.utc_day_limit_units) === 100_000n && categoryLimits?.benchmark === amount && categoryLimits?.forum === forumAmount,
+  'financial_policy_readonly_database_mismatch');
+  demand(persisted.operation.length === 1 && operation.actor_owner_id === ownerId && operation.subject_owner_id === ownerId &&
+    operation.operation_id === body.operationId && operation.action === 'agent_financial_policy_update' && HEX_HASH.test(operation.payload_hash) &&
+    responseJson?.revision === 1 && responseJson.allowCashShortfall === false && responseJson.operationLimit === amount &&
+    responseJson.utcDayLimit === amount && responseJson.categoryLimits?.benchmark === amount && responseJson.categoryLimits?.forum === forumAmount,
+  'financial_policy_operation_receipt_mismatch');
+  demand(persisted.audit.length === 1 && audit.event_type === 'agent_financial_policy_updated' &&
+    audit.operation_id === body.operationId && audit.actor_owner_id === ownerId && audit.subject_owner_id === ownerId &&
+    auditMetadata?.agentId === agentId && auditMetadata.revision === 1 && auditMetadata.allowCashShortfall === false &&
+    auditMetadata.operationLimit === amount && auditMetadata.utcDayLimit === amount &&
+    auditMetadata.categoryLimits?.benchmark === amount && auditMetadata.categoryLimits?.forum === forumAmount,
+  'financial_policy_audit_binding_mismatch');
+
+  const responseBody = response ? await response.json().catch(() => ({})) : {};
+  let uiConfirmedSaved = false;
+  if (response?.status() === 200) {
+    demand(responseBody.revision === 1 && responseBody.allowCashShortfall === false && responseBody.operationLimit === amount &&
+      responseBody.utcDayLimit === amount && responseBody.categoryLimits?.benchmark === amount &&
+      responseBody.categoryLimits?.forum === forumAmount, 'financial_policy_ui_response_mismatch');
+    await ownerPage.waitForFunction((id) => /saved.*revision 1/i.test(
+      document.querySelector(`[data-testid="financial-policy-status-${id}"]`)?.textContent ?? ''), agentId, { timeout: 15_000 });
+    uiConfirmedSaved = /saved.*revision 1/i.test(await ownerPage.getByTestId('financial-policy-status-' + agentId).innerText());
+  }
+  await ownerPage.reload({ waitUntil: 'domcontentloaded' });
+  await ownerPage.getByTestId('agent-card-' + agentId).waitFor({ state: 'visible' });
+  await form.waitFor({ state: 'visible', timeout: 15_000 });
+  const saved = {
+    allowCashShortfall: await cashSwitch.isChecked(),
+    operation: await cap('operation'), utcDay: await cap('utc-day'),
+    benchmark: await cap('benchmark'), forum: await cap('forum'),
+  };
+  demand(saved.allowCashShortfall === false && saved.operation.amount === amount && !saved.operation.unlimited &&
+    saved.utcDay.amount === amount && !saved.utcDay.unlimited && saved.benchmark.amount === amount && !saved.benchmark.unlimited &&
+    saved.forum.amount === forumAmount && !saved.forum.unlimited, 'financial_policy_reload_ui_mismatch');
+  return {
+    operationId: body.operationId, expectedRevision: body.expectedRevision, revision: policy.revision,
+    allowCashShortfall: policy.allow_cash_shortfall, operationLimitUnits: policy.operation_limit_units,
+    utcDayLimitUnits: policy.utc_day_limit_units, categoryLimits,
+    browserHttpStatus: response?.status() ?? null, responseReconciledFromDatabase: response === null || response.status() !== 200,
+    uiConfirmedSaved, databaseReadback: {
+      role: 'oid_observer', policyRevision: policy.revision, operationReceiptId: operation.id, operationPayloadHash: operation.payload_hash,
+      auditId: audit.id, auditEventType: audit.event_type,
+    },
+  };
+}
+
+async function requestOwnerCancellation({ ownerPage, runId, observerPool, output }) {
+  if (!runId) return;
+  try {
+    await ownerPage.goto('/runs', { waitUntil: 'domcontentloaded' });
+    const runCard = ownerPage.getByTestId('owner-run-' + runId);
+    await runCard.waitFor({ state: 'visible', timeout: 12_000 });
+    const cancel = ownerPage.getByTestId('run-cancel-' + runId);
+    if (await cancel.count() === 1 && await cancel.isVisible()) {
+      const responsePromise = ownerPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/owner/runs/' + runId + '/cancel'
+        && response.request().method() === 'POST', { timeout: 15_000 });
+      await cancel.click();
+      const response = await responsePromise;
+      output.stages.push({ name: 'owner_cancel_ui', status: response.ok() ? 'requested' : 'blocked', httpStatus: response.status() });
+    } else {
+      output.stages.push({ name: 'owner_cancel_ui', status: 'not_available_run_already_terminal' });
+    }
+  } catch (error) {
+    output.stages.push({ name: 'owner_cancel_ui', status: 'unknown', reasonCode: safeErrorCode(error, 'owner_cancel_ui_unavailable') });
+  }
+  try {
+    const end = Date.now() + 60_000;
+    let latest = null;
+    while (Date.now() < end) {
+      latest = await readRunSnapshot(observerPool, { runId });
+      const row = latest.run[0];
+      if (row && ['cancelled', 'failed', 'expired', 'completed', 'disqualified', 'unknown'].includes(row.status)) {
+        output.runAfterCleanup = row;
+        const preparationIndexes = latest.preparations.map((entry) => entry.task_index);
+        const sequenceObservedS2 = output.taskIds?.[1] === 'S2' && output.successorActivation?.taskIndex === 1;
+        output.cleanupEvidence = { terminalStatus: row.status,
+          cancellationEvidencePresent: typeof row.cancellation_evidence_hash === 'string' && HEX_HASH.test(row.cancellation_evidence_hash),
+          preparationLeaseCount: latest.preparations.length,
+          preparationTaskIndexes: preparationIndexes,
+          allTaskLeasesFenced: latest.preparations.every((entry, index) => entry.lease_state === 'fenced' && entry.task_index === index) &&
+            (!sequenceObservedS2 || (latest.preparations.length === 2 && preparationIndexes[0] === 0 && preparationIndexes[1] === 1)) };
+        return;
+      }
+      await delay(750);
+    }
+    output.runAfterCleanup = latest?.run?.[0] ?? null;
+    output.cleanupEvidence = { terminalStatus: output.runAfterCleanup?.status ?? null,
+      cancellationEvidencePresent: false, allTaskLeasesFenced: false };
+  } catch (error) {
+    output.cleanupEvidence = { terminalStatus: 'unknown', cancellationEvidencePresent: false, allTaskLeasesFenced: false,
+      reasonCode: safeErrorCode(error, 'cleanup_observation_unavailable') };
+  }
+}
+
+/**
+ * AICODE-NOTE: This opt-in harness uses the real owner UI and agent API plus read-only owner/BEF observers.
+ * The two-task mode observes the real server successor preparation, activation, and session attach after private known-result terminalization.
+ * Evaluation and completion remain a private harness bridge; the worker does not grade or dispatch participant actions, and this is not full acceptance.
+ */
+async function runGenuineOwnerRunCase(input) {
+  const sequenceMode = input.sequenceMode === true;
+  const taskIds = sequenceMode ? input.taskIds : [input.taskId ?? 'S1'];
+  demand(Array.isArray(taskIds) && taskIds.length >= 1 && taskIds.every((id) => SUPPORTED_TASKS.has(id)) &&
+    (sequenceMode ? JSON.stringify(taskIds) === JSON.stringify(['S1', 'S2']) : taskIds.length === 1),
+  'unsupported_genuine_task_selection');
+  const taskId = taskIds[0];
+  demand(taskId !== 'M1' || input.automaticWorkerEvaluation === true, 'm1_capture_requires_server_worker');
+  const output = {
+    schemaVersion: sequenceMode ? 'genuine-training-sequence-owner-run-capture/v1' : 'genuine-' + taskId.toLowerCase() + '-owner-run-capture/v1',
+    classification: input.automaticWorkerEvaluation
+      ? (sequenceMode ? 'local_two_task_training_sequence_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance'
+        : 'local_first_task_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance')
+      : sequenceMode
+      ? 'local_two_task_training_sequence_with_internal_grade_fence_completion_bridge_and_real_worker_advancement_not_full_scenario_or_product_acceptance'
+      : 'local_first_task_capture_not_full_scenario_acceptance_or_product_release_acceptance',
+    captureId: input.captureId ?? randomUUID(),
+    fullScenarioAcceptance: false,
+    productReleaseActivation: 'isolated_acceptance_database_only',
+    externalModelUsed: false,
+    internalTaskEvaluationRecorded: false,
+    automaticWorkerEvaluationRequested: input.automaticWorkerEvaluation === true,
+    automaticWorkerEvaluationVerified: false,
+    taskGradePublished: false,
+    taskId, taskIds, mode: 'training',
+    setup: input.setup ?? null,
+    stages: [],
+    participantActions: [],
+    identity: { ownerId: input.ownerId, adminProviderFixture: true },
+  };
+  let observerPool;
+  let ownerDbClient;
+  let actorCredential = '';
+  let runId = null;
+  const environmentId = 'bef-env-a';
+  const record = (name, status, facts = {}) => output.stages.push({ name, status, ...facts });
+  try {
+    // This unauthenticated request must stop at bearer authentication. It creates
+    // no admission identity and catches a proxy/Host mismatch before costly replay.
+    const ingressProbe = await agentRequest({ publicOrigin: input.publicOrigin,
+      path: '/api/agent/run-intents/' + randomUUID() + '/accept', method: 'POST', bearer: '',
+      body: { operationId: randomUUID() } });
+    const ingressError = ingressProbe.payload?.error?.code;
+    output.agentIngressPreflight = { httpStatus: ingressProbe.status,
+      errorCode: typeof ingressError === 'string' && /^[A-Za-z0-9_]{1,96}$/.test(ingressError) ? ingressError : null,
+      classification: 'unauthenticated_proxy_probe_no_admission_or_actor_execution' };
+    record('agent_proxy_ingress_authentication_boundary', ingressProbe.status === 401 ? 'verified' : 'blocked',
+      output.agentIngressPreflight);
+    demand(ingressProbe.status === 401 && ingressError === 'UNAUTHORIZED', 'agent_proxy_ingress_not_reaching_authentication');
+    record('pinned_full_release_validation_and_isolated_activation', 'started');
+    const release = await validateAndActivatePinnedRelease({ repositoryRoot: input.repoRoot, databaseUrl: input.databaseUrl });
+    output.release = release;
+    record('pinned_full_release_validation_and_isolated_activation', 'verified', {
+      manifestHash: release.manifestHash, caseCount: 20, sourceInputCount: release.sourceInputCount,
+      activatedInFreshDatabase: true,
+    });
+
+    observerPool = new Pool({ connectionString: input.observerDatabaseUrl, max: 2, application_name: 'genuine-s1-owner-observer' });
+    const observerIdentity = await readonlyTransaction(observerPool, async (query) => pgRows(await query(
+      'SELECT current_user AS role,current_database() AS database_name,current_setting(\'transaction_read_only\') AS readonly'))[0]);
+    demand(observerIdentity?.role === 'oid_observer' && observerIdentity.readonly === 'on', 'owner_observer_role_invalid');
+    output.database = { databaseName: observerIdentity.database_name, observerRole: observerIdentity.role, readOnly: true };
+
+    record('owner_bonus_fixture_ui_and_readonly_database', 'started');
+    const grantForm = input.adminPage.getByTestId('bonus-grant-form');
+    await grantForm.waitFor({ state: 'visible', timeout: 15_000 });
+    const grantAmount = '0.1';
+    const grantReason = sequenceMode ? 'Synthetic local S1 to S2 training-sequence acceptance fixture'
+      : 'Synthetic local ' + taskId + ' first-task acceptance fixture';
+    await grantForm.getByTestId('bonus-grant-owner-id').fill(input.ownerId);
+    await grantForm.getByTestId('bonus-grant-amount').fill(grantAmount);
+    await grantForm.getByTestId('bonus-grant-reason').fill(grantReason);
+    await grantForm.getByTestId('bonus-grant-expiry').fill('');
+    const grantPromise = input.adminPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/admin/bonus-grants'
+      && response.request().method() === 'POST', { timeout: 15_000 });
+    await grantForm.getByTestId('bonus-grant-submit').click();
+    const grantHttp = await grantPromise;
+    let grantBody = {};
+    try { grantBody = await grantHttp.json(); } catch { /* HTTP status is retained below. */ }
+    const grantId = grantBody?.grant?.id;
+    const grantOperationId = grantBody?.operationId;
+    demand(grantHttp.status() === 200 && UUID.test(grantId) && typeof grantOperationId === 'string', 'bonus_grant_ui_failed');
+    const grantDb = await checkBonusGrant(observerPool, grantId, input.ownerId, grantOperationId);
+    demand(grantDb.grant.length === 1 && BigInt(grantDb.grant[0].amount_units) === 100000n &&
+      grantDb.ledgerEntries.some((entry) => BigInt(entry.available_delta_units) === 100000n), 'bonus_grant_database_binding_mismatch');
+    output.bonusGrant = { grantId, operationId: grantOperationId, amountUnits: '100000', browserHttpStatus: grantHttp.status(),
+      database: grantDb };
+    record('owner_bonus_fixture_ui_and_readonly_database', 'verified', { grantId, amountUnits: '100000' });
+
+    await input.ownerPage.goto('/agents', { waitUntil: 'domcontentloaded' });
+    const card = await createCard(input.ownerPage, 'Genuine ' + taskId + ' local capture ' + input.captureId.slice(0, 8));
+    const agentId = card.id;
+    const agentCard = input.ownerPage.getByTestId('agent-card-' + agentId);
+    await agentCard.waitFor({ state: 'visible', timeout: 12_000 });
+    const training = agentCard.getByTestId('agent-permission-training');
+    if (!await training.isChecked()) await training.check();
+    const permissionPromise = input.ownerPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/owner/agents/' + agentId + '/permissions'
+      && response.request().method() === 'PUT', { timeout: 15_000 });
+    const permissionButton = agentCard.getByTestId('agent-permissions-save');
+    await permissionButton.click();
+    const permissionHttp = await permissionPromise;
+    const permissionBody = await permissionHttp.json().catch(() => ({}));
+    demand(permissionHttp.status() === 200 && permissionBody?.agent?.permissions?.training === true,
+      'agent_training_permission_ui_failed');
+    const financialPolicy = await setS1FinancialPolicyThroughOwnerUi({ ownerPage: input.ownerPage, observerPool,
+      ownerId: input.ownerId, agentId });
+    record('owner_agent_financial_policy_ui_and_readonly_database', 'verified', {
+      agentId, operationId: financialPolicy.operationId, revision: financialPolicy.revision,
+      operationLimitUnits: financialPolicy.operationLimitUnits, utcDayLimitUnits: financialPolicy.utcDayLimitUnits,
+      benchmarkLimit: financialPolicy.categoryLimits.benchmark, forumLimit: financialPolicy.categoryLimits.forum,
+      allowCashShortfall: financialPolicy.allowCashShortfall,
+    });
+    const credential = await issueThroughUi(input.ownerPage, agentId, 'issue');
+    actorCredential = credential.secret;
+    credential.secret = '';
+    const accountSnapshot = await requestOwnerSnapshot(observerPool, input.ownerId, agentId);
+    demand(accountSnapshot.owner[0]?.admission_status === 'admitted' && accountSnapshot.agent[0]?.training === true,
+      'agent_permission_database_mismatch');
+    output.agent = { agentId, createdOperationId: card.operationId, permissionRevision: permissionBody.agent.policyRevision,
+      financialPolicy,
+      credentialIssuedThroughOwnerUi: true, credentialOperationId: credential.operationId,
+      credentialId: credential.credential.id, accessGrantId: credential.credential.grantId,
+      database: accountSnapshot };
+    record('owner_agent_card_permission_and_credential_ui', 'verified', { agentId, trainingPermission: true });
+
+    await input.ownerPage.goto('/runs?agentId=' + encodeURIComponent(agentId), { waitUntil: 'domcontentloaded' });
+    await input.ownerPage.getByTestId('run-intent-form').waitFor({ state: 'visible', timeout: 15_000 });
+    await input.ownerPage.getByTestId('run-agent-select').selectOption(agentId);
+    await input.ownerPage.getByTestId('run-mode-select').selectOption('training');
+    const catalog = await input.ownerPage.request.get('/api/owner/runs/catalog').then((response) => response.json());
+    demand(catalog?.intentCreationReady === true && catalog?.activeRelease?.manifestHash === output.release.manifestHash &&
+      catalog?.activeRelease?.completeRankedRelease === true && Array.isArray(catalog.activeRelease.openTaskIds) &&
+      (sequenceMode ? JSON.stringify(catalog.activeRelease.openTaskIds.slice(0, taskIds.length)) === JSON.stringify(taskIds)
+        : taskIds.every((id) => catalog.activeRelease.openTaskIds.includes(id))),
+    'owner_run_catalog_not_bound_to_full_release');
+    for (const id of catalog.activeRelease.openTaskIds) {
+      const checkbox = input.ownerPage.getByTestId('run-task-checkbox-' + id);
+      if (taskIds.includes(id) && !await checkbox.isChecked()) await checkbox.check();
+      if (!taskIds.includes(id) && await checkbox.isChecked()) await checkbox.uncheck();
+    }
+    const currentTasks = input.ownerPage.locator('[data-testid^="run-task-checkbox-"]:checked');
+    const checkedCount = await currentTasks.count();
+    demand(checkedCount === taskIds.length, 'run_intent_task_selection_mismatch');
+    const cashCeiling = input.ownerPage.getByTestId('run-cash-ceiling');
+    await cashCeiling.fill('0');
+    const quoteText = (await input.ownerPage.getByTestId('run-selected-quote').innerText()).trim();
+    const selectedWeight = output.release.trainingTasks.filter((entry) => taskIds.includes(entry.taskId))
+      .reduce((sum, entry) => sum + entry.taskWeight, 0);
+    const totalWeight = output.release.trainingTasks.reduce((sum, entry) => sum + entry.taskWeight, 0);
+    const fullPrice = BigInt(output.release.trainingPriceUnits);
+    demand(output.release.precision === 6 && output.release.trainingTasks.length === catalog.activeRelease.openTaskIds.length &&
+      output.release.trainingTasks.every((entry, index) => entry.taskId === catalog.activeRelease.openTaskIds[index]) &&
+      totalWeight === 15 && selectedWeight > 0, 'validated_release_pricing_projection_invalid');
+    const quoteUnits = ((fullPrice * BigInt(selectedWeight)) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
+    const quoteMatch = /Server quote for this selection:\s*([0-9]+(?:\.[0-9]+)?)\s+USDC/i.exec(quoteText);
+    demand(quoteMatch && exactUsdcUnits(quoteMatch[1]) === quoteUnits, 'owner_quote_does_not_match_validated_release_weights');
+    const intentPromise = input.ownerPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/owner/runs/intents'
+      && response.request().method() === 'POST', { timeout: 20_000 });
+    await input.ownerPage.getByTestId('run-intent-create').click();
+    const intentHttp = await intentPromise;
+    let intentBody = {};
+    try { intentBody = await intentHttp.json(); } catch { /* Reconcile from independent PostgreSQL if the body is absent. */ }
+    const intentId = intentBody?.intent?.id;
+    demand([200, 201].includes(intentHttp.status()) && UUID.test(intentId), 'owner_run_intent_ui_failed');
+    const intentSnapshot = await readonlyTransaction(observerPool, async (query) => {
+      const result = await query(`SELECT id::text,owner_id::text,agent_id::text,operation_id,mode,task_ids,release_identity,manifest_hash,
+          quote_price_units::text,cash_ceiling_units::text,status,run_id::text,
+          successor_preparation_policy_version,successor_preparation_timeout_seconds
+        FROM oid_run_launch_intent WHERE id=$1`, [intentId]);
+      return pgRows(result);
+    });
+    demand(intentSnapshot.length === 1 && intentSnapshot[0].owner_id === input.ownerId && intentSnapshot[0].agent_id === agentId &&
+      intentSnapshot[0].status === 'pending' && intentSnapshot[0].mode === 'training' &&
+      JSON.stringify(intentSnapshot[0].task_ids) === JSON.stringify(taskIds) && intentSnapshot[0].manifest_hash === output.release.manifestHash &&
+      BigInt(intentSnapshot[0].quote_price_units) === quoteUnits && BigInt(intentSnapshot[0].cash_ceiling_units) === 0n &&
+      (sequenceMode ? intentSnapshot[0].successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
+        Number(intentSnapshot[0].successor_preparation_timeout_seconds) === 180
+        : true),
+    'owner_intent_database_binding_mismatch');
+    output.launchIntent = { intentId, operationId: intentSnapshot[0].operation_id, browserHttpStatus: intentHttp.status(),
+      selectedTasks: taskIds, mode: 'training', cashCeilingUnits: '0', quoteDisplay: quoteText, quotePriceUnits: quoteUnits.toString(),
+      successorPreparationPolicyVersion: intentSnapshot[0].successor_preparation_policy_version,
+      successorPreparationTimeoutSeconds: intentSnapshot[0].successor_preparation_timeout_seconds,
+      database: intentSnapshot[0] };
+    record('owner_run_intent_ui_and_readonly_database', 'verified', { intentId, runUiAction: 'Create private intent' });
+
+    const acceptOperationId = randomUUID();
+    record('agent_accept_http_and_readonly_database', 'started', { operationId: acceptOperationId });
+    let accept = { status: null, payload: {} };
+    let acceptTransportUnknown = false;
+    try {
+      accept = await agentRequest({ publicOrigin: input.publicOrigin,
+        path: '/api/agent/run-intents/' + intentId + '/accept', method: 'POST', bearer: actorCredential,
+        body: { operationId: acceptOperationId } });
+    } catch { acceptTransportUnknown = true; }
+    const acceptErrorCode = accept.payload?.error?.code;
+    output.acceptanceAttempt = { operationId: acceptOperationId, intentId, httpStatus: accept.status,
+      transportUnknown: acceptTransportUnknown,
+      errorCode: typeof acceptErrorCode === 'string' && /^[A-Za-z0-9_]{1,96}$/.test(acceptErrorCode) ? acceptErrorCode : null };
+    const createIntentOperationId = intentSnapshot[0].operation_id;
+    let acceptedRunId = !acceptTransportUnknown && [200, 201].includes(accept.status)
+      ? accept.payload?.run?.id ?? accept.payload?.run?.runId ?? null : null;
+    let reconciledAcceptanceFromDatabase = false;
+    if (!UUID.test(acceptedRunId ?? '')) {
+      const acceptedIntent = await readonlyTransaction(observerPool, async (query) => pgRows(await query(
+        `SELECT id::text,owner_id::text,agent_id::text,operation_id,status,run_id::text,manifest_hash
+          FROM oid_run_launch_intent WHERE id=$1`, [intentId])));
+      if (acceptedIntent.length === 1 && acceptedIntent[0].owner_id === input.ownerId && acceptedIntent[0].agent_id === agentId &&
+          acceptedIntent[0].operation_id === createIntentOperationId && acceptedIntent[0].manifest_hash === output.release.manifestHash &&
+          acceptedIntent[0].status === 'accepted' && UUID.test(acceptedIntent[0].run_id ?? '')) {
+        acceptedRunId = acceptedIntent[0].run_id;
+        reconciledAcceptanceFromDatabase = true;
+      }
+    }
+    demand(UUID.test(acceptedRunId ?? '') &&
+      (([200, 201].includes(accept.status) && !acceptTransportUnknown) || reconciledAcceptanceFromDatabase),
+    'agent_accept_http_or_response_unknown');
+    runId = acceptedRunId;
+    const acceptedSnapshot = await readRunSnapshot(observerPool, { runId });
+    demand(acceptedSnapshot.run.length === 1 && acceptedSnapshot.run[0].intent_status === 'accepted' &&
+      acceptedSnapshot.run[0].intent_operation_id === createIntentOperationId && acceptedSnapshot.run[0].manifest_hash === output.release.manifestHash,
+    'agent_accept_database_binding_mismatch');
+    demand(acceptedSnapshot.run[0].owner_id === input.ownerId && acceptedSnapshot.run[0].agent_id === agentId &&
+      acceptedSnapshot.run[0].intentId === intentId && acceptedSnapshot.run[0].mode === 'training' &&
+      Array.isArray(acceptedSnapshot.run[0].task_ids) && JSON.stringify(acceptedSnapshot.run[0].task_ids) === JSON.stringify(taskIds) &&
+      BigInt(acceptedSnapshot.run[0].quote_price_units) === quoteUnits &&
+      (sequenceMode ? acceptedSnapshot.run[0].successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
+        Number(acceptedSnapshot.run[0].successor_preparation_timeout_seconds) === 180 &&
+        acceptedSnapshot.run[0].intent_successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
+        Number(acceptedSnapshot.run[0].intent_successor_preparation_timeout_seconds) === 180
+        : true) &&
+      acceptedEventMatches(acceptedSnapshot, { runId, intentId, taskIds,
+        ownerId: input.ownerId, agentId, manifestHash: output.release.manifestHash, acceptOperationId }),
+    'agent_accept_event_or_owner_binding_mismatch');
+    output.runInitial = { overallDeadline: acceptedSnapshot.run[0].overall_deadline,
+      successorPreparationPolicyVersion: acceptedSnapshot.run[0].successor_preparation_policy_version,
+      successorPreparationTimeoutSeconds: acceptedSnapshot.run[0].successor_preparation_timeout_seconds };
+    const acceptanceEvent = acceptedSnapshot.acceptanceEvents[0];
+    output.run = { runId, createIntentOperationId, acceptOperationId, acceptanceHttpStatus: accept.status,
+      acceptanceReconciledFromDatabase: reconciledAcceptanceFromDatabase, acceptTransportUnknown,
+      acceptanceEvent: { eventId: acceptanceEvent.eventId, sequence: acceptanceEvent.sequence,
+        payloadHash: acceptanceEvent.payloadHash, operationId: acceptanceEvent.payload.operationId,
+        intentId: acceptanceEvent.intentId, runId: acceptanceEvent.runId, ownerId: acceptanceEvent.ownerId,
+        agentId: acceptanceEvent.agentId }, database: acceptedSnapshot.run[0] };
+    record('agent_accept_http_and_readonly_database', 'verified', { runId, operationId: acceptOperationId });
+
+    const { TaskSealedEvidenceSource } = await import('../../owner-identity/dist/task-sealed-evidence-source.js');
+    const { createDatabase } = await import('../../owner-identity/dist/db.js');
+    const { loadConfig } = await import('../../owner-identity/dist/config.js');
+    const { createPostgresTaskReleaseQuerySource } = await import('../../owner-identity/dist/task-store.js');
+    const created = createDatabase(loadConfig({ ...process.env, OID_DATABASE_URL: input.databaseUrl }));
+    ownerDbClient = created.client;
+    const taskReleaseSource = createPostgresTaskReleaseQuerySource(created.db);
+    const evidenceSource = new TaskSealedEvidenceSource({ taskReleaseSource, evidenceRoot: input.repoRoot });
+    for (let taskIndex = 0; taskIndex < taskIds.length; taskIndex += 1) {
+      const currentTaskId = taskIds[taskIndex];
+      let successorActivation = null;
+      const captured = await captureAndEvaluateTrainingTask({ input, output, record, observerPool, bearer: actorCredential,
+        runId, taskIndex, taskId: currentTaskId, intentId, createIntentOperationId, acceptOperationId,
+        selectedTaskIds: taskIds, agentId, created, taskReleaseSource, evidenceSource, sequenceMode,
+        beforeAction: sequenceMode && taskIndex === 1 ? async (task) => {
+          successorActivation = await verifyTrainingSuccessorActivation({ input, record, observerPool, runId, task,
+            oldOverallDeadline: output.runInitial.overallDeadline, release: output.release,
+            priorTaskResult: output.taskEvaluations[0].result, predecessorTerminalization: output.predecessorTerminalization,
+            dispatchIdentity: output.dispatchIdentity });
+          output.successorActivation = successorActivation;
+        } : null });
+      if (sequenceMode && taskIndex === 0) {
+        demand((input.automaticWorkerEvaluation ? captured.terminalization?.observedFromWorker === true
+          : captured.terminalization?.replayed === false) && output.predecessorTerminalization?.status === 'verified',
+          'successor_worker_waited_before_known_predecessor_terminalization');
+        output.workerAdvancement = { status: 'awaited_from_real_server_worker', nextTaskIndex: 1,
+          trigger: 'known_terminalization_after_exact_generation_fence', manualPreparationOrActivation: false };
+      }
+      if (sequenceMode && taskIndex === 1) demand(successorActivation?.taskIndex === 1,
+        'successor_activation_not_independently_verified');
+    }
+  } catch (error) {
+    output.status = 'blocked';
+    output.blocker = { stage: output.stages.at(-1)?.name ?? 'genuine_s1_setup', reasonCode: safeErrorCode(error) };
+    if (error?.safeDiagnostic && typeof error.safeDiagnostic === 'object') output.safeDiagnostic = error.safeDiagnostic;
+    record(output.blocker.stage, 'blocked', { reasonCode: output.blocker.reasonCode });
+  } finally {
+    actorCredential = '';
+    if (runId && observerPool && output.trainingRunCompletion?.status !== 'verified') {
+      await requestOwnerCancellation({ ownerPage: input.ownerPage, runId, observerPool, output });
+    }
+    if (ownerDbClient) await ownerDbClient.end({ timeout: 5 }).catch(() => undefined);
+    if (observerPool) await observerPool.end().catch(() => undefined);
+  }
+  if (!output.status) output.status = output.trainingRunCompletion?.status === 'verified'
+    ? (input.automaticWorkerEvaluation ? (sequenceMode ? 'captured_s1_s2_training_sequence_completed_by_server_worker'
+      : 'captured_' + taskId.toLowerCase() + '_training_run_completed_by_server_worker')
+      : sequenceMode ? 'captured_s1_s2_training_sequence_completed_by_internal_bridge_and_real_worker_advancement'
+      : 'captured_' + taskId.toLowerCase() + '_training_run_completed_by_internal_bridge')
+    : (sequenceMode ? 'captured_partial_training_sequence' : 'captured_first_task_only');
+  output.runId = runId;
+  output.fullScenarioAcceptance = false;
+  output.productReleaseActivated = false;
+  output.taskGradePublished = false;
+  assertSecretFree(output, 'genuine-s1-owner-run');
+  return output;
+}
+
+export async function runGenuineS1OwnerCase(input) {
+  return runGenuineOwnerRunCase({ ...input, sequenceMode: false });
+}
+
+export async function runGenuineTrainingSequenceOwnerCase(input) {
+  return runGenuineOwnerRunCase({ ...input, sequenceMode: true, taskIds: ['S1', 'S2'] });
+}
+
+export async function writeGenuineS1Capture({ repositoryRoot, capture, provenance }) {
+  const captureId = capture.captureId;
+  demand(UUID.test(captureId), 'capture_id_invalid');
+  const directory = resolve(repositoryRoot, evidenceRootForTask(capture.taskId ?? 'S1'), captureId);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const payload = { ...capture, provenance, fullScenarioAcceptance: false,
+    claims: { productReleaseActivation: false, internalTaskEvaluationRecorded: capture.internalTaskEvaluationRecorded === true,
+      taskGradePublished: false, ownerAcceptance: false, bddLifecycleChanged: false,
+      automaticWorkerEvaluation: capture.automaticWorkerEvaluationVerified === true } };
+  assertSecretFree(payload, 'genuine-s1-capture');
+  const bytes = Buffer.from(JSON.stringify(payload, null, 2) + '\n');
+  await writeFile(resolve(directory, 'capture.json'), bytes, { flag: 'wx', mode: 0o600 });
+  const manifest = { schemaVersion: 'genuine-' + (capture.taskId ?? 'S1').toLowerCase() + '-owner-run-artifact/v1', captureId,
+    classification: payload.classification, status: capture.status, fullScenarioAcceptance: false,
+    artifacts: [{ path: 'capture.json', sha256: sha256(bytes), boundary: 'local first-task harness and independent observers' }] };
+  await writeFile(resolve(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  return { directory: relative(repositoryRoot, directory).split(sep).join('/'), manifest, sha256: sha256(bytes) };
+}
+
+export async function writeGenuineS1StartupBlock({ repositoryRoot, captureId, phase, reasonCode, taskId = 'S1', automaticWorkerEvaluation = false }) {
+  return writeGenuineS1Capture({ repositoryRoot, capture: {
+    schemaVersion: 'genuine-' + taskId.toLowerCase() + '-owner-run-capture/v1', captureId, taskId, status: 'blocked',
+    classification: automaticWorkerEvaluation
+      ? 'local_first_task_server_worker_lifecycle_requested_not_full_scenario_or_product_acceptance'
+      : 'local_first_task_capture_not_full_scenario_acceptance_or_product_release_acceptance',
+    automaticWorkerEvaluationRequested: automaticWorkerEvaluation, automaticWorkerEvaluationVerified: false,
+    fullScenarioAcceptance: false, productReleaseActivation: false, internalTaskEvaluationRecorded: false, taskGradePublished: false,
+    stages: [{ name: phase, status: 'blocked', reasonCode }], participantActions: [],
+  }, provenance: { startupFailure: true, sourceStableDuringRun: false } });
+}
+
+export async function writeGenuineTrainingSequenceCapture({ repositoryRoot, capture, provenance }) {
+  demand(UUID.test(capture.captureId) && capture.schemaVersion === 'genuine-training-sequence-owner-run-capture/v1' &&
+    JSON.stringify(capture.taskIds) === JSON.stringify(['S1', 'S2']), 'training_sequence_capture_identity_invalid');
+  const directory = resolve(repositoryRoot, SEQUENCE_EVIDENCE_ROOT, capture.captureId);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const payload = { ...capture, provenance, fullScenarioAcceptance: false,
+    claims: { productReleaseActivation: false, internalTaskEvaluationRecorded: capture.internalTaskEvaluationRecorded === true,
+      taskGradePublished: false, ownerAcceptance: false, bddLifecycleChanged: false,
+      realWorkerSuccessorAdvancement: capture.successorActivation?.taskIndex === 1,
+      automaticWorkerEvaluation: capture.automaticWorkerEvaluationVerified === true } };
+  assertSecretFree(payload, 'genuine-training-sequence-capture');
+  const bytes = Buffer.from(JSON.stringify(payload, null, 2) + '\n');
+  await writeFile(resolve(directory, 'capture.json'), bytes, { flag: 'wx', mode: 0o600 });
+  const manifest = { schemaVersion: 'genuine-training-sequence-owner-run-artifact/v1', captureId: capture.captureId,
+    classification: payload.classification, status: capture.status, fullScenarioAcceptance: false,
+    artifacts: [{ path: 'capture.json', sha256: sha256(bytes),
+      boundary: capture.automaticWorkerEvaluationRequested
+        ? 'local two-task training sequence with server worker lifecycle and readonly harness verification; not full scenario acceptance'
+        : 'local two-task training sequence with internal grading and completion bridge plus real worker advancement; not full scenario acceptance' }] };
+  await writeFile(resolve(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  return { directory: relative(repositoryRoot, directory).split(sep).join('/'), manifest, sha256: sha256(bytes) };
+}
+
+export async function writeGenuineTrainingSequenceStartupBlock({ repositoryRoot, captureId, phase, reasonCode, automaticWorkerEvaluation = false }) {
+  return writeGenuineTrainingSequenceCapture({ repositoryRoot, capture: {
+    schemaVersion: 'genuine-training-sequence-owner-run-capture/v1', captureId, taskIds: ['S1', 'S2'], mode: 'training',
+    status: 'blocked', classification: automaticWorkerEvaluation
+      ? 'local_two_task_training_sequence_server_worker_lifecycle_requested_not_full_scenario_or_product_acceptance'
+      : 'local_two_task_training_sequence_with_internal_grade_fence_completion_bridge_and_real_worker_advancement_not_full_scenario_or_product_acceptance',
+    automaticWorkerEvaluationRequested: automaticWorkerEvaluation, automaticWorkerEvaluationVerified: false,
+    fullScenarioAcceptance: false, productReleaseActivation: false, internalTaskEvaluationRecorded: false, taskGradePublished: false,
+    stages: [{ name: phase, status: 'blocked', reasonCode }], participantActions: [],
+  }, provenance: { startupFailure: true, sourceStableDuringRun: false } });
+}
+
+/** Provision coordinator credentials only inside the compose tmpfs mount. */
+export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, automaticWorkerEvaluation = false }) {
+  demand(process.platform === 'linux' && repositoryRoot === ROOT, 'genuine_s1_requires_pinned_docker_runtime');
+  demand(process.env.OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED === 'true', 'explicit_private_coordinator_override_required');
+  const configPath = process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG || '.local/owner-identity/bef-task-coordinator.json';
+  demand(configPath === '.local/owner-identity/bef-task-coordinator.json', 'coordinator_config_path_not_pinned');
+  const manifestBytes = await safeBytes(repositoryRoot, 'infrastructure/benchmark-environment/manifest.json');
+  const manifest = JSON.parse(manifestBytes.bytes.toString('utf8'));
+  const release = JSON.parse((await safeBytes(repositoryRoot, PIN.release.path, PIN.release.sha256)).bytes.toString('utf8'));
+  const releaseManifest = release.manifest;
+  demand(releaseManifest?.executionIdentity?.environmentManifestSha256 === manifestBytes.sha256 &&
+    manifest.local?.identity === 'private-anvil-fork' && manifest.local?.chainId === 8453 && Array.isArray(manifest.x402?.catalog),
+  'coordinator_manifest_pin_mismatch');
+  const target = resolve(repositoryRoot, '.local/owner-identity');
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  await chmod(target, 0o700);
+  const targetInfo = await stat(target);
+  demand(targetInfo.isDirectory() && (targetInfo.mode & 0o077) === 0, 'coordinator_tmpfs_permissions_invalid');
+  const secretsDir = resolve(target, 'secrets');
+  await mkdir(secretsDir, { recursive: true, mode: 0o700 });
+  await chmod(secretsDir, 0o700);
+  let adminKey = (await readFile('/run/secrets/bef_admin_key', 'utf8')).trim();
+  demand(adminKey.length >= 16 && adminKey.length <= 4096 && !/[\r\n\u0000]/.test(adminKey), 'coordinator_admin_key_unavailable');
+  const keyPath = resolve(secretsDir, 'bef-admin-key');
+  await writeFile(keyPath, adminKey + '\n', { flag: 'wx', mode: 0o600 });
+  await chmod(keyPath, 0o600);
+  adminKey = '';
+  const local = manifest.local;
+  const x402Policy = {
+    manifestSha256: manifestBytes.sha256,
+    scheme: manifest.x402.scheme,
+    network: manifest.x402.network,
+    asset: manifest.x402.asset,
+    assetTransferMethod: manifest.x402.assetTransferMethod,
+    eip712Domain: manifest.x402.eip712Domain,
+    maxTimeoutSeconds: manifest.x402.maxTimeoutSeconds ?? 300,
+    sdkVersions: { core: manifest.x402.version, evm: local.versions.x402Evm, viem: local.versions.viem },
+    localAnvil: { identity: local.identity, chainId: local.chainId, anvilVersion: local.anvilVersion,
+      executionNetwork: local.executionNetwork, hardFork: local.hardfork,
+      forkBlockNumber: local.forkBlock, forkBlockHash: manifest.source.blockHash },
+    resources: manifest.x402.catalog.map((item) => ({ resourceId: item.resourceId, resourceSha256: item.resourceSha256,
+      contentType: item.contentType, ...(item.dataType ? { dataType: item.dataType } : {}),
+      ...(item.schema ? { schema: item.schema } : {}), ...(item.provenance ? { provenance: item.provenance } : {}),
+      offers: item.offers })),
+  };
+  const apiPort = process.env.BEF_API_HOST_PORT || '8783';
+  const sourcePort = process.env.BEF_SOURCE_PROXY_HOST_PORT || '18544';
+  const rpcPort = process.env.BEF_LOCAL_RPC_A_HOST_PORT || '18545';
+  const config = { schemaVersion: 'local-bef-task-coordinator-config/v1', adminKeyFile: 'secrets/bef-admin-key',
+    sourceRpcUrl: 'http://host.docker.internal:' + sourcePort,
+    ...(automaticWorkerEvaluation ? { observationPipeline: {
+      schemaVersion: 'local-bef-training-observation/v1',
+      database: { host: 'host.docker.internal', port: Number(process.env.BEF_DATABASE_HOST_PORT || '55432'), database: 'bef' },
+      passwordFile: '/run/secrets/bef_database_observer_password',
+    } } : {}),
+    environments: [{ envId: 'bef-env-a', apiBaseUrl: 'http://host.docker.internal:' + apiPort,
+      observerRpcUrl: 'http://host.docker.internal:' + rpcPort, x402Policy }] };
+  const configAbsolute = resolve(repositoryRoot, configPath);
+  await writeFile(configAbsolute, JSON.stringify(config) + '\n', { flag: 'wx', mode: 0o600 });
+  await chmod(configAbsolute, 0o600);
+  process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG = configPath;
+  return { configPath, environmentId: 'bef-env-a', manifestSha256: manifestBytes.sha256, secretMaterialRetained: false };
+}

@@ -9,7 +9,9 @@ import { fundGenerationFixture, GenerationFixtureFailure, newGenerationId } from
 import type { ApplicationRuntime, RuntimeEnvironment } from './runtime.js';
 import { mismatchedResource } from './resource.js';
 import { registerPrerequisiteValidationRoute } from './prerequisite-validation.js';
-import { bindGenerationSigner } from './selected-execution.js';
+import { bindGenerationSigner, observePersistedSelectedExecution } from './selected-execution.js';
+import { PostgresExecutionPersistence } from './selected-execution-persistence.js';
+import { registerPreparationRoutes } from './preparation-routes.js';
 
 const addressPattern = /^0x[0-9a-fA-F]{40}$/;
 const generationInput = z.object({
@@ -165,6 +167,11 @@ async function fenceForReset(runtime: ApplicationRuntime, envId: string): Promis
           AND transaction_hash IS NULL AND receipt_status IN ('unknown', 'not_submitted')`,
       [envId],
     );
+    await client.query(
+      `UPDATE bef_preparation SET status='fenced',fence_confirmed_at=COALESCE(fence_confirmed_at,clock_timestamp())
+        WHERE env_id=$1 AND status <> 'fenced'`,
+      [envId],
+    );
     const unresolved = await client.query(
       `SELECT operation_id, status
          FROM bef_operation
@@ -217,7 +224,14 @@ function isPlainEmptyObject(value: unknown): boolean {
   );
 }
 
-export function registerAdminRoutes(app: FastifyInstance, runtime: ApplicationRuntime): void {
+export function registerAdminRoutes(
+  app: FastifyInstance,
+  runtime: ApplicationRuntime,
+  executionPersistence: PostgresExecutionPersistence,
+): void {
+  registerPreparationRoutes(app, runtime);
+  app.addHook('onClose', async () => runtime.preparationResponses?.eraseAll());
+
   app.get<{ Params: { envId: string } }>(
     '/internal/admin/environments/:envId/probe-capabilities',
     async (request, reply) => {
@@ -241,6 +255,12 @@ export function registerAdminRoutes(app: FastifyInstance, runtime: ApplicationRu
         reset: {
           supported: true,
           route: 'POST /internal/admin/environments/{envId}/reset',
+        },
+        selectedExecutionReconciliation: {
+          supported: true,
+          route: 'POST /internal/admin/environments/{envId}/selected-executions/{operationId}/reconcile',
+          requestIdentity: ['envId', 'operationId'],
+          requestBody: 'empty',
         },
         services: {
           postgres: { version: runtime.postgresVersion },
@@ -406,6 +426,134 @@ export function registerAdminRoutes(app: FastifyInstance, runtime: ApplicationRu
     },
   );
 
+  // AICODE-NOTE: Recovery identifies an existing selected action only by its
+  // persisted environment and operation IDs. It never restores RAM signer
+  // state, accepts a replacement hash/RPC endpoint, or resubmits a participant action.
+  app.post<{ Params: { envId: string; operationId: string } }>(
+    '/internal/admin/environments/:envId/selected-executions/:operationId/reconcile',
+    async (request, reply) => {
+      if (!authorized(request, runtime)) return reply.code(403).send({ error: 'forbidden' });
+      const { envId, operationId } = request.params;
+      const environment = environmentFor(runtime, envId);
+      if (!environment) return reply.code(404).send({ error: 'environment_not_found' });
+      if (!z.string().uuid().safeParse(operationId).success ||
+          !isPlainEmptyObject(request.body) || !isPlainEmptyObject(request.query)) {
+        return reply.code(400).send({ error: 'invalid_reconciliation_request' });
+      }
+      reply.header('cache-control', 'no-store');
+
+      try {
+        const result = await withEnvironmentAdvisoryLock(runtime.pool, envId, async () => {
+          const target = await withTransaction(runtime.pool, (client) =>
+            executionPersistence.readAdminReconciliationTarget(
+              client, envId, operationId, runtime.loadedManifest.sha256,
+            ));
+          if (!target) return { kind: 'missing' as const };
+          if (target.kind === 'terminal') {
+            return {
+              kind: 'terminal' as const,
+              outcome: target.outcome,
+              transactionHash: target.transactionHash,
+            };
+          }
+          if (target.kind === 'unknown') {
+            return { kind: 'unknown' as const, reasonCode: target.reasonCode, transactionHash: target.transactionHash };
+          }
+
+          let observed: Awaited<ReturnType<typeof observePersistedSelectedExecution>>;
+          try {
+            observed = await observePersistedSelectedExecution({
+              manifest: runtime.manifest,
+              envId,
+              observerRpcUrl: environment.observerRpcUrl,
+              payer: target.payer,
+              action: target.action,
+              transactionHash: target.transactionHash,
+              intent: target.intent,
+              before: target.before,
+            });
+          } catch {
+            return {
+              kind: 'unknown' as const,
+              reasonCode: 'original_observation_unavailable_or_conflicting',
+              transactionHash: target.transactionHash,
+            };
+          }
+
+          const observation = {
+            schemaVersion: 'bef-selected-execution-observation/v1',
+            envId,
+            generationId: target.generationId,
+            operationId,
+            manifestSha256: target.manifestSha256,
+            observerApplicationSourceSha256: runtime.applicationSourceSha256,
+            transactionHash: target.transactionHash,
+            payer: target.payer,
+            selectedAction: target.action,
+            transactionIntent: target.intent,
+            before: target.before,
+            sourceBlockHash: observed.sourceBlockHash,
+            prestateBlockHash: observed.prestateBlockHash,
+            receiptBlockHash: observed.receiptBlockHash,
+            receiptBlockTransactionHashes: observed.receiptBlockTransactionHashes,
+            effectsValid: observed.effectsValid,
+            measurement: observed.measurement,
+          };
+          const recorded = await withTransaction(runtime.pool, (client) =>
+            executionPersistence.recordAdminReconciliation(client, {
+              envId,
+              operationId,
+              expectedManifestSha256: runtime.loadedManifest.sha256,
+              transactionHash: target.transactionHash,
+              measurement: observed.measurement,
+              effectsValid: observed.effectsValid,
+              observation,
+            }));
+          if (recorded.kind === 'unknown') {
+            return {
+              kind: 'unknown' as const,
+              reasonCode: 'execution_effects_unverified',
+              transactionHash: recorded.transactionHash,
+              observationSha256: recorded.observationSha256,
+              observationRef: recorded.observationRef,
+            };
+          }
+          return {
+            kind: 'finalized' as const,
+            outcome: recorded.outcome,
+            transactionHash: recorded.transactionHash,
+            observationSha256: recorded.observationSha256,
+            observationRef: recorded.observationRef,
+          };
+        });
+
+        if (result.kind === 'missing') return reply.code(404).send({ error: 'selected_execution_not_found' });
+        if (result.kind === 'terminal') {
+          return { outcome: result.outcome, operationId, transactionHash: result.transactionHash, replayed: true };
+        }
+        if (result.kind === 'unknown') {
+          return reply.code(409).send({
+            outcome: 'unknown', operationId, transactionHash: result.transactionHash,
+            reasonCode: result.reasonCode,
+            ...(result.observationSha256 ? {
+              observerEvidenceSha256: result.observationSha256,
+              observerEvidenceRef: result.observationRef,
+            } : {}),
+          });
+        }
+        if (result.kind === 'finalized') {
+          return {
+            outcome: result.outcome, operationId, transactionHash: result.transactionHash,
+            observerEvidenceSha256: result.observationSha256,
+            observerEvidenceRef: result.observationRef,
+          };
+        }
+      } catch {
+        return reply.code(503).send({ outcome: 'unknown', error: 'selected_execution_reconciliation_unavailable' });
+      }
+    },
+  );
+
   app.post<{ Params: { envId: string } }>(
     '/internal/admin/environments/:envId/generations/:generationId/fence',
     async (request, reply) => {
@@ -438,10 +586,18 @@ export function registerAdminRoutes(app: FastifyInstance, runtime: ApplicationRu
                 [envId, generationId],
               );
             }
+            await client.query(
+              `UPDATE bef_preparation SET status='fenced',fence_confirmed_at=COALESCE(fence_confirmed_at,clock_timestamp())
+                WHERE env_id=$1 AND generation_id=$2 AND status <> 'fenced'`,
+              [envId, generationId],
+            );
             const countsAfter = await readGenerationCounts(client, envId, generationId);
             return { kind: 'fenced' as const, statusBefore, countsBefore, countsAfter };
           });
-          if (state.kind === 'fenced') runtime.signerStore.eraseGeneration({ envId, generationId });
+          if (state.kind === 'fenced') {
+            runtime.signerStore.eraseGeneration({ envId, generationId });
+            runtime.preparationResponses?.eraseGeneration(envId, generationId);
+          }
           return state;
         });
         if (outcome.kind === 'missing') return reply.code(404).send({ error: 'generation_not_found' });
@@ -484,6 +640,7 @@ export function registerAdminRoutes(app: FastifyInstance, runtime: ApplicationRu
         const outcome = await withEnvironmentAdvisoryLock(runtime.pool, envId, async () => {
           const fenceState = await fenceForReset(runtime, envId);
           runtime.signerStore.eraseEnvironment(envId);
+          runtime.preparationResponses?.eraseEnvironment(envId);
           if (fenceState === 'unresolved') return { kind: 'unresolved' as const };
           try {
             const identity = await resetAnvilFork(environment.adminRpcUrl, runtime.config.sourceProxyUrl, runtime.manifest);

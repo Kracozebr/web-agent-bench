@@ -1,0 +1,24 @@
+name: web-agent-bench-oid
+
+services:
+  runtime:
+    environment:
+      OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: "true"
+      OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: .local/owner-identity/bef-task-coordinator.json
+      BEF_API_HOST_PORT: "${BEF_API_HOST_PORT:-8783}"
+      BEF_DATABASE_HOST_PORT: "${BEF_DATABASE_HOST_PORT:-55432}"
+      BEF_SOURCE_PROXY_HOST_PORT: "${BEF_SOURCE_PROXY_HOST_PORT:-18544}"
+      BEF_LOCAL_RPC_A_HOST_PORT: "${BEF_LOCAL_RPC_A_HOST_PORT:-18545}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    tmpfs:
+      - "/workspace/.local/owner-identity:rw,noexec,nosuid,nodev,size=8m,mode=0700"
+    secrets:
+      - bef_admin_key
+      - bef_database_observer_password
+
+secrets:
+  bef_admin_key:
+    file: ../benchmark-environment/.local/secrets/admin-key
+  bef_database_observer_password:
+    file: ../benchmark-environment/.local/secrets/database-observer-password

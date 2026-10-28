@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -22,6 +22,11 @@ import { runAapOauthCases } from "./oauth-cases.mjs";
 import { runBillingCases } from "./billing-cases.mjs";
 import { saveBillingEvidence } from "./billing-evidence.mjs";
 import { runFinancialUiCases } from "./financial-ui-cases.mjs";
+import { runLaunchBoundaryCases, saveLaunchBoundaryCapture } from "./run-cases.mjs";
+import { runTransactionCases } from "./run-transaction-cases.mjs";
+import { provisionGenuineS1CoordinatorConfig, runGenuineS1OwnerCase, runGenuineTrainingSequenceOwnerCase,
+  writeGenuineS1Capture, writeGenuineS1StartupBlock, writeGenuineTrainingSequenceCapture,
+  writeGenuineTrainingSequenceStartupBlock } from "./genuine-s1-cases.mjs";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(packageRoot, "../..");
@@ -31,6 +36,12 @@ const adminSubject = "oid-admin-fixture-sub";
 const clientId = "oid-local-" + randomBytes(8).toString("hex") + ".apps.example.invalid";
 const clientSecret = randomBytes(32).toString("base64url");
 const runId = randomUUID();
+const genuineWorkerSequenceOptIn = process.argv.includes("--genuine-training-sequence-worker-owner-run");
+const genuineSequenceOptIn = genuineWorkerSequenceOptIn || process.argv.includes("--genuine-training-sequence-owner-run");
+const genuineWorkerTaskId = ["S1", "S2", "S4", "M1"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
+const genuineWorkerOptIn = genuineWorkerSequenceOptIn || genuineWorkerTaskId !== undefined;
+const genuineTaskId = genuineWorkerTaskId ?? ["S1", "S2", "S4"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
+const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
 const activeContract = JSON.parse(await readFile(resolve(repoRoot, "tests/bdd/changes/owner-identity-and-pilot-admission/harness-contracts.json"), "utf8"));
 const contractRows = activeContract.protected_scenarios;
 const REQUIRED = Object.fromEntries(Object.entries(contractRows).map(([scenarioId, row]) => [scenarioId, row.required_observations]));
@@ -46,6 +57,40 @@ let phase = "startup";
 let apiChild;
 let apiEnvironment;
 let databaseIsolation;
+let sourceInputsBeforeCheckpoint;
+let genuineArtifactWritten = false;
+
+function projectGenuineBrowserCapture(capture, allowedPath) {
+  if (!capture || capture.schemaVersion !== "oid-browser-observation/v1" || capture.scenarioId !== "OID-SC-011") return null;
+  const keep = (row) => typeof row?.path === "string" && allowedPath(row.path);
+  return {
+    schemaVersion: capture.schemaVersion,
+    scenarioId: capture.scenarioId,
+    actions: Array.isArray(capture.actions) ? capture.actions.filter((row) => typeof row?.action === "string" && typeof row?.selector === "string").slice(-32) : [],
+    requests: Array.isArray(capture.requests) ? capture.requests.filter(keep).slice(-64).map((row) => ({
+      method: row.method, path: row.path,
+      ...(typeof row.operationId === "string" ? { operationId: row.operationId } : {}),
+      ...(Number.isSafeInteger(row.expectedRevision) ? { expectedRevision: row.expectedRevision } : {}),
+      ...(typeof row.mode === "string" ? { mode: row.mode } : {}),
+    })) : [],
+    responses: Array.isArray(capture.responses) ? capture.responses.filter(keep).slice(-64).map((row) => ({
+      method: row.method, path: row.path, status: row.status,
+    })) : [],
+  };
+}
+
+function correlateGenuineUiOperation(capture, label, operationId, pathPrefix) {
+  if (!capture || typeof operationId !== "string") return { label, status: "unknown", reasonCode: "operation_not_captured" };
+  const requestIndex = capture.requests.findIndex((row) => row.operationId === operationId && row.path.startsWith(pathPrefix));
+  if (requestIndex < 0) return { label, status: "unknown", reasonCode: "browser_request_not_captured" };
+  const request = capture.requests[requestIndex];
+  const sameRouteRequests = capture.requests.filter((row) => row.path === request.path && row.method === request.method);
+  const occurrence = sameRouteRequests.findIndex((row) => row.operationId === operationId);
+  const sameRouteResponses = capture.responses.filter((row) => row.path === request.path && row.method === request.method);
+  return { label, status: "observed", operationId, method: request.method, path: request.path,
+    responseStatus: sameRouteResponses[occurrence]?.status ?? null,
+    responseCorrelation: "same-origin method/path occurrence order" };
+}
 
 async function isolateAcceptanceDatabase() {
   const ownerUrl = new URL(process.env.OID_DATABASE_URL);
@@ -139,6 +184,11 @@ async function waitHttp(url, predicate, label) {
 async function startRuntime() {
   phase = "runtime_preflight";
   if (process.platform !== "linux") throw new Error("Run owner acceptance inside the pinned Linux Docker runtime");
+    if (genuineS1OptIn) {
+    if (process.argv.length !== 3) throw Object.assign(new Error("genuine_s1_cli_shape_invalid"), { code: "GENUINE_S1_CLI_SHAPE_INVALID" });
+    phase = "genuine_s1_private_coordinator_provisioning";
+    await provisionGenuineS1CoordinatorConfig({ repositoryRoot: repoRoot, automaticWorkerEvaluation: genuineWorkerOptIn });
+  }
   requireLoopbackOrigin(publicOrigin, "OID_PUBLIC_ORIGIN");
   requireLoopbackOrigin(apiOrigin, "OID_ACCEPTANCE_API_ORIGIN");
   if (publicOrigin !== "http://127.0.0.1:3000" || apiOrigin !== "http://127.0.0.1:8784") throw new Error("The acceptance origins are pinned to 127.0.0.1 ports 3000 and 8784");
@@ -147,6 +197,8 @@ async function startRuntime() {
 
   phase = "isolated_acceptance_database";
   await isolateAcceptanceDatabase();
+  console.log(JSON.stringify({ event: "oid_acceptance_database_isolated", captureId: runId,
+    databaseName: databaseIsolation.databaseName, retainedForInspection: true }));
 
   phase = "local_google_fixture";
   fixture = await startGoogleFixtureServer({ host: "127.0.0.1", port: 0, clientId, clientSecret, publicOrigin });
@@ -165,6 +217,10 @@ async function startRuntime() {
     OID_AUTH_RATE_LIMIT_MAX: "120",
     OID_SIWE_RATE_LIMIT_MAX: "120",
     OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX: "120",
+    // The private runtime coordinator is available only through an explicit
+    // genuine owner-run CLI and its tmpfs override. Compose alone cannot opt in.
+    OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: genuineS1OptIn ? "true" : "false",
+    OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG ?? ".local/owner-identity/bef-task-coordinator.json",
     NODE_ENV: "development",
   };
   // Keep acceptance rate buckets and cookies isolated across independent runs.
@@ -440,6 +496,10 @@ async function collectSourceHashes() {
     resolve(repoRoot, "tests/bdd/features/tester_bonus_billing.feature"),
     resolve(repoRoot, "tests/bdd/mappers/test_tester_bonus_billing_bdd.py"),
     resolve(repoRoot, "tools/replay_tbb_acceptance.py"),
+    resolve(repoRoot, "openspec/changes/benchmark-run-lifecycle"),
+    resolve(repoRoot, "openspec/changes/benchmark-task-suite"),
+    resolve(repoRoot, "tests/bdd/changes/benchmark-run-lifecycle"),
+    resolve(repoRoot, "tests/bdd/changes/benchmark-task-suite"),
     resolve(repoRoot, "tools/harness_contracts.py"),
     resolve(repoRoot, "tools/run_bdd_acceptance.py"),
     resolve(repoRoot, "package.json"),
@@ -481,6 +541,54 @@ async function main() {
     await startRuntime();
     phase = "hash_source_inputs_before";
     const sourceHashesBefore = await collectSourceHashes();
+    // AICODE-NOTE: Keep the exact DB and source inventory even if a fixture throws
+    // before its final capture; a later source hash cannot stand in for this one.
+    const beforeProof = { schemaVersion: "owner-acceptance-source-inputs-before/v1", captureId: runId,
+      databaseIsolation, sourceInputs: sourceHashesBefore };
+    assertSecretFree(beforeProof, "source-inputs-before");
+    const beforeBytes = Buffer.from(JSON.stringify(beforeProof, null, 2) + "\n");
+    const beforeDirectory = resolve(repoRoot, "artifacts/runs/owner-acceptance-inputs", runId);
+    await mkdir(beforeDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(resolve(beforeDirectory, "source-inputs-before.json"), beforeBytes, { flag: "wx", mode: 0o600 });
+    sourceInputsBeforeCheckpoint = { path: relative(repoRoot, resolve(beforeDirectory, "source-inputs-before.json")).split(sep).join("/"),
+      sha256: sha256(beforeBytes), sourceInputCount: sourceHashesBefore.length };
+    console.log(JSON.stringify({ event: "oid_acceptance_source_inputs_pinned", captureId: runId,
+      databaseName: databaseIsolation.databaseName, checkpoint: sourceInputsBeforeCheckpoint }));
+    if (process.argv.includes("--run-transactions-only")) {
+      phase = "coordinator_postgres_transaction_integration";
+      await stopChild(apiChild);
+      const result = await runTransactionCases({ databaseUrl: process.env.OID_DATABASE_URL,
+        observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+      const startResult = await (await import("./run-start-cases.mjs")).runStartCases({
+        databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+      const storeResult = await (await import("./task-store-cases.mjs")).runTaskStoreCases({
+        databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL, repoRoot });
+      const evaluationResult = await (await import("./task-result-cases.mjs")).runTaskResultCases({
+        databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+      const actionResult = await (await import("./task-action-cases.mjs")).runTaskActionCases({
+        databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+      result.atomicStartIntegration = startResult;
+      result.releaseStoreIntegration = storeResult;
+      result.evaluationStoreIntegration = evaluationResult;
+      result.taskActionIntegration = actionResult;
+      result.executionBindingIntegration = await (await import("./task-execution-binding-cases.mjs")).runTaskExecutionBindingCases({
+        databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+      result.taskPreparationIntegration = await (await import("./task-preparation-cases.mjs")).runTaskPreparationCases({
+        databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+      const sourceHashesAfter = await collectSourceHashes();
+      const provenance = { runId, databaseIsolation, inputHashesBefore: sourceHashesBefore,
+        inputHashesAfter: sourceHashesAfter, sourceStableDuringRun: JSON.stringify(sourceHashesBefore) === JSON.stringify(sourceHashesAfter) };
+      if (!provenance.sourceStableDuringRun) throw new Error("Sources changed during transaction integration capture");
+      const saved = await saveLaunchBoundaryCapture({ result, provenance, repoRoot });
+      console.log(JSON.stringify({ ...saved, integration: { status: result.status, boundary: result.boundary,
+        observations: result.observations }, atomicStart: { status: startResult.status, observations: startResult.observations },
+        releaseStore: { status: storeResult.status, observations: storeResult.observations },
+        evaluationStore: { status: evaluationResult.status, observations: evaluationResult.observations },
+        taskActions: { status: actionResult.status, observations: actionResult.observations },
+        executionBindings: result.executionBindingIntegration,
+        taskPreparation: result.taskPreparationIntegration }, null, 2));
+      return;
+    }
     phase = "admin_google_browser_flow";
     const adminContext = await newContext();
     const admin = await googleLogin(adminContext, "OID-SC-011", adminSubject);
@@ -561,6 +669,74 @@ async function main() {
     const confirmed = await waitOwner(ownerLogin.page, "authenticated");
     if (confirmed.owner?.id !== ownerId || confirmed.owner?.admissionStatus !== "admitted") throw new Error("Activation did not confirm the same admitted owner in the real owner projection");
     const activationOperation = ownerLogin.capture.requests.filter((item) => item.path === "/api/admission/activate" && item.method === "POST").at(-1)?.operationId;
+    if (genuineS1OptIn) {
+      phase = genuineSequenceOptIn ? "genuine_training_sequence_owner_run" : "genuine_s1_first_task_owner_run";
+      const captureInput = {
+        captureId: runId,
+        automaticWorkerEvaluation: genuineWorkerOptIn,
+        ...(genuineSequenceOptIn ? {} : { taskId: genuineTaskId }),
+        repoRoot,
+        databaseUrl: process.env.OID_DATABASE_URL,
+        observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
+        publicOrigin,
+        adminPage: admin.page,
+        ownerPage: ownerLogin.page,
+        ownerId,
+        setup: {
+          adminProviderFixture: true,
+          invitationId: inviteId,
+          ownerInvitationIssueOperationId: issueOperation,
+          ownerActivationOperationId: activationOperation,
+          ownerSubjectSha256: digest(ownerSubject),
+          ownerActivationHttpStatus: activationHttp.status(),
+          ownerAdmissionStatus: confirmed.owner?.admissionStatus,
+        },
+      };
+      const capture = genuineSequenceOptIn
+        ? await runGenuineTrainingSequenceOwnerCase(captureInput)
+        : await runGenuineS1OwnerCase(captureInput);
+      const adminBrowser = projectGenuineBrowserCapture(admin.capture, (path) => path === "/api/admin/bonus-grants" || path.startsWith("/api/admin/invitations"));
+      const ownerBrowser = projectGenuineBrowserCapture(ownerLogin.capture, (path) => path === "/api/admission/activate" ||
+        path === "/api/owner/runs/catalog" || path === "/api/owner/runs/intents" || path.endsWith("/results") ||
+        /^\/api\/owner\/runs\/[^/]+\/cancel$/.test(path) ||
+        path === "/api/owner/agents" || /^\/api\/owner\/agents\/[^/]+\/(?:permissions|credentials|manual-credential|financial-policy)$/.test(path));
+      capture.browserWitness = { classification: "safe_same_origin_browser_request_response_metadata_no_bodies_or_headers",
+        admin: adminBrowser, owner: ownerBrowser };
+      const ownerRequests = ownerLogin.capture.requests;
+      const operationForPath = (pathPattern, method) => ownerRequests.find((row) => row.method === method && pathPattern.test(row.path))?.operationId ?? null;
+      capture.browserActionManifest = [
+        correlateGenuineUiOperation(admin.capture, "admin_bonus_grant_submit", capture.bonusGrant?.operationId, "/api/admin/bonus-grants"),
+        correlateGenuineUiOperation(ownerLogin.capture, "owner_activation", capture.setup?.ownerActivationOperationId, "/api/admission/activate"),
+        correlateGenuineUiOperation(ownerLogin.capture, "owner_agent_create", capture.agent?.createdOperationId, "/api/owner/agents"),
+        correlateGenuineUiOperation(ownerLogin.capture, "owner_training_permission_save",
+          operationForPath(/^\/api\/owner\/agents\/[^/]+\/permissions$/, "PUT"), "/api/owner/agents/"),
+        correlateGenuineUiOperation(ownerLogin.capture, "owner_financial_policy_save",
+          capture.agent?.financialPolicy?.operationId, "/api/owner/agents/"),
+        correlateGenuineUiOperation(ownerLogin.capture, "owner_agent_credential_issue",
+          capture.agent?.credentialOperationId, "/api/owner/agents/"),
+        correlateGenuineUiOperation(ownerLogin.capture, "owner_run_intent_create",
+          capture.launchIntent?.operationId, "/api/owner/runs/intents"),
+      ];
+      const sourceHashesAfter = await collectSourceHashes();
+      const provenance = { runId, databaseIsolation, inputHashesBefore: sourceHashesBefore,
+        inputHashesAfter: sourceHashesAfter, sourceStableDuringRun: JSON.stringify(sourceHashesBefore) === JSON.stringify(sourceHashesAfter),
+        runtimeBoundary: { apiNodeEnv: "development", webNodeEnv: "production", coordinatorEnabledByCli: true } };
+      if (!provenance.sourceStableDuringRun) {
+        capture.status = "blocked";
+        capture.blocker = { stage: "source_provenance", reasonCode: "source_inputs_changed_during_run" };
+        capture.stages.push({ name: "source_provenance", status: "blocked", reasonCode: "source_inputs_changed_during_run" });
+      }
+      const savedGenuine = genuineSequenceOptIn
+        ? await writeGenuineTrainingSequenceCapture({ repositoryRoot: repoRoot, capture, provenance })
+        : await writeGenuineS1Capture({ repositoryRoot: repoRoot, capture, provenance });
+      genuineArtifactWritten = true;
+      await ownerContext.close();
+      await adminContext.close();
+      console.log(JSON.stringify({ ...savedGenuine, status: capture.status, fullScenarioAcceptance: false,
+        runId: capture.runId ?? null, stageCount: capture.stages.length, blocker: capture.blocker ?? null }, null, 2));
+      if (capture.status === "blocked") process.exitCode = 2;
+      return;
+    }
     phase = "wallet_link_and_return";
     const walletResult = await linkWalletAndReturn({ context: ownerContext, page: ownerLogin.page, scenarioId: "OID-SC-011", expectedOwnerId: ownerId });
     if (!walletResult.sameOwner) throw new Error("Returning wallet login changed the owner identity");
@@ -651,6 +827,29 @@ async function main() {
     billingData.browserData["TBB-SC-013"] = financialUi.browserData;
     billingData.databaseData["TBB-SC-013"] = financialUi.databaseData;
 
+    phase = "browser_launch_release_boundary";
+    const launchBoundary = await runLaunchBoundaryCases({ page: ownerLogin.page, ownerId,
+      agentId: financialUi.browserData.financialPolicy.agentId,
+      observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+    phase = "coordinator_postgres_transaction_integration";
+    await stopChild(apiChild);
+    const runTransactions = await runTransactionCases({ databaseUrl: process.env.OID_DATABASE_URL,
+      observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+    runTransactions.atomicStartIntegration = await (await import("./run-start-cases.mjs")).runStartCases({
+      databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+    runTransactions.releaseStoreIntegration = await (await import("./task-store-cases.mjs")).runTaskStoreCases({
+      databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL, repoRoot });
+    runTransactions.evaluationStoreIntegration = await (await import("./task-result-cases.mjs")).runTaskResultCases({
+      databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+    runTransactions.taskActionIntegration = await (await import("./task-action-cases.mjs")).runTaskActionCases({
+      databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+    runTransactions.executionBindingIntegration = await (await import("./task-execution-binding-cases.mjs")).runTaskExecutionBindingCases({
+      databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+    runTransactions.taskPreparationIntegration = await (await import("./task-preparation-cases.mjs")).runTaskPreparationCases({
+      databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL });
+    await restartOwnerApi();
+    launchBoundary.transactionIntegration = runTransactions;
+
     const operations = [
       issueOperation, sc009IssueOperation, activationOperation, revokeOperation, ...policyOperations, walletResult.linkOperationId,
       ...failedFlows.flatMap((row) => row.capture.authOperations.map((operation) => operation.operationId)),
@@ -720,6 +919,7 @@ async function main() {
     };
     const aapSaved = await saveAapEvidence({ ...aap, credentialData, oauthData, provenance });
     const billingSaved = await saveBillingEvidence({ ...billingData, provenance });
+    const launchSaved = await saveLaunchBoundaryCapture({ result: launchBoundary, provenance, repoRoot });
     const googleMatrixRows = await observer.snapshot({ subjects: googleMatrix.subjects, operationIds: googleMatrix.operations });
     const sc001 = await saveCompleteScenario("OID-SC-001", { trials: googleMatrix.trials, callerEmailEndpoint: googleMatrix.callerEmailEndpoint }, googleMatrixRows, provenance);
     const siweMatrixRows = await observer.snapshot({ ownerIds: [siweMatrix.ownerId], subjectHashes: siweMatrix.subjectHashes, operationIds: siweMatrix.operations, nonceHashes: siweMatrix.nonceHashes });
@@ -790,6 +990,7 @@ async function main() {
       aap: { privateCardAndPolicyObserved: true, manualCredentialObserved: credentialData.sc004Ready === true,
         browserConsentObserved: oauthData.sc002Ready === true, oauthExchangeObserved: oauthData.sc003Ready === true, scenarios: aapSaved },
       billing: { grantObserved: billingData.sc001Ready === true, immutableTermsObserved: billingData.sc002Ready === true, scenarios: billingSaved },
+      launch: launchSaved,
       observations: { adminOAuth: true, invitationIssuedInUI: true, invitationSecretExcludedFromList: true, inviteVerifierMatches: true, ownerActivationViaUI: true, independentReadOnlyPostgresRows: true },
       blockedReason: "Unsupported downstream boundaries, remaining scenario-specific negative matrices, and external OID-SC-012 compatibility remain blocked.",
     }, null, 2));
@@ -802,7 +1003,20 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
+  if (genuineS1OptIn && !genuineArtifactWritten) {
+    const code = typeof error?.code === "string" && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
+      ? error.code : "genuine_s1_startup_or_owner_setup_failed";
+    try {
+      const saved = genuineSequenceOptIn
+        ? await writeGenuineTrainingSequenceStartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code,
+          automaticWorkerEvaluation: genuineWorkerOptIn })
+        : await writeGenuineS1StartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code, taskId: genuineTaskId,
+          automaticWorkerEvaluation: genuineWorkerOptIn });
+      genuineArtifactWritten = true;
+      console.error(JSON.stringify({ event: "genuine_s1_capture_blocked", ...saved, phase, reasonCode: code }));
+    } catch { /* Preserve the original safe startup diagnostic if artifact writing is unavailable. */ }
+  }
   let safeDiagnostic;
   try {
     if (error?.safeDiagnostic && typeof error.safeDiagnostic === "object") {
@@ -817,6 +1031,9 @@ main().catch((error) => {
     .map((line) => line.trim().slice(0, 240));
   console.error(JSON.stringify({
     event: "oid_acceptance_failed",
+    captureId: runId,
+    ...(databaseIsolation ? { databaseIsolation } : {}),
+    ...(sourceInputsBeforeCheckpoint ? { sourceInputsBeforeCheckpoint } : {}),
     phase,
     errorName: error instanceof Error ? error.name : "Error",
     ...(safeCode ? { errorCode: safeCode } : {}),

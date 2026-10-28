@@ -14,6 +14,7 @@ import {
   type OperationRecord,
   type ParticipantAuth,
   type SelectedAction,
+  type PinnedV3FeeTier,
 } from './selected-execution.js';
 import {
   finalizeTransactionCost,
@@ -27,7 +28,7 @@ const HASH = /^0x[0-9a-f]{64}$/i;
 const HEX_BYTES = /^0x(?:[0-9a-f]{2})*$/i;
 const DECIMAL = /^(?:0|[1-9][0-9]{0,77})$/;
 const SIGNED_DECIMAL = /^-?(?:0|[1-9][0-9]{0,77})$/;
-const ACTION_KINDS = new Set(['approve', 'wrap', 'unwrap', 'swap']);
+const ACTION_KINDS = new Set(['approve', 'transfer', 'wrap', 'unwrap', 'swap']);
 
 type OperationRow = {
   operation_id: string;
@@ -54,6 +55,40 @@ type SelectedExecutionRow = {
   reason_code: string | null;
   measurement_json: unknown;
 };
+
+type PinnedRoutePoolIdentity = { feeTier: PinnedV3FeeTier; address: string; codeHash: string };
+
+export type AdminReconciliationTarget =
+  | {
+    kind: 'pending';
+    operationId: string;
+    envId: string;
+    generationId: string;
+    manifestSha256: string;
+    operationStatus: 'settling' | 'settlement_unknown';
+    payer: Address;
+    transactionHash: Hex;
+    action: SelectedAction;
+    intent: ExecutionTransactionObservation;
+    before: ExecutionSnapshot;
+    previousMeasurementSha256: string | null;
+    originalEventRefs: Array<{
+      eventSequence: string;
+      eventId: string;
+      eventKind: string;
+      transactionHash: string | null;
+      eventSha256: string;
+    }>;
+  }
+  | {
+    kind: 'terminal';
+    operationId: string;
+    envId: string;
+    generationId: string;
+    outcome: 'success' | 'reverted';
+    transactionHash: Hex;
+  }
+  | { kind: 'unknown'; operationId: string; reasonCode: string; transactionHash: Hex | null };
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -122,7 +157,7 @@ function snapshot(value: unknown): ExecutionSnapshot {
   const object = asObject(value, 'execution_persistence_prestate_invalid');
   const names = [
     'blockNumber', 'payerNativeWei', 'payerWethUnits', 'payerUsdcUnits',
-    'recipientUsdcUnits', 'wethRouterAllowance', 'poolWethUnits', 'poolUsdcUnits',
+    'recipientWethUnits', 'recipientUsdcUnits', 'wethRouterAllowance', 'usdcRouterAllowance', 'poolWethUnits', 'poolUsdcUnits',
     'poolLiquidity', 'poolSqrtPriceX96',
   ] as const;
   if (Object.keys(object).length !== names.length || names.some((name) => !(name in object))) {
@@ -191,16 +226,18 @@ function actionFromMeasurement(
   value: unknown,
   transaction: ExecutionTransactionObservation,
   receipt: Record<string, unknown>,
+  routePools?: readonly PinnedRoutePoolIdentity[],
 ): SelectedAction {
   const object = asObject(value, 'execution_persistence_measurement_invalid');
   const kind = object.kind;
   if (typeof kind !== 'string' || !ACTION_KINDS.has(kind)) return fail('execution_persistence_measurement_invalid');
 
   if (kind === 'approve') {
-    exactKeys(object, ['kind', 'token', 'spender', 'amountUnits', 'gasLimit'], 'execution_persistence_measurement_action_invalid');
+    exactKeys(object, ['kind', 'tokenAssetId', 'token', 'spender', 'amountUnits', 'gasLimit'], 'execution_persistence_measurement_action_invalid');
+    if (object.tokenAssetId !== 'WETH' && object.tokenAssetId !== 'USDC') return fail('execution_persistence_measurement_action_invalid');
     const token = address(object.token, 'execution_persistence_measurement_action_invalid');
     const spender = address(object.spender, 'execution_persistence_measurement_action_invalid');
-    const action = selectedAction({ kind, amountUnits: object.amountUnits, gasLimit: object.gasLimit }, kind);
+    const action = selectedAction({ kind, tokenAssetId: object.tokenAssetId, amountUnits: object.amountUnits, gasLimit: object.gasLimit }, kind);
     if (action.kind !== 'approve') return fail('execution_persistence_measurement_action_invalid');
     if (transaction.to?.toLowerCase() !== token.toLowerCase() || transaction.valueWei !== '0') {
       return fail('execution_persistence_measurement_action_binding_conflict');
@@ -227,26 +264,77 @@ function actionFromMeasurement(
     return action;
   }
 
+  if (kind === 'transfer') {
+    exactKeys(object, ['kind', 'token', 'amountUnits', 'recipient', 'gasLimit'], 'execution_persistence_measurement_action_invalid');
+    const token = address(object.token, 'execution_persistence_measurement_action_invalid');
+    const recipient = address(object.recipient, 'execution_persistence_measurement_action_invalid');
+    const action = selectedAction({ kind, amountUnits: object.amountUnits, recipient, gasLimit: object.gasLimit }, kind);
+    if (action.kind !== 'transfer') return fail('execution_persistence_measurement_action_invalid');
+    if (transaction.to?.toLowerCase() !== token.toLowerCase() || transaction.valueWei !== '0') {
+      return fail('execution_persistence_measurement_action_binding_conflict');
+    }
+    const expectedInput = `0xa9059cbb${encodedAddressWord(recipient, 'execution_persistence_measurement_action_invalid')}${encodedUintWord(BigInt(action.amountUnits), 'execution_persistence_measurement_action_invalid')}`;
+    if (transaction.input.toLowerCase() !== expectedInput) return fail('execution_persistence_measurement_action_binding_conflict');
+    if (receipt.status === 'success') {
+      const from = address(receipt.from, 'execution_persistence_measurement_invalid');
+      const fromTopic = `0x${from.slice(2).toLowerCase().padStart(64, '0')}`;
+      const toTopic = `0x${recipient.slice(2).toLowerCase().padStart(64, '0')}`;
+      const amountData = `0x${encodedUintWord(BigInt(action.amountUnits), 'execution_persistence_measurement_action_invalid')}`;
+      const matches = (receipt.logs as unknown[]).filter((value) => {
+        if (!isRecord(value) || typeof value.address !== 'string' || value.address.toLowerCase() !== token.toLowerCase() || !Array.isArray(value.topics)) return false;
+        const topics = value.topics;
+        return topics.length === 3 &&
+          typeof topics[0] === 'string' && topics[0].toLowerCase() === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' &&
+          typeof topics[1] === 'string' && topics[1].toLowerCase() === fromTopic &&
+          typeof topics[2] === 'string' && topics[2].toLowerCase() === toTopic &&
+          typeof value.data === 'string' && value.data.toLowerCase() === amountData;
+      });
+      if (matches.length !== 1) return fail('execution_persistence_measurement_action_receipt_conflict');
+    }
+    return action;
+  }
+
   if (kind === 'wrap' || kind === 'unwrap') {
     exactKeys(object, ['kind', 'amountWei', 'gasLimit'], 'execution_persistence_measurement_action_invalid');
     return selectedAction({ kind, amountWei: object.amountWei, gasLimit: object.gasLimit }, kind);
   }
 
-  exactKeys(object, [
-    'kind', 'route', 'router', 'tokenIn', 'tokenOut', 'fee', 'amountInWei',
-    'amountOutMinimumUsdcUnits', 'recipient', 'gasLimit',
-  ], 'execution_persistence_measurement_action_invalid');
+  const legacySwapKeys = [
+    'kind', 'route', 'router', 'inputAssetId', 'outputAssetId', 'tokenIn', 'tokenOut', 'fee', 'amountInUnits',
+    'amountOutMinimumUnits', 'recipient', 'gasLimit',
+  ];
+  const hasPinnedPoolIdentity = Object.hasOwn(object, 'poolAddress') || Object.hasOwn(object, 'poolCodeHash');
+  exactKeys(object, hasPinnedPoolIdentity ? [...legacySwapKeys, 'poolAddress', 'poolCodeHash'] : legacySwapKeys, 'execution_persistence_measurement_action_invalid');
+  if ((object.inputAssetId !== 'WETH' && object.inputAssetId !== 'USDC') ||
+      (object.outputAssetId !== 'WETH' && object.outputAssetId !== 'USDC') || object.inputAssetId === object.outputAssetId) {
+    return fail('execution_persistence_measurement_action_invalid');
+  }
   const router = address(object.router, 'execution_persistence_measurement_action_invalid');
   const tokenIn = address(object.tokenIn, 'execution_persistence_measurement_action_invalid');
   const tokenOut = address(object.tokenOut, 'execution_persistence_measurement_action_invalid');
   const fee = object.fee;
-  if (object.route !== 'uniswap-v3-exactInputSingle' || !Number.isSafeInteger(fee) || (fee as number) <= 0 || (fee as number) > 0xffffff) {
+  if (object.route !== 'uniswap-v3-exactInputSingle' || (fee !== 500 && fee !== 3000) ||
+      (fee === 3000 && !hasPinnedPoolIdentity)) {
     return fail('execution_persistence_measurement_action_invalid');
+  }
+  if (hasPinnedPoolIdentity) {
+    const poolAddress = address(object.poolAddress, 'execution_persistence_measurement_action_invalid');
+    if (typeof object.poolCodeHash !== 'string' || !HASH.test(object.poolCodeHash)) return fail('execution_persistence_measurement_action_invalid');
+    const expectedPool = routePools?.find((pool) => pool.feeTier === fee);
+    if (routePools && (!expectedPool || expectedPool.address.toLowerCase() !== poolAddress.toLowerCase() ||
+        expectedPool.codeHash.toLowerCase() !== object.poolCodeHash.toLowerCase())) {
+      return fail('execution_persistence_measurement_action_binding_conflict');
+    }
+  } else if (routePools && !routePools.some((pool) => pool.feeTier === fee)) {
+    return fail('execution_persistence_measurement_action_binding_conflict');
   }
   const action = selectedAction({
     kind,
-    amountInWei: object.amountInWei,
-    amountOutMinimumUsdcUnits: object.amountOutMinimumUsdcUnits,
+    feeTier: fee as PinnedV3FeeTier,
+    inputAssetId: object.inputAssetId,
+    outputAssetId: object.outputAssetId,
+    amountInUnits: object.amountInUnits,
+    amountOutMinimumUnits: object.amountOutMinimumUnits,
     recipient: object.recipient,
     gasLimit: object.gasLimit,
   }, kind);
@@ -260,8 +348,8 @@ function actionFromMeasurement(
     encodedAddressWord(tokenOut, 'execution_persistence_measurement_action_invalid'),
     encodedUintWord(BigInt(fee as number), 'execution_persistence_measurement_action_invalid'),
     encodedAddressWord(action.recipient, 'execution_persistence_measurement_action_invalid'),
-    encodedUintWord(BigInt(action.amountInWei), 'execution_persistence_measurement_action_invalid'),
-    encodedUintWord(BigInt(action.amountOutMinimumUsdcUnits), 'execution_persistence_measurement_action_invalid'),
+    encodedUintWord(BigInt(action.amountInUnits), 'execution_persistence_measurement_action_invalid'),
+    encodedUintWord(BigInt(action.amountOutMinimumUnits), 'execution_persistence_measurement_action_invalid'),
     encodedUintWord(0n, 'execution_persistence_measurement_action_invalid'),
   ];
   if (words.some((word, index) => word !== expectedWords[index])) {
@@ -291,12 +379,16 @@ function transactionMatchesPersistedIntent(
 function selectedActionInputsFromMeasurement(value: unknown): SelectedAction {
   const object = asObject(value, 'execution_persistence_measurement_invalid');
   const kind = object.kind;
-  if (kind === 'approve') return selectedAction({ kind, amountUnits: object.amountUnits, gasLimit: object.gasLimit }, kind);
+  if (kind === 'approve') return selectedAction({ kind, tokenAssetId: object.tokenAssetId, amountUnits: object.amountUnits, gasLimit: object.gasLimit }, kind);
+  if (kind === 'transfer') return selectedAction({ kind, amountUnits: object.amountUnits, recipient: object.recipient, gasLimit: object.gasLimit }, kind);
   if (kind === 'wrap' || kind === 'unwrap') return selectedAction({ kind, amountWei: object.amountWei, gasLimit: object.gasLimit }, kind);
   if (kind === 'swap') return selectedAction({
     kind,
-    amountInWei: object.amountInWei,
-    amountOutMinimumUsdcUnits: object.amountOutMinimumUsdcUnits,
+    feeTier: object.fee,
+    inputAssetId: object.inputAssetId,
+    outputAssetId: object.outputAssetId,
+    amountInUnits: object.amountInUnits,
+    amountOutMinimumUnits: object.amountOutMinimumUnits,
     recipient: object.recipient,
     gasLimit: object.gasLimit,
   }, kind);
@@ -308,7 +400,7 @@ function assertMeasurementActionBinding(measured: ExecutionMeasurement, action: 
   if (canonicalJson(persisted) !== canonicalJson(action)) fail('execution_persistence_terminal_binding_conflict');
 }
 
-function measurement(value: unknown, expectedHash: Hex, expectedStatus?: 'success' | 'reverted'): ExecutionMeasurement {
+function measurement(value: unknown, expectedHash: Hex, expectedStatus?: 'success' | 'reverted', routePools?: readonly PinnedRoutePoolIdentity[]): ExecutionMeasurement {
   const object = asObject(value, 'execution_persistence_measurement_invalid');
   const receipt = asObject(object.receipt, 'execution_persistence_measurement_invalid');
   const transaction = transactionIntent(object.transaction);
@@ -363,13 +455,19 @@ function measurement(value: unknown, expectedHash: Hex, expectedStatus?: 'succes
   const selectedPrincipalUnits = decimal(fee.selectedPrincipalUnits, 'execution_persistence_measurement_invalid');
   const principalUnits = decimal(fee.principalUnits, 'execution_persistence_measurement_invalid');
   if (fee.baseL1Fee !== 'unmodelled' ||
-      (fee.principalAsset !== null && fee.principalAsset !== 'ETH' && fee.principalAsset !== 'WETH')) {
+      (fee.principalAsset !== null && fee.principalAsset !== 'ETH' && fee.principalAsset !== 'WETH' && fee.principalAsset !== 'USDC')) {
     return fail('execution_persistence_measurement_invalid');
   }
-  const parsedAction = actionFromMeasurement(object.selectedAction, transaction, receipt);
+  const parsedAction = actionFromMeasurement(object.selectedAction, transaction, receipt, routePools);
   const expectedSelectedPrincipalUnits = parsedAction.kind === 'wrap' || parsedAction.kind === 'unwrap' ? parsedAction.amountWei
-    : parsedAction.kind === 'swap' ? parsedAction.amountInWei : '0';
+    : parsedAction.kind === 'swap' ? parsedAction.amountInUnits
+      : parsedAction.kind === 'transfer' ? parsedAction.amountUnits : '0';
+  const expectedPrincipalAsset = parsedAction.kind === 'wrap' ? 'ETH'
+    : parsedAction.kind === 'unwrap' ? 'WETH'
+      : parsedAction.kind === 'swap' ? parsedAction.inputAssetId
+      : parsedAction.kind === 'transfer' ? 'USDC' : null;
   if (selectedPrincipalUnits !== expectedSelectedPrincipalUnits ||
+      fee.principalAsset !== expectedPrincipalAsset ||
       principalUnits !== (status === 'success' ? selectedPrincipalUnits : '0')) {
     return fail('execution_persistence_measurement_invalid');
   }
@@ -377,9 +475,17 @@ function measurement(value: unknown, expectedHash: Hex, expectedStatus?: 'succes
   decimal(task.expenseBudgetUsdcUnits, 'execution_persistence_measurement_invalid');
   decimal(task.allowanceAfterUnits, 'execution_persistence_measurement_invalid');
   decimal(task.nativeEthReserveWei, 'execution_persistence_measurement_invalid');
-  if (typeof task.allowanceCleanupExpected !== 'boolean' ||
+  const expectedAllowanceAssetId = parsedAction.kind === 'approve' ? parsedAction.tokenAssetId
+    : parsedAction.kind === 'swap' ? parsedAction.inputAssetId : 'WETH';
+  const expectedAllowanceAfterUnits = expectedAllowanceAssetId === 'WETH' ? after.wethRouterAllowance : after.usdcRouterAllowance;
+  const expectedRecipient = parsedAction.kind === 'transfer' || parsedAction.kind === 'swap' ? parsedAction.recipient : null;
+  const expectedMinimumOutput = parsedAction.kind === 'swap' ? parsedAction.amountOutMinimumUnits : null;
+  if (typeof task.allowanceCleanupExpected !== 'boolean' || (task.allowanceAssetId !== 'WETH' && task.allowanceAssetId !== 'USDC') ||
       (task.recipient !== null && (typeof task.recipient !== 'string' || !ADDRESS.test(task.recipient))) ||
-      (task.selectedMinimumOutputUnits !== null && (typeof task.selectedMinimumOutputUnits !== 'string' || !DECIMAL.test(task.selectedMinimumOutputUnits)))) {
+      (task.selectedMinimumOutputUnits !== null && (typeof task.selectedMinimumOutputUnits !== 'string' || !DECIMAL.test(task.selectedMinimumOutputUnits))) ||
+      task.allowanceAssetId !== expectedAllowanceAssetId || task.allowanceAfterUnits !== expectedAllowanceAfterUnits ||
+      (task.recipient === null ? null : String(task.recipient).toLowerCase()) !== (expectedRecipient?.toLowerCase() ?? null) ||
+      (task.selectedMinimumOutputUnits === null ? null : String(task.selectedMinimumOutputUnits)) !== expectedMinimumOutput) {
     return fail('execution_persistence_measurement_invalid');
   }
   for (const logValue of receipt.logs) {
@@ -442,6 +548,7 @@ type ExecutionEventKind =
   | 'prestate_observed'
   | 'original_tx_hash_bound'
   | 'settlement_unknown'
+  | 'observer_reconciliation'
   | 'receipt_finalized'
   | 'rejected_before_broadcast';
 
@@ -471,7 +578,7 @@ async function appendEvent(
  * parameters or transaction payloads.
  */
 export class PostgresExecutionPersistence implements ExecutionPersistence {
-  constructor(private readonly costContext?: { manifestSha256: string; feePolicy: FeePolicySnapshot }) {}
+  constructor(private readonly costContext?: { manifestSha256: string; feePolicy: FeePolicySnapshot; routePools?: readonly PinnedRoutePoolIdentity[] }) {}
 
   private costIdentity(input: Omit<CostIdentity, 'manifestSha256' | 'feePolicy'>): CostIdentity {
     if (!this.costContext) fail('transaction_cost_context_not_pinned');
@@ -645,9 +752,10 @@ export class PostgresExecutionPersistence implements ExecutionPersistence {
       if (!selectedActionRow) fail('transaction_cost_selected_action_missing');
       const action = selectedAction(selectedActionRow.selected_action_json, selectedActionRow.action_kind);
       const selectedPrincipalUnits = action.kind === 'wrap' || action.kind === 'unwrap' ? action.amountWei
-        : action.kind === 'swap' ? action.amountInWei : '0';
+        : action.kind === 'swap' ? action.amountInUnits
+          : action.kind === 'transfer' ? action.amountUnits : '0';
       const selectedPrincipalAsset = action.kind === 'wrap' ? 'ETH'
-        : action.kind === 'unwrap' || action.kind === 'swap' ? 'WETH' : null;
+        : action.kind === 'unwrap' ? 'WETH' : action.kind === 'swap' ? action.inputAssetId : action.kind === 'transfer' ? 'USDC' : null;
       await insertUnknownTransactionCost(client, this.costIdentity({
         operationId,
         envId: row!.env_id,
@@ -710,11 +818,215 @@ export class PostgresExecutionPersistence implements ExecutionPersistence {
         row.receipt_status !== row.outcome) fail('execution_persistence_terminal_binding_conflict');
     const hash = transactionHash(row.transaction_hash, 'execution_persistence_hash_invalid');
     const action = selectedAction(row.selected_action_json, row.action_kind);
-    const measured = measurement(row.measurement_json, hash, row.outcome);
+    const measured = measurement(row.measurement_json, hash, row.outcome, this.costContext?.routePools);
     const intent = transactionIntent(row.transaction_intent_json);
     assertMeasurementActionBinding(measured, action);
     if (!transactionMatchesPersistedIntent(measured.transaction, intent)) fail('execution_persistence_terminal_binding_conflict');
     return { outcome: row.outcome, transactionHash: hash, measurement: measured };
+  }
+
+  /**
+   * Load the original operation binding for the private admin reconciler. The
+   * caller holds the environment advisory lock and a transaction; this method
+   * never accepts a transaction hash, action, payer, generation, or RPC URL
+   * from the request.
+   */
+  async readAdminReconciliationTarget(
+    client: PoolClient,
+    envId: string,
+    operationId: string,
+    expectedManifestSha256: string,
+  ): Promise<AdminReconciliationTarget | null> {
+    if (!/^[0-9a-f-]{36}$/i.test(operationId) || !/^[0-9a-f]{64}$/i.test(expectedManifestSha256)) {
+      return fail('execution_persistence_reconciliation_identity_invalid');
+    }
+    const result = await client.query<{
+      operation_id: string;
+      env_id: string;
+      generation_id: string;
+      participant_id: string;
+      operation_kind: string;
+      operation_status: string;
+      operation_receipt_status: string;
+      operation_transaction_hash: string | null;
+      generation_participant_id: string;
+      generation_payer_address: string;
+      generation_manifest_sha256: string | null;
+      environment_manifest_sha256: string;
+      action_kind: string;
+      selected_action_json: unknown;
+      prestate_json: unknown;
+      transaction_intent_json: unknown;
+      selected_transaction_hash: string | null;
+      selected_outcome: string;
+      measurement_json: unknown;
+    }>(
+      `SELECT o.operation_id::text,o.env_id,o.generation_id::text,o.participant_id,
+              o.operation_kind,o.status AS operation_status,o.receipt_status AS operation_receipt_status,
+              o.transaction_hash AS operation_transaction_hash,
+              g.participant_id AS generation_participant_id,g.payer_address AS generation_payer_address,
+              g.manifest_sha256 AS generation_manifest_sha256,env.manifest_sha256 AS environment_manifest_sha256,
+              e.action_kind,e.selected_action_json,e.prestate_json,e.transaction_intent_json,
+              e.transaction_hash AS selected_transaction_hash,e.outcome AS selected_outcome,e.measurement_json
+         FROM bef_operation o
+         JOIN bef_selected_execution e USING(operation_id,env_id,generation_id)
+         JOIN bef_generation g USING(env_id,generation_id)
+         JOIN bef_environment env USING(env_id)
+        WHERE o.env_id=$1 AND o.operation_id=$2::uuid
+        FOR UPDATE OF o,e,g`,
+      [envId, operationId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+
+    const operationHash = row.operation_transaction_hash;
+    const selectedHash = row.selected_transaction_hash;
+    const safeHash = operationHash && HASH.test(operationHash) ? operationHash as Hex : null;
+    const identityMatches = row.operation_id === operationId && row.env_id === envId &&
+      row.participant_id === row.generation_participant_id && row.operation_kind === row.action_kind &&
+      row.generation_manifest_sha256?.trim().toLowerCase() === expectedManifestSha256.toLowerCase() &&
+      row.environment_manifest_sha256.trim().toLowerCase() === expectedManifestSha256.toLowerCase() &&
+      safeHash !== null && selectedHash !== null && HASH.test(selectedHash) &&
+      safeHash.toLowerCase() === selectedHash.toLowerCase();
+    if (!identityMatches) {
+      return { kind: 'unknown', operationId, reasonCode: 'persisted_binding_conflict', transactionHash: safeHash };
+    }
+
+    let payer: Address;
+    let action: SelectedAction;
+    let intent: ExecutionTransactionObservation;
+    let before: ExecutionSnapshot;
+    try {
+      payer = address(row.generation_payer_address, 'execution_persistence_reconciliation_payer_invalid');
+      action = selectedAction(row.selected_action_json, row.action_kind);
+      intent = transactionIntent(row.transaction_intent_json);
+      before = snapshot(row.prestate_json);
+    } catch {
+      return { kind: 'unknown', operationId, reasonCode: 'persisted_binding_invalid', transactionHash: safeHash };
+    }
+    if (intent.hash.toLowerCase() !== safeHash!.toLowerCase() || intent.from.toLowerCase() !== payer.toLowerCase()) {
+      return { kind: 'unknown', operationId, reasonCode: 'persisted_binding_conflict', transactionHash: safeHash };
+    }
+
+    let previousMeasurementSha256: string | null = null;
+    if (row.measurement_json !== null) {
+      try {
+        const priorMeasurement = measurement(row.measurement_json, safeHash!, undefined, this.costContext?.routePools);
+        assertMeasurementActionBinding(priorMeasurement, action);
+        if (!transactionMatchesPersistedIntent(priorMeasurement.transaction, intent)) {
+          return { kind: 'unknown', operationId, reasonCode: 'persisted_measurement_binding_conflict', transactionHash: safeHash };
+        }
+        previousMeasurementSha256 = sha256(canonicalJson(priorMeasurement));
+      } catch {
+        return { kind: 'unknown', operationId, reasonCode: 'persisted_measurement_invalid', transactionHash: safeHash };
+      }
+    }
+
+    if (['settling', 'settlement_unknown'].includes(row.operation_status) &&
+        ['settling', 'settlement_unknown'].includes(row.selected_outcome) &&
+        row.operation_receipt_status === 'unknown') {
+      const events = await client.query<{
+        event_sequence: string;
+        event_id: string;
+        event_kind: string;
+        transaction_hash: string | null;
+        event_json: unknown;
+      }>(
+        `SELECT event_sequence::text,event_id::text,event_kind,transaction_hash,event_json
+           FROM bef_selected_execution_event
+          WHERE env_id=$1 AND generation_id=$2::uuid AND operation_id=$3::uuid
+          ORDER BY event_sequence`,
+        [envId, row.generation_id, operationId],
+      );
+      return {
+        kind: 'pending', operationId, envId, generationId: row.generation_id,
+        manifestSha256: expectedManifestSha256.toLowerCase(),
+        operationStatus: row.operation_status as 'settling' | 'settlement_unknown',
+        payer, transactionHash: safeHash!, action, intent, before,
+        previousMeasurementSha256,
+        originalEventRefs: events.rows.map((event) => ({
+          eventSequence: event.event_sequence,
+          eventId: event.event_id,
+          eventKind: event.event_kind,
+          transactionHash: event.transaction_hash,
+          eventSha256: sha256(canonicalJson(decodeJson(event.event_json))),
+        })),
+      };
+    }
+
+    if ((row.operation_status === 'settled' && row.selected_outcome === 'success' && row.operation_receipt_status === 'success') ||
+        (row.operation_status === 'reverted' && row.selected_outcome === 'reverted' && row.operation_receipt_status === 'reverted')) {
+      try {
+        const completed = await this.readCompleted(client, operationId);
+        if (completed && completed.transactionHash.toLowerCase() === safeHash!.toLowerCase()) {
+          return {
+            kind: 'terminal', operationId, envId, generationId: row.generation_id,
+            outcome: completed.outcome, transactionHash: completed.transactionHash,
+          };
+        }
+      } catch {
+        // Contradictory terminal evidence stays unknown and is never repaired here.
+      }
+    }
+    return { kind: 'unknown', operationId, reasonCode: 'operation_not_reconcilable', transactionHash: safeHash };
+  }
+
+  /** Persist a read-only observer record, and finish only verified receipt effects. */
+  async recordAdminReconciliation(
+    client: PoolClient,
+    input: {
+      envId: string;
+      operationId: string;
+      expectedManifestSha256: string;
+      transactionHash: Hex;
+      measurement: ExecutionMeasurement;
+      effectsValid: boolean;
+      observation: Record<string, unknown>;
+    },
+  ): Promise<
+    | { kind: 'finalized'; outcome: 'success' | 'reverted'; transactionHash: Hex; observationSha256: string; observationRef: string }
+    | { kind: 'unknown'; transactionHash: Hex; observationSha256: string; observationRef: string }
+  > {
+    const target = await this.readAdminReconciliationTarget(
+      client, input.envId, input.operationId, input.expectedManifestSha256,
+    );
+    if (!target || target.kind !== 'pending' || target.transactionHash.toLowerCase() !== input.transactionHash.toLowerCase()) {
+      return fail('execution_persistence_reconciliation_binding_conflict');
+    }
+    const measured = measurement(input.measurement, target.transactionHash, undefined, this.costContext?.routePools);
+    assertMeasurementActionBinding(measured, target.action);
+    if (!transactionMatchesPersistedIntent(measured.transaction, target.intent)) {
+      return fail('execution_persistence_reconciliation_effects_unverified');
+    }
+    const evidenceJson = canonicalJson(input.observation);
+    const evidenceHash = sha256(evidenceJson);
+    const eventId = randomUUID();
+    const observationRef = `bef_selected_execution_event:${eventId}`;
+    await client.query(
+      `INSERT INTO bef_selected_execution_event(
+         event_id,operation_id,env_id,generation_id,event_kind,transaction_hash,event_json
+       ) VALUES($1,$2,$3,$4,'observer_reconciliation',$5,$6::jsonb)`,
+      [eventId, input.operationId, input.envId, target.generationId, target.transactionHash,
+        JSON.stringify({
+          persistedManifestSha256: target.manifestSha256,
+          observerManifestSha256: input.expectedManifestSha256.toLowerCase(),
+          transactionHash: target.transactionHash,
+          observerEvidenceSha256: evidenceHash,
+          observerEvidenceRef: observationRef,
+          previousMeasurementSha256: target.previousMeasurementSha256,
+          originalEventRefs: target.originalEventRefs,
+          observerEvidence: JSON.parse(evidenceJson) as Record<string, unknown>,
+        })],
+    );
+    if (input.effectsValid) {
+      const outcome = measured.receipt.status === 'success' ? 'success' : 'reverted';
+      await this.finish(client, input.operationId, target.transactionHash, outcome, measured);
+      return { kind: 'finalized', outcome, transactionHash: target.transactionHash, observationSha256: evidenceHash, observationRef };
+    }
+    if (target.operationStatus === 'settling') {
+      await this.markUnknown(client, input.operationId, target.transactionHash, measured);
+    }
+    return { kind: 'unknown', transactionHash: target.transactionHash, observationSha256: evidenceHash, observationRef };
   }
 
   async rejectBeforeBroadcast(client: PoolClient, operationId: string, reasonCode: string): Promise<void> {
@@ -759,7 +1071,7 @@ export class PostgresExecutionPersistence implements ExecutionPersistence {
     measuredValue?: ExecutionMeasurement | null,
   ): Promise<void> {
     const hash = transactionHash(txHash, 'execution_persistence_hash_invalid');
-    const measured = measuredValue == null ? null : measurement(measuredValue, hash);
+    const measured = measuredValue == null ? null : measurement(measuredValue, hash, undefined, this.costContext?.routePools);
     if (measured) {
       const binding = await storedExecutionBinding(client, operationId, hash);
       assertMeasurementActionBinding(measured, binding.action);
@@ -811,7 +1123,7 @@ export class PostgresExecutionPersistence implements ExecutionPersistence {
   ): Promise<void> {
     const hash = transactionHash(txHash, 'execution_persistence_hash_invalid');
     if (!measuredValue) fail('execution_persistence_measurement_required');
-    const measured = measurement(measuredValue, hash, outcome);
+    const measured = measurement(measuredValue, hash, outcome, this.costContext?.routePools);
     const binding = await storedExecutionBinding(client, operationId, hash);
     assertMeasurementActionBinding(measured, binding.action);
     if (!transactionMatchesPersistedIntent(measured.transaction, binding.intent)) {

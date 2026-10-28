@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "bts-local-case-assembly-policy/v1",
+  "profileId": "local-bef-2026-10-27-v1",
+  "boundary": "isolated_local_bef_anvil_fork",
+  "taskDeadlineSeconds": 60,
+  "trainingRunTimeoutSeconds": 480,
+  "rankedRunTimeoutSeconds": 720,
+  "expenseBudget": {
+    "basis": ["paid_service_charge", "participant_gas_success_or_revert", "verified_dex_fee"],
+    "participantGasConversion": "floor_after_summing_receipt_gas_wei_at_pinned_rate",
+    "dexFeeConversion": "ceil_exact_input_units_times_fee_tier_over_1000000",
+    "headroomMultiplierNumerator": "2",
+    "headroomMultiplierDenominator": "1",
+    "roundUpToUsdcUnits": "10000",
+    "excludePrincipal": true,
+    "excludeSponsoredFacilitatorGas": true,
+    "pinOnceAfterReferenceBeforeReleaseActivation": true
+  },
+  "nativeReserveWei": {
+    "S1": "10000000000000000",
+    "S4": "10000000000000000",
+    "M3": "10000000000000000",
+    "M4": "10000000000000000",
+    "H2": "10000000000000000",
+    "H3": "10000000000000000",
+    "U1": "9999994000000000000"
+  },
+  "permittedProvenanceIds": ["synthetic-benchmark-fixture"],
+  "duplicatePurchaseIdentity": "one_public_purchase_operation_per_resource",
+  "routeContractIds": {
+    "fee500": { "routerContractId": "swapRouter02", "poolContractId": "pool" },
+    "fee3000": { "routerContractId": "swapRouter02", "poolContractId": "pool3000" }
+  },
+  "difficultyApproval": false,
+  "releaseActivation": false
+}

@@ -1,0 +1,434 @@
+{
+  "acceptance_state": "blocked",
+  "active_delta_sha256": "bb5e1bc1a49e83331d69274de9d1ec1db8b530a787f8287e945a4d25cf3d82ec",
+  "bef_spec_profile": "active-delta",
+  "blocked_prerequisites": [
+    {
+      "adapter_module": "tests.bdd.adapters.benchmark_task_suite",
+      "approved_scenarios": [
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_manifest_validator_environment_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_001",
+          "requirement_id": "BTS-REQ-001",
+          "scenario_id": "BTS-SC-001"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_manifest_validator_environment_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_002",
+          "requirement_id": "BTS-REQ-001",
+          "scenario_id": "BTS-SC-002"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_catalog_quote_shared_ledger",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_003",
+          "requirement_id": "BTS-REQ-002",
+          "scenario_id": "BTS-SC-003"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_catalog_quote_shared_ledger",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_004",
+          "requirement_id": "BTS-REQ-002",
+          "scenario_id": "BTS-SC-004"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_cutoff_evm_evidence_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_005",
+          "requirement_id": "BTS-REQ-003",
+          "scenario_id": "BTS-SC-005"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_cutoff_evm_evidence_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_006",
+          "requirement_id": "BTS-REQ-003",
+          "scenario_id": "BTS-SC-006"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_tool_result_http_render_cache",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_007",
+          "requirement_id": "BTS-REQ-004",
+          "scenario_id": "BTS-SC-007"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_tool_result_http_render_cache",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_008",
+          "requirement_id": "BTS-REQ-004",
+          "scenario_id": "BTS-SC-008"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_full_suite_coordinator_leaderboard_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_009",
+          "requirement_id": "BTS-REQ-005",
+          "scenario_id": "BTS-SC-009"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_scoped_tool_http_isolated_evm",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_010",
+          "requirement_id": "BTS-REQ-006",
+          "scenario_id": "BTS-SC-010"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s1_tool_evm_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_011",
+          "requirement_id": "BTS-REQ-007",
+          "scenario_id": "BTS-SC-011"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s1_tool_evm_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_012",
+          "requirement_id": "BTS-REQ-007",
+          "scenario_id": "BTS-SC-012"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s2_offer_answer_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_013",
+          "requirement_id": "BTS-REQ-008",
+          "scenario_id": "BTS-SC-013"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s2_offer_answer_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_014",
+          "requirement_id": "BTS-REQ-008",
+          "scenario_id": "BTS-SC-014"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s3_catalog_answer_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_015",
+          "requirement_id": "BTS-REQ-009",
+          "scenario_id": "BTS-SC-015"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s3_catalog_answer_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_016",
+          "requirement_id": "BTS-REQ-009",
+          "scenario_id": "BTS-SC-016"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s4_allowance_evm_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_017",
+          "requirement_id": "BTS-REQ-010",
+          "scenario_id": "BTS-SC-017"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_s4_allowance_evm_grader_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_018",
+          "requirement_id": "BTS-REQ-010",
+          "scenario_id": "BTS-SC-018"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m1_x402_evm_delivery_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_019",
+          "requirement_id": "BTS-REQ-011",
+          "scenario_id": "BTS-SC-019"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m1_x402_evm_delivery_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_020",
+          "requirement_id": "BTS-REQ-011",
+          "scenario_id": "BTS-SC-020"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m2_x402_catalog_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_021",
+          "requirement_id": "BTS-REQ-012",
+          "scenario_id": "BTS-SC-021"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m2_x402_catalog_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_022",
+          "requirement_id": "BTS-REQ-012",
+          "scenario_id": "BTS-SC-022"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m3_swap_evm_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_023",
+          "requirement_id": "BTS-REQ-013",
+          "scenario_id": "BTS-SC-023"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m3_swap_evm_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_024",
+          "requirement_id": "BTS-REQ-013",
+          "scenario_id": "BTS-SC-024"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m4_swap_allowance_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_025",
+          "requirement_id": "BTS-REQ-014",
+          "scenario_id": "BTS-SC-025"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_m4_swap_allowance_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_026",
+          "requirement_id": "BTS-REQ-014",
+          "scenario_id": "BTS-SC-026"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_h1_x402_components_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_027",
+          "requirement_id": "BTS-REQ-015",
+          "scenario_id": "BTS-SC-027"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_h1_x402_components_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_028",
+          "requirement_id": "BTS-REQ-015",
+          "scenario_id": "BTS-SC-028"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_h2_payout_conversion_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_029",
+          "requirement_id": "BTS-REQ-016",
+          "scenario_id": "BTS-SC-029"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_h2_payout_conversion_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_030",
+          "requirement_id": "BTS-REQ-016",
+          "scenario_id": "BTS-SC-030"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_h3_data_swap_dependency_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_031",
+          "requirement_id": "BTS-REQ-017",
+          "scenario_id": "BTS-SC-031"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_h3_data_swap_dependency_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_032",
+          "requirement_id": "BTS-REQ-017",
+          "scenario_id": "BTS-SC-032"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_u1_treasury_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_033",
+          "requirement_id": "BTS-REQ-018",
+          "scenario_id": "BTS-SC-033"
+        },
+        {
+          "adapter_profile": "benchmark_task_suite_http_evm_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_u1_treasury_grader",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_bts_sc_034",
+          "requirement_id": "BTS-REQ-018",
+          "scenario_id": "BTS-SC-034"
+        }
+      ],
+      "code": "active_adapter_module_missing",
+      "execution_started": false,
+      "expected_source": "tests/bdd/adapters/benchmark_task_suite.py",
+      "source_inventory": {
+        "approved_proposal": "openspec/changes/benchmark-task-suite/bdd-harness-proposal.json",
+        "normative_source": "openspec/changes/benchmark-task-suite/specs/*/spec.md",
+        "runtime_contract": "tests/bdd/changes/benchmark-task-suite/harness-contracts.json",
+        "scenario_map": "tests/bdd/changes/benchmark-task-suite/scenario-map.md"
+      }
+    }
+  ],
+  "change": "benchmark-task-suite",
+  "command": [
+    ".venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_benchmark_task_suite_bdd.py",
+    "--change",
+    "benchmark-task-suite",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/benchmark-task-suite-pytest.xml"
+  ],
+  "command_executed": false,
+  "execution_started": false,
+  "exit_code": 2,
+  "finished_at_utc": "2026-10-27T04:45:15.835388Z",
+  "gate": {
+    "class": "environment",
+    "mandatory": true
+  },
+  "git_commit": "4ef9f4478514590c8cef512c4f3ec6196a48e0f3",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "reason_code": "active_adapter_module_missing",
+    "status": "not_run"
+  },
+  "harness_contract_sha256": "2012e752cccd30359d7cff6aaf59c745d65c8d9834325a54d63e7467b1fd07af",
+  "harness_sources_sha256": "90c68069838cb73b56989a1ce979b8111efcd743b2bbe2e5d2242920899d37fd",
+  "harness_sources_sha256_after": "90c68069838cb73b56989a1ce979b8111efcd743b2bbe2e5d2242920899d37fd",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/benchmark-task-suite/specs/*/spec.md",
+  "scenario_map_sha256": "3a4f83629669450623e9a737789c49087df14653c755f5e035e3819a43c78aad",
+  "scenario_results": {
+    "BTS-SC-001": "not_run",
+    "BTS-SC-002": "not_run",
+    "BTS-SC-003": "not_run",
+    "BTS-SC-004": "not_run",
+    "BTS-SC-005": "not_run",
+    "BTS-SC-006": "not_run",
+    "BTS-SC-007": "not_run",
+    "BTS-SC-008": "not_run",
+    "BTS-SC-009": "not_run",
+    "BTS-SC-010": "not_run",
+    "BTS-SC-011": "not_run",
+    "BTS-SC-012": "not_run",
+    "BTS-SC-013": "not_run",
+    "BTS-SC-014": "not_run",
+    "BTS-SC-015": "not_run",
+    "BTS-SC-016": "not_run",
+    "BTS-SC-017": "not_run",
+    "BTS-SC-018": "not_run",
+    "BTS-SC-019": "not_run",
+    "BTS-SC-020": "not_run",
+    "BTS-SC-021": "not_run",
+    "BTS-SC-022": "not_run",
+    "BTS-SC-023": "not_run",
+    "BTS-SC-024": "not_run",
+    "BTS-SC-025": "not_run",
+    "BTS-SC-026": "not_run",
+    "BTS-SC-027": "not_run",
+    "BTS-SC-028": "not_run",
+    "BTS-SC-029": "not_run",
+    "BTS-SC-030": "not_run",
+    "BTS-SC-031": "not_run",
+    "BTS-SC-032": "not_run",
+    "BTS-SC-033": "not_run",
+    "BTS-SC-034": "not_run"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-27T04:45:10.549183Z"
+}

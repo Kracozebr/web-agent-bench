@@ -44,7 +44,7 @@ import {
   RECORD_UNKNOWN_SETTLEMENT_OPERATION_SQL,
   RECORD_UNKNOWN_SETTLEMENT_PAYMENT_SQL,
 } from './settlement-unknown-sql.js';
-import { durableOfferRequirementsMatch, selectedPinnedOffer } from './offers.js';
+import { durableOfferRequirementsMatch, selectedPinnedResourceOffer } from './offers.js';
 import { recordPrivateVerificationStarted } from './facilitator-verification.js';
 import { buildSafeRequest } from './facilitator-observation.js';
 
@@ -862,9 +862,12 @@ export async function startFacilitator(): Promise<void> {
       resource_variant: string;
       selected_offer_id: string | null;
       selected_amount_units: string | null;
+      selected_resource_id: string | null;
+      selected_resource_sha256: string | null;
       selection_precedes_verification: boolean;
     }>(
       `SELECT o.request_sha256,o.operation_kind,o.status,g.resource_variant,o.selected_offer_id,o.selected_amount_units::text,
+              o.selected_resource_id,o.selected_resource_sha256,
               (o.offer_selected_at IS NOT NULL AND o.verification_started_at IS NOT NULL
                 AND o.verification_started_at >= o.offer_selected_at) AS selection_precedes_verification
          FROM bef_operation o JOIN bef_generation g USING(env_id,generation_id)
@@ -885,12 +888,17 @@ export async function startFacilitator(): Promise<void> {
     }
     if (phase === 'verify' && candidate?.resource_variant === 'verification_without_receipt'
       && candidate.status === 'awaiting_payment') {
-      const selectedPinned = selectedPinnedOffer(manifest, { offerId: candidate.selected_offer_id });
-      if (!selectedPinned || candidate.selected_amount_units !== selectedPinned.amount
-        || parsed.data.paymentRequirements.amount !== selectedPinned.amount) {
+      const selectedPinned = selectedPinnedResourceOffer(manifest, {
+        resourceId: candidate.selected_resource_id ?? manifest.x402.resourceId,
+        offerId: candidate.selected_offer_id,
+      });
+      if (!selectedPinned || (candidate.selected_resource_sha256 !== null
+          && candidate.selected_resource_sha256 !== selectedPinned.resource.resourceSha256)
+        || candidate.selected_amount_units !== selectedPinned.offer.amount
+        || parsed.data.paymentRequirements.amount !== selectedPinned.offer.amount) {
         return reply.code(409).send({ error: 'offer_choice_mismatch' });
       }
-      const requestSupport = supportedRequestChecks(parsed.data, manifest, account.address, selectedPinned.amount);
+      const requestSupport = supportedRequestChecks(parsed.data, manifest, account.address, selectedPinned.offer.amount);
       if (!requestSupport.supported) return reply.code(400).send({
         error: 'unsupported_payment_requirements',
         reasonCode: parsed.data.paymentRequirements.scheme !== manifest.x402.scheme ||
@@ -906,7 +914,7 @@ export async function startFacilitator(): Promise<void> {
           generationId: context.generationId,
           operationId: context.operationId,
           requestSha256: context.requestSha256,
-        }, selectedPinned);
+        }, selectedPinned.offer);
         if (!recorded) return reply.code(409).send({ error: 'offer_choice_mismatch' });
         selected = await selectOperation();
       } catch {

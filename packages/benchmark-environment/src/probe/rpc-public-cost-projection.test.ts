@@ -17,8 +17,10 @@ const spender = `0x${'6'.repeat(40)}`;
 const sentinel = `0x${'9'.repeat(64)}`;
 const selectedHash = `0x${'8'.repeat(64)}`;
 const mismatchedHash = `0x${'7'.repeat(64)}`;
+const transferHash = `0x${'b'.repeat(64)}`;
 const selectedInput = `0x095ea7b3${'0'.repeat(24)}${spender.slice(2)}${'0'.repeat(63)}1`;
 const mismatchedInput = `0x095ea7b3${'0'.repeat(24)}${spender.slice(2)}${'0'.repeat(63)}2`;
+const transferInput = `0xa9059cbb${'0'.repeat(24)}${destination.slice(2)}${'0'.repeat(60)}03e8`;
 const transferWithAuthorizationInput = `${keccak256(toBytes('transferWithAuthorization(address,address,uint256,uint256,uint256,bytes32,uint8,bytes32,bytes32)')).slice(0, 10)}${'0'.repeat(9 * 64)}`;
 
 test('SC-008 transaction and full-block evidence persists only fixed public cost fields', async () => {
@@ -38,13 +40,14 @@ test('SC-008 transaction and full-block evidence persists only fixed public cost
     const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
     const requestedHash = request.params[0];
     const isSelected = requestedHash === selectedHash;
+    const isTransfer = requestedHash === transferHash;
     const isMismatched = requestedHash === mismatchedHash;
     const tx = {
-      hash: isSelected ? selectedHash : isMismatched ? mismatchedHash : transactionHash,
+      hash: isSelected ? selectedHash : isTransfer ? transferHash : isMismatched ? mismatchedHash : transactionHash,
       from: payer, to: destination, value: '0x0', nonce: '0x1',
       type: '0x2', chainId: '0x2105', gas: '0x5208', maxFeePerGas: '0x100', maxPriorityFeePerGas: '0x2',
       blockHash, blockNumber: '0x10', transactionIndex: '0x0',
-      input: isSelected ? selectedInput : isMismatched ? mismatchedInput : sentinel,
+      input: isSelected ? selectedInput : isTransfer ? transferInput : isMismatched ? mismatchedInput : sentinel,
       r: sentinel, s: sentinel, v: sentinel,
       authorization: { signature: sentinel, nonce: sentinel },
     };
@@ -104,6 +107,19 @@ test('SC-008 transaction and full-block evidence persists only fixed public cost
     });
     assert.equal(selectedResult.result.input, selectedInput);
     for (const field of ['r', 's', 'v', 'authorization']) assert.equal(Object.hasOwn(selectedResult.result, field), false);
+
+    const transferResult = await rpc.call<Record<string, unknown>>({
+      url, endpointBoundary: 'local-chain-readonly-proxy', environmentId: 'bef-sc008-projection',
+      method: 'eth_getTransactionByHash', params: [transferHash], operationId: 'operation-a',
+      variantId: 'task_s1_transfer_capture', label: 'task-s1-selected-transfer-transaction',
+      selectedExecutionTransaction: {
+        environmentId: 'bef-sc008-projection', operationId: 'operation-a', variantId: 'task_s1_transfer_capture',
+        kind: 'transfer', transactionHash: transferHash, expectedFrom: payer, expectedTo: destination,
+        expectedValueWei: '0', expectedChainId: '8453', expectedNonce: '1', expectedGas: '21000', expectedInput: transferInput,
+      },
+    });
+    assert.equal(transferResult.result.input, transferInput);
+    for (const field of ['r', 's', 'v', 'authorization']) assert.equal(Object.hasOwn(transferResult.result, field), false);
 
     await assert.rejects(() => rpc.call<Record<string, unknown>>({
       url, endpointBoundary: 'local-chain-readonly-proxy', environmentId: 'bef-sc008-projection',

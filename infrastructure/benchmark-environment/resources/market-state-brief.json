@@ -1,0 +1,27 @@
+{
+  "resourceId": "bef-market-state-brief-v1",
+  "schema": "web-agent-bench/market-state-brief/v1",
+  "provenance": {
+    "classification": "synthetic-benchmark-fixture",
+    "boundary": "private acceptance environment",
+    "source": "repository-authored deterministic fixture"
+  },
+  "content": {
+    "title": "Market state fixture",
+    "routeCode": "alternative",
+    "observations": [
+      {
+        "asset": "USDC",
+        "network": "eip155:8453",
+        "unit": "6-decimal base units",
+        "observation": "This fixture is static benchmark content and is not a live market quote."
+      },
+      {
+        "asset": "WETH",
+        "network": "eip155:8453",
+        "unit": "18-decimal base units",
+        "observation": "The catalog resource identifier and content digest are pinned by the local runtime manifest."
+      }
+    ]
+  }
+}

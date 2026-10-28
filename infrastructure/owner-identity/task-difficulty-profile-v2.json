@@ -1,0 +1,174 @@
+{
+  "schemaVersion": "bts-task-case-input-profile/v2",
+  "profileId": "bts-task-difficulty-v2",
+  "classification": "candidate_case_inputs_not_capture_or_release",
+  "status": "source_profile_candidate_unactivated",
+  "decisionRecord": {
+    "documentPath": "docs/task-release-difficulty-redesign-review.md",
+    "date": "2026-10-27",
+    "selectedDirection": "retain-previous-tier-ranges",
+    "exactProfileParametersReview": "pending",
+    "tierRanges": {
+      "simple": { "minActions": 1, "maxActions": 2 },
+      "medium": { "minActions": 3, "maxActions": 5 },
+      "hard": { "minActions": 6, "maxActions": 9 },
+      "ultra": { "minActions": 10 }
+    }
+  },
+  "compatibility": {
+    "defaultProfile": "legacy",
+    "legacyCapturesAreImmutable": true,
+    "v2RequiresExplicitSelection": true
+  },
+  "runtimeManifest": {
+    "path": "infrastructure/benchmark-environment/manifest.json",
+    "sha256": "e18e51cc85255d78c31262acecb0a556b51624f4b007cad77e870cceae361810"
+  },
+  "tasks": {
+    "M1": {
+      "countedParticipantActions": 3,
+      "participantActionPlan": ["inspect_offer", "pay", "retrieve"],
+      "modes": {
+        "ranked": { "resourceId": "bef-market-state-brief-v1", "offerId": "market-brief-standard", "amountUsdcUnits": "125000" },
+        "training": { "resourceId": "bef-resource-v1", "offerId": "canonical", "amountUsdcUnits": "100000" }
+      }
+    },
+    "M2": {
+      "rankedOnly": true,
+      "countedParticipantActions": 3,
+      "participantActionPlan": ["inspect_catalog", "pay:minimum-qualifying-offer", "retrieve"],
+      "selectionRule": "minimum_complete_advertised_price_among_pinned_qualifying_offers"
+    },
+    "M4": {
+      "countedParticipantActions": 3,
+      "participantActionPlan": ["wrap", "approve:exact-input", "swap:WETH-to-USDC"],
+      "initialWethUnits": "0",
+      "inputAssetId": "WETH",
+      "outputAssetId": "USDC",
+      "finalAllowanceUnits": "0",
+      "feeTier": 3000,
+      "modes": {
+        "ranked": { "exactInputUnits": "100000000000000" },
+        "training": { "exactInputUnits": "200000000000000" }
+      },
+      "cleanupPolicy": "exact_approval_may_be_consumed_by_swap_no_unnecessary_revoke"
+    },
+    "H3": {
+      "rankedOnly": true,
+      "countedParticipantActions": 6,
+      "participantActionPlan": ["inspect_offer", "pay:route-reference", "retrieve:route-reference", "wrap", "approve:exact-input", "swap:reference-selected-route"],
+      "referenceResourceId": "bef-market-state-brief-v1",
+      "referenceOfferId": "market-brief-standard",
+      "initialWethUnits": "0",
+      "inputAssetId": "WETH",
+      "outputAssetId": "USDC",
+      "exactInputUnits": "100000000000000",
+      "routePolicy": "authenticated_delivered_reference_selects_one_of_release_pinned_routes"
+    },
+    "U1": {
+      "rankedOnly": true,
+      "countedParticipantActions": 10,
+      "participantActionPlan": ["inspect_catalog", "pay:component-1", "retrieve:component-1", "pay:component-2", "retrieve:component-2", "transfer:obligation-1", "transfer:obligation-2", "approve:exact-input", "swap:USDC-to-WETH", "unwrap"],
+      "requiredDistinctPaidComponents": 2,
+      "requiredDistinctObligations": 2,
+      "components": [
+        { "resourceId": "bef-resource-v1", "offerId": "canonical", "amountUsdcUnits": "100000" },
+        { "resourceId": "bef-market-state-brief-v1", "offerId": "market-brief-standard", "amountUsdcUnits": "125000" }
+      ],
+      "obligations": [
+        { "obligationId": "u1-usdc-payout-1", "recipient": "0x3000000000000000000000000000000000000001", "amountUsdcUnits": "100000" },
+        { "obligationId": "u1-usdc-payout-2", "recipient": "0x3000000000000000000000000000000000000002", "amountUsdcUnits": "200000" }
+      ],
+      "planning": {
+        "exactInputUsdcUnits": "1500000",
+        "feeTier": 3000,
+        "slippageBps": 1000,
+        "maximumParticipantGasWei": "6000000000000",
+        "validation": "fresh_public_quote_and_independent_quoter_before_actual_generation; reject_if_fixed_target_not_reached_at_both_gas_output_bounds"
+      },
+      "allocationAssets": ["USDC", "ETH", "WETH"],
+      "targetSharesBps": { "USDC": 40, "ETH": 9960, "WETH": 0 },
+      "assetToleranceBps": { "USDC": 1, "ETH": 1, "WETH": 0 },
+      "toleranceBps": 1,
+      "cleanupPolicy": "exact_approval_can_leave_zero_scope_without_creating_an_extra_allowance",
+      "swapPrincipalPolicy": "pin_from_fresh_pre_action_plan_and_public_quote"
+    },
+    "H1": {
+      "requiredDistinctPaidComponents": 3,
+      "countedParticipantActions": 7,
+      "participantActionPlan": [
+        "inspect_catalog",
+        "pay:component-1",
+        "retrieve:component-1",
+        "pay:component-2",
+        "retrieve:component-2",
+        "pay:component-3",
+        "retrieve:component-3"
+      ],
+      "requiredResources": [
+        "bef-resource-v1",
+        "bef-market-state-brief-v1",
+        "bef-treasury-risk-policy-v2"
+      ],
+      "modes": {
+        "ranked": {
+          "components": [
+            { "resourceId": "bef-resource-v1", "offerId": "canonical", "amountUsdcUnits": "100000" },
+            { "resourceId": "bef-market-state-brief-v1", "offerId": "market-brief-extended", "amountUsdcUnits": "250000" },
+            { "resourceId": "bef-treasury-risk-policy-v2", "offerId": "treasury-risk-canonical", "amountUsdcUnits": "100000" }
+          ]
+        },
+        "training": {
+          "components": [
+            { "resourceId": "bef-market-state-brief-v1", "offerId": "market-brief-standard", "amountUsdcUnits": "125000" },
+            { "resourceId": "bef-resource-v1", "offerId": "canonical", "amountUsdcUnits": "100000" },
+            { "resourceId": "bef-treasury-risk-policy-v2", "offerId": "treasury-risk-extended", "amountUsdcUnits": "250000" }
+          ]
+        }
+      }
+    },
+    "H2": {
+      "requiredDistinctObligations": 6,
+      "countedParticipantActions": 6,
+      "assetId": "USDC",
+      "recipientIdentityPolicy": "deterministic_synthetic_public_addresses_no_recipient_private_keys",
+      "participantActionPlan": [
+        "transfer:obligation-1",
+        "transfer:obligation-2",
+        "transfer:obligation-3",
+        "transfer:obligation-4",
+        "transfer:obligation-5",
+        "transfer:obligation-6"
+      ],
+      "modes": {
+        "ranked": {
+          "obligations": [
+            { "obligationId": "h2-usdc-payout-1", "recipient": "0x1000000000000000000000000000000000000001", "amountUsdcUnits": "100000" },
+            { "obligationId": "h2-usdc-payout-2", "recipient": "0x1000000000000000000000000000000000000002", "amountUsdcUnits": "150000" },
+            { "obligationId": "h2-usdc-payout-3", "recipient": "0x1000000000000000000000000000000000000003", "amountUsdcUnits": "200000" },
+            { "obligationId": "h2-usdc-payout-4", "recipient": "0x1000000000000000000000000000000000000004", "amountUsdcUnits": "250000" },
+            { "obligationId": "h2-usdc-payout-5", "recipient": "0x1000000000000000000000000000000000000005", "amountUsdcUnits": "300000" },
+            { "obligationId": "h2-usdc-payout-6", "recipient": "0x1000000000000000000000000000000000000006", "amountUsdcUnits": "350000" }
+          ]
+        },
+        "training": {
+          "obligations": [
+            { "obligationId": "h2-usdc-payout-1", "recipient": "0x2000000000000000000000000000000000000001", "amountUsdcUnits": "125000" },
+            { "obligationId": "h2-usdc-payout-2", "recipient": "0x2000000000000000000000000000000000000002", "amountUsdcUnits": "175000" },
+            { "obligationId": "h2-usdc-payout-3", "recipient": "0x2000000000000000000000000000000000000003", "amountUsdcUnits": "225000" },
+            { "obligationId": "h2-usdc-payout-4", "recipient": "0x2000000000000000000000000000000000000004", "amountUsdcUnits": "275000" },
+            { "obligationId": "h2-usdc-payout-5", "recipient": "0x2000000000000000000000000000000000000005", "amountUsdcUnits": "325000" },
+            { "obligationId": "h2-usdc-payout-6", "recipient": "0x2000000000000000000000000000000000000006", "amountUsdcUnits": "375000" }
+          ]
+        }
+      }
+    }
+  },
+  "measurementBoundary": {
+    "budgetsAndExpenses": "derive from fresh quotes and measured execution receipts",
+    "qualityParameters": "derive from reviewed fresh observations",
+    "deadlines": "derive from measured reference elapsed time",
+    "approvalStatus": "not claimed",
+    "releaseReadiness": "blocked_until_fresh_capture_and_release_review"
+  }
+}

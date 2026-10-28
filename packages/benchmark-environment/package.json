@@ -15,7 +15,13 @@
     "start:proxy": "node dist/proxy.js",
     "start:gateway": "node dist/gateway.js",
     "migrate": "tsx src/migrate.ts",
-    "probe": "tsx src/probe.ts"
+    "probe": "tsx src/probe.ts",
+    "probe:task-transfer": "tsx src/probe/task-transfer-main.ts",
+    "probe:task-reverse-swap": "tsx src/probe/task-reverse-swap-main.ts",
+    "probe:task-native": "tsx src/probe/task-native-main.ts",
+    "probe:task-resource-catalog": "tsx src/probe/task-resource-catalog-main.ts",
+    "probe:task-reference": "tsx src/probe/task-reference-main.ts",
+    "probe:task-h3": "tsx src/probe/task-h3-main.ts"
   },
   "dependencies": {
     "@x402/core": "2.28.0",

@@ -158,7 +158,7 @@ test('private admin setup timeout is deadline-clamped and failure evidence is sa
   }
 });
 
-test('only exact private-admin reset and generation POSTs use the manifest-bounded setup timeout', async () => {
+test('only exact private-admin setup routes use the manifest-bounded setup timeout', async () => {
   const observations: Record<string, unknown>[] = [];
   const evidence = {
     writeObservation: async (_path: string, _id: string, body: Record<string, unknown>) => {
@@ -185,6 +185,7 @@ test('only exact private-admin reset and generation POSTs use the manifest-bound
     for (const [boundary, method, path] of [
       ['private-admin-http', 'POST', '/internal/admin/environments/bef-env-a/reset'],
       ['private-admin-http', 'POST', '/internal/admin/environments/bef-env-a/generations'],
+      ['private-admin-http', 'PUT', '/internal/admin/environments/bef-env-a/preparations/00000000-0000-4000-8000-000000000001'],
       ['private-admin-http', 'GET', '/internal/admin/environments/bef-env-a/reset'],
       ['private-admin-http', 'POST', '/internal/admin/environments/bef-env-a/fence'],
       ['actual-tool-http', 'POST', '/internal/admin/environments/bef-env-a/reset'],
@@ -195,14 +196,41 @@ test('only exact private-admin reset and generation POSTs use the manifest-bound
   } finally {
     globalThis.fetch = originalFetch;
   }
-  assert.equal(fetchCalls, 6, 'each failed request should be sent once');
-  assert.equal(observations.length, 6);
+  assert.equal(fetchCalls, 7, 'each failed request should be sent once');
+  assert.equal(observations.length, 7);
   const effectiveTimeouts = observations.map((observation) =>
     Number((observation.transport as Record<string, unknown>).effectiveTimeoutMs));
   assert.equal(effectiveTimeouts[0], 250);
   assert.equal(effectiveTimeouts[1], 250);
-  assert.equal(effectiveTimeouts[2], 10_000);
+  assert.equal(effectiveTimeouts[2], 250);
   assert.equal(effectiveTimeouts[3], 10_000);
   assert.equal(effectiveTimeouts[4], 10_000);
   assert.equal(effectiveTimeouts[5], 10_000);
+  assert.equal(effectiveTimeouts[6], 10_000);
+});
+
+test('fresh generation credentials remain RAM-only even before their values are registered for redaction', async () => {
+  const observations: Record<string, unknown>[] = [];
+  const evidence = { writeObservation: async (_path: string, _id: string, value: Record<string, unknown>) => {
+    observations.push(value); return _path;
+  } } as unknown as EvidenceWriter;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ runToken: 'new-synthetic-bearer-fixture', status: 'ready' }),
+    { status: 200, headers: { 'content-type': 'application/json' } });
+  try {
+    const transport = new HttpEvidenceTransport(evidence, []);
+    for (const [method, path] of [
+      ['POST', '/internal/admin/environments/bef-env-a/generations'],
+      ['PUT', '/internal/admin/environments/bef-env-a/preparations/00000000-0000-4000-8000-000000000001'],
+    ] as const) {
+      const request = { boundary: 'private-admin-http' as const, method, url: `http://127.0.0.1${path}`,
+        observationId: 'setup-credentials', operationId: null, variantId: null };
+      await assert.rejects(transport.request({ ...request, includeRawResponseBytes: true }),
+        { message: 'probe_http_raw_setup_response_forbidden' });
+      await transport.request(request);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(observations.length, 2);
+  assert.equal(JSON.stringify(observations).includes('new-synthetic-bearer-fixture'), false);
+  assert.ok(observations.every((value) => !('bodyBase64' in (value.response as Record<string, unknown>))));
 });

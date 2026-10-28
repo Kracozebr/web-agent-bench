@@ -1,0 +1,44 @@
+{
+  "resourceId": "bef-treasury-risk-policy-v2",
+  "schema": "web-agent-bench/treasury-risk-policy/v2",
+  "provenance": {
+    "classification": "synthetic-benchmark-fixture",
+    "boundary": "private acceptance environment",
+    "source": "repository-authored deterministic v2 case dataset"
+  },
+  "content": {
+    "title": "Treasury risk policy",
+    "policyId": "synthetic-treasury-risk-policy-v2",
+    "revision": "v2",
+    "scenario": {
+      "portfolioId": "synthetic-treasury-portfolio-v2",
+      "network": "eip155:8453",
+      "reportingAsset": "USDC",
+      "status": "static-review-scenario"
+    },
+    "riskDimensions": [
+      {
+        "ruleId": "counterparty-concentration",
+        "metric": "portfolio-exposure-bps",
+        "maximum": 2200,
+        "action": "manual-review"
+      },
+      {
+        "ruleId": "native-gas-reserve",
+        "metric": "native-wei",
+        "minimum": "10000000000000000",
+        "action": "hold"
+      },
+      {
+        "ruleId": "router-approval-scope",
+        "metric": "token-base-units",
+        "maximumRule": "exact-input-only",
+        "action": "reject-excess"
+      }
+    ],
+    "decisionPolicy": {
+      "triggerManualReview": ["counterparty concentration exceeds its cap", "native reserve falls below its floor"],
+      "approvalRule": "allow exact-input approvals only"
+    }
+  }
+}

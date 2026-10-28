@@ -873,6 +873,9 @@ export function AgentManagementPanel() {
                       <button className="button button-small" data-testid={`agent-edit-${agent.id}`} type="button" onClick={() => setEditing((current) => ({ ...current, [agent.id]: true }))} disabled={busy}>
                         Edit profile
                       </button>
+                      <Link className="button button-small" data-testid={`agent-launch-${agent.id}`} href={`/runs?agentId=${encodeURIComponent(agent.id)}`}>
+                        Create run intent
+                      </Link>
                     </div>
                   )}
 

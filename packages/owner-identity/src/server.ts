@@ -3,8 +3,16 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { getAddress, verifyMessage } from "viem";
-import { registerAgentRoutes } from "./agents.js";
+import { allowedAgentRequestHosts, registerAgentRoutes, resolveAgentPrincipal, type AgentRouteDependencies } from "./agents.js";
 import { registerLedgerRoutes } from "./ledger.js";
+import { registerRunIntentMcpTools, registerRunRoutes } from "./run-routes.js";
+import { consumeRunCancellationOutbox, expireQueuedRuns } from "./run-service.js";
+import type { RunServiceDependencies } from "./run-service.js";
+import { unavailableTaskExecutionReadinessProvider } from "./task-release.js";
+import { createPostgresTaskReleaseProvider, createPostgresTaskReleaseQuerySource } from "./task-store.js";
+import { closeExpiredTaskActions } from "./task-action-service.js";
+import { cleanupFailedLocalBefTaskCoordinatorStartup, createLocalBefTaskCoordinator,
+  LOCAL_BEF_RUN_SERVICE_POLICY, type LocalBefTaskCoordinator } from "./bef-task-coordinator.js";
 import { createAuth, siweRequestFingerprint, withSiweRequest } from "./auth.js";
 import { loadConfig, getGoogleMode } from "./config.js";
 import { createDatabase } from "./db.js";
@@ -34,6 +42,7 @@ const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 64 * 1024 });
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const hmac = (value: string) => createHmac("sha256", config.authSecret).update(value).digest("hex");
 const randomToken = () => randomBytes(32).toString("base64url");
+let startupCoordinatorForCleanup: LocalBefTaskCoordinator | undefined;
 
 interface Authenticated {
   user: { id: string; email: string; name: string };
@@ -429,14 +438,35 @@ async function start() {
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Cache-Control", "no-store");
     const pathname = new URL(request.url, config.publicOrigin).pathname;
+    // AICODE-NOTE: Remote agent HTTP acceptance has no browser Origin header; its route authenticates the bearer principal and rejects a mismatched optional Origin.
+    const isAgentRunAcceptance = /^\/api\/agent\/run-intents\/[0-9a-f-]{36}\/accept$/i.test(pathname);
+    const isAgentTaskOperation = /^\/api\/agent\/runs\/[0-9a-f-]{36}\/tasks\/(?:[0-9]|1[01])\/(?:actions|finish)$/i.test(pathname);
     if (pathname.startsWith("/api/") && request.method !== "GET" && request.method !== "HEAD" &&
-      !pathname.startsWith("/api/auth/") && pathname !== "/api/agent/mcp") {
+      !pathname.startsWith("/api/auth/") && pathname !== "/api/agent/mcp" && !isAgentRunAcceptance && !isAgentTaskOperation) {
       try { await requireOrigin(request); }
       catch (error) { return responseError(reply, error); }
     }
   });
 
-  registerAgentRoutes(app, {
+  const runServiceDependencies = {
+    db,
+    admissionReleaseProvider: createPostgresTaskReleaseProvider(db),
+    taskReleaseSource: createPostgresTaskReleaseQuerySource(db),
+    executionReadinessProvider: unavailableTaskExecutionReadinessProvider,
+    ...(config.localBefTaskCoordinatorEnabled ? LOCAL_BEF_RUN_SERVICE_POLICY : {})
+  } satisfies RunServiceDependencies & { taskReleaseSource: ReturnType<typeof createPostgresTaskReleaseQuerySource> };
+  let localBefTaskCoordinator: LocalBefTaskCoordinator | undefined;
+  if (config.localBefTaskCoordinatorEnabled) {
+    localBefTaskCoordinator = await createLocalBefTaskCoordinator({
+      db,
+      databaseUrl: config.databaseUrl,
+      config,
+      releaseSource: runServiceDependencies.taskReleaseSource,
+    });
+    startupCoordinatorForCleanup = localBefTaskCoordinator;
+    await localBefTaskCoordinator.acquire();
+  }
+  const agentRouteDependencies: AgentRouteDependencies = {
     db,
     auth,
     config,
@@ -448,11 +478,29 @@ async function start() {
     manualCredentialTtlSeconds: config.manualCredentialTtlSeconds,
     agentResource: `${config.publicOrigin}/api/agent`,
     agentPreflightUrl: `${config.publicOrigin}/api/agent/preflight`,
+    registerMcpTools: (server, principal) => registerRunIntentMcpTools(server, principal, runServiceDependencies),
     resolveOwner: async (request) => {
       const session = await authenticated(request);
       const context = await ownerFor(session);
       return { owner: context.owner };
     }
+  };
+  registerAgentRoutes(app, agentRouteDependencies);
+
+  registerRunRoutes(app, {
+    ...runServiceDependencies,
+    publicOrigin: config.publicOrigin,
+    agentRequestHosts: allowedAgentRequestHosts(config),
+    agentRateLimitMax: config.agentPreflightRateLimitMax,
+    resolveOwner: async (request) => {
+      const session = await authenticated(request);
+      const context = await ownerFor(session);
+      return { owner: context.owner };
+    },
+    resolveAgentPrincipal: (bearer) => resolveAgentPrincipal(agentRouteDependencies, bearer),
+    requireOrigin,
+    rateLimit,
+    rateLimitMax: config.authRateLimitMax
   });
 
   registerLedgerRoutes(app, {
@@ -1150,13 +1198,72 @@ async function start() {
     }
   });
 
+  const runMaintenanceIntervalMs = config.localBefTaskCoordinatorEnabled
+    ? config.localBefTaskCoordinatorTickMs : 1000;
+  const runMaintenanceBatchSize = 50;
+  let runMaintenanceTimer: NodeJS.Timeout | undefined;
+  let runMaintenanceInFlight: Promise<void> | undefined;
+  let runMaintenanceStopped = false;
+
+  async function runMaintenanceTick(): Promise<void> {
+    if (runMaintenanceStopped || runMaintenanceInFlight) return;
+    const work = (async () => {
+      if (localBefTaskCoordinator) {
+        try { await localBefTaskCoordinator.tick(); }
+        catch (error) { requestSafeLog(error); }
+      } else {
+        try { await expireQueuedRuns(db, runMaintenanceBatchSize); }
+        catch (error) { requestSafeLog(error); }
+        try { await consumeRunCancellationOutbox(db, undefined, runMaintenanceBatchSize); }
+        catch (error) { requestSafeLog(error); }
+      }
+      try { await closeExpiredTaskActions({ db }, runMaintenanceBatchSize); }
+      catch (error) { requestSafeLog(error); }
+    })();
+    runMaintenanceInFlight = work;
+    try { await work; }
+    finally {
+      if (runMaintenanceInFlight === work) runMaintenanceInFlight = undefined;
+      if (!runMaintenanceStopped) runMaintenanceTimer = setTimeout(() => {
+        runMaintenanceTimer = undefined;
+        void runMaintenanceTick();
+      }, runMaintenanceIntervalMs);
+    }
+  }
+
+  app.addHook("onClose", async () => {
+    runMaintenanceStopped = true;
+    if (runMaintenanceTimer) {
+      clearTimeout(runMaintenanceTimer);
+      runMaintenanceTimer = undefined;
+    }
+    await runMaintenanceInFlight;
+    await localBefTaskCoordinator?.stop();
+  });
   app.setErrorHandler((error, _request, reply) => responseError(reply, error));
   await app.listen({ host: config.apiHost, port: config.apiPort });
+  startupCoordinatorForCleanup = undefined;
+  void runMaintenanceTick();
   app.log.info({ host: config.apiHost, port: config.apiPort, googleMode: getGoogleMode(config) }, "owner identity API listening");
+
+  let shutdownStarted = false;
+  const gracefulShutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    try { await app.close(); }
+    catch (error) { requestSafeLog(error); }
+    await client.end().catch((error: unknown) => requestSafeLog(error));
+    process.exitCode = signal === "SIGINT" ? 130 : 143;
+  };
+  process.once("SIGINT", () => { void gracefulShutdown("SIGINT"); });
+  process.once("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });
 }
 
 start().catch(async (error: unknown) => {
   requestSafeLog(error);
-  await client.end().catch(() => undefined);
+  for (const cleanupError of await cleanupFailedLocalBefTaskCoordinatorStartup(
+    startupCoordinatorForCleanup, () => client.end(),
+  )) requestSafeLog(cleanupError);
+  startupCoordinatorForCleanup = undefined;
   process.exitCode = 1;
 });

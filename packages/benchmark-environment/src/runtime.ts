@@ -6,10 +6,11 @@ import pg from 'pg';
 import { keccak256, type Address } from 'viem';
 import { assertAnvilIdentity, type AnvilIdentity } from './chain.js';
 import { readApiConfig, type ApiRuntimeConfig } from './config.js';
-import { loadPinnedResource, type ResourceBytes } from './resource.js';
+import { loadPinnedResources, type ResourceBytes } from './resource.js';
 import { loadManifest, type LoadedManifest, type RuntimeManifest } from './manifest.js';
 import { poolFor, registerManifest, verifySchema, withEnvironmentAdvisoryLock, withTransaction } from './db.js';
 import { EphemeralSignerStore } from './ephemeral-signer-store.js';
+import { PreparationResponseStore } from './preparation-state.js';
 
 const { Pool } = pg;
 
@@ -29,7 +30,9 @@ export type ApplicationRuntime = {
   config: ApiRuntimeConfig;
   pool: pg.Pool;
   signerStore: EphemeralSignerStore;
+  preparationResponses: PreparationResponseStore;
   resource: ResourceBytes;
+  resources: Map<string, ResourceBytes>;
   envs: Map<string, RuntimeEnvironment>;
   postgresVersion: string;
   apiPackageVersion: string;
@@ -81,7 +84,9 @@ async function sourceDigest(root: string): Promise<string> {
     resolve(root, 'infrastructure/benchmark-environment/manifest.json'),
     resolve(root, 'infrastructure/benchmark-environment/resource.json'),
   ];
-  return treeDigest(root, [...appFiles, ...staticFiles].filter(existsSync));
+  const catalogResourceDir = resolve(root, 'infrastructure/benchmark-environment/resources');
+  const catalogResourceFiles = existsSync(catalogResourceDir) ? await listFiles(catalogResourceDir) : [];
+  return treeDigest(root, [...appFiles, ...staticFiles, ...catalogResourceFiles].filter(existsSync));
 }
 
 async function packageMetadata(): Promise<{ version: string; dependencies: Record<string, string> }> {
@@ -146,6 +151,50 @@ function decodeAbiString(value: unknown): string {
   return Buffer.from(encoded.slice(valueStart, valueStart + byteLength * 2), 'hex').toString('utf8');
 }
 
+function abiWord(value: string): string {
+  const normalized = value.toLowerCase();
+  const encoded = normalized.startsWith('0x') ? normalized.slice(2) : BigInt(normalized).toString(16);
+  if (!/^[0-9a-f]{1,64}$/.test(encoded)) throw new Error('Pinned pool call argument is malformed');
+  return encoded.padStart(64, '0');
+}
+
+function decodeAbiAddress(value: unknown): string {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{64}$/i.test(value)) throw new Error('Pinned pool identity RPC result is malformed');
+  return `0x${value.slice(-40)}`.toLowerCase();
+}
+
+function decodeAbiUint(value: unknown): bigint {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{64}$/i.test(value)) throw new Error('Pinned pool state RPC result is malformed');
+  return BigInt(value);
+}
+
+async function verifyAlternativePool(url: string, manifest: RuntimeManifest): Promise<void> {
+  const pool = manifest.contracts.pool3000;
+  if (!pool) return;
+  const block = manifest.source.blockNumber;
+  const readCall = async (target: Address, data: string) => rpc(url, 'eth_call', [{ to: target, data }, block]);
+  const factoryData = `0x1698ee82${abiWord(manifest.contracts.weth.address)}${abiWord(manifest.contracts.usdc.address)}${abiWord('0xbb8')}`;
+  const [factoryPoolRaw, token0Raw, token1Raw, feeRaw, liquidityRaw, quoteRaw] = await Promise.all([
+    readCall(manifest.contracts.factory.address as Address, factoryData),
+    readCall(pool.address as Address, '0x0dfe1681'),
+    readCall(pool.address as Address, '0xd21220a7'),
+    readCall(pool.address as Address, '0xddca3f43'),
+    readCall(pool.address as Address, '0x1a686502'),
+    readCall(manifest.contracts.quoterV2.address as Address,
+      `0xc6a5026a${abiWord(manifest.contracts.usdc.address)}${abiWord(manifest.contracts.weth.address)}${abiWord(pool.quote.amountInUnits)}${abiWord('0xbb8')}${abiWord('0x0')}`),
+  ]);
+  if (decodeAbiAddress(factoryPoolRaw) !== pool.address.toLowerCase() ||
+      decodeAbiAddress(token0Raw) !== manifest.contracts.weth.address.toLowerCase() ||
+      decodeAbiAddress(token1Raw) !== manifest.contracts.usdc.address.toLowerCase() ||
+      decodeAbiUint(feeRaw) !== 3000n || decodeAbiUint(liquidityRaw) !== BigInt(pool.liquidityAtSource)) {
+    throw new Error('Runtime fee-3000 pool public identity or liquidity differs from its pinned observation');
+  }
+  if (typeof quoteRaw !== 'string' || !/^0x[0-9a-f]{256}$/i.test(quoteRaw) ||
+      BigInt(`0x${quoteRaw.slice(2, 66)}`) !== BigInt(pool.quote.amountOutUnits)) {
+    throw new Error('Runtime fee-3000 pool quote differs from its pinned source observation');
+  }
+}
+
 async function verifyChainBoundary(url: string, manifest: RuntimeManifest, local: boolean): Promise<void> {
   const chainId = await rpc(url, 'eth_chainId', []) as string;
   if (chainId.toLowerCase() !== '0x2105') throw new Error('RPC chain id does not match the pinned Base domain');
@@ -161,6 +210,7 @@ async function verifyChainBoundary(url: string, manifest: RuntimeManifest, local
     [manifest.contracts.swapRouter02.address, manifest.contracts.swapRouter02.codeHash],
     [manifest.contracts.quoterV2.address, manifest.contracts.quoterV2.codeHash],
     [manifest.contracts.pool.address, manifest.contracts.pool.codeHash],
+    ...(manifest.contracts.pool3000 ? [[manifest.contracts.pool3000.address, manifest.contracts.pool3000.codeHash] as const] : []),
   ] as const) {
     const code = await rpc(url, 'eth_getCode', [address, manifest.source.blockNumber]) as `0x${string}`;
     if (keccak256(code).toLowerCase() !== expected.toLowerCase()) throw new Error(`RPC pinned code hash mismatch at ${address}`);
@@ -174,9 +224,14 @@ async function verifyChainBoundary(url: string, manifest: RuntimeManifest, local
   if (decodeAbiString(nameResult) !== manifest.x402.eip712Domain.name || decodeAbiString(versionResult) !== manifest.x402.eip712Domain.version) {
     throw new Error('Pinned USDC EIP-712 domain differs from the runtime manifest');
   }
+  await verifyAlternativePool(url, manifest);
   if (local) {
     const quoter = await rpc(url, 'eth_getCode', [manifest.contracts.quoterV2.address, 'latest']) as `0x${string}`;
     if (keccak256(quoter).toLowerCase() !== manifest.contracts.quoterV2.codeHash.toLowerCase()) throw new Error('Local fork contract state differs from pinned source at latest');
+    if (manifest.contracts.pool3000) {
+      const alternativePool = await rpc(url, 'eth_getCode', [manifest.contracts.pool3000.address, 'latest']) as `0x${string}`;
+      if (keccak256(alternativePool).toLowerCase() !== manifest.contracts.pool3000.codeHash.toLowerCase()) throw new Error('Local fork fee-3000 pool code differs from pinned source at latest');
+    }
   }
 }
 
@@ -188,7 +243,7 @@ async function getHealth(url: string): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
-async function fenceProcessLostGenerations(pool: pg.Pool, envIds: string[]): Promise<void> {
+export async function fenceProcessLostGenerations(pool: pg.Pool, envIds: string[]): Promise<void> {
   for (const envId of envIds) {
     await withEnvironmentAdvisoryLock(pool, envId, async () => {
       await withTransaction(pool, async (client) => {
@@ -196,22 +251,30 @@ async function fenceProcessLostGenerations(pool: pg.Pool, envIds: string[]): Pro
           `SELECT generation_id FROM bef_generation WHERE env_id=$1 AND status='active' FOR UPDATE`,
           [envId],
         );
-        if (!active.rowCount) return;
         const generationIds = active.rows.map((row) => row.generation_id);
+        if (active.rowCount) {
+          await client.query(
+            `UPDATE bef_generation SET status='fenced',fenced_at=COALESCE(fenced_at,clock_timestamp())
+              WHERE env_id=$1 AND generation_id=ANY($2::uuid[]) AND status='active'`,
+            [envId, generationIds],
+          );
+          // Actions without a durable transaction hash were never broadcast and
+          // cannot be resumed because their signer was lost with the process.
+          // Hash-bound/unknown operations remain untouched for reconciliation.
+          await client.query(
+            `UPDATE bef_operation SET status='rejected',receipt_status='not_submitted',completed_at=clock_timestamp()
+              WHERE env_id=$1 AND generation_id=ANY($2::uuid[])
+                AND status IN ('accepted','awaiting_payment') AND transaction_hash IS NULL
+                AND receipt_status IN ('unknown','not_submitted')`,
+            [envId, generationIds],
+          );
+        }
+        // The previous process lost its RAM-only response and signer caches.
+        // Persist a terminal fence, including reservations that had not bound a generation yet.
         await client.query(
-          `UPDATE bef_generation SET status='fenced',fenced_at=COALESCE(fenced_at,clock_timestamp())
-            WHERE env_id=$1 AND generation_id=ANY($2::uuid[]) AND status='active'`,
-          [envId, generationIds],
-        );
-        // Actions without a durable transaction hash were never broadcast and
-        // cannot be resumed because their signer was lost with the process.
-        // Hash-bound/unknown operations remain untouched for reconciliation.
-        await client.query(
-          `UPDATE bef_operation SET status='rejected',receipt_status='not_submitted',completed_at=clock_timestamp()
-            WHERE env_id=$1 AND generation_id=ANY($2::uuid[])
-              AND status IN ('accepted','awaiting_payment') AND transaction_hash IS NULL
-              AND receipt_status IN ('unknown','not_submitted')`,
-          [envId, generationIds],
+          `UPDATE bef_preparation SET status='fenced',fence_confirmed_at=COALESCE(fence_confirmed_at,clock_timestamp())
+            WHERE env_id=$1 AND status <> 'fenced'`,
+          [envId],
         );
       });
     });
@@ -224,9 +287,12 @@ export async function loadApplicationRuntime(): Promise<ApplicationRuntime> {
   const { manifest } = loadedManifest;
   const config = readApiConfig(manifest);
   const packagePins = await verifyPackagePins(manifest);
-  const resource = await loadPinnedResource(manifest);
+  const resources = await loadPinnedResources(manifest);
+  const resource = resources.get(manifest.x402.resourceId);
+  if (!resource) throw new Error('Legacy pinned resource is absent from the catalog');
   const pool = poolFor(config.databaseUrl);
   const signerStore = new EphemeralSignerStore();
+  const preparationResponses = new PreparationResponseStore();
   const versions = await pool.query<{ version: string; current_user: string }>('SELECT version(), current_user');
   const postgresVersion = versions.rows[0]?.version ?? 'unknown';
   if (!postgresVersion.includes(`PostgreSQL ${manifest.local.postgresqlVersion}`) || versions.rows[0]?.current_user !== 'bef_api') {
@@ -237,7 +303,7 @@ export async function loadApplicationRuntime(): Promise<ApplicationRuntime> {
   const tableCheck = await pool.query<{ table_name: string }>(
     `SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'bef_%'`,
   );
-  const requiredTables = ['bef_environment', 'bef_generation', 'bef_operation', 'bef_payment', 'bef_x402_observation', 'bef_delivery', 'bef_denial'];
+  const requiredTables = ['bef_environment', 'bef_generation', 'bef_preparation', 'bef_operation', 'bef_payment', 'bef_x402_observation', 'bef_delivery', 'bef_denial'];
   if (requiredTables.some((name) => !tableCheck.rows.some((row) => row.table_name === name))) {
     await pool.end();
     throw new Error('BEF PostgreSQL migration prerequisites are incomplete');
@@ -312,7 +378,9 @@ export async function loadApplicationRuntime(): Promise<ApplicationRuntime> {
     config,
     pool,
     signerStore,
+    preparationResponses,
     resource,
+    resources,
     envs,
     postgresVersion,
     apiPackageVersion: packagePins.apiPackageVersion,

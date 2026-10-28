@@ -87,6 +87,82 @@ export interface AgentFinancialPolicy {
 
 export type AgentFinancialPolicyResponse = AgentFinancialPolicy;
 
+export type RunMode = "training" | "ranked";
+
+export interface RunCatalogRelease {
+  releaseIdentity: string;
+  manifestHash: string;
+  benchmarkVersion: string;
+  benchmarkHash: string;
+  policyHash: string;
+  taskIds: string[];
+  openTaskIds: string[];
+  completeRankedRelease: boolean;
+  rankedPrice: string;
+  trainingPrice: string;
+  precision: 6;
+}
+
+export interface RunCatalogResponse {
+  status: "active" | "active_release_unavailable";
+  activeRelease: RunCatalogRelease | null;
+  intentCreationReady: boolean;
+  intentCreationReason: string;
+  readyToStart: boolean;
+  readinessReason: string;
+}
+
+export interface RunLaunchIntent {
+  id: string;
+  agentId: string;
+  mode: RunMode;
+  taskIds: string[];
+  benchmarkVersion: string;
+  manifestHash: string;
+  benchmarkHash: string;
+  policyHash: string;
+  quote: { price: string; precision: 6; token: "USDC" };
+  cashCeiling: string;
+  status: "pending" | "accepted" | "cancelled" | "expired";
+  createdAt: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+  runId: string | null;
+  runStatus: string | null;
+  queueDeadline: string | null;
+  terminalReason: string | null;
+}
+
+export interface RunLaunchIntentsResponse { intents: RunLaunchIntent[] }
+export interface RunLaunchIntentResponse { intent: RunLaunchIntent; replayed?: boolean }
+
+export interface OwnerRunProjection {
+  id: string;
+  intentId: string;
+  agentId: string;
+  mode: RunMode;
+  taskIds: string[];
+  benchmarkVersion: string;
+  manifestHash: string;
+  benchmarkHash: string;
+  policyHash: string;
+  quotePrice: string;
+  cashCeiling: string;
+  status: string;
+  queueDeadline: string | null;
+  queuedAt: string | null;
+  startedAt: string | null;
+  overallDeadline: string | null;
+  finishedAt: string | null;
+  terminalReason: string | null;
+  cancellationReason: string | null;
+  cancellationRequestedAt: string | null;
+  cancellationEvidenceHash: string | null;
+}
+
+export interface OwnerRunsResponse { runs: OwnerRunProjection[] }
+export interface OwnerRunResponse { run: OwnerRunProjection; replayed: boolean }
+
 export interface IdentityConfig {
   googleEnabled: boolean;
   googleMode: "provider-fixture" | "google" | "disabled";
@@ -154,6 +230,23 @@ const knownMessages: Record<string, string> = {
   IMMUTABLE_GRANT: "Bonus grant terms are immutable after issuance.",
   UNKNOWN_FIELD: "The server rejected an unsupported agent field. Review the current server response before trying again.",
   RATE_LIMITED: "Too many attempts. Wait a moment and try again.",
+  RUN_POLICY_UNCONFIGURED: "Run admission is not enabled until bounded intent and queue settings are configured.",
+  RELEASE_UNAVAILABLE: "No validated active benchmark release is available. Run intent creation is disabled.",
+  RELEASE_INCOMPLETE: "A complete twelve-task active release is required before admission.",
+  MODE_NOT_AUTHORIZED: "This agent does not currently have permission for the selected run mode.",
+  PENDING_INTENT_LIMIT: "The owner has reached the pending intent limit. Refresh status before trying again.",
+  GLOBAL_INTENT_CAPACITY: "Shared intent capacity is full. Refresh status before trying again.",
+  RUN_INTENT_EXPIRED: "This launch intent has expired. Create a new intent after reviewing the current quote.",
+  RUN_INTENT_CANCELLED: "This launch intent was cancelled and cannot be accepted.",
+  RUN_INTENT_TERMINAL: "This launch intent is no longer pending and cannot admit a run.",
+  STALE_RUN_INTENT: "The active version or quote changed. Review the current release and create a new intent.",
+  STALE_AGENT_POLICY: "Agent permissions changed after this intent was created. Review the current policy and create a new intent.",
+  STALE_OWNER_POLICY: "Owner financial limits changed after this intent was created. Review them and create a new intent.",
+  AGENT_BUDGET_EXCEEDED: "The current agent budget does not permit this run at the pinned quote.",
+  CASH_CEILING_EXCEEDED: "The run would require more cash than the owner approved in this intent.",
+  CASH_PERMISSION_REQUIRED: "Cash spending requires separate owner permission. No run was admitted.",
+  INSUFFICIENT_FUNDS: "Available cash and bonus funds do not cover this run. No run was admitted.",
+  RELEASE_INVALID: "The active release failed server validation. Intent creation is disabled.",
 };
 
 function readCode(payload: unknown): string | undefined {

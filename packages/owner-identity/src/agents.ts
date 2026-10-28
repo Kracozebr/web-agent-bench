@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { isIP } from "node:net";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -66,6 +67,20 @@ export interface AgentRouteDependencies {
   manualCredentialTtlSeconds: number;
   agentResource: string;
   agentPreflightUrl: string;
+  registerMcpTools?: (server: McpServer, principal: AgentPrincipal) => void;
+}
+
+/** Hosts accepted by authenticated agent HTTP ingress on the configured API listener. */
+export function allowedAgentRequestHosts(config: Pick<OwnerIdentityConfig, "publicOrigin" | "apiHost" | "apiPort">): ReadonlySet<string> {
+  const configuredApiHost = config.apiHost.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const addressHost = isIP(configuredApiHost) === 6 ? `[${configuredApiHost}]` : configuredApiHost;
+  return new Set([
+    new URL(config.publicOrigin).host.toLowerCase(),
+    `127.0.0.1:${config.apiPort}`,
+    `localhost:${config.apiPort}`,
+    `[::1]:${config.apiPort}`,
+    ...(configuredApiHost === "0.0.0.0" || configuredApiHost === "::" ? [] : [`${addressHost}:${config.apiPort}`]),
+  ]);
 }
 
 interface VerifiedOAuthRequest {
@@ -454,7 +469,7 @@ function validAgentId(value: string): boolean {
 
 const uuidError = () => new HttpError(404, "AGENT_NOT_FOUND", "Agent was not found");
 
-interface AgentPrincipal {
+export interface AgentPrincipal {
   ownerId: string;
   agentId: string;
   grantId: string;
@@ -472,7 +487,7 @@ function bearerChallenge(dependencies: AgentRouteDependencies): string {
   return `Bearer resource_metadata="${metadataUrl}", scope="agent:operate"`;
 }
 
-async function resolveAgentPrincipal(dependencies: AgentRouteDependencies, bearer: string): Promise<AgentPrincipal | undefined> {
+export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies, bearer: string): Promise<AgentPrincipal | undefined> {
   const now = new Date();
   const manual = /^aap1_[A-Za-z0-9_-]{43}$/.test(bearer);
   if (manual) {
@@ -588,14 +603,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
   app.all("/api/agent/mcp", { bodyLimit: 64 * 1024 }, async (request, reply) => {
     if (request.method !== "POST") return reply.code(405).header("Allow", "POST").send({ error: "method_not_allowed" });
     const host = request.headers.host?.toLowerCase();
-    const configuredApiHost = dependencies.config.apiHost.toLowerCase();
-    const allowedHosts = new Set([
-      new URL(dependencies.config.publicOrigin).host.toLowerCase(),
-      `127.0.0.1:${dependencies.config.apiPort}`,
-      `localhost:${dependencies.config.apiPort}`,
-      `[::1]:${dependencies.config.apiPort}`,
-      ...(configuredApiHost === "0.0.0.0" || configuredApiHost === "::" ? [] : [`${configuredApiHost}:${dependencies.config.apiPort}`])
-    ]);
+    const allowedHosts = allowedAgentRequestHosts(dependencies.config);
     if (!host || !allowedHosts.has(host)) return reply.code(421).send({ error: "misdirected_request" });
     const origin = request.headers.origin;
     if (origin && origin !== dependencies.config.publicOrigin) return reply.code(403).send({ error: "origin_not_allowed" });
@@ -638,6 +646,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
         };
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result };
       });
+      dependencies.registerMcpTools?.(server, principal);
       return server;
     }, { legacy: "reject", responseMode: "json", keepAliveMs: 0, maxRequestBodySize: 64 * 1024 });
 

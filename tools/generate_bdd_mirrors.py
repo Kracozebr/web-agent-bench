@@ -278,7 +278,8 @@ def load_acceptance_results(
         return {scenario.scenario_id: "not_run" for scenario in scenarios}
     if payload.get("acceptance_state") == "running":
         return {scenario.scenario_id: "not_run" for scenario in scenarios}
-    if payload.get("acceptance_state") not in {"complete", "failed"}:
+    acceptance_state = payload.get("acceptance_state")
+    if acceptance_state not in {"complete", "failed", "blocked"}:
         return {scenario.scenario_id: "not_run" for scenario in scenarios}
     if payload.get("lifecycle_phase") != lifecycle_phase or payload.get("normative_source") != normative_source:
         raise ContractError("BDD acceptance evidence does not target the selected normative source")
@@ -289,6 +290,21 @@ def load_acceptance_results(
     allowed_results = {"not_run", "passed", "failed", "skipped", "blocked"}
     if any(result not in allowed_results for result in results.values()):
         raise ContractError("BDD acceptance evidence contains an invalid result")
+    if acceptance_state == "blocked":
+        blockers = payload.get("blocked_prerequisites")
+        if change_name is None or not isinstance(blockers, list) or not blockers:
+            raise ContractError("blocked BDD acceptance evidence needs active-delta prerequisites")
+        if any(
+            not isinstance(blocker, dict)
+            or not isinstance(blocker.get("code"), str)
+            or not blocker["code"]
+            for blocker in blockers
+        ):
+            raise ContractError("blocked BDD acceptance prerequisites need machine-readable codes")
+        if any(result != "not_run" for result in results.values()):
+            raise ContractError("blocked BDD preflight cannot claim an executed scenario result")
+        if payload.get("execution_started") is not False or payload.get("command_executed") is not False:
+            raise ContractError("blocked BDD preflight cannot claim that scenario execution started")
     return {str(scenario_id): str(result) for scenario_id, result in results.items()}
 
 

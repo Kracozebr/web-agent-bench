@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -40,6 +41,81 @@ from tools.harness_contracts import (
 
 
 EVIDENCE_SCHEMA_VERSION = 1
+BLOCKED_EXIT_CODE = 2
+
+
+def _active_adapter_spec(module_name: str, find_spec=None):
+    """Resolve one active adapter while preserving unrelated import failures."""
+
+    finder = importlib.util.find_spec if find_spec is None else find_spec
+    try:
+        return finder(module_name)
+    except ModuleNotFoundError as error:
+        if error.name == module_name:
+            return None
+        raise
+
+
+def _is_local_adapter_spec(root: Path, spec: object) -> bool:
+    """Do not accept an installed module with the same name as the repository adapter."""
+
+    origin = getattr(spec, "origin", None)
+    if not isinstance(origin, str) or origin in {"built-in", "frozen"}:
+        return False
+    adapters_root = (root / "tests" / "bdd" / "adapters").resolve()
+    try:
+        Path(origin).resolve().relative_to(adapters_root)
+    except ValueError:
+        return False
+    return True
+
+
+def _missing_adapter_prerequisite(
+    root: Path, change_name: str | None, scenarios: list[object]
+) -> dict[str, object] | None:
+    """Describe a known absent active adapter before the audit or any scenario executes."""
+
+    if change_name is None:
+        return None
+    module_name = f"tests.bdd.adapters.{validate_change_name(change_name).replace('-', '_')}"
+    spec = _active_adapter_spec(module_name)
+    if spec is not None and _is_local_adapter_spec(root, spec):
+        return None
+
+    proposal = load_proposal(root, change_name)
+    approved_rows = proposal["protected_scenarios"]
+    scenario_rows = []
+    for scenario in scenarios:
+        row = approved_rows.get(scenario.scenario_id)
+        if not isinstance(row, dict):
+            raise ValueError(f"active adapter prerequisite lacks proposal row: {scenario.scenario_id}")
+        scenario_rows.append(
+            {
+                "scenario_id": scenario.scenario_id,
+                "requirement_id": scenario.requirement_id,
+                "named_mapper": scenario.mapper_name,
+                "adapter_profile": row["adapter"],
+                "gate": row["gate"],
+                "mandatory": row["mandatory"],
+                "boundary": row["boundary"],
+                "boundary_detail": row["boundary_detail"],
+            }
+        )
+
+    module_path = Path("tests") / "bdd" / "adapters" / f"{module_name.rsplit('.', 1)[1]}.py"
+    return {
+        "code": "active_adapter_module_missing",
+        "adapter_module": module_name,
+        "expected_source": module_path.as_posix(),
+        "source_inventory": {
+            "normative_source": f"openspec/changes/{change_name}/specs/*/spec.md",
+            "approved_proposal": f"openspec/changes/{change_name}/bdd-harness-proposal.json",
+            "runtime_contract": f"tests/bdd/changes/{change_name}/harness-contracts.json",
+            "scenario_map": f"tests/bdd/changes/{change_name}/scenario-map.md",
+        },
+        "approved_scenarios": scenario_rows,
+        "execution_started": False,
+    }
 
 
 def _git_metadata(root: Path) -> tuple[str, bool]:
@@ -259,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_unchanged": None,
         "scenario_map_sha256": None,
         "harness_audit": {"status": "not_run"},
+        "execution_started": False,
         "scenario_results": {scenario.scenario_id: "not_run" for scenario in scenarios},
     }
     try:
@@ -290,6 +367,69 @@ def main(argv: list[str] | None = None) -> int:
     # The running record is still written before the audit, mirror generation, and pytest subprocesses
     # so an interruption cannot leave an older pass looking current.
     _write_evidence(evidence_path, preflight)
+    try:
+        blocked_prerequisite = _missing_adapter_prerequisite(root, change_name, scenarios)
+    except (ImportError, OSError, RuntimeError, ValueError) as error:
+        print("Cannot resolve the selected active adapter prerequisite.", file=sys.stderr)
+        preflight.update(
+            acceptance_state="failed",
+            finished_at_utc=_utc_now(),
+            exit_code=1,
+            error_code="active_adapter_preflight_error",
+            import_error_module=getattr(error, "name", None),
+        )
+        _write_evidence(evidence_path, preflight)
+        return 1
+    if blocked_prerequisite is not None:
+        preflight.update(
+            acceptance_state="blocked",
+            finished_at_utc=_utc_now(),
+            exit_code=BLOCKED_EXIT_CODE,
+            command_executed=False,
+            blocked_prerequisites=[blocked_prerequisite],
+            harness_audit={
+                "status": "not_run",
+                "reason_code": "active_adapter_module_missing",
+            },
+        )
+        _write_evidence(evidence_path, preflight)
+        generate_command = [sys.executable, str(root / "tools" / "generate_bdd_mirrors.py")]
+        generate_command.extend(["--change", change_name])
+        regenerate = subprocess.run(generate_command, cwd=root, check=False)
+        if regenerate.returncode != 0:
+            preflight.update(
+                acceptance_state="failed",
+                exit_code=regenerate.returncode,
+                error_code="blocked_scenario_map_generation_failed",
+            )
+            _write_evidence(evidence_path, preflight)
+            return regenerate.returncode
+        if not _record_source_integrity(root, change_name, preflight):
+            preflight.update(finished_at_utc=_utc_now(), exit_code=1)
+            _write_evidence(evidence_path, preflight)
+            print("Harness sources changed while recording the blocked preflight.", file=sys.stderr)
+            return 1
+        try:
+            preflight["scenario_map_sha256"] = _sha256_file(
+                scenario_map_path(root, change_name)
+            )
+        except OSError as error:
+            preflight.update(
+                acceptance_state="failed",
+                finished_at_utc=_utc_now(),
+                exit_code=1,
+                error_code="cannot_hash_blocked_scenario_map",
+            )
+            _write_evidence(evidence_path, preflight)
+            return 1
+        _write_evidence(evidence_path, preflight)
+        print(
+            f"Blocked {selected_change} before scenario execution: "
+            f"{blocked_prerequisite['expected_source']} is missing.",
+            file=sys.stderr,
+        )
+        return BLOCKED_EXIT_CODE
+
     audit_command = [sys.executable, str(root / "tools" / "check_bdd_harness.py"), "--json"]
     if change_name is not None:
         audit_command.extend(["--change", change_name])
@@ -324,6 +464,8 @@ def main(argv: list[str] | None = None) -> int:
         _write_evidence(evidence_path, preflight)
         return regenerate.returncode
 
+    preflight["execution_started"] = True
+    _write_evidence(evidence_path, preflight)
     result = subprocess.run(
         execution_command,
         cwd=root,
@@ -364,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_unchanged": None,
         "scenario_map_sha256": None,
         "harness_audit": audit,
+        "execution_started": True,
         "scenario_results": scenario_results,
     }
 

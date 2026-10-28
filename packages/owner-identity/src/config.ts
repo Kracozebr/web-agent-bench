@@ -28,6 +28,10 @@ export interface OwnerIdentityConfig {
   siweChainId: 8453;
   nonceTtlSeconds: 900;
   nodeEnv: string;
+  localBefTaskCoordinatorEnabled: boolean;
+  localBefTaskCoordinatorConfigPath?: string;
+  localBefTaskCoordinatorTickMs: number;
+  localBefTaskCoordinatorBatchSize: number;
 }
 
 function optional(env: NodeJS.ProcessEnv, key: string): string | undefined {
@@ -44,6 +48,21 @@ function integer(env: NodeJS.ProcessEnv, key: string, fallback: number, min: num
     throw new Error(`${key} must be between ${min} and ${max}`);
   }
   return value;
+}
+
+function booleanFlag(env: NodeJS.ProcessEnv, key: string, fallback: boolean): boolean {
+  const raw = optional(env, key);
+  if (raw === undefined) return fallback;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${key} must be true or false`);
+}
+
+function isLoopbackHost(value: string): boolean {
+  const host = value.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "::1") return true;
+  const version = isIP(host);
+  return version === 4 && host.split(".")[0] === "127";
 }
 
 function origin(env: NodeJS.ProcessEnv): string {
@@ -118,12 +137,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
   if (registrationMode !== "closed" && registrationMode !== "open") {
     throw new Error("OID_REGISTRATION_MODE must be closed or open");
   }
+  const localBefTaskCoordinatorEnabled = booleanFlag(env, "OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED", false);
+  const localBefTaskCoordinatorConfigPath = optional(env, "OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG");
+  const nodeEnv = env.NODE_ENV?.toLowerCase() ?? "development";
+  if (localBefTaskCoordinatorEnabled && nodeEnv === "production") {
+    throw new Error("OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED is forbidden in production");
+  }
+  if (localBefTaskCoordinatorEnabled && nodeEnv !== "development" && nodeEnv !== "test") {
+    throw new Error("OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED is allowed only in development or test");
+  }
+  const apiHost = optional(env, "OID_API_HOST") ?? "127.0.0.1";
+  if (localBefTaskCoordinatorEnabled && !isLoopbackHost(apiHost)) {
+    throw new Error("The local BEF task coordinator requires a loopback OID_API_HOST");
+  }
+  if (localBefTaskCoordinatorEnabled && !localBefTaskCoordinatorConfigPath) {
+    throw new Error("OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG is required when the local BEF task coordinator is enabled");
+  }
 
   return {
     databaseUrl,
     authSecret,
     publicOrigin: origin(env),
-    apiHost: optional(env, "OID_API_HOST") ?? "127.0.0.1",
+    apiHost,
     apiPort: integer(env, "OID_API_PORT", 8784, 1, 65535),
     ...(googleClientId ? { googleClientId } : {}),
     ...(googleClientSecret ? { googleClientSecret } : {}),
@@ -143,7 +178,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     rateLimitWindowSeconds: integer(env, "OID_RATE_LIMIT_WINDOW_SECONDS", 60, 1, 3600),
     siweChainId: 8453,
     nonceTtlSeconds: 900,
-    nodeEnv: env.NODE_ENV ?? "development"
+    nodeEnv: env.NODE_ENV ?? "development",
+    localBefTaskCoordinatorEnabled,
+    ...(localBefTaskCoordinatorConfigPath ? { localBefTaskCoordinatorConfigPath } : {}),
+    localBefTaskCoordinatorTickMs: integer(env, "OID_LOCAL_BEF_TASK_COORDINATOR_TICK_MS", 1000, 500, 10000),
+    localBefTaskCoordinatorBatchSize: integer(env, "OID_LOCAL_BEF_TASK_COORDINATOR_BATCH_SIZE", 10, 1, 20)
   };
 }
 

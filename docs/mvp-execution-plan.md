@@ -97,12 +97,105 @@ benchmark task; coordinator, общий ledger и evaluators отсутству�
 Подготовлен [review следующего пути](run-execution-entry-review.md): поэтапная
 реализация существующих BRL/TBB/BTS пакетов — 25/15/34 сценария соответственно.
 Review описывает launch intent, shared reservations/start/cancel, actual task
-effects/evaluation и предлагает денежные/rubric defaults. Approval этих трёх
-пакетов остаётся pending; прежнее OID/AAP approval не переносится автоматически.
+effects/evaluation и денежные/rubric defaults. Владелец отдельно одобрил весь
+неизменённый BRL/TBB/BTS scope из 74 сценариев, рассмотренный на `9ee9211`;
+это зафиксировано в [approval](../openspec/changes/benchmark-run-lifecycle/approval.md).
+Прежнее OID/AAP approval не переносилось на него автоматически.
 Первый срез — реальные ledger/intent/admission/cancel transactions; до validated
 task release и готовой среды нет start/debit или completed/graded result.
 
 ## Последовательность и критерии перехода
+
+Checkpoint 26 октября: реализованы PostgreSQL intent/admission/reservation,
+очередь с ротацией владельцев, atomic start/debit и доставка отмены с durable
+receipt. Добавлены настоящий экран `/runs`, matching-agent HTTP/MCP acceptance,
+схема полного release и immutable PostgreSQL registry. Прямые транзакционные
+проверки с явно синтетическими release/readiness/fence ports прошли 32 наблюдения;
+они не являются полным BRL/BTS acceptance. Новый scoped USDC transfer проверен
+на настоящем локальном fork с 41 артефактом. Полный release из 12 реальных кейсов,
+evaluators и подключённый product executor ещё не готовы; без них UI/admission/start
+остаются fail-closed. Границы и команды: [checkpoint приёмки](run-admission-acceptance.md).
+
+Checkpoint 27 октября: все 12 ranked и 8 training reference-кейсов выполнены на
+закреплённом локальном BEF fork. Полный кандидат прошёл offline release validator:
+20/20 semantic/reference checks и независимую проверку сложности при прежних
+диапазонах; сохранены 2177 проверенных source/artifact pins. Приватный worker
+первого задания реализован и выключен по умолчанию; отдельная подготовка S4
+подтвердила точный baseline в обоих режимах. Неизменяемое хранилище наблюдений
+проверено на PostgreSQL. Реестр продукта не активирован: сборщик наблюдений,
+genuine owner-run grading, переходы между заданиями и полный реальный
+browser → backend → БД acceptance ещё требуют подключения и проверки.
+Последующий genuine S1-прогон активировал проверенный release только в новой
+изолированной БД и прошёл от реального UI intent через acceptance, очередь,
+подготовку, списание и исполнение до перевода USDC и finish. Независимые readonly
+RPC/БД подтвердили исходный эффект; наблюдатель остановил оценку на несовпадении
+с реальным форматом action-evidence, после чего UI-отмена подтвердила fencing.
+Оценки и успешного завершения этого run нет. Исторические доказательства теперь
+привязаны к окружению конкретной задачи; сервис завершения промежуточной training
+задачи проверен отдельно на PostgreSQL, но продвижение worker ещё не подключено.
+После исправлений пятый genuine S1-прогон сохранил оценку `passed` 1/1,
+восстановил исходный input без расхождений, подтвердил результат через приватный
+API владельца и завершил training-run после точного fencing. Отдельное чтение
+owner/BEF PostgreSQL после остановки runtime подтвердило `completed`, одно
+списание 33334 единиц, отсутствие refund и освобождённые claim/slot. Это реальная
+проверка первого задания с внутренним мостом оценки/завершения; автоматический
+worker grading, внешний model client и полный run из 12 задач ещё не доказаны.
+Точные артефакты и границы: [текущий checkpoint](run-admission-acceptance.md).
+
+Checkpoint 28 октября: после привязки исполнения к среде конкретной задачи
+обновлённый full-release validator снова прошёл 20/20 с 2177 pins. Новый общий
+PostgreSQL-прогон прошёл все семь транзакционных групп на неизменённых исходниках;
+его исполнительные порты синтетические. Новый genuine S1 на текущем manifest
+подтвердил `passed` 1/1, fencing, завершение и результат через настоящее нажатие
+кнопки в UI. Затем genuine S2 также сохранил `passed` 1/1, завершил training-run
+и показал ту же оценку через кнопку; независимые readonly owner/BEF запросы
+подтвердили одно списание, отсутствие refund и fencing. После устранения
+несовместимостей коллектор/producer такой же реальный путь прошёл S4: сохранён
+`passed` 1/1, выполнены fencing и нормальное завершение, оценка показана кнопкой
+в UI. Подготовка successor и атомарная активация проверены на PostgreSQL с
+синтетическим адаптером; подключение перехода к worker и реальный многозадачный
+run остаются незакрытой работой. Полный BDD не переведён в `passed`.
+
+Продолжение 28 октября: владелец подтвердил локальный предел successor preparation
+180 секунд. Подключённый worker уже реально подготовил и активировал S2 после
+S1 с тем же run/claim/слотом и одним списанием 66667. В попытке `b34b2285` обе
+задачи получили известный `passed` 1/1, обе среды fenced, backend завершил run;
+подготовка заняла 2757 мс, общий дедлайн продлён ровно на этот интервал. Capture
+пока `blocked`: финальная проверка harness ожидала лишний `task.terminalized`
+для последней задачи и не дошла до кнопки результатов. Независимое чтение БД
+подтвердило контракт: один промежуточный `task.terminalized` и один `run.completed`
+с доказательствами обеих задач. Исправленный harness проходит новый изолированный
+UI-прогон; автоматическая оценка worker и полный двенадцатизадачный run ещё
+не доказаны. Исходные неудачные capture сохранены отдельно.
+
+Следующий свежий genuine sequence `200e82e5` прошёл с exit 0: S1 → S2, известные
+`passed` 1/1 обеих задач и реальная кнопка результатов с HTTP 200. Worker сам
+выполнил подготовку/активацию S2; внутренний мост ещё выполнил оценку и завершение.
+После остановки runtime независимые owner/BEF read-only проверки прошли 16/16:
+одна charge 66667, без refund, обе генерации fenced, исходный claim освобождён,
+слотов нет; 3462 мс подготовки ровно один раз добавлены к общему дедлайну.
+248 исходных файлов оставались неизменными. Следующий срез — production-путь
+локального worker для observer/seal/evaluate/fence/complete, продолжение после
+verified mandatory violation согласно BRL-REQ-005 и затем остальные задачи.
+Полный BDD по-прежнему не переведён в `passed`.
+
+Затем automatic-worker capture `93a9597a` прошёл с exit 0: backend сам выполнил
+observer/seal/evaluate/fence/complete для S1 → S2; harness только отправлял
+действия/finish и читал результат. Обе оценки `passed` 1/1 показаны кнопкой в UI,
+252 исходных файла не менялись. Интервал 3509 мс добавлен к общему дедлайну один
+раз; один ledger debit 66667, без refund, исходный claim освобождён, слотов нет.
+Root отдельно прочитал owner/BEF под read-only ролями до нового reset: обе задачи
+известны и завершены, обе генерации fenced. Полный BDD и полный run из 12 задач
+по-прежнему не закрыты. Следующие проверки — automatic S4 и затем M1 payment/
+delivery collector, сохраняя существующие pinned release/executor/action-service.
+
+Независимая post-stop сверка automatic S1/S2 прошла 19/19. Затем automatic S4
+(`e58fe6af`) тоже прошла с exit 0 и UI: worker записал known/pass 1/1, fence и
+completion, одно списание 33334, без refund, ресурсы освобождены. Её независимая
+owner/BEF сверка — 15/15. Автоматические локальные пути S1/S2/S4 подтверждены;
+идёт реализация M1 collector/packet/sealed reader и driver inspect→pay→retrieve.
+Синтаксическая проверка driver не является проверкой оплаты; новый M1 runtime
+ещё не запускался. Полный release/run и обязательные BDD gates не закрыты.
 
 | Этап | Работа | Результат для перехода дальше |
 | --- | --- | --- |

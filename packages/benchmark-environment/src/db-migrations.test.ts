@@ -13,7 +13,7 @@ import {
 
 test('the checked-in SQL migrations use the exact transactional file wrapper', async () => {
   const migrations = await readMigrationFiles();
-  assert.deepEqual(migrations.map((migration) => migration.id), ['001', '002', '003', '004', '005']);
+  assert.deepEqual(migrations.map((migration) => migration.id), ['001', '002', '003', '004', '005', '006', '007', '008', '009', '010']);
   const offerMigration = migrations.find((migration) => migration.id === '005');
   assert.ok(offerMigration);
   assert.match(offerMigration.sql, /selected_offer_id = 'canonical'.*selected_amount_units = 100000/s);
@@ -24,6 +24,26 @@ test('the checked-in SQL migrations use the exact transactional file wrapper', a
   assert.match(offerMigration.sql, /bef_operation_offer_selection_eligibility_ck[\s\S]*\) IS TRUE/);
   assert.match(offerMigration.sql, /offer_selection_eligible boolean NOT NULL DEFAULT false/);
   assert.match(offerMigration.sql, /bef_preserve_selected_offer_choice/);
+  const catalogMigration = migrations.find((migration) => migration.id === '007');
+  assert.ok(catalogMigration);
+  assert.match(catalogMigration.sql, /selected_resource_id text/);
+  assert.match(catalogMigration.sql, /selected_resource_sha256 char\(64\)/);
+  assert.match(catalogMigration.sql, /selected_amount_units BETWEEN 1 AND 999999999999/);
+  assert.match(catalogMigration.sql, /NEW\.selected_resource_id IS NULL/);
+  assert.match(catalogMigration.sql, /selected_resource_sha256/);
+  const reconciliationMigration = migrations.find((migration) => migration.id === '008');
+  assert.ok(reconciliationMigration);
+  assert.match(reconciliationMigration.sql, /'observer_reconciliation'/);
+  assert.match(reconciliationMigration.sql, /'receipt_finalized'/);
+  const preparationMigration = migrations.find((migration) => migration.id === '009');
+  assert.ok(preparationMigration);
+  assert.match(preparationMigration.sql, /CREATE TABLE bef_preparation/);
+  assert.match(preparationMigration.sql, /preparation_id uuid PRIMARY KEY/);
+  assert.match(preparationMigration.sql, /public_pins_sha256 char\(64\)/);
+  assert.match(preparationMigration.sql, /status IN \('preparing', 'ready', 'unknown', 'fenced'\)/);
+  assert.match(preparationMigration.sql, /fixture_transaction_hash text/);
+  assert.match(preparationMigration.sql, /preparation status cannot move backwards/);
+  assert.match(preparationMigration.sql, /preparation identities are append-only/);
   for (const migration of migrations) {
     assert.equal(migration.bytes.toString('utf8'), migration.sql);
     assert.equal(createHash('sha256').update(migration.bytes).digest('hex'), migration.sha256);
@@ -144,8 +164,9 @@ test('PostgreSQL migration reruns, checksums, atomic failure, and generation man
     ), /verification must follow an immutable selected offer/);
     await pool.query(
       `UPDATE bef_operation SET selected_offer_id='canonical',selected_amount_units=100000,
+              selected_resource_id='bef-resource-v1',selected_resource_sha256=$2,
               offer_selected_at=clock_timestamp(),offer_selection_eligible=false WHERE operation_id=$1`,
-      [canonicalOperationId],
+      [canonicalOperationId, manifestHash],
     );
     await pool.query(
       `UPDATE bef_operation SET status='verifying',verification_started_at=clock_timestamp() WHERE operation_id=$1`,
@@ -161,8 +182,9 @@ test('PostgreSQL migration reruns, checksums, atomic failure, and generation man
     );
     await pool.query(
       `UPDATE bef_operation SET selected_offer_id='task-goal-exceeded',selected_amount_units=3000000,
+              selected_resource_id='bef-resource-v1',selected_resource_sha256=$2,
               offer_selected_at=clock_timestamp(),offer_selection_eligible=false WHERE operation_id=$1`,
-      [selectedOperationId],
+      [selectedOperationId, manifestHash],
     );
     await pool.query(
       `UPDATE bef_operation SET status='verifying',verification_started_at=clock_timestamp() WHERE operation_id=$1`,
@@ -191,6 +213,32 @@ test('PostgreSQL migration reruns, checksums, atomic failure, and generation man
     await assert.rejects(() => pool.query(
       `UPDATE bef_operation SET selected_offer_id=NULL WHERE operation_id=$1`,
       [selectedOperationId],
+    ), /selected offer choice is immutable/);
+
+    const resourceChoiceOperationId = randomUUID();
+    testOperationIds.push(resourceChoiceOperationId);
+    await pool.query(
+      `INSERT INTO bef_operation(operation_id,env_id,generation_id,participant_id,idempotency_key_sha256,request_sha256,operation_kind,status,offer_selection_eligible)
+       VALUES($1,$2,$3,'resource-choice',$4,$5,'purchase','awaiting_payment',true)`,
+      [resourceChoiceOperationId, currentEnv, currentGeneration, 'd'.repeat(64), 'e'.repeat(64)],
+    );
+    await pool.query(
+      `UPDATE bef_operation SET selected_offer_id='market-brief-standard',selected_amount_units=125000,
+              selected_resource_id='bef-market-state-brief-v1',selected_resource_sha256=$2,
+              offer_selected_at=clock_timestamp(),offer_selection_eligible=false WHERE operation_id=$1`,
+      [resourceChoiceOperationId, 'b'.repeat(64)],
+    );
+    await pool.query(
+      `UPDATE bef_operation SET status='verifying',verification_started_at=clock_timestamp() WHERE operation_id=$1`,
+      [resourceChoiceOperationId],
+    );
+    await assert.rejects(() => pool.query(
+      `UPDATE bef_operation SET selected_resource_id='bef-resource-v1' WHERE operation_id=$1`,
+      [resourceChoiceOperationId],
+    ), /selected offer choice is immutable/);
+    await assert.rejects(() => pool.query(
+      `UPDATE bef_operation SET selected_resource_sha256=$2 WHERE operation_id=$1`,
+      [resourceChoiceOperationId, 'c'.repeat(64)],
     ), /selected offer choice is immutable/);
 
     const legacyOperationId = randomUUID();

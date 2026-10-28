@@ -91,8 +91,10 @@ type ChainState = {
   payerNativeWei: string;
   payerWethUnits: string;
   payerUsdcUnits: string;
+  recipientWethUnits: string;
   recipientUsdcUnits: string;
   wethRouterAllowance: string;
+  usdcRouterAllowance: string;
   poolWethUnits: string;
   poolUsdcUnits: string;
   poolLiquidity: string;
@@ -363,15 +365,19 @@ async function readChainState(ctx: ProbeContext, session: Session, variantId: Pr
   const blockTag = `0x${BigInt(blockNumber).toString(16)}`;
   const block = await blockIdentity(ctx, session, variantId, blockTag, operationId, `${label}-block`);
   const manifest = ctx.runtime.manifest;
-  const [payerNativeWei, payerWethUnits, payerUsdcUnits, recipientUsdcUnits, wethRouterAllowance, poolWethUnits, poolUsdcUnits, poolLiquidity, poolSlot0] = await Promise.all([
+  const [payerNativeWei, payerWethUnits, payerUsdcUnits, recipientWethUnits, recipientUsdcUnits, wethRouterAllowance, usdcRouterAllowance, poolWethUnits, poolUsdcUnits, poolLiquidity, poolSlot0] = await Promise.all([
     rawRpc<string>(ctx, session, { operationId, variantId, label: `${label}-payer-native`, method: 'eth_getBalance', params: [session.payerAddress, blockTag], requestedBlock: blockTag }),
     uintCall(ctx, session, variantId, `${label}-payer-weth`, manifest.contracts.weth.address as Address,
       encodeFunctionData({ abi: ERC20_ABI, functionName: 'balanceOf', args: [session.payerAddress] }), blockTag, operationId),
     uintCall(ctx, session, variantId, `${label}-payer-usdc`, manifest.contracts.usdc.address as Address,
       encodeFunctionData({ abi: ERC20_ABI, functionName: 'balanceOf', args: [session.payerAddress] }), blockTag, operationId),
+    uintCall(ctx, session, variantId, `${label}-recipient-weth`, manifest.contracts.weth.address as Address,
+      encodeFunctionData({ abi: ERC20_ABI, functionName: 'balanceOf', args: [recipient] }), blockTag, operationId),
     uintCall(ctx, session, variantId, `${label}-recipient-usdc`, manifest.contracts.usdc.address as Address,
       encodeFunctionData({ abi: ERC20_ABI, functionName: 'balanceOf', args: [recipient] }), blockTag, operationId),
     uintCall(ctx, session, variantId, `${label}-router-allowance`, manifest.contracts.weth.address as Address,
+      encodeFunctionData({ abi: ERC20_ABI, functionName: 'allowance', args: [session.payerAddress, manifest.contracts.swapRouter02.address as Address] }), blockTag, operationId),
+    uintCall(ctx, session, variantId, `${label}-usdc-router-allowance`, manifest.contracts.usdc.address as Address,
       encodeFunctionData({ abi: ERC20_ABI, functionName: 'allowance', args: [session.payerAddress, manifest.contracts.swapRouter02.address as Address] }), blockTag, operationId),
     uintCall(ctx, session, variantId, `${label}-pool-weth`, manifest.contracts.weth.address as Address,
       encodeFunctionData({ abi: ERC20_ABI, functionName: 'balanceOf', args: [manifest.contracts.pool.address as Address] }), blockTag, operationId),
@@ -392,8 +398,10 @@ async function readChainState(ctx: ProbeContext, session: Session, variantId: Pr
     payerNativeWei: BigInt(payerNativeWei).toString(),
     payerWethUnits: payerWethUnits.toString(),
     payerUsdcUnits: payerUsdcUnits.toString(),
+    recipientWethUnits: recipientWethUnits.toString(),
     recipientUsdcUnits: recipientUsdcUnits.toString(),
     wethRouterAllowance: wethRouterAllowance.toString(),
+    usdcRouterAllowance: usdcRouterAllowance.toString(),
     poolWethUnits: poolWethUnits.toString(),
     poolUsdcUnits: poolUsdcUnits.toString(),
     poolLiquidity: poolLiquidity.toString(),
@@ -600,8 +608,10 @@ function effectDelta(after: ChainState, before: ChainState): Record<string, stri
     payerNativeWei: delta('payerNativeWei'),
     payerWethUnits: delta('payerWethUnits'),
     payerUsdcUnits: delta('payerUsdcUnits'),
+    recipientWethUnits: delta('recipientWethUnits'),
     recipientUsdcUnits: delta('recipientUsdcUnits'),
     wethRouterAllowance: delta('wethRouterAllowance'),
+    usdcRouterAllowance: delta('usdcRouterAllowance'),
     poolWethUnits: delta('poolWethUnits'),
     poolUsdcUnits: delta('poolUsdcUnits'),
   };
@@ -648,25 +658,35 @@ async function action(ctx: ProbeContext, session: Session, variantId: ProbeVaria
   const execution = rows.selectedExecution[0];
   const selectedAction = recordOf(responseBody.selectedAction);
   if (!selectedAction || selectedAction.kind !== kind) throw new Error('probe_sc007_selected_action_not_persisted');
-  for (const [field, value] of Object.entries(body)) {
+  const normalizedInput: Record<string, unknown> = kind === 'approve'
+    ? { kind, tokenAssetId: 'WETH', ...body }
+    : kind === 'swap'
+      ? {
+        kind, inputAssetId: 'WETH', outputAssetId: 'USDC', amountInUnits: body.amountInWei,
+        amountOutMinimumUnits: body.amountOutMinimumUsdcUnits, recipient: parsedAddress(body.recipient, 'selected_action_recipient'),
+        gasLimit: body.gasLimit,
+      }
+      : { kind, ...body };
+  for (const [field, value] of Object.entries(normalizedInput)) {
+    if (field === 'kind') continue;
     if (!sameField(selectedAction[field], value, field)) throw new Error('probe_sc007_selected_action_input_was_changed');
   }
   const manifest = ctx.runtime.manifest;
   const expectedObservedAction: Record<string, unknown> = kind === 'approve'
-    ? { kind, token: manifest.contracts.weth.address, spender: manifest.contracts.swapRouter02.address, ...body }
+    ? { kind, tokenAssetId: 'WETH', token: manifest.contracts.weth.address, spender: manifest.contracts.swapRouter02.address, ...body }
     : kind === 'wrap' || kind === 'unwrap'
       ? { kind, ...body }
       : {
         kind, route: manifest.swap.route, router: manifest.contracts.swapRouter02.address,
-        tokenIn: manifest.swap.tokenIn, tokenOut: manifest.swap.tokenOut, fee: manifest.swap.fee,
-        ...body, recipient: parsedAddress(body.recipient, 'selected_action_recipient'),
+        inputAssetId: 'WETH', outputAssetId: 'USDC', tokenIn: manifest.swap.tokenIn, tokenOut: manifest.swap.tokenOut, fee: manifest.swap.fee,
+        amountInUnits: body.amountInWei, amountOutMinimumUnits: body.amountOutMinimumUsdcUnits,
+        recipient: parsedAddress(body.recipient, 'selected_action_recipient'), gasLimit: body.gasLimit,
       };
   if (stableJson(selectedAction) !== stableJson(expectedObservedAction)) {
     throw new Error('probe_sc007_selected_action_metadata_not_bound_to_manifest');
   }
   const storedAction = jsonRecord(execution?.selected_action_json, 'stored_selected_action');
-  const expectedStoredAction: Record<string, unknown> = { kind, ...body };
-  if (kind === 'swap') expectedStoredAction.recipient = parsedAddress(body.recipient, 'stored_selected_action_recipient');
+  const expectedStoredAction: Record<string, unknown> = normalizedInput;
   if (stableJson(storedAction) !== stableJson(expectedStoredAction)) {
     throw new Error('probe_sc007_selected_action_database_binding_invalid');
   }
@@ -888,7 +908,7 @@ async function readQuote(ctx: ProbeContext, session: Session, variantId: Sc007Va
     throw new Error('probe_sc007_quote_identity_or_status_invalid');
   }
   const quote = recordOf(body.quote);
-  if (!quote || decimal(quote.amountInWei, 'quote_input') !== amountInWei) throw new Error('probe_sc007_quote_amount_mismatch');
+  if (!quote || decimal(quote.amountInUnits, 'quote_input') !== amountInWei) throw new Error('probe_sc007_quote_amount_mismatch');
   const blockNumber = decimal(body.blockNumber, 'quote_block_number');
   const blockTag = `0x${BigInt(blockNumber).toString(16)}`;
   const quoteData = encodeFunctionData({
@@ -908,7 +928,7 @@ async function readQuote(ctx: ProbeContext, session: Session, variantId: Sc007Va
   });
   const quoteDecoded = decodeFunctionResult({ abi: QUOTER_V2_ABI, functionName: 'quoteExactInputSingle', data: quoteRaw });
   const independentAmountOut = quoteDecoded[0].toString();
-  if (independentAmountOut !== decimal(quote.amountOutUsdcUnits, 'quote_output')) {
+  if (independentAmountOut !== decimal(quote.amountOutUnits, 'quote_output')) {
     throw new Error('probe_sc007_quoter_v2_output_mismatch');
   }
   await ctx.evidence.writeObservation(`selected/${variantId}-quote-${amountInWei}.json`, `sc007-${variantId}-quote-${amountInWei}`, {
@@ -1178,7 +1198,7 @@ export async function runSc007Variant(
     operations.push(wrapped, approval);
     const quoteBody = await readQuote(ctx, session, variantId, swapAmount);
     const quote = recordOf(quoteBody.quote);
-    const quotedOutput = decimal(quote?.amountOutUsdcUnits, 'quote_output');
+    const quotedOutput = decimal(quote?.amountOutUnits, 'quote_output');
     if (variantId === 'agent_chosen_slippage_guard_reverts') minOut = (BigInt(quotedOutput) + 1n).toString();
     if (variantId === 'agent_chosen_slippage_guard_reverts') {
       measured.selectedMinOutCall = await readSelectedSwapMinOutRevert(ctx, session, variantId, {
@@ -1208,7 +1228,7 @@ export async function runSc007Variant(
       goalOutputUsdcUnits: variantId === 'actual_output_below_task_goal_recorded' ? TASK_OUTPUT_GOAL_UNITS : null,
       actualOutputBelowGoal: variantId === 'actual_output_below_task_goal_recorded' ? outputToRecipient < BigInt(TASK_OUTPUT_GOAL_UNITS) : null,
       recipientGoalMismatch: recipient.toLowerCase() !== session.payerAddress.toLowerCase(),
-      minOutWasPreserved: swap.action.amountOutMinimumUsdcUnits === minOut,
+      minOutWasPreserved: swap.action.amountOutMinimumUnits === minOut,
       swapTransactionValueWei: decimal(swap.transaction.valueWei, 'swap_transaction_value'),
       swapTransactionHadNoWrapOrUnwrapEvents: (swap.events.deposits as unknown[]).length === 0
         && (swap.events.withdrawals as unknown[]).length === 0

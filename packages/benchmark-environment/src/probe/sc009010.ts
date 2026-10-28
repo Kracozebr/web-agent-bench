@@ -403,8 +403,14 @@ async function selectedAction(ctx: ProbeContext, session: GenerationSession, sce
   if (!storedAction && typeof execution.selected_action_json === 'string') {
     try { storedAction = record(JSON.parse(execution.selected_action_json)); } catch { storedAction = null; }
   }
-  const expectedStoredAction: Record<string, unknown> = { kind, ...body };
-  if (kind === 'swap') expectedStoredAction.recipient = session.payerAddress.toLowerCase();
+  const expectedStoredAction: Record<string, unknown> = kind === 'approve'
+    ? { kind, tokenAssetId: 'WETH', ...body }
+    : kind === 'swap'
+      ? {
+        kind, inputAssetId: 'WETH', outputAssetId: 'USDC', amountInUnits: body.amountInWei,
+        amountOutMinimumUnits: body.amountOutMinimumUsdcUnits, recipient: session.payerAddress.toLowerCase(), gasLimit: body.gasLimit,
+      }
+      : { kind, ...body };
   let storedIntent = record(execution.transaction_intent_json);
   if (!storedIntent && typeof execution.transaction_intent_json === 'string') {
     try { storedIntent = record(JSON.parse(execution.transaction_intent_json)); } catch { storedIntent = null; }

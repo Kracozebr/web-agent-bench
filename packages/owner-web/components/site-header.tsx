@@ -7,6 +7,7 @@ const links = [
   { href: "/sign-in", label: "Sign in" },
   { href: "/account", label: "Owner account" },
   { href: "/agents", label: "Agents" },
+  { href: "/runs", label: "Runs" },
   { href: "/billing", label: "Billing" },
   { href: "/admin", label: "Administration" },
 ];

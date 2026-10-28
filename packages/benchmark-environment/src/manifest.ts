@@ -37,6 +37,8 @@ export const RuntimeManifestSchema = z.object({
     implementationCodeArtifactSha256: z.string().regex(/^[0-9a-f]{64}$/),
     implementationSlotArtifact: z.literal('infrastructure/benchmark-environment/source-intake/usdc-implementation-observation.json'),
     implementationSlotArtifactSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    routePool3000Artifact: z.literal('infrastructure/benchmark-environment/source-intake/uniswap-v3-usdc-weth-3000.json').optional(),
+    routePool3000ArtifactSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     allowedMethods: z.array(sourceMethod).min(1),
     maxBatchItems: positiveInt,
     maxRequestBytes: positiveInt,
@@ -76,6 +78,11 @@ export const RuntimeManifestSchema = z.object({
     swapRouter02: z.object({ address, codeHash: hex32 }).strict(),
     quoterV2: z.object({ address, codeHash: hex32 }).strict(),
     pool: z.object({ address, codeHash: hex32, token0: address, token1: address, fee: z.literal(500), liquidityAtSource: z.string().regex(/^0x[0-9a-f]+$/i), sqrtPriceX96AtSource: z.string().regex(/^0x[0-9a-f]+$/i) }).strict(),
+    pool3000: z.object({
+      address, codeHash: hex32, token0: address, token1: address, fee: z.literal(3000),
+      liquidityAtSource: z.string().regex(/^[1-9][0-9]{0,77}$/),
+      quote: z.object({ inputAssetId: z.literal('USDC'), outputAssetId: z.literal('WETH'), amountInUnits: z.string().regex(/^[1-9][0-9]{0,77}$/), amountOutUnits: z.string().regex(/^[1-9][0-9]{0,77}$/) }).strict(),
+    }).strict().optional(),
   }).strict(),
   funding: z.object({
     mode: z.literal('private-anvil-impersonated-transfer'),
@@ -107,6 +114,23 @@ export const RuntimeManifestSchema = z.object({
     resourceId: z.string().min(1),
     resourcePath: z.string().min(1),
     resourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    catalog: z.array(z.object({
+      resourceId: z.string().regex(/^[a-z][a-z0-9-]{2,63}$/),
+      resourcePath: z.string().regex(/^infrastructure\/benchmark-environment\/(?:resource\.json|resources\/[a-z0-9-]+\.json)$/),
+      resourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      contentType: z.literal('application/json'),
+      schema: z.string().regex(/^[a-z0-9][a-z0-9._/-]{2,95}$/),
+      dataType: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional(),
+      provenance: z.object({
+        classification: z.literal('synthetic-benchmark-fixture'),
+        boundary: z.literal('private acceptance environment'),
+        source: z.string().min(1).max(160),
+      }).strict(),
+      offers: z.array(z.object({
+        id: z.string().regex(/^[a-z][a-z0-9-]{2,63}$/),
+        amount: z.string().regex(/^[1-9][0-9]{0,11}$/),
+      }).strict()).min(1).max(8),
+    }).strict()).min(2).max(32).optional(),
     maxTimeoutSeconds: positiveInt,
     facilitatorGasPayer: z.literal('ephemeral-local-facilitator'),
     confirmationTimeoutMs: positiveInt,
@@ -146,8 +170,9 @@ export const RuntimeManifestSchema = z.object({
     principalSeparateFromExpense: z.literal(true),
   }).strict(),
   tools: z.object({
-    reads: z.array(z.enum(['balances', 'offer', 'quote'])).min(3),
-    writes: z.array(z.enum(['purchase', 'approve', 'swap', 'wrap', 'unwrap'])).min(5),
+    reads: z.array(z.enum(['balances', 'offer', 'quote', 'catalog', 'retrieve'])).min(3),
+    writes: z.array(z.enum(['purchase', 'pay', 'approve', 'swap', 'wrap', 'unwrap', 'transfer'])).min(5),
+    participantProtocol: z.enum(['combined_purchase_v1', 'separate_payment_delivery_v2']).optional(),
     noArbitraryUrls: z.literal(true),
     noRawRpc: z.literal(true),
     noParticipantAnvilAdmin: z.literal(true),
@@ -211,8 +236,44 @@ export async function loadManifest(path = RUNTIME_MANIFEST_PATH): Promise<Loaded
     || BigInt(manifest.x402.offers[1].amount) > BigInt(manifest.funding.maxUsdcUnitsPerGeneration)) {
     throw new Error('Pinned x402 offers must include canonical price and a bounded task-goal-exceeding price');
   }
+  if (manifest.x402.catalog) {
+    const resourceIds = new Set<string>();
+    const offerIds = new Set<string>();
+    const resourcePaths = new Set<string>();
+    for (const resource of manifest.x402.catalog) {
+      if (resourceIds.has(resource.resourceId) || resourcePaths.has(resource.resourcePath)) {
+        throw new Error('Pinned x402 catalog resource identifiers and paths must be unique');
+      }
+      resourceIds.add(resource.resourceId);
+      resourcePaths.add(resource.resourcePath);
+      for (const offer of resource.offers) {
+        if (offerIds.has(offer.id)) throw new Error('Pinned x402 catalog offer identifiers must be unique');
+        if (BigInt(offer.amount) > BigInt(manifest.funding.maxUsdcUnitsPerGeneration)) {
+          throw new Error('Pinned x402 catalog offer exceeds the generation funding bound');
+        }
+        offerIds.add(offer.id);
+      }
+    }
+    const legacy = manifest.x402.catalog[0];
+    if (legacy?.resourceId !== manifest.x402.resourceId || legacy.resourcePath !== manifest.x402.resourcePath
+      || legacy.resourceSha256 !== manifest.x402.resourceSha256 || legacy.offers.length !== manifest.x402.offers.length
+      || legacy.offers.some((offer, index) => offer.id !== manifest.x402.offers[index]?.id || offer.amount !== manifest.x402.offers[index]?.amount)) {
+      throw new Error('The first x402 catalog resource must preserve the legacy pinned resource and offers');
+    }
+  }
   if (manifest.contracts.pool.token0.toLowerCase() !== manifest.contracts.weth.address.toLowerCase() || manifest.contracts.pool.token1.toLowerCase() !== manifest.contracts.usdc.address.toLowerCase()) {
     throw new Error('Pinned pool token order must match WETH/USDC observation');
+  }
+  if (Boolean(manifest.contracts.pool3000) !== Boolean(manifest.source.routePool3000Artifact && manifest.source.routePool3000ArtifactSha256)) {
+    throw new Error('Pinned fee-3000 pool and its source observation artifact must be declared together');
+  }
+  if (manifest.contracts.pool3000 && (
+    manifest.contracts.pool3000.token0.toLowerCase() !== manifest.contracts.weth.address.toLowerCase() ||
+    manifest.contracts.pool3000.token1.toLowerCase() !== manifest.contracts.usdc.address.toLowerCase() ||
+    manifest.contracts.pool3000.fee !== 3000 || BigInt(manifest.contracts.pool3000.liquidityAtSource) <= 0n ||
+    manifest.contracts.pool3000.address.toLowerCase() === manifest.contracts.pool.address.toLowerCase()
+  )) {
+    throw new Error('Pinned fee-3000 pool must be a distinct liquid WETH/USDC pool');
   }
   if (manifest.funding.donor.toLowerCase() !== manifest.contracts.pool.address.toLowerCase() || manifest.funding.token.toLowerCase() !== manifest.contracts.usdc.address.toLowerCase()) {
     throw new Error('Private fixture funding must use the observed pool donor and canonical USDC');
@@ -242,6 +303,75 @@ export async function loadManifest(path = RUNTIME_MANIFEST_PATH): Promise<Loaded
   })) {
     const item = intake.contracts?.[key];
     if (!item?.bytecode || keccak256(item.bytecode).toLowerCase() !== expected.toLowerCase()) throw new Error(`Pinned source intake code mismatch: ${key}`);
+  }
+  if (manifest.contracts.pool3000) {
+    const routeObservation = await readPinnedArtifact(
+      manifest.source.routePool3000Artifact!,
+      manifest.source.routePool3000ArtifactSha256!,
+    ) as Record<string, unknown>;
+    const source = routeObservation.source as Record<string, unknown> | undefined;
+    const observedPool = routeObservation.pool as Record<string, unknown> | undefined;
+    if (routeObservation.schemaVersion !== 'bef-uniswap-v3-route-observation/v1' ||
+        source?.chainId !== '0x2105' || source.blockNumber !== manifest.source.blockNumber ||
+        typeof source.blockHash !== 'string' || source.blockHash.toLowerCase() !== manifest.source.blockHash.toLowerCase() ||
+        observedPool?.address !== manifest.contracts.pool3000.address ||
+        typeof observedPool.codeHash !== 'string' || observedPool.codeHash.toLowerCase() !== manifest.contracts.pool3000.codeHash.toLowerCase() ||
+        observedPool.token0 !== manifest.contracts.pool3000.token0 || observedPool.token1 !== manifest.contracts.pool3000.token1 ||
+        observedPool.fee !== 3000 || observedPool.liquidityAtSource !== manifest.contracts.pool3000.liquidityAtSource) {
+      throw new Error('Pinned fee-3000 source observation does not match the route manifest');
+    }
+    const observations = routeObservation.rawRpcObservations;
+    const findObservation = (name: string): { request: Record<string, unknown>; response: Record<string, unknown> } | undefined => {
+      if (!Array.isArray(observations)) return undefined;
+      const candidate = observations.find((item) => item && typeof item === 'object' && !Array.isArray(item) && (item as Record<string, unknown>).name === name) as Record<string, unknown> | undefined;
+      if (!candidate || !candidate.request || typeof candidate.request !== 'object' || !candidate.response || typeof candidate.response !== 'object') return undefined;
+      return { request: candidate.request as Record<string, unknown>, response: candidate.response as Record<string, unknown> };
+    };
+    const resultHex = (observation: { request: Record<string, unknown>; response: Record<string, unknown> } | undefined, method: string, target: string, selector?: string): string => {
+      if (!observation || observation.request.method !== method || !Array.isArray(observation.request.params) ||
+          observation.response.error || typeof observation.response.result !== 'string') throw new Error('Pinned fee-3000 source RPC evidence is incomplete');
+      const params = observation.request.params;
+      if (method === 'eth_getCode') {
+        if (String(params[0]).toLowerCase() !== target.toLowerCase() || params[1] !== manifest.source.blockNumber) throw new Error('Pinned fee-3000 code evidence is not block-bound');
+      } else if (method === 'eth_call') {
+        const call = params[0] as Record<string, unknown> | undefined;
+        if (!call || typeof call !== 'object' || typeof call.to !== 'string' || call.to.toLowerCase() !== target.toLowerCase() ||
+            params[1] !== manifest.source.blockNumber || (selector && (typeof call.data !== 'string' || !call.data.toLowerCase().startsWith(selector)))) {
+          throw new Error('Pinned fee-3000 call evidence is not contract/block-bound');
+        }
+      }
+      return observation.response.result;
+    };
+    const code = resultHex(findObservation('pool-fee3000-code'), 'eth_getCode', manifest.contracts.pool3000.address);
+    if (keccak256(code as `0x${string}`).toLowerCase() !== manifest.contracts.pool3000.codeHash.toLowerCase()) {
+      throw new Error('Pinned fee-3000 source code hash does not match its observation');
+    }
+    const factoryPool = resultHex(findObservation('factory-fee3000'), 'eth_call', manifest.contracts.factory.address, '0x1698ee82');
+    if (`0x${factoryPool.slice(-40)}`.toLowerCase() !== manifest.contracts.pool3000.address.toLowerCase()) {
+      throw new Error('Pinned fee-3000 factory observation does not identify the configured pool');
+    }
+    const views = routeObservation.publicPoolViews as Record<string, unknown> | undefined;
+    const readView = (name: string, selector: string): string => resultHex(
+      views?.[name] as { request: Record<string, unknown>; response: Record<string, unknown> } | undefined,
+      'eth_call', manifest.contracts.pool3000!.address, selector,
+    );
+    const token0 = readView('token0', '0x0dfe1681');
+    const token1 = readView('token1', '0xd21220a7');
+    const fee = readView('fee', '0xddca3f43');
+    const liquidity = readView('liquidity', '0x1a686502');
+    if (`0x${token0.slice(-40)}`.toLowerCase() !== manifest.contracts.pool3000.token0.toLowerCase() ||
+        `0x${token1.slice(-40)}`.toLowerCase() !== manifest.contracts.pool3000.token1.toLowerCase() ||
+        BigInt(fee).toString() !== '3000' || BigInt(liquidity).toString() !== manifest.contracts.pool3000.liquidityAtSource) {
+      throw new Error('Pinned fee-3000 public pool views do not match the configured route');
+    }
+    const quote = findObservation('quoter-fee3000-0_1-usdc-to-weth');
+    const quoteResult = resultHex(quote, 'eth_call', manifest.contracts.quoterV2.address, '0xc6a5026a');
+    const quotedOutput = BigInt(`0x${quoteResult.slice(2, 66)}`).toString();
+    if (quotedOutput !== manifest.contracts.pool3000.quote.amountOutUnits ||
+        manifest.contracts.pool3000.quote.amountInUnits !== '100000' || manifest.contracts.pool3000.quote.inputAssetId !== 'USDC' ||
+        manifest.contracts.pool3000.quote.outputAssetId !== 'WETH') {
+      throw new Error('Pinned fee-3000 quote evidence does not match the route manifest');
+    }
   }
   const funding = await readPinnedArtifact(manifest.source.fundingArtifact, manifest.source.fundingArtifactSha256) as { blockNumber?: string; donor?: string; privateForkFixtureMaxTransferUnits?: number };
   if (funding.blockNumber !== manifest.source.blockNumber || funding.donor?.toLowerCase() !== manifest.funding.donor.toLowerCase() || Number(manifest.funding.maxUsdcUnitsPerGeneration) > Number(funding.privateForkFixtureMaxTransferUnits)) {

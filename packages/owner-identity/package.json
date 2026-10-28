@@ -24,6 +24,8 @@
     "@fastify/cookie": "11.1.2",
     "@modelcontextprotocol/server": "2.4.0",
     "@signinwithethereum/siwe": "4.2.1",
+    "@x402/core": "2.28.0",
+    "@x402/evm": "2.28.0",
     "better-auth": "1.7.12",
     "drizzle-orm": "0.45.4",
     "postgres": "3.4.9",

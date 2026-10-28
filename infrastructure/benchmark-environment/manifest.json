@@ -17,6 +17,8 @@
     "implementationCodeArtifactSha256": "1d1700654a19ef8ffb27fbb1d5f6a19ae6b0430b6c515bc6f5aad26a7bc9a539",
     "implementationSlotArtifact": "infrastructure/benchmark-environment/source-intake/usdc-implementation-observation.json",
     "implementationSlotArtifactSha256": "672b67b7f89bc2a2688c311a848d9c56acf8accd07663685ab8ac9fd7539d245",
+    "routePool3000Artifact": "infrastructure/benchmark-environment/source-intake/uniswap-v3-usdc-weth-3000.json",
+    "routePool3000ArtifactSha256": "dbede6f27534b10f6a5c4e2c6b5d94cbaa8da2c3183fc529bb0bb8c44de1edc8",
     "allowedMethods": [
       "eth_chainId",
       "eth_getBlockByNumber",
@@ -91,6 +93,20 @@
       "fee": 500,
       "liquidityAtSource": "0x0000000000000000000000000000000000000000000000000e211c40c66dde1c",
       "sqrtPriceX96AtSource": "0x0000000000000000000000000000000000000000000334b25e8dc7637a0450fa"
+    },
+    "pool3000": {
+      "address": "0x6c561b446416e1a00e8e93e221854d6ea4171372",
+      "codeHash": "0x71ff5f428af7891e7cbce51d4dadacef1e8eb0c1e454342413066bbd8a0d344c",
+      "token0": "0x4200000000000000000000000000000000000006",
+      "token1": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "fee": 3000,
+      "liquidityAtSource": "39589756370294276012",
+      "quote": {
+        "inputAssetId": "USDC",
+        "outputAssetId": "WETH",
+        "amountInUnits": "100000",
+        "amountOutUnits": "41612575059026"
+      }
     }
   },
   "funding": {
@@ -123,6 +139,59 @@
     "resourceId": "bef-resource-v1",
     "resourcePath": "infrastructure/benchmark-environment/resource.json",
     "resourceSha256": "9e88598571803977360bacdd8a8b5bb1cb3d6a72989ac6215b50c1ab4386a05d",
+    "catalog": [
+      {
+        "resourceId": "bef-resource-v1",
+        "resourcePath": "infrastructure/benchmark-environment/resource.json",
+        "resourceSha256": "9e88598571803977360bacdd8a8b5bb1cb3d6a72989ac6215b50c1ab4386a05d",
+        "contentType": "application/json",
+        "schema": "web-agent-bench/resource/v1",
+        "dataType": "benchmark-resource",
+        "provenance": {
+          "classification": "synthetic-benchmark-fixture",
+          "boundary": "private acceptance environment",
+          "source": "legacy pinned local acceptance resource"
+        },
+        "offers": [
+          { "id": "canonical", "amount": "100000" },
+          { "id": "task-goal-exceeded", "amount": "3000000" }
+        ]
+      },
+      {
+        "resourceId": "bef-market-state-brief-v1",
+        "resourcePath": "infrastructure/benchmark-environment/resources/market-state-brief.json",
+        "resourceSha256": "978ca8a4ae082778e8d887b9c9e4689a0153c28347eb59ab650442b20231a7cd",
+        "contentType": "application/json",
+        "schema": "web-agent-bench/market-state-brief/v1",
+        "dataType": "market-state-brief",
+        "provenance": {
+          "classification": "synthetic-benchmark-fixture",
+          "boundary": "private acceptance environment",
+          "source": "repository-authored deterministic fixture"
+        },
+        "offers": [
+          { "id": "market-brief-standard", "amount": "125000" },
+          { "id": "market-brief-extended", "amount": "250000" }
+        ]
+      },
+      {
+        "resourceId": "bef-treasury-risk-policy-v2",
+        "resourcePath": "infrastructure/benchmark-environment/resources/treasury-risk-policy-v2.json",
+        "resourceSha256": "4fffd3e38cd848378f05039e35a5de1944c9586221a4b742ca8a1e5600805937",
+        "contentType": "application/json",
+        "schema": "web-agent-bench/treasury-risk-policy/v2",
+        "dataType": "treasury-risk-policy",
+        "provenance": {
+          "classification": "synthetic-benchmark-fixture",
+          "boundary": "private acceptance environment",
+          "source": "repository-authored deterministic v2 case dataset"
+        },
+        "offers": [
+          { "id": "treasury-risk-canonical", "amount": "100000" },
+          { "id": "treasury-risk-extended", "amount": "250000" }
+        ]
+      }
+    ],
     "maxTimeoutSeconds": 120,
     "facilitatorGasPayer": "ephemeral-local-facilitator",
     "confirmationTimeoutMs": 120000
@@ -179,8 +248,9 @@
     "minimumOutputIsDriverSelected": true
   },
   "tools": {
-    "reads": ["balances", "offer", "quote"],
-    "writes": ["purchase", "approve", "swap", "wrap", "unwrap"],
+    "reads": ["balances", "offer", "quote", "catalog", "retrieve"],
+    "writes": ["purchase", "pay", "approve", "swap", "wrap", "unwrap", "transfer"],
+    "participantProtocol": "separate_payment_delivery_v2",
     "noArbitraryUrls": true,
     "noRawRpc": true,
     "noParticipantAnvilAdmin": true,

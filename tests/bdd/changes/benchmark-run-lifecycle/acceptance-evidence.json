@@ -1,0 +1,335 @@
+{
+  "acceptance_state": "blocked",
+  "active_delta_sha256": "aea6a0ff7faba34cb6db72b293318d73533b289a377e36c0132a9e37798a8813",
+  "bef_spec_profile": "active-delta",
+  "blocked_prerequisites": [
+    {
+      "adapter_module": "tests.bdd.adapters.benchmark_run_lifecycle",
+      "approved_scenarios": [
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "admission_api_postgres",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_001",
+          "requirement_id": "BRL-REQ-001",
+          "scenario_id": "BRL-SC-001"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "admission_api_postgres",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_002",
+          "requirement_id": "BRL-REQ-001",
+          "scenario_id": "BRL-SC-002"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "admission_api_postgres",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_003",
+          "requirement_id": "BRL-REQ-002",
+          "scenario_id": "BRL-SC-003"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "admission_api_postgres",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_004",
+          "requirement_id": "BRL-REQ-002",
+          "scenario_id": "BRL-SC-004"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_executor",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_005",
+          "requirement_id": "BRL-REQ-003",
+          "scenario_id": "BRL-SC-005"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_executor",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_006",
+          "requirement_id": "BRL-REQ-003",
+          "scenario_id": "BRL-SC-006"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_executor_slot",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_019",
+          "requirement_id": "BRL-REQ-003",
+          "scenario_id": "BRL-SC-019"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "budget_postgres_clock",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_007",
+          "requirement_id": "BRL-REQ-004",
+          "scenario_id": "BRL-SC-007"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_anvil",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_008",
+          "requirement_id": "BRL-REQ-005",
+          "scenario_id": "BRL-SC-008"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_anvil",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_009",
+          "requirement_id": "BRL-REQ-005",
+          "scenario_id": "BRL-SC-009"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_anvil_finish",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_020",
+          "requirement_id": "BRL-REQ-005",
+          "scenario_id": "BRL-SC-020"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_api_postgres_clock",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_010",
+          "requirement_id": "BRL-REQ-006",
+          "scenario_id": "BRL-SC-010"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_anvil_clock",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_011",
+          "requirement_id": "BRL-REQ-006",
+          "scenario_id": "BRL-SC-011"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_api_postgres_executor",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_012",
+          "requirement_id": "BRL-REQ-007",
+          "scenario_id": "BRL-SC-012"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_api_postgres_executor",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_013",
+          "requirement_id": "BRL-REQ-007",
+          "scenario_id": "BRL-SC-013"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_anvil_recovery",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_014",
+          "requirement_id": "BRL-REQ-008",
+          "scenario_id": "BRL-SC-014"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_anvil_recovery",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_015",
+          "requirement_id": "BRL-REQ-008",
+          "scenario_id": "BRL-SC-015"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_api_postgres_feedback",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_016",
+          "requirement_id": "BRL-REQ-009",
+          "scenario_id": "BRL-SC-016"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_result_handoff",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_017",
+          "requirement_id": "BRL-REQ-009",
+          "scenario_id": "BRL-SC-017"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_postgres_artifact_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_018",
+          "requirement_id": "BRL-REQ-010",
+          "scenario_id": "BRL-SC-018"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_http_postgres_validated_integrity_finding",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_021",
+          "requirement_id": "BRL-REQ-011",
+          "scenario_id": "BRL-SC-021"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "coordinator_http_postgres_integrity_validation_recovery",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_022",
+          "requirement_id": "BRL-REQ-011",
+          "scenario_id": "BRL-SC-022"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_owner_agent_http_mcp_postgres_launch_admission",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_023",
+          "requirement_id": "BRL-REQ-012",
+          "scenario_id": "BRL-SC-023"
+        },
+        {
+          "adapter_profile": "benchmark_run_lifecycle_http_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_launch_authorization_deadline_quote_and_cancel_transactions",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_024",
+          "requirement_id": "BRL-REQ-012",
+          "scenario_id": "BRL-SC-024"
+        },
+        {
+          "adapter_profile": "benchmark_launch_browser_client_adapter",
+          "boundary": "environment",
+          "boundary_detail": "actual_owner_browser_pinned_external_client_mcp_and_store",
+          "gate": "environment",
+          "mandatory": true,
+          "named_mapper": "test_brl_sc_025",
+          "requirement_id": "BRL-REQ-012",
+          "scenario_id": "BRL-SC-025"
+        }
+      ],
+      "code": "active_adapter_module_missing",
+      "execution_started": false,
+      "expected_source": "tests/bdd/adapters/benchmark_run_lifecycle.py",
+      "source_inventory": {
+        "approved_proposal": "openspec/changes/benchmark-run-lifecycle/bdd-harness-proposal.json",
+        "normative_source": "openspec/changes/benchmark-run-lifecycle/specs/*/spec.md",
+        "runtime_contract": "tests/bdd/changes/benchmark-run-lifecycle/harness-contracts.json",
+        "scenario_map": "tests/bdd/changes/benchmark-run-lifecycle/scenario-map.md"
+      }
+    }
+  ],
+  "change": "benchmark-run-lifecycle",
+  "command": [
+    ".venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_benchmark_run_lifecycle_bdd.py",
+    "--change",
+    "benchmark-run-lifecycle",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/benchmark-run-lifecycle-pytest.xml"
+  ],
+  "command_executed": false,
+  "execution_started": false,
+  "exit_code": 2,
+  "finished_at_utc": "2026-10-27T04:47:08.933890Z",
+  "gate": {
+    "class": "environment",
+    "mandatory": true
+  },
+  "git_commit": "4ef9f4478514590c8cef512c4f3ec6196a48e0f3",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "reason_code": "active_adapter_module_missing",
+    "status": "not_run"
+  },
+  "harness_contract_sha256": "dde1d2f7ea0870de276239b0bab3858ac62fb5b932d782b08c3e7a16c4e63ff1",
+  "harness_sources_sha256": "8d503790b46c05011dd4d5a2da053eaf74cca980d5bbf4936338ca24fb46b8a1",
+  "harness_sources_sha256_after": "8d503790b46c05011dd4d5a2da053eaf74cca980d5bbf4936338ca24fb46b8a1",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/benchmark-run-lifecycle/specs/*/spec.md",
+  "scenario_map_sha256": "1c8af17d5ee2128c97a1aa9ed4719c588281c40ed066f60a0da1a39914c356f1",
+  "scenario_results": {
+    "BRL-SC-001": "not_run",
+    "BRL-SC-002": "not_run",
+    "BRL-SC-003": "not_run",
+    "BRL-SC-004": "not_run",
+    "BRL-SC-005": "not_run",
+    "BRL-SC-006": "not_run",
+    "BRL-SC-007": "not_run",
+    "BRL-SC-008": "not_run",
+    "BRL-SC-009": "not_run",
+    "BRL-SC-010": "not_run",
+    "BRL-SC-011": "not_run",
+    "BRL-SC-012": "not_run",
+    "BRL-SC-013": "not_run",
+    "BRL-SC-014": "not_run",
+    "BRL-SC-015": "not_run",
+    "BRL-SC-016": "not_run",
+    "BRL-SC-017": "not_run",
+    "BRL-SC-018": "not_run",
+    "BRL-SC-019": "not_run",
+    "BRL-SC-020": "not_run",
+    "BRL-SC-021": "not_run",
+    "BRL-SC-022": "not_run",
+    "BRL-SC-023": "not_run",
+    "BRL-SC-024": "not_run",
+    "BRL-SC-025": "not_run"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-27T04:47:04.525625Z"
+}

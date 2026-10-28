@@ -60,8 +60,9 @@ test('PostgreSQL SC005 verify-only recording preserves awaiting_payment and is g
     if (options.selected) {
       await pool.query(
         `UPDATE bef_operation SET selected_offer_id=$2,selected_amount_units=$3,
+                selected_resource_id='bef-resource-v1',selected_resource_sha256=$4,
                 offer_selected_at=clock_timestamp(),offer_selection_eligible=false
-          WHERE operation_id=$1`, [operationId, OFFER.id, OFFER.amount],
+          WHERE operation_id=$1`, [operationId, OFFER.id, OFFER.amount, MANIFEST_HASH],
       );
     }
     if (options.operationStatus && options.operationStatus !== 'awaiting_payment') {
@@ -139,8 +140,9 @@ test('PostgreSQL SC005 verify-only recording preserves awaiting_payment and is g
     );
     await pool.query(
       `UPDATE bef_operation SET selected_offer_id=$2,selected_amount_units=$3,
+              selected_resource_id='bef-resource-v1',selected_resource_sha256=$4,
               offer_selected_at=clock_timestamp(),offer_selection_eligible=false WHERE operation_id=$1`,
-      [fencedOperation, OFFER.id, OFFER.amount],
+      [fencedOperation, OFFER.id, OFFER.amount, MANIFEST_HASH],
     );
     assert.equal(await recordPrivateVerificationStarted(pool, {
       envId: fencedEnv, generationId: fencedGeneration, operationId: fencedOperation, requestSha256: REQUEST_HASH,

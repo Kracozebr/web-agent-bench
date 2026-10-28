@@ -120,7 +120,9 @@ export async function sourceDigests(root: string): Promise<{ appSourceSha256: st
     resolve(root, 'infrastructure/benchmark-environment/manifest.json'),
     resolve(root, 'infrastructure/benchmark-environment/resource.json'),
   ];
-  const uniqueAppFiles = [...new Set([...appFiles, ...staticFiles])].filter((path) => existsSync(path));
+  const catalogResourceDir = resolve(root, 'infrastructure/benchmark-environment/resources');
+  const catalogResourceFiles = existsSync(catalogResourceDir) ? await walkFiles(catalogResourceDir) : [];
+  const uniqueAppFiles = [...new Set([...appFiles, ...staticFiles, ...catalogResourceFiles])].filter((path) => existsSync(path));
   return {
     appSourceSha256: await treeDigest(root, uniqueAppFiles),
     probeSourceSha256: await treeDigest(root, probeFiles),
