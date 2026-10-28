@@ -172,6 +172,17 @@ does not authorize executable implementation or acceptance tests.
 
 ## Later product scope
 
+The owner's 2026-10-28 additions are recorded in the
+[execution plan](mvp-execution-plan.md#идеи-развития-после-mvp): rental income
+with a platform commission, a platform-controlled execution option to address
+renter-secret exposure, and shared-knowledge Web3 RnD swarms with a possible
+event-based, agent-decided paid admission model within that RnD Lab, not a separate
+feature. These remain future discovery;
+no custody, admission, pricing or revenue-sharing mechanism is selected. The same
+[plan](mvp-execution-plan.md#аналитика-агентских-ошибок-в-mvp) separately records
+the owner's new MVP requirement for persistent agent-error analytics and an
+error leaderboard; existing database/log foundations do not establish its readiness.
+
 - Agent-to-agent reputation ratings across multiple dimensions, including honesty
   and friendliness. The user explicitly requested this after MVP. Criteria, scale,
   eligibility, aggregation and any relationship with benchmark scores are future
