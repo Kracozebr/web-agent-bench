@@ -12,7 +12,7 @@ import { BefTaskPreparationAdapter } from './bef-task-preparation.js';
 import type { OwnerIdentityConfig } from './config.js';
 import { claimNextQueuedRun, consumeRunCancellationOutbox, expireQueuedRuns, requestRunCancellationFromCoordinator,
   startQueuedRun, SUCCESSOR_PREPARATION_POLICY_VERSION, type RunServiceDependencies, type LocalCoordinatorCancellationReason } from './run-service.js';
-import { activatePreparedTrainingSuccessor } from './task-successor-activation.js';
+import { activatePreparedRankedSuccessor, activatePreparedTrainingSuccessor } from './task-successor-activation.js';
 import { findPinnedResourceOffer, type PinnedX402Policy } from './task-action-x402.js';
 import { sha256CanonicalTaskJson, type TaskCase, type TaskReleaseQuerySource } from './task-release.js';
 import { createPostgresTaskReleaseProvider } from './task-store.js';
@@ -27,7 +27,7 @@ import { processClosedTrainingTask } from './task-training-observation-lifecycle
 
 /**
  * AICODE-NOTE: This disabled-by-default local coordinator advances only from an already evaluated,
- * fenced, and terminalized training task. It reloads the private sealed evidence and delegates
+ * fenced, and terminalized training or ranked task. It reloads the private sealed evidence and delegates
  * predecessor replay and activation to the immutable owner services; it never grades or terminalizes.
  */
 
@@ -361,9 +361,10 @@ export function isResumablePreDispatchPreparation(row: {
 }
 
 export function isValidSuccessorLocator(candidate: {
-  run_id: string; predecessor_task_index: number; claim_id: string;
+  run_id: string; predecessor_task_index: number; claim_id: string; mode?: unknown;
 }): boolean {
   return UUID.test(candidate.run_id) && UUID.test(candidate.claim_id) &&
+    (candidate.mode === undefined || candidate.mode === 'training' || candidate.mode === 'ranked') &&
     Number.isSafeInteger(candidate.predecessor_task_index) && candidate.predecessor_task_index >= 0 &&
     candidate.predecessor_task_index <= 10;
 }
@@ -433,7 +434,7 @@ export function isExactFencedKnownClosedTask(row: FencedKnownTaskRecoveryRow): b
   const cutoff = row.action_cutoff_sequence;
   const accepted = row.accepted_action_sequence;
   const reconciled = row.reconciled_action_sequence;
-  if (row.run_mode !== 'training' || row.run_status !== 'running' || row.task_status !== 'active' ||
+  if (!['training', 'ranked'].includes(String(row.run_mode)) || row.run_status !== 'running' || row.task_status !== 'active' ||
       !Number.isSafeInteger(taskIndex) || Number(taskIndex) < 0 || Number(taskIndex) > 11 ||
       row.closure_status !== 'closed' || typeof row.closure_id !== 'string' || !UUID.test(row.closure_id) ||
       typeof row.task_id !== 'string' || !row.task_id || typeof row.run_id !== 'string' || !UUID.test(row.run_id) ||
@@ -532,7 +533,7 @@ export function isExactFencedKnownClosedTask(row: FencedKnownTaskRecoveryRow): b
       !sameCanonical(inputRun.cutoffEvidence, bundleCutoff.evidence) || !sameCanonical(input.observations, bundle.observations)) return false;
   const inputCase = recoveryObject(input.taskCase);
   const inputRelease = recoveryObject(input.release);
-  if (!inputCase || !inputRelease || inputCase.taskId !== taskId || inputCase.caseId !== row.preparation_case_id ||
+  if (!inputCase || !inputRelease || inputCase.taskId !== taskId || inputCase.mode !== row.run_mode || inputCase.caseId !== row.preparation_case_id ||
       inputCase.caseHash !== row.preparation_case_hash || inputCase.rubricHash !== row.evaluation_rubric_hash ||
       inputRelease.releaseIdentity !== row.release_identity || inputRelease.manifestHash !== row.release_manifest_hash) return false;
 
@@ -873,7 +874,7 @@ export async function createLocalBefTaskCoordinator(input: {
         WHERE preparation_id=i.preparation_id ORDER BY revision DESC LIMIT 1) o ON true
       LEFT JOIN oid_task_preparation_dispatch d ON d.preparation_id=i.preparation_id
       WHERE (r.status='preparing' AND i.task_index=0) OR
-        (r.status='running' AND r.mode='training' AND i.task_index>0 AND t.status='queued' AND l.state='leased')
+        (r.status='running' AND r.mode IN ('training','ranked') AND i.task_index>0 AND t.status='queued' AND l.state='leased')
       ORDER BY i.created_at,i.preparation_id LIMIT ${batchSize}`) as unknown as Array<{ run_id: string; preparation_id: string;
         observation_status: string; lease_state: string; dispatch_status: string | null }>;
     await lease.assertHeld();
@@ -1000,8 +1001,8 @@ export async function createLocalBefTaskCoordinator(input: {
     }
   }
 
-  async function successorCandidates(): Promise<Array<{ run_id: string; predecessor_task_index: number; claim_id: string }>> {
-    return await input.db.execute(sql`SELECT r.id AS run_id,p.task_index AS predecessor_task_index,c.claim_id
+  async function successorCandidates(): Promise<Array<{ run_id: string; predecessor_task_index: number; claim_id: string; mode: 'training' | 'ranked' }>> {
+    return await input.db.execute(sql`SELECT r.id AS run_id,p.task_index AS predecessor_task_index,c.claim_id,r.mode
       FROM oid_benchmark_run r
       JOIN oid_run_dispatch_claim c ON c.run_id=r.id AND c.status='claimed'
       JOIN oid_run_execution_slot s ON s.run_id=r.id AND s.agent_id=r.agent_id AND s.claim_id=c.claim_id
@@ -1022,7 +1023,7 @@ export async function createLocalBefTaskCoordinator(input: {
         AND eb.env_id=b.environment_id AND eb.generation_id=b.generation_id
       JOIN oid_run_task n ON n.run_id=p.run_id AND n.task_index=p.task_index+1
         AND n.status='queued' AND n.closure_status='open' AND n.started_at IS NULL AND n.finished_at IS NULL
-      WHERE r.status='running' AND r.mode='training' AND p.task_index BETWEEN 0 AND 10
+      WHERE r.status='running' AND r.mode IN ('training','ranked') AND p.task_index BETWEEN 0 AND 10
         AND p.finished_at<r.overall_deadline
         AND NOT EXISTS (SELECT 1 FROM oid_task_preparation_intent next_i
           JOIN oid_task_environment_lease next_l ON next_l.lease_id=next_i.lease_id AND next_l.preparation_id=next_i.preparation_id
@@ -1031,11 +1032,11 @@ export async function createLocalBefTaskCoordinator(input: {
           AND ev.payload_json->>'taskIndex'=p.task_index::text)
         AND NOT EXISTS (SELECT 1 FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active')
       ORDER BY r.started_at,r.id,p.task_index LIMIT ${batchSize}`) as unknown as
-        Array<{ run_id: string; predecessor_task_index: number; claim_id: string }>;
+        Array<{ run_id: string; predecessor_task_index: number; claim_id: string; mode: 'training' | 'ranked' }>;
   }
 
   async function prepareAndActivateSuccessor(candidate: {
-    run_id: string; predecessor_task_index: number; claim_id: string;
+    run_id: string; predecessor_task_index: number; claim_id: string; mode: 'training' | 'ranked';
   }): Promise<void> {
     const runId = candidate.run_id;
     const predecessorTaskIndex = candidate.predecessor_task_index;
@@ -1059,12 +1060,15 @@ export async function createLocalBefTaskCoordinator(input: {
         createPreparedSuccessorTaskStartPort(successorPreparationDependencies, attachPreparedSession),
         () => lease.assertHeld(),
       );
-      const activation = await activatePreparedTrainingSuccessor({
+      const activationDependencies = {
         db: input.db,
         taskReleaseSource: input.releaseSource,
         evidenceSource,
         preparedTaskStart: successorStartPort,
-      }, { runId, predecessorTaskIndex });
+      };
+      const activation = candidate.mode === 'ranked'
+        ? await activatePreparedRankedSuccessor(activationDependencies, { runId, predecessorTaskIndex })
+        : await activatePreparedTrainingSuccessor(activationDependencies, { runId, predecessorTaskIndex });
       await lease.assertHeld();
       const key = sessionKey(runId, target.taskIndex);
       if (!activation.replayed && (!activation.preparation ||
@@ -1121,7 +1125,7 @@ export async function createLocalBefTaskCoordinator(input: {
       if (!hasPreparationIntent && isBoundedSuccessorWindowFailure(code)) {
         const deadlineRows = await input.db.execute(sql`SELECT r.overall_deadline,p.finished_at
           FROM oid_benchmark_run r JOIN oid_run_task p ON p.run_id=r.id AND p.task_index=${predecessorTaskIndex}
-          WHERE r.id=${runId} AND r.mode='training' AND r.status='running'`) as unknown as Array<{
+          WHERE r.id=${runId} AND r.mode=${candidate.mode} AND r.status='running'`) as unknown as Array<{
             overall_deadline: Date | string | null; finished_at: Date | string | null;
           }>;
         await lease.assertHeld();
@@ -1202,7 +1206,7 @@ export async function createLocalBefTaskCoordinator(input: {
       FROM oid_benchmark_run r JOIN oid_run_task t ON t.run_id=r.id
       JOIN oid_run_dispatch_claim c ON c.run_id=r.id AND c.status='claimed'
       JOIN oid_run_execution_slot s ON s.run_id=r.id AND s.claim_id=c.claim_id AND s.state='running'
-      WHERE r.status='running' AND r.mode='training' AND t.status='active'
+      WHERE r.status='running' AND r.mode IN ('training','ranked') AND t.status='active'
         AND t.closure_status='closed' AND t.action_cutoff_sequence IS NOT NULL
         AND t.reconciled_action_sequence>=t.action_cutoff_sequence
       ORDER BY r.id,t.task_index LIMIT ${batchSize}`) as unknown as Array<{ run_id: string; task_index: number }>;
@@ -1214,7 +1218,7 @@ export async function createLocalBefTaskCoordinator(input: {
         preparationAdapter: guardedPreparationAdapter, assertLeaseHeld: () => lease.assertHeld() },
       { runId: row.run_id, taskIndex: row.task_index });
       await lease.assertHeld();
-      const progress = { schemaVersion: 'local-bef-training-observation-progress/v1',
+      const progress = { schemaVersion: 'local-bef-task-observation-progress/v1',
         classification: 'internal_worker_progress_not_task_grade_or_platform_attribution',
         runId: row.run_id, taskIndex: row.task_index, status: outcome.status, stage: outcome.stage,
         ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}) };

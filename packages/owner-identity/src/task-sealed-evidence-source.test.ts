@@ -8,8 +8,10 @@ import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
-import type { TaskCase, TaskReleaseQuerySource } from './task-release.js';
+import type { EvidenceReference, TaskCase, TaskReleaseQuerySource } from './task-release.js';
 import { sha256CanonicalTaskJson } from './task-release.js';
+import type { M1CaptureAction } from './task-m1-capture-packet.js';
+import { createS3CapturePacketFixture } from './task-s3-capture-packet.fixture.js';
 import { TaskSealedEvidenceSource } from './task-sealed-evidence-source.js';
 
 const HASH = (label: string) => createHash('sha256').update(label).digest('hex');
@@ -121,6 +123,7 @@ async function makeFixture(root: string): Promise<Fixture> {
       releaseIdentity: RELEASE_ID,
       manifestHash: MANIFEST_HASH,
       executionIdentity: { environmentManifestSha256: ENV_MANIFEST_HASH },
+      costPolicy: { ethValuation: { numerator: '1', denominator: '1' } },
       cases: { training: [taskCase], ranked: [taskCase] },
     },
   };
@@ -251,6 +254,7 @@ async function makeS2Fixture(root: string, options: { action?: boolean; answer?:
     applicationSourceHash: SOURCE_HASH, executionIdentityHash: EXECUTION_HASH, initialStateSha256: INITIAL_STATE_HASH,
   }, cutoff: { observationSequence, status: 'authoritative', evidence: captureEvidence }, observations };
   const record: any = { releaseIdentity: RELEASE_ID, manifestHash: MANIFEST_HASH, manifest: { releaseIdentity: RELEASE_ID, manifestHash: MANIFEST_HASH,
+    costPolicy: { ethValuation: { numerator: '1', denominator: '1' } },
     executionIdentity: { environmentManifestSha256: ENV_MANIFEST_HASH, localChainId: 8453,
       assets: [{ assetId: 'USDC', kind: 'erc20', chainId: 8453, address: S2_ASSET }] },
     cases: { training: [taskCase], ranked: [taskCase] } } };
@@ -621,7 +625,7 @@ test('sealed S2 rejects tampered or missing action evidence children', async () 
   });
 });
 
-test('sealed source routes M1 through release validation and keeps other IDs unavailable', async () => {
+test('sealed source routes M1 through release validation and resolves newly supported IDs against the release', async () => {
   await withPrivateRoot(async (root) => {
     const fixture = await makeS2Fixture(root);
     fixture.row.task_id = 'M1';
@@ -640,10 +644,180 @@ test('sealed source routes M1 through release validation and keeps other IDs una
     const unsupportedResult = await source.load({ runId: RUN, taskIndex: 0, closureId: CLOSURE },
       { async execute() { return [fixture.row]; } } as never);
     assert.equal(unsupportedResult, null);
-    assert.equal(releaseReads, 1, 'unsupported task IDs are rejected before release lookup');
+    assert.equal(releaseReads, 2, 'newly supported task IDs reach release validation and remain unavailable without an admitted case');
   });
 });
 
+test('sealed M1 reader accepts string action sequences and an explicitly known no-request rejection', () => {
+  const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+    async getActiveAdmissionRelease() { return null; },
+    async getValidatedReleaseRecord() { return null; },
+  }, evidenceRoot: process.cwd() });
+  const reference: EvidenceReference = {
+    path: `${COORDINATOR_EVIDENCE_ROOT}action/m1-rejected-action.json`, sha256: HASH('m1-action-child'),
+    boundary: 'actual_tool_http_x402_local_evm_application_store',
+  };
+  const actionId = '80000000-0000-4000-8000-000000000008';
+  const protocol = {
+    schema: 'bef-x402-split-payment-observation-v1', resourceId: 'market-brief', offerId: 'standard',
+    resourceSha256: HASH('resource'), amountUnits: '200000', network: 'eip155:8453', asset: S2_ASSET,
+    readHandle: { kind: 'offer', operationId: '90000000-0000-4000-8000-000000000009' },
+    acceptedTerms: { scheme: 'exact', network: 'eip155:8453', asset: S2_ASSET, amount: '200000',
+      payTo: S2_RECIPIENT, transferMethod: 'eip3009' },
+  };
+  const action = {
+    actionId, actionSequence: 1, ownerOperationId: 'synthetic-m1-owner-operation', actionKind: 'pay',
+    commandSha256: HASH('m1-command'), receiptStatus: 'rejected_before_execution', actionEvidence: reference,
+    befOperationId: null, transactionHash: null, rawResponseSha256: null, participantToolResponse: null, paymentProtocol: protocol,
+  } as unknown as M1CaptureAction;
+  const bundle = { binding: { environmentId: ENVIRONMENT }, execution: {
+    generationId: GENERATION, environmentManifestHash: ENV_MANIFEST_HASH, applicationSourceHash: SOURCE_HASH,
+  } };
+  const row = { run_id: RUN, task_index: 0 };
+  const evidence = (reasonCode: string, extra: Record<string, unknown> = {}) => Buffer.from(JSON.stringify({
+    schema: 'bef-task-action-observation-v1', actionId, runId: RUN, taskIndex: 0, actionSequence: '1',
+    ownerOperationId: action.ownerOperationId, actionKind: action.actionKind, commandSha256: action.commandSha256,
+    environmentId: ENVIRONMENT, generationId: GENERATION, manifestSha256: ENV_MANIFEST_HASH,
+    applicationSourceSha256: SOURCE_HASH, idempotencyKey: `task-action-${actionId}`, status: action.receiptStatus,
+    reasonCode, paymentProtocol: action.paymentProtocol, ...extra,
+  }));
+  const validate = (bytes: Buffer) => (source as unknown as { validateM1ActionEvidence: (
+    bytes: Buffer, reference: EvidenceReference, action: M1CaptureAction,
+    bundle: { binding: Record<string, unknown>; execution: Record<string, unknown> }, row: { run_id: string; task_index: number },
+  ) => Record<string, unknown> }).validateM1ActionEvidence.call(source, bytes, reference, action, bundle, row);
+
+  assert.equal(validate(evidence('task_split_pay_pinned_context_unavailable')).actionSequence, '1');
+  assert.throws(() => validate(evidence('task_split_pay_challenge_unavailable')), (error: { code?: string }) =>
+    error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  assert.throws(() => validate(evidence('task_split_pay_pinned_context_unavailable', { rawResponseSha256: HASH('unexpected-response') })),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+
+  const operationId = '90000000-0000-4000-8000-000000000010';
+  const challengeHash = HASH('challenge-response');
+  action.befOperationId = operationId;
+  action.rawResponseSha256 = challengeHash;
+  action.paymentProtocol = { ...protocol, befOperationId: operationId, challengeResponseSha256: challengeHash,
+    challengeHeaderSha256: HASH('challenge-header') };
+  assert.equal(validate(evidence('task_split_pay_challenge_scope_mismatch', {
+    httpStatus: 402, befOperationId: operationId, rawResponseSha256: challengeHash,
+  })).actionSequence, '1');
+});
+
+test('paid sealed replay binds owner command, durable receipt history, actual response and BEF request hash', async () => {
+  const actionId = '81000000-0000-4000-8000-000000000008';
+  const ownerOperationId = '82000000-0000-4000-8000-000000000008';
+  const befOperationId = '83000000-0000-4000-8000-000000000008';
+  const participantId = '84000000-0000-4000-8000-000000000008';
+  const command = { kind: 'inspect_offer' as const, resourceId: 'resource-market-snapshot', offerId: 'stream' };
+  const commandSha256 = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command });
+  const responseHash = HASH('paid-owner-raw-response');
+  const payment = { scheme: 'exact', network: 'eip155:8453', asset: S2_ASSET, amount: '125000',
+    payTo: S2_RECIPIENT, transferMethod: 'eip3009' };
+  const response = { operationId: befOperationId, readHandle: { kind: 'offer', operationId: befOperationId },
+    freeInspection: true, deliveryState: 'not_delivered', resourceId: command.resourceId, resourceSha256: HASH('resource'),
+    contentType: 'application/json', payment, offers: [{ id: 'stream', payment }] };
+  const requestHash = HASH(JSON.stringify({ method: 'GET', path: '/offer', resourceId: command.resourceId }));
+  const actionEvidence: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/paid-owner-read.json`,
+    sha256: HASH('paid-owner-action-evidence'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+  const action = { actionId, actionSequence: 1, ownerOperationId, actionKind: 'inspect_offer', commandSha256,
+    receiptStatus: 'observed', actionEvidence, befOperationId, transactionHash: null, rawResponseSha256: responseHash,
+    safeResponse: {}, paymentProtocol: null, retrievedContent: null };
+  const actionEvidenceValue = { schema: 'bef-task-action-observation-v1', actionId, runId: RUN, taskIndex: 0, actionSequence: '1',
+    ownerOperationId, actionKind: 'inspect_offer', commandSha256, environmentId: ENVIRONMENT, generationId: GENERATION,
+    manifestSha256: ENV_MANIFEST_HASH, applicationSourceSha256: SOURCE_HASH, idempotencyKey: `task-action-${actionId}`,
+    status: 'observed', befOperationId, transactionHash: null, rawResponseSha256: responseHash, participantToolResponse: response,
+    paymentProtocol: null };
+  const censusOperation = { operation_id: befOperationId, env_id: ENVIRONMENT, generation_id: GENERATION, participant_id: participantId,
+    idempotency_key_sha256: createHash('sha256').update(`task-action-${actionId}`).digest('hex'), request_sha256: requestHash,
+    operation_kind: 'offer', status: 'accepted', receipt_status: 'not_submitted', transaction_hash: null, response_sha256: responseHash };
+  const packet = { ownerActions: [action], bef: { after: { generation: { participant_id: participantId }, operations: [censusOperation], payments: [], deliveries: [] } } };
+  const row: Record<string, unknown> = { run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'H1',
+    environment_id: ENVIRONMENT, generation_id: GENERATION, environment_manifest_hash: ENV_MANIFEST_HASH,
+    application_source_hash: SOURCE_HASH, action_cutoff_sequence: '1' };
+  const dbAction = { id: actionId, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'H1', environment_id: ENVIRONMENT,
+    action_sequence: '1', operation_id: ownerOperationId, payload_hash: commandSha256, action_kind: 'inspect_offer', command_json: command,
+    receipt_revision: 1, receipt_status: 'observed', evidence_hash: actionEvidence.sha256, evidence_path: actionEvidence.path, transaction_hash: null,
+    tool_response_json: response, tool_response_hash: sha256CanonicalTaskJson(response), history_revision: 1, history_status: 'observed',
+    history_evidence_hash: actionEvidence.sha256, history_evidence_path: actionEvidence.path, history_transaction_hash: null,
+    history_tool_response_json: response, history_tool_response_hash: sha256CanonicalTaskJson(response) };
+  const callVerifier = async (candidateRow = row, candidatePacket = packet, candidateDbActions = [dbAction], composite = false) => {
+    const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+      async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
+    }, evidenceRoot: process.cwd() });
+    const tx = { async execute() { return candidateDbActions; } };
+    await (source as unknown as { verifyPaidOwnerActions(tx: unknown, row: unknown, packet: unknown,
+      evidence: ReadonlyMap<string, Record<string, unknown>>, composite: boolean): Promise<void> })
+      .verifyPaidOwnerActions(tx, candidateRow, candidatePacket, new Map([[actionEvidence.path, actionEvidenceValue]]), composite);
+  };
+  await callVerifier();
+  await assert.rejects(callVerifier(row, packet, [{ ...dbAction, history_tool_response_json: { ...response, resourceId: 'tampered-resource' } }]),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(callVerifier(row, { ...packet, bef: { after: { ...packet.bef.after,
+    operations: [{ ...censusOperation, request_sha256: HASH('wrong-request') }] } } }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(callVerifier(row, packet, [{ ...dbAction, command_json: { ...command, resourceId: 'tampered-resource' } }]),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(callVerifier(row, { ...packet, ownerActions: [] }, [dbAction], true),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(callVerifier({ ...row, action_cutoff_sequence: '2' }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(callVerifier(row, packet, [{ ...dbAction, action_sequence: '2' }]),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(callVerifier(row, packet, [{ ...dbAction, tool_response_json: { ...response, resourceId: 'tampered-current-response' } }]),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+});
+
+test('S3 sealed replay binds durable owner receipt and BEF hash to original raw response evidence', async () => {
+  const { packet } = createS3CapturePacketFixture();
+  const action = packet.ownerActions[0]!;
+  assert.equal(action.receiptStatus, 'observed');
+  assert.ok(action.response);
+  assert.ok(action.befOperationId);
+  const response = action.response!;
+  const rawResponseSha256 = packet.bef.before.operations[0]!.response_sha256!;
+  const actionEvidenceValue: Record<string, unknown> = {
+    schema: 'bef-task-action-observation-v1', actionId: action.actionId, runId: packet.binding.runId, taskIndex: 0, actionSequence: '1',
+    ownerOperationId: action.ownerOperationId, actionKind: 'inspect_catalog', commandSha256: action.commandSha256,
+    environmentId: packet.binding.environmentId, generationId: packet.execution.generationId,
+    manifestSha256: packet.execution.environmentManifestHash, applicationSourceSha256: packet.execution.applicationSourceHash,
+    idempotencyKey: `task-action-${action.actionId}`, status: 'observed', httpStatus: 200,
+    befOperationId: action.befOperationId, rawResponseSha256, participantToolResponse: response,
+  };
+  const dbAction: Record<string, unknown> = {
+    id: action.actionId, run_id: packet.binding.runId, task_index: 0, owner_id: packet.binding.ownerId, agent_id: packet.binding.agentId, task_id: 'S3',
+    environment_id: packet.binding.environmentId, action_sequence: '1', operation_id: action.ownerOperationId,
+    payload_hash: action.commandSha256, action_kind: 'inspect_catalog', command_json: action.command,
+    receipt_revision: 1, receipt_status: 'observed', evidence_hash: action.actionEvidence.sha256,
+    evidence_path: action.actionEvidence.path, transaction_hash: null, tool_response_json: response,
+    tool_response_hash: sha256CanonicalTaskJson(response), history_revision: 1, history_status: 'observed',
+    history_evidence_hash: action.actionEvidence.sha256, history_evidence_path: action.actionEvidence.path,
+    history_transaction_hash: null, history_tool_response_json: response, history_tool_response_hash: sha256CanonicalTaskJson(response),
+  };
+  const row: Record<string, unknown> = {
+    run_id: packet.binding.runId, task_index: 0, owner_id: packet.binding.ownerId, agent_id: packet.binding.agentId, task_id: 'S3', environment_id: packet.binding.environmentId,
+    generation_id: packet.execution.generationId, environment_manifest_hash: packet.execution.environmentManifestHash,
+    application_source_hash: packet.execution.applicationSourceHash, action_cutoff_sequence: '1',
+  };
+  const invoke = async (candidatePacket = packet, candidateEvidence = actionEvidenceValue, candidateAction = dbAction) => {
+    const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+      async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
+    }, evidenceRoot: process.cwd() });
+    const tx = { async execute() { return [candidateAction]; } };
+    await (source as unknown as { verifyS3OwnerActions(tx: unknown, row: unknown, packet: unknown,
+      evidence: ReadonlyMap<string, Record<string, unknown>>): Promise<void> })
+      .verifyS3OwnerActions(tx, row, candidatePacket, new Map([[action.actionEvidence.path, candidateEvidence]]));
+  };
+
+  await invoke();
+  await assert.rejects(invoke(packet, { ...actionEvidenceValue, rawResponseSha256: HASH('different-raw-response') }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const changedPublicResponse = structuredClone(packet);
+  changedPublicResponse.ownerActions[0]!.response!.freeInspection = false;
+  await assert.rejects(invoke(changedPublicResponse),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(invoke(packet, actionEvidenceValue, { ...dbAction, operation_id: 'different-owner-operation' }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+});
 const pgEnabled = process.env.OID_TASK_SEALED_EVIDENCE_SOURCE_PG_TEST === '1';
 
 test('isolated PostgreSQL source reads original S1 evidence from a fenced generation without nesting transactions', { skip: !pgEnabled }, async () => {

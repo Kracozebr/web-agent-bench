@@ -1,6 +1,6 @@
-// Private local training successor activation.
+// Private local successor activation for admitted training and ranked runs.
 //
-// This module only advances an already charged, running training run after the
+// This module only advances an already charged, running run after the
 // strict task finalizer proves that its predecessor is already terminal. It
 // never scores, charges, refunds, or starts a real executor. The injected
 // PreparedTaskStartPort is authoritative; callers must attach the returned
@@ -18,6 +18,7 @@ import {
   type ValidatedTaskReleaseRecord,
 } from './task-release.js';
 import { selectTaskIds } from './task-catalog.js';
+import type { TaskMode } from './task-catalog.js';
 import {
   getTaskExecutionBinding,
   getTaskExecutionContext,
@@ -26,6 +27,7 @@ import {
   type TaskExecutionBindingReader,
 } from './task-execution-binding.js';
 import {
+  finalizeKnownRankedTask,
   finalizeKnownTrainingTask,
   type FinalizedTrainingTask,
   type TaskRunCompletionDependencies,
@@ -36,7 +38,7 @@ import type {
   TaskPreparationTarget,
   TaskPreparationTransaction,
 } from './task-preparation.js';
-import { readKnownCanonicalTrainingEvaluation } from './task-preparation.js';
+import { readKnownCanonicalRankedEvaluation, readKnownCanonicalTrainingEvaluation } from './task-preparation.js';
 import { readSuccessorPreparationPolicySnapshot } from './run-service.js';
 
 type Transaction = Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
@@ -45,11 +47,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const HASH = /^[0-9a-f]{64}$/i;
 const EVIDENCE_PATH = /^(?![A-Za-z]:)(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,512}$/;
 
-export interface TrainingSuccessorActivationDependencies extends TaskRunCompletionDependencies {
+export interface TaskSuccessorActivationDependencies extends TaskRunCompletionDependencies {
   preparedTaskStart: PreparedTaskStartPort;
 }
 
-export type TrainingSuccessorActivation = {
+export type TaskSuccessorActivation = {
   runId: string;
   fromTaskIndex: number;
   toTaskIndex: number;
@@ -68,6 +70,9 @@ export type TrainingSuccessorActivation = {
   preparation: TaskPreparationRecord | null;
   binding: PublicTaskExecutionBinding;
 };
+export type TrainingSuccessorActivationDependencies = TaskSuccessorActivationDependencies;
+export type TrainingSuccessorActivation = TaskSuccessorActivation;
+export type RankedSuccessorActivation = TaskSuccessorActivation;
 
 type RunRow = {
   id: string;
@@ -189,14 +194,22 @@ function hashRunServicePayload(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 }
 
+function isTaskMode(value: string): value is TaskMode { return value === 'training' || value === 'ranked'; }
+function readKnownEvaluationForMode(result: unknown, input: unknown, taskId: string, runId: string, mode: string) {
+  if (mode === 'training') return readKnownCanonicalTrainingEvaluation(result, input, taskId, runId);
+  if (mode === 'ranked') return readKnownCanonicalRankedEvaluation(result, input, taskId, runId);
+  return null;
+}
+
 function assertRunTaskOrder(run: RunRow, record: ValidatedTaskReleaseRecord, tasks: readonly TaskRow[]): void {
-  const selection = selectTaskIds('training', run.task_ids);
-  const releasedTrainingIds: readonly string[] = record.manifest.cases.training.map((taskCase) => taskCase.taskId);
-  if (run.mode !== 'training' || !selection.ok || selection.taskIds.some((taskId, index) => taskId !== run.task_ids[index]) ||
+  if (!isTaskMode(run.mode)) fail(409, 'RUN_TASK_SELECTION_MISMATCH', 'The run mode is not supported for task successor activation');
+  const selection = selectTaskIds(run.mode, run.task_ids);
+  const releasedTaskIds: readonly string[] = record.manifest.cases[run.mode].map((taskCase) => taskCase.taskId);
+  if (!selection.ok || selection.taskIds.some((taskId, index) => taskId !== run.task_ids[index]) ||
       tasks.length !== run.task_ids.length || tasks.some((task, index) =>
         task.task_index !== index || task.task_id !== run.task_ids[index] ||
-        (index > 0 && releasedTrainingIds.indexOf(task.task_id) <= releasedTrainingIds.indexOf(tasks[index - 1]!.task_id)))) {
-    fail(409, 'RUN_TASK_SELECTION_MISMATCH', 'The selected training tasks do not match the pinned release order');
+        (index > 0 && releasedTaskIds.indexOf(task.task_id) <= releasedTaskIds.indexOf(tasks[index - 1]!.task_id)))) {
+    fail(409, 'RUN_TASK_SELECTION_MISMATCH', 'The selected tasks do not match the pinned mode-specific release order');
   }
 }
 
@@ -211,6 +224,7 @@ async function preflightKnownPredecessor(
   db: OwnerDatabase,
   runId: string,
   predecessorTaskIndex: number,
+  expectedMode: TaskMode,
 ): Promise<{ taskIds: string[]; claimId: string }> {
   const targets = await query<{
     mode: string; status: string; task_ids: string[]; started_at: Date | string | null;
@@ -219,14 +233,14 @@ async function preflightKnownPredecessor(
     FROM oid_benchmark_run WHERE id=${runId}`);
   const run = targets[0];
   if (!run) fail(404, 'RUN_NOT_FOUND', 'The run does not exist');
-  if (run.mode !== 'training' || run.status !== 'running' || !date(run.started_at) || !date(run.overall_deadline) ||
+  if (run.mode !== expectedMode || run.status !== 'running' || !date(run.started_at) || !date(run.overall_deadline) ||
       run.cancellation_reason !== null || run.cancellation_requested_at !== null) {
-    fail(409, 'SUCCESSOR_RUN_NOT_CURRENT', 'Only a current, running training run can activate a successor');
+    fail(409, 'SUCCESSOR_RUN_NOT_CURRENT', 'Only a current, running run of the selected mode can activate a successor');
   }
   const toTaskIndex = predecessorTaskIndex + 1;
   if (!Number.isSafeInteger(predecessorTaskIndex) || predecessorTaskIndex < 0 ||
       predecessorTaskIndex > 10 || toTaskIndex >= run.task_ids.length) {
-    fail(409, 'SUCCESSOR_TASK_INDEX_INVALID', 'The selected training task has no valid successor');
+    fail(409, 'SUCCESSOR_TASK_INDEX_INVALID', 'The selected task has no valid successor');
   }
   const taskRows = await query<TaskRow>(db, sql`SELECT task_index,task_id,status,closure_status,closure_id,closure_operation_id,
       closure_payload_hash,closure_reason,accepted_action_sequence::text AS accepted_action_sequence,
@@ -250,13 +264,13 @@ async function preflightKnownPredecessor(
        taskRows[toTaskIndex]?.status !== 'queued' || taskRows[toTaskIndex]?.started_at !== null ||
        taskRows[toTaskIndex]?.finished_at !== null ||
        taskRows.slice(toTaskIndex + 1).some((task) => task.status !== 'queued' || task.started_at !== null || task.finished_at !== null))) {
-    fail(409, 'RUN_TASK_ORDER_CONFLICT', 'Only the exact queued next training task may be activated');
+    fail(409, 'RUN_TASK_ORDER_CONFLICT', 'Only the exact queued next task may be activated');
   }
   const resultRows = await query<{ task_index: number; input_hash: string; result_hash: string; input_json: unknown; result_json: unknown }>(db, sql`SELECT task_index,input_hash,result_hash,input_json,result_json
     FROM oid_run_task_evaluation WHERE run_id=${runId} AND task_index<=${predecessorTaskIndex} ORDER BY task_index`);
   if (resultRows.length !== predecessorTaskIndex + 1 || resultRows.some((entry) => {
       const taskId = run.task_ids[entry.task_index];
-      const known = taskId ? readKnownCanonicalTrainingEvaluation(entry.result_json, entry.input_json, taskId, runId) : null;
+      const known = taskId ? readKnownEvaluationForMode(entry.result_json, entry.input_json, taskId, runId, expectedMode) : null;
       return !Number.isSafeInteger(entry.task_index) || !taskId || !safeHash(entry.input_hash) || !safeHash(entry.result_hash) ||
         sha256CanonicalTaskJson(parsed(entry.input_json)) !== entry.input_hash ||
         sha256CanonicalTaskJson(parsed(entry.result_json)) !== entry.result_hash || !known ||
@@ -297,7 +311,7 @@ async function validateRelease(tx: Transaction, run: RunRow, source: TaskRelease
       record.benchmarkVersion !== run.benchmark_version || record.benchmarkHash !== run.benchmark_hash ||
       record.policyHash !== run.policy_hash || record.manifest.releaseIdentity !== run.release_identity ||
       record.manifest.manifestHash !== run.manifest_hash) {
-    fail(503, 'PINNED_RELEASE_UNAVAILABLE', 'The exact validated training release is unavailable');
+    fail(503, 'PINNED_RELEASE_UNAVAILABLE', 'The exact validated release is unavailable');
   }
   return record;
 }
@@ -318,11 +332,12 @@ async function validateActivationAccess(
   tx: Transaction,
   run: RunRow,
   ownerAdmissionStatus: string | undefined,
-  agent: { access_generation: number; access_revoked_at: Date | string | null; training: boolean },
+  agent: { access_generation: number; access_revoked_at: Date | string | null; training: boolean; ranked: boolean },
 ): Promise<void> {
+  const modeAllowed = run.mode === 'training' ? agent.training : run.mode === 'ranked' ? agent.ranked : false;
   if (ownerAdmissionStatus !== 'admitted' || agent.access_revoked_at !== null ||
-      agent.access_generation !== run.access_generation || !agent.training) {
-    fail(409, 'RUN_ACCESS_NOT_CURRENT', 'Current owner and training access is required to activate a successor');
+      agent.access_generation !== run.access_generation || !modeAllowed) {
+    fail(409, 'RUN_ACCESS_NOT_CURRENT', 'Current owner and mode-specific agent access is required to activate a successor');
   }
   await assertNoCancellationHistory(tx, run);
 }
@@ -350,7 +365,8 @@ async function validatePredecessorReceipt(
       BigInt(String(task.action_cutoff_sequence)) !== BigInt(String(task.reconciled_action_sequence))) {
     fail(409, 'TASK_TERMINALIZATION_MISMATCH', 'The predecessor changed after strict terminal evidence replay');
   }
-  const taskCase = record.manifest.cases.training.find((entry) => entry.taskId === task.task_id);
+  if (!isTaskMode(run.mode)) fail(409, 'TASK_CASE_UNAVAILABLE', 'The run mode is not supported by its pinned release');
+  const taskCase = record.manifest.cases[run.mode].find((entry) => entry.taskId === task.task_id);
   if (!taskCase) fail(409, 'TASK_CASE_UNAVAILABLE', 'The exact predecessor case is missing from the pinned release');
 
   const evaluations = await query<{
@@ -363,7 +379,7 @@ async function validatePredecessorReceipt(
   const evaluation = evaluations[0];
   const input = parsed(evaluation?.input_json);
   const result = parsed(evaluation?.result_json);
-  const known = evaluation ? readKnownCanonicalTrainingEvaluation(result, input, task.task_id, run.id) : null;
+  const known = evaluation ? readKnownEvaluationForMode(result, input, task.task_id, run.id, run.mode) : null;
   if (!evaluation || evaluation.run_id !== run.id || evaluation.task_index !== taskIndex ||
       evaluation.closure_id !== task.closure_id || evaluation.task_id !== task.task_id ||
       evaluation.release_identity !== run.release_identity || evaluation.manifest_hash !== run.manifest_hash ||
@@ -441,7 +457,7 @@ async function validatePredecessorReceipt(
       bundle.execution_identity_hash !== context.executionIdentityHash ||
       bundle.initial_state_sha256 !== context.initialStateSha256 ||
       context.runId !== run.id || context.taskIndex !== taskIndex || context.taskId !== task.task_id ||
-      context.mode !== 'training' || context.releaseIdentity !== run.release_identity ||
+      context.mode !== run.mode || context.releaseIdentity !== run.release_identity ||
       context.releaseManifestHash !== run.manifest_hash || context.caseId !== taskCase.caseId ||
       context.caseHash !== taskCase.caseHash || context.initialStateSha256 !== taskCase.initialState.stateSha256 ||
       context.executionIdentityHash !== taskCase.executionIdentityHash ||
@@ -571,7 +587,7 @@ async function replayActivation(
   policyVersion: string,
   policyTimeoutSeconds: number,
   events: Array<{ source: string; payload_hash: string; payload_json: unknown }>,
-): Promise<TrainingSuccessorActivation | null> {
+): Promise<TaskSuccessorActivation | null> {
   const matches = events.filter((event) => object(event.payload_json)?.toTaskIndex === toTaskIndex);
   if (matches.length === 0) return null;
   if (matches.length !== 1 || matches[0]!.source !== 'coordinator') {
@@ -593,7 +609,9 @@ async function replayActivation(
   const newDeadline = typeof payload.overallDeadline === 'string' ? date(payload.overallDeadline) : null;
   const taskDeadline = typeof payload.taskDeadline === 'string' ? date(payload.taskDeadline) : null;
   const interval = payload.preparationIntervalMilliseconds;
-  const duration = record.manifest.cases.training.find((entry) => entry.taskId === task.task_id)?.taskDeadlineSeconds;
+  const duration = isTaskMode(run.mode)
+    ? record.manifest.cases[run.mode].find((entry) => entry.taskId === task.task_id)?.taskDeadlineSeconds
+    : undefined;
   const expectedPredecessorReceipt = {
     closureId: receipt.closureId, inputHash: receipt.inputHash, resultHash: receipt.resultHash,
     outcome: receipt.outcome, preparationId: receipt.preparationId, leaseId: receipt.leaseId,
@@ -657,7 +675,7 @@ function validatePreparedPins(
   taskId: string,
   claimId: string,
 ): void {
-  const taskCase = record.manifest.cases.training.find((entry) => entry.taskId === taskId);
+  const taskCase = isTaskMode(run.mode) ? record.manifest.cases[run.mode].find((entry) => entry.taskId === taskId) : undefined;
   if (!taskCase || !UUID.test(preparation.intent.preparationId) ||
       preparation.intent.runId !== run.id || preparation.intent.taskIndex !== target.taskIndex ||
       preparation.intent.claimId !== claimId || preparation.intent.taskId !== taskId ||
@@ -679,10 +697,11 @@ function validatePreparedPins(
   }
 }
 
-export async function activatePreparedTrainingSuccessor(
-  deps: TrainingSuccessorActivationDependencies,
+async function activatePreparedSuccessorForMode(
+  deps: TaskSuccessorActivationDependencies,
   input: { runId: string; predecessorTaskIndex: number },
-): Promise<TrainingSuccessorActivation> {
+  mode: TaskMode,
+): Promise<TaskSuccessorActivation> {
   if (!UUID.test(input.runId) || !Number.isSafeInteger(input.predecessorTaskIndex) ||
       input.predecessorTaskIndex < 0 || input.predecessorTaskIndex > 10) {
     fail(400, 'INVALID_SUCCESSOR_ACTIVATION_TARGET', 'A run UUID and bounded non-final predecessor index are required');
@@ -691,8 +710,9 @@ export async function activatePreparedTrainingSuccessor(
   const predecessorTaskIndex = input.predecessorTaskIndex;
 
   // Read-only guards prevent accidentally terminalizing an active task.
-  const preflight = await preflightKnownPredecessor(deps.db, runId, predecessorTaskIndex);
-  const finalized = await finalizeKnownTrainingTask(deps, { runId, taskIndex: predecessorTaskIndex });
+  const preflight = await preflightKnownPredecessor(deps.db, runId, predecessorTaskIndex, mode);
+  const finalize = mode === 'ranked' ? finalizeKnownRankedTask : finalizeKnownTrainingTask;
+  const finalized = await finalize(deps, { runId, taskIndex: predecessorTaskIndex });
   if (!finalized.replayed) {
     fail(409, 'TASK_TERMINALIZATION_NOT_REPLAYED', 'Successor activation requires an already committed predecessor receipt');
   }
@@ -708,7 +728,7 @@ export async function activatePreparedTrainingSuccessor(
       id: string; owner_id: string; access_generation: number; access_revoked_at: Date | string | null;
     }>(tx, sql`SELECT id,owner_id,access_generation,access_revoked_at FROM oid_agent
       WHERE id=${candidate.agentId} AND owner_id=${candidate.ownerId} FOR NO KEY UPDATE`);
-    const policyRows = await query<{ training: boolean; revision: number }>(tx, sql`SELECT training,revision
+    const policyRows = await query<{ training: boolean; ranked: boolean; revision: number }>(tx, sql`SELECT training,ranked,revision
       FROM oid_agent_policy WHERE agent_id=${candidate.agentId} FOR UPDATE`);
     const runRows = await query<RunRow & { owner_admission_status: string; intent_policy_version: string | null;
       intent_policy_timeout_seconds: number | null }>(tx, sql`SELECT r.id,r.intent_id,r.owner_id,r.agent_id,r.mode,r.task_ids,
@@ -727,12 +747,13 @@ export async function activatePreparedTrainingSuccessor(
     const agent = agentRows[0];
     const agentPolicy = policyRows[0];
     if (!run || !agent || !agentPolicy) fail(404, 'RUN_NOT_FOUND', 'The run does not exist');
-    if (run.mode !== 'training' || run.status !== 'running' || !date(run.started_at) ||
+    if (run.mode !== mode || run.status !== 'running' || !date(run.started_at) ||
         !date(run.overall_deadline) || run.finished_at !== null || run.terminal_reason !== null) {
-      fail(409, 'SUCCESSOR_RUN_NOT_CURRENT', 'Only a current, running training run can activate a successor');
+      fail(409, 'SUCCESSOR_RUN_NOT_CURRENT', 'Only a current, running run of the selected mode can activate a successor');
     }
     await validateActivationAccess(tx, run, run.owner_admission_status, {
-      access_generation: agent.access_generation, access_revoked_at: agent.access_revoked_at, training: agentPolicy.training,
+      access_generation: agent.access_generation, access_revoked_at: agent.access_revoked_at,
+      training: agentPolicy.training, ranked: agentPolicy.ranked,
     });
     const runPolicy = validatePolicy(run, runRows[0]!.intent_policy_version, runRows[0]!.intent_policy_timeout_seconds);
 
@@ -781,7 +802,7 @@ export async function activatePreparedTrainingSuccessor(
         taskRows.some((task) => task.status === 'active') ||
         taskRows.slice(predecessorTaskIndex + 2).some((task) => task.status !== 'queued' ||
           task.started_at !== null || task.finished_at !== null)) {
-      fail(409, 'RUN_TASK_ORDER_CONFLICT', 'Only the exact queued next training task may be activated');
+      fail(409, 'RUN_TASK_ORDER_CONFLICT', 'Only the exact queued next task may be activated');
     }
     for (let index = 0; index < predecessorTaskIndex; index += 1) {
       if (!['completed', 'failed'].includes(taskRows[index]!.status) || !date(taskRows[index]!.finished_at)) {
@@ -792,7 +813,7 @@ export async function activatePreparedTrainingSuccessor(
       FROM oid_run_task_evaluation WHERE run_id=${run.id} AND task_index<=${predecessorTaskIndex} ORDER BY task_index FOR UPDATE`);
     if (results.length !== predecessorTaskIndex + 1 || results.some((item) => {
         const taskId = run.task_ids[item.task_index];
-        const known = taskId ? readKnownCanonicalTrainingEvaluation(item.result_json, item.input_json, taskId, run.id) : null;
+        const known = taskId ? readKnownEvaluationForMode(item.result_json, item.input_json, taskId, run.id, mode) : null;
         return !Number.isSafeInteger(item.task_index) || !taskId || !safeHash(item.input_hash) || !safeHash(item.result_hash) ||
           sha256CanonicalTaskJson(parsed(item.input_json)) !== item.input_hash ||
           sha256CanonicalTaskJson(parsed(item.result_json)) !== item.result_hash || !known ||
@@ -803,7 +824,7 @@ export async function activatePreparedTrainingSuccessor(
 
     const oldDeadline = date(run.overall_deadline);
     const predecessorFinishedAt = date(receipt.finishedAt);
-    const taskCase = record.manifest.cases.training.find((entry) => entry.taskId === persistedSuccessor.task_id);
+    const taskCase = record.manifest.cases[mode].find((entry) => entry.taskId === persistedSuccessor.task_id);
     const taskTimeoutSeconds = taskCase?.taskDeadlineSeconds;
     if (!oldDeadline || !predecessorFinishedAt || !Number.isSafeInteger(taskTimeoutSeconds) ||
         (taskTimeoutSeconds ?? 0) < 1 || predecessorFinishedAt.getTime() >= oldDeadline.getTime()) {
@@ -949,5 +970,19 @@ export async function activatePreparedTrainingSuccessor(
       replayed: false, preparation, binding,
     };
   });
+}
+
+export function activatePreparedTrainingSuccessor(
+  deps: TaskSuccessorActivationDependencies,
+  input: { runId: string; predecessorTaskIndex: number },
+): Promise<TrainingSuccessorActivation> {
+  return activatePreparedSuccessorForMode(deps, input, 'training');
+}
+
+export function activatePreparedRankedSuccessor(
+  deps: TaskSuccessorActivationDependencies,
+  input: { runId: string; predecessorTaskIndex: number },
+): Promise<RankedSuccessorActivation> {
+  return activatePreparedSuccessorForMode(deps, input, 'ranked');
 }
 

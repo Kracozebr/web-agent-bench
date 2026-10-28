@@ -1,3 +1,4 @@
+import { captureRankedVersionSnapshot } from './task-ranked-handoff.js';
 import { createHash, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { OwnerDatabase } from "./db.js";
@@ -911,6 +912,7 @@ export async function acceptLaunchIntent(deps: RunServiceDependencies, input: Ac
       ${intent.benchmark_version},${intent.manifest_hash},${intent.benchmark_hash},${intent.policy_hash},
       ${intent.successor_preparation_policy_version},${intent.successor_preparation_timeout_seconds},${quoteUnits.toString()},
       ${intent.cash_ceiling_units.toString()},${agent.access_generation},${agent.policy_revision},'queued',${now.toISOString()},${queueDeadline.toISOString()})`);
+    if (intent.mode === 'ranked') await captureRankedVersionSnapshot(tx, {runId,ownerId,agentId}, now.toISOString());
     const allocation = await allocateAndReserveSources(tx, {
       ownerId, agentId, runId, amountUnits: quoteUnits,
       cashCeilingUnits: toBigInt(intent.cash_ceiling_units), allowCashShortfall: financial.allowCashShortfall,
@@ -1476,6 +1478,7 @@ export async function startQueuedRun(
         baselineEvidence: preparedPreparation.observation.baselineEvidence,
       });
     }
+    if (run.mode === 'ranked') await captureRankedVersionSnapshot(tx, {runId:run.id,ownerId:run.owner_id,agentId:run.agent_id}, now.toISOString());
     const holds = await query<{ id: string; source_kind: string; bonus_grant_id: string | null; cash_provenance: string | null; amount_units: bigint | string }>(tx, sql`SELECT id,source_kind,bonus_grant_id,cash_provenance,amount_units
       FROM oid_run_reservation WHERE run_id=${run.id} AND state='held' ORDER BY source_kind,bonus_grant_id,cash_provenance FOR UPDATE`);
     for (const hold of holds) {

@@ -21,6 +21,13 @@ const MAX_MANIFEST_BYTES = 256 * 1024;
 const MAX_ACTIONS = 256;
 const MAX_ROWS = 2048;
 
+/** BEF hashes its outer request envelope around the canonically serialized owner body. */
+export function splitPayRequestSha256(environmentId:unknown,body:Record<string,unknown>):string {
+  if(typeof environmentId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(environmentId))fail('M1_CAPTURE_PACKET_INVALID');
+  const parsedBody=JSON.parse(canonicalTaskJson(body)) as Record<string,unknown>;
+  return createHash('sha256').update(JSON.stringify({method:'POST',path:`/tools/${environmentId}/pay`,body:parsedBody})).digest('hex');
+}
+
 type JsonRecord = Record<string, unknown>;
 type M1ActionKind = 'inspect_catalog' | 'inspect_offer' | 'pay' | 'retrieve';
 type M1ActionStatus = 'observed' | 'rejected_before_execution';
@@ -328,8 +335,9 @@ function validateAction(value: unknown): M1CaptureAction {
       (action.rawResponseSha256 !== null && (typeof action.rawResponseSha256 !== 'string' || !HASH.test(action.rawResponseSha256))) ||
       (action.participantToolResponse !== null && !isRecord(action.participantToolResponse)) ||
       (action.paymentProtocol !== null && !isRecord(action.paymentProtocol))) fail('M1_CAPTURE_PACKET_INVALID');
-  if (action.receiptStatus === 'rejected_before_execution' && (action.transactionHash !== null || action.participantToolResponse !== null ||
-      typeof action.rawResponseSha256 !== 'string' || !HASH.test(action.rawResponseSha256))) fail('M1_CAPTURE_PACKET_INVALID');
+  if (action.receiptStatus === 'rejected_before_execution' && (action.transactionHash !== null || action.participantToolResponse !== null)) {
+    fail('M1_CAPTURE_PACKET_INVALID');
+  }
   if (action.receiptStatus === 'observed' && action.participantToolResponse === null) fail('M1_CAPTURE_PACKET_INVALID');
   if (action.receiptStatus === 'observed' && (typeof action.rawResponseSha256 !== 'string' || !HASH.test(action.rawResponseSha256))) fail('M1_CAPTURE_PACKET_INVALID');
   if (action.receiptStatus === 'observed' && action.actionKind !== 'inspect_catalog' && action.befOperationId === null) fail('M1_CAPTURE_PACKET_INVALID');
@@ -396,7 +404,21 @@ function validateAction(value: unknown): M1CaptureAction {
     if (typeof response.operationId === 'string' && response.operationId !== action.befOperationId) fail('M1_CAPTURE_PACKET_INVALID');
     if (action.actionKind !== 'inspect_catalog' && response.operationId !== action.befOperationId) fail('M1_CAPTURE_PACKET_INVALID');
   } else {
-    if (action.paymentProtocol !== null) validateRejectedPaymentProtocol(action);
+    if (action.paymentProtocol !== null) {
+      validateRejectedPaymentProtocol(action);
+      if (action.actionKind === 'pay') {
+        const protocol = action.paymentProtocol as JsonRecord;
+        const protocolOperationId = protocol.befOperationId ?? null;
+        if (protocolOperationId !== action.befOperationId ||
+            protocol.challengeResponseSha256 !== undefined &&
+              (typeof action.rawResponseSha256 !== 'string' ||
+                String(protocol.challengeResponseSha256).toLowerCase() !== action.rawResponseSha256.toLowerCase())) {
+          fail('M1_CAPTURE_PACKET_INVALID');
+        }
+      }
+    } else if (action.befOperationId !== null) {
+      fail('M1_CAPTURE_PACKET_INVALID');
+    }
   }
   return action as unknown as M1CaptureAction;
 }
@@ -728,6 +750,55 @@ function parseBase64(value: unknown, maxBytes: number): Buffer {
   return bytes;
 }
 
+function validateRejectedPurchaseOperation(
+  packet: M1CapturePacket,
+  action: M1CaptureAction,
+  operationsById: ReadonlyMap<string, JsonRecord>,
+): JsonRecord | null {
+  const expectedIdempotencyHash = createHash('sha256').update(`task-action-${action.actionId}`).digest('hex');
+  const matchingByKey = packet.bef.after.operations.filter((operation) =>
+    String(operation.idempotency_key_sha256).toLowerCase() === expectedIdempotencyHash);
+  demand(matchingByKey.length <= 1);
+
+  if (action.actionKind !== 'pay' || action.paymentProtocol === null) {
+    demand(matchingByKey.length === 0 && action.befOperationId === null);
+    return null;
+  }
+
+  const protocol = action.paymentProtocol;
+  const recordedId = action.befOperationId?.toLowerCase() ?? null;
+  const protocolId = typeof protocol.befOperationId === 'string' ? protocol.befOperationId.toLowerCase() : null;
+  demand(recordedId === protocolId);
+  const operation = recordedId ? operationsById.get(recordedId) ?? null : matchingByKey[0] ?? null;
+  demand(!recordedId || operation !== null);
+  demand(!operation || matchingByKey.length === 0 || operation.operation_id === matchingByKey[0]!.operation_id);
+  if (!operation) return null;
+
+  const generation = packet.bef.after.generation;
+  const expectedRequestHash = splitPayRequestSha256(packet.binding.environmentId, {
+    resourceId: protocol.resourceId, offerId: protocol.offerId, readHandle: protocol.readHandle, acceptedTerms: protocol.acceptedTerms,
+  });
+  const operationId = String(operation.operation_id).toLowerCase();
+  demand(operation.env_id === generation.env_id && operation.generation_id === generation.generation_id &&
+    operation.participant_id === generation.participant_id &&
+    String(operation.idempotency_key_sha256).toLowerCase() === expectedIdempotencyHash && operation.operation_kind === 'purchase' &&
+    ['awaiting_payment', 'rejected'].includes(String(operation.status)) && operation.receipt_status === 'not_submitted' &&
+    operation.transaction_hash === null && operation.payment_response_mode === 'deferred_delivery' &&
+    operation.selected_offer_id === protocol.offerId && operation.selected_resource_id === protocol.resourceId &&
+    typeof operation.selected_resource_sha256 === 'string' &&
+    operation.selected_resource_sha256.toLowerCase() === String(protocol.resourceSha256).toLowerCase() &&
+    operation.selected_amount_units === protocol.amountUnits && typeof operation.request_sha256 === 'string' &&
+    operation.request_sha256.toLowerCase() === expectedRequestHash &&
+    !packet.bef.after.payments.some((row) => String(row.operation_id).toLowerCase() === operationId) &&
+    !packet.bef.after.deliveries.some((row) => String(row.operation_id).toLowerCase() === operationId) &&
+    !packet.bef.after.costs.some((row) => String(row.operation_id).toLowerCase() === operationId) &&
+    !packet.bef.after.x402Observations.some((row) => String(row.operation_id).toLowerCase() === operationId));
+  const responseSha256 = operation.response_sha256;
+  demand(responseSha256 === null || typeof responseSha256 === 'string' && HASH.test(responseSha256) &&
+    typeof action.rawResponseSha256 === 'string' && responseSha256.toLowerCase() === action.rawResponseSha256.toLowerCase());
+  return operation;
+}
+
 function m1RequirementsFromObserved(packet: M1CapturePacket, paymentOperation: JsonRecord, assets: M1PacketProjectionContext['assets']): {
   scheme: string; resourceId: string; offerId: string; version: string; amountUnits: string; network: string; assetId: string;
   recipient: string; authFields: Array<{ name: string; value: string }>;
@@ -926,12 +997,13 @@ function projectSingleM1PacketObservations(
       ? matchingRetrieve.some((validAction) => validAction.actionId === action.actionId) : true));
     const firstRetrieve = matchingRetrieve.sort((left, right) => left.actionSequence - right.actionSequence)[0]!;
     demand(firstRetrieve.actionSequence > payAction.actionSequence && deliveryRow.resource_id === packet.bef.resourcePin.resourceId);
-    const payload = firstRetrieve.participantToolResponse!.content as Record<string, unknown>;
+    const response=firstRetrieve.participantToolResponse!;
+    const payload = {resourceId:response.resourceId,contentType:response.contentType,contentHash:response.contentHash,contentBytes:response.contentBytes};
     const payloadSha256 = createHash('sha256').update(canonicalTaskJson(payload)).digest('hex');
     delivery = {
       kind: 'data_delivery', ...meta(`m1-delivery-${deliveryRow.delivery_id}`, firstRetrieve.actionSequence, firstRetrieve.actionSequence),
       componentId: taskCase.objective.component.componentId, resourceId: String(deliveryRow.resource_id),
-      sourceId: String(pinnedResource.provenance.classification), payloadSchemaVersion: String(pinnedResource.schema),
+      sourceId: String(pinnedResource.provenance.classification), payloadSchemaVersion: 'bef-delivery-envelope/v1',
       payloadSha256, payload, transactionHash: String(paymentRow.transaction_hash), paymentAttemptId: String(paymentRow.payment_id),
     };
   } else {
@@ -998,14 +1070,20 @@ export function projectM1PacketObservations(
   const purchaseOperations = packet.bef.after.operations.filter((operation) => operation.operation_kind === 'purchase');
   const paymentProofs = packet.rpc.paymentProofs as JsonRecord[];
   const participantTransferLogs = packet.rpc.participantTransferLogs as JsonRecord[];
-  demand(purchaseOperations.length === observedPays.length);
   demand(packet.bef.after.selectedExecutions.length === 0 && packet.bef.after.selectedEvents.length === 0 && packet.bef.after.denials.length === 0);
-  const operationsById = new Map(packet.bef.after.operations.map((operation) => [String(operation.operation_id), operation]));
+  const operationsById = new Map(packet.bef.after.operations.map((operation) => [String(operation.operation_id).toLowerCase(), operation]));
   const joinedOperationIds = new Set<string>();
   const readOperationIds = new Set<string>();
+  const rejectedPurchaseOperationIds = new Set<string>();
   for (const action of packet.ownerActions) {
     if (action.receiptStatus === 'rejected_before_execution') {
-      demand(action.befOperationId === null);
+      const operation = validateRejectedPurchaseOperation(packet, action, operationsById);
+      if (operation) {
+        const operationId = String(operation.operation_id);
+        demand(!joinedOperationIds.has(operationId));
+        joinedOperationIds.add(operationId);
+        rejectedPurchaseOperationIds.add(operationId);
+      }
       continue;
     }
     if (action.actionKind === 'inspect_catalog' && action.befOperationId === null) {
@@ -1014,7 +1092,7 @@ export function projectM1PacketObservations(
     }
     demand(action.befOperationId !== null);
     const operationId = action.befOperationId;
-    const operation = operationsById.get(operationId);
+    const operation = operationsById.get(operationId.toLowerCase());
     demand(operation !== undefined);
     if (action.actionKind === 'inspect_catalog' || action.actionKind === 'inspect_offer') {
       demand(!readOperationIds.has(operationId) && operation.operation_kind === (action.actionKind === 'inspect_catalog' ? 'catalog' : 'offer') &&
@@ -1032,7 +1110,8 @@ export function projectM1PacketObservations(
         operation.receipt_status === 'success' && action.participantToolResponse?.operationId === operationId && joinedOperationIds.has(operationId));
     }
   }
-  demand(joinedOperationIds.size === packet.bef.after.operations.length);
+  demand(joinedOperationIds.size === packet.bef.after.operations.length &&
+    purchaseOperations.length === observedPays.length + rejectedPurchaseOperationIds.size);
   const actionOperationIds = new Set<string>();
   const operationIds = new Set<string>();
   for (const action of observedPays) {
@@ -1042,9 +1121,12 @@ export function projectM1PacketObservations(
   }
   for (const operation of purchaseOperations) {
     const operationId = operation.operation_id;
-    demand(typeof operationId === 'string' && actionOperationIds.has(operationId) && !operationIds.has(operationId));
+    demand(typeof operationId === 'string' &&
+      (actionOperationIds.has(operationId) || rejectedPurchaseOperationIds.has(operationId)) && !operationIds.has(operationId));
     operationIds.add(operationId);
   }
+
+  const observedPurchaseOperations = purchaseOperations.filter((operation) => actionOperationIds.has(String(operation.operation_id)));
 
   if (observedPays.length === 0) {
     const before = packet.rpc.baseline as JsonRecord;
@@ -1065,12 +1147,13 @@ export function projectM1PacketObservations(
   demand(packet.bef.after.payments.length === observedPays.length && packet.bef.after.costs.length === observedPays.length &&
     packet.bef.after.deliveries.length === purchaseOperations.filter((operation) => operation.status === 'delivered').length &&
     paymentProofs.length === observedPays.length && packet.bef.after.x402Observations.length === observedPays.length * 2 &&
-    packet.bef.after.x402Observations.every((observation) => typeof observation.operation_id === 'string' && operationIds.has(observation.operation_id)) &&
+    packet.bef.after.x402Observations.every((observation) => typeof observation.operation_id === 'string' &&
+      actionOperationIds.has(observation.operation_id)) &&
     participantTransferLogs.every((log) => observedPays.some((action) => {
       const operation = purchaseOperations.find((candidate) => candidate.operation_id === action.befOperationId);
       return typeof operation?.transaction_hash === 'string' && operation.transaction_hash.toLowerCase() === String(log.transactionHash).toLowerCase();
     })));
-  for (const operation of purchaseOperations) {
+  for (const operation of observedPurchaseOperations) {
     const rows = packet.bef.after.x402Observations.filter((observation) => observation.operation_id === operation.operation_id);
     const verify = rows.filter((observation) => observation.phase === 'verify');
     const settle = rows.filter((observation) => observation.phase === 'settle');

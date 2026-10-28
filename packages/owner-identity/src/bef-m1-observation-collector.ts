@@ -21,7 +21,7 @@ import {
   canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase, type TaskReleaseQuerySource,
 } from './task-release.js';
 import type { TaskObservationBundleCandidate } from './task-observation-store.js';
-import { projectM1PacketObservations, validateM1CapturePacket, type M1CaptureAction, type M1CapturePacket } from './task-m1-capture-packet.js';
+import { projectM1PacketObservations, validateM1CapturePacket, splitPayRequestSha256, type M1CaptureAction, type M1CapturePacket } from './task-m1-capture-packet.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH = /^[0-9a-f]{64}$/i;
@@ -169,6 +169,34 @@ async function readEvidence(rootPath: string, ref: EvidenceReference, prefix: st
 function parseSafe(bytes: Buffer, code: BefM1UnavailableCode): Json {
   let parsed: unknown; try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown; } catch { throw new Unavailable(code); }
   if (!isRecord(parsed) || hasSecret(parsed)) throw new Unavailable(code);
+  return parsed;
+}
+/** Baseline eth_call arguments are public reads, not signed transaction input. */
+export function parseM1PreparationEvidence(bytes:Uint8Array,kind:'fixture'|'baseline'):Json {
+  let parsed:unknown;
+  try{parsed=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown;}
+  catch{throw new Unavailable('preparation_unavailable');}
+  if(!isRecord(parsed))throw new Unavailable('preparation_unavailable');
+  const scan=structuredClone(parsed);
+  if(kind==='baseline'){
+    const evidence=isRecord(scan.evidence)?scan.evidence:null;
+    const state=evidence&&isRecord(evidence.state)?evidence.state:null;
+    if(!state||typeof state.blockNumber!=='string'||!HEX_QUANTITY.test(state.blockNumber)||!Array.isArray(state.reads)||state.reads.length>256)
+      throw new Unavailable('preparation_unavailable');
+    for(const read of state.reads){
+      if(!isRecord(read)||read.method!=='eth_call')continue;
+      if(!Array.isArray(read.params)||read.params.length!==2||read.params[1]!==state.blockNumber||!isRecord(read.params[0]))
+        throw new Unavailable('preparation_unavailable');
+      const call=read.params[0];
+      if(Object.keys(call).sort().join(',')!=='data,to'||typeof call.to!=='string'||!ADDRESS.test(call.to)||typeof call.data!=='string'||
+        !/^0x(?:70a082310{24}[0-9a-f]{40}|dd62ed3e0{24}[0-9a-f]{40}0{24}[0-9a-f]{40})$/i.test(call.data))
+        throw new Unavailable('preparation_unavailable');
+      // AICODE-NOTE: Redact only the scanner's copy of exact balanceOf/allowance calls.
+      // The original hash-bound preparation bytes and every other secret check stay intact.
+      read.params[0]={to:call.to,publicCallSha256:hashString(call.data)};
+    }
+  }
+  if(hasSecret(scan))throw new Unavailable('preparation_unavailable');
   return parsed;
 }
 
@@ -319,21 +347,27 @@ async function captureCensus(port:BefM1ReadOnlyPostgresPort,envId:string,generat
 }
 
 type PreparedEvidence={fixture:EvidenceReference;baseline:EvidenceReference;blockNumber:bigint;blockHash:string};
+/** The fixture records its API observation boundary, separately from the local fork execution identity. */
+export function m1PreparationHealthMatches(health:unknown,status:unknown,pins:{environmentId:string;preparationId:string;generationId:string|null;
+  environmentManifestHash:string;applicationSourceHash:string}):boolean {
+  return isRecord(health)&&health.boundary==='benchmark-environment-api'&&health.environmentId===pins.environmentId&&
+    typeof health.environmentManifestSha256==='string'&&health.environmentManifestSha256.toLowerCase()===pins.environmentManifestHash.toLowerCase()&&
+    typeof health.applicationSourceSha256==='string'&&health.applicationSourceSha256.toLowerCase()===pins.applicationSourceHash.toLowerCase()&&
+    isRecord(status)&&status.schemaVersion==='bef-preparation-status/v1'&&status.envId===pins.environmentId&&
+    typeof pins.generationId==='string'&&status.preparationId===pins.preparationId&&status.status==='ready'&&status.generationId===pins.generationId;
+}
 async function loadPreparedEvidence(root:string,prep:PrepRow,runId:string,index:number,taskCase:Extract<TaskCase,{taskId:'M1'}>):Promise<PreparedEvidence>{
   const fixture=evidenceRef(prep.fixture_evidence),baseline=evidenceRef(prep.baseline_evidence);
   if(!fixture||!baseline||fixture.path===baseline.path||fixture.sha256===baseline.sha256)throw new Unavailable('preparation_unavailable');
   const [fixtureBytes,baselineBytes]=await Promise.all([readEvidence(root,fixture,PREPARATION_ROOT,'preparation_unavailable'),readEvidence(root,baseline,PREPARATION_ROOT,'preparation_unavailable')]);
-  const f=parseSafe(fixtureBytes,'preparation_unavailable'),b=parseSafe(baselineBytes,'preparation_unavailable'),pins=publicPins(prep,runId,index);
+  const f=parseM1PreparationEvidence(fixtureBytes,'fixture'),b=parseM1PreparationEvidence(baselineBytes,'baseline'),pins=publicPins(prep,runId,index);
   for(const [doc,kind] of [[f,'fixture'],[b,'baseline']] as const){
     if(doc.schemaVersion!=='owner-bef-task-preparation-evidence/v1'||doc.kind!==kind||doc.preparationId!==prep.preparation_id||
       doc.environmentId!==prep.environment_id||doc.publicPinsSha256!==pins||!isRecord(doc.evidence))throw new Unavailable('preparation_unavailable');
   }
   const fixtureEvidence=f.evidence as Json;const health=fixtureEvidence.environmentHealth;const status=fixtureEvidence.publicStatus;
-  if(!isRecord(health)||health.boundary!=='private_fork'||health.environmentId!==prep.environment_id||
-    String(health.environmentManifestSha256).toLowerCase()!==prep.environment_manifest_sha256.toLowerCase()||
-    String(health.applicationSourceSha256).toLowerCase()!==prep.application_source_hash.toLowerCase()||
-    !isRecord(status)||status.schemaVersion!=='bef-public-preparation-status/v1'||status.envId!==prep.environment_id||
-    status.preparationId!==prep.preparation_id||status.status!=='ready'||status.generationId!==prep.generation_id)
+  if(!m1PreparationHealthMatches(health,status,{environmentId:prep.environment_id,preparationId:prep.preparation_id,generationId:prep.generation_id,
+    environmentManifestHash:prep.environment_manifest_sha256,applicationSourceHash:prep.application_source_hash}))
     throw new Unavailable('preparation_unavailable');
   const evidence=b.evidence as Json;const state=evidence.state;
   if(!isRecord(state)||state.sameBlock!==true||!isRecord(state.projection)||!Array.isArray(state.reads)||
@@ -545,7 +579,7 @@ function caseCheckpointProjection(checkpoint:RpcCheckpoint,taskCase:Extract<Task
     deliveredComponentIds:[...taskCase.initialState.deliveredComponentIds].sort(),fulfilledObligationIds:[...taskCase.initialState.fulfilledObligationIds].sort()};
 }
 type Interval={blocks:RpcBlock[];transactions:Map<string,Json>;participantLogQueryCount:number;transferLogs:Json[]};
-function decodeTransferLog(value:unknown,tokenAddress:string,assetId:string,participant:string):Json{
+export function decodeM1TransferLog(value:unknown,tokenAddress:string,assetId:string,participant:string):Json{
   if(!isRecord(value)||!Array.isArray(value.topics)||value.topics.length!==3||value.topics[0]?.toLowerCase()!==TRANSFER_TOPIC||typeof value.data!=='string'||!HEX_WORD.test(value.data))
     throw new Unavailable('rpc_observation_unavailable');
   const fromTopic=String(value.topics[1]),toTopic=String(value.topics[2]);
@@ -577,7 +611,7 @@ async function readInterval(rpc:RpcRecorder,assets:ManifestData['assets'],baseli
   if(to>from){for(const token of tokens){for(const topics of [[TRANSFER_TOPIC,`0x${paddedAddress(participant)}`],[TRANSFER_TOPIC,null,`0x${paddedAddress(participant)}`]] as const){
     const logs=await rpc.request('eth_getLogs',[{address:token.address,fromBlock:`0x${(from+1n).toString(16)}`,toBlock:`0x${to.toString(16)}`,topics}]);participantLogQueryCount++;
     if(!Array.isArray(logs)||logs.length>MAX_ROWS)throw new Unavailable('rpc_observation_unavailable');
-    for(const value of logs){const decoded=decodeTransferLog(value,token.address,token.id,participant);const key=`${decoded.transactionHash}|${decoded.logIndex}|${decoded.assetId}`;
+    for(const value of logs){const decoded=decodeM1TransferLog(value,token.address,token.id,participant);const key=`${decoded.transactionHash}|${decoded.logIndex}|${decoded.assetId}`;
       const prior=dedupe.get(key);if(prior&&canonicalTaskJson(prior)!==canonicalTaskJson(decoded))throw new Unavailable('rpc_mapping_incomplete');dedupe.set(key,decoded);}
   }}}
   transferLogs.push(...dedupe.values());transferLogs.sort((a,b)=>BigInt(String(a.blockNumber))<BigInt(String(b.blockNumber))?-1:BigInt(String(a.blockNumber))>BigInt(String(b.blockNumber))?1:
@@ -609,7 +643,7 @@ function expectedPaymentRequirements(row:Json,op:Json,resourcePin:Json):Json{
 function expectedPayRequestHash(action:M1LoadedAction):string{
   const p=action.protocol;if(!p||action.command.kind!=='pay')return '';
   const body={resourceId:action.command.resourceId,offerId:action.command.offerId,readHandle:p.readHandle,acceptedTerms:p.acceptedTerms};
-  return hashString(JSON.stringify({method:'POST',path:'/tools/'+String(action.evidence.environmentId)+'/pay',body}));
+  return splitPayRequestSha256(String(action.evidence.environmentId),body);
 }
 export function validateM1OperationCensus(census:Census,actions:M1LoadedAction[],envId:string,generationId:string,participantId:string,resourcePin:Json):void{
   if(census.selectedExecutions.length||census.selectedEvents.length||census.denials.length)throw new Unavailable('rpc_mapping_incomplete');
@@ -648,7 +682,7 @@ export function validateM1OperationCensus(census:Census,actions:M1LoadedAction[]
       }
       continue;
     }
-    if(action.row.receipt_status!=='observed'||!action.evidence.befOperationId)continue;
+    if(action.row.receipt_status!=='observed'||!action.evidence.befOperationId||action.command.kind==='retrieve')continue;
     const id=String(action.evidence.befOperationId).toLowerCase();const operation=byId.get(id);
     if(!operation){if(action.command.kind==='inspect_catalog'&&action.response?.operationId===undefined)continue;throw new Unavailable('rpc_mapping_incomplete');}
     if(operation.env_id!==envId||operation.generation_id!==generationId||operation.participant_id!==participantId||
@@ -678,6 +712,10 @@ export function validateM1OperationCensus(census:Census,actions:M1LoadedAction[]
     }
   }
   for(const action of actions)if(action.command.kind==='retrieve'&&action.row.receipt_status==='observed'){
+    const payActionId=action.command.payActionId;
+    const prior=actions.find((candidate)=>candidate.row.id===payActionId&&candidate.command.kind==='pay'&&candidate.row.receipt_status==='observed');
+    if(!prior||prior.sequence>=action.sequence||prior.evidence.befOperationId!==action.evidence.befOperationId)
+      throw new Unavailable('rpc_mapping_incomplete');
     if(!action.evidence.befOperationId||!byId.has(String(action.evidence.befOperationId).toLowerCase()))throw new Unavailable('rpc_mapping_incomplete');
     consumed.add(String(action.evidence.befOperationId).toLowerCase());
   }
@@ -745,7 +783,11 @@ async function makePaymentProofs(rpc:RpcRecorder,interval:Interval,census:Census
     for(const rawLog of receiptRaw.logs){if(!isRecord(rawLog))throw new Unavailable('rpc_observation_unavailable');const address=normalizeAddress(rawLog.address);const assetId=address?assetByAddress.get(address):undefined;
       if(!assetId||!Array.isArray(rawLog.topics)||rawLog.topics[0]?.toLowerCase()!==TRANSFER_TOPIC)continue;
       const from=transferTopicAddress(rawLog.topics[1]),to=transferTopicAddress(rawLog.topics[2]);if(!from||!to)throw new Unavailable('rpc_observation_unavailable');
-      if(from===participant||to===participant){const projected=decodeTransferLog({...rawLog,transactionHash:txHash,blockNumber:receiptBlock,blockHash:receiptBlockHash},address!,assetId,participant);
+      if(from===participant||to===participant){
+        if(normalizeHash(rawLog.transactionHash)!==txHash||quantity(rawLog.blockNumber)!==receiptBlock||
+          normalizeHash(rawLog.blockHash)!==receiptBlockHash||quantity(rawLog.transactionIndex)!==receiptIndex)
+          throw new Unavailable('rpc_mapping_incomplete');
+        const projected=decodeM1TransferLog(rawLog,address!,assetId,participant);
         receiptTransfers.push(projected);}
     }
     const expectedLogs=relatedLogs.filter((log)=>String(log.transactionHash).toLowerCase()===txHash);
@@ -840,7 +882,7 @@ async function collectLocked(deps:BefM1ObservationCollectorDependencies,target:{
   let taskIds:unknown=run.task_ids;if(typeof taskIds==='string')taskIds=parseJson(taskIds,'owner_cutoff_mismatch');
   if(run.mode!=='training'||run.status!=='running'||run.cancellation_reason!==null||run.task_id!=='M1'||!Array.isArray(taskIds)||taskIds[target.taskIndex]!=='M1')
     return unavailable('unsupported_task');
-  if(!run.started_at||run.task_status!=='running'||run.closure_status!=='closed'||!run.closure_id||run.action_cutoff_sequence===null)
+  if(!run.started_at||run.task_status!=='active'||run.closure_status!=='closed'||!run.closure_id||run.action_cutoff_sequence===null)
     return unavailable('owner_cutoff_unavailable');
   const actionCutoff=sequence(run.action_cutoff_sequence),reconciled=sequence(run.reconciled_action_sequence);
   if(actionCutoff===null||reconciled===null||reconciled<actionCutoff)return unavailable('reconciliation_pending');
@@ -907,7 +949,7 @@ async function collectLocked(deps:BefM1ObservationCollectorDependencies,target:{
   let packetActions:M1CaptureAction[];
   try{packetActions=actions.map((action)=>({actionId:action.row.id,actionSequence:action.sequence,ownerOperationId:action.row.operation_id,
       actionKind:action.command.kind,commandSha256:action.row.payload_hash.toLowerCase(),receiptStatus:action.row.receipt_status as M1CaptureAction['receiptStatus'],
-      actionEvidence:action.ref,befOperationId:action.evidence.befOperationId as string|null,transactionHash:normalizeHash(action.evidence.transactionHash),
+      actionEvidence:action.ref,befOperationId:(action.evidence.befOperationId as string|undefined)??null,transactionHash:normalizeHash(action.evidence.transactionHash),
       rawResponseSha256:typeof action.evidence.rawResponseSha256==='string'?action.evidence.rawResponseSha256.toLowerCase():null,
       participantToolResponse:action.response,paymentProtocol:action.protocol}));
     validateM1OperationCensus(censusBefore.census,actions,prep.environment_id,prep.generation_id,prep.participant_id,manifest.resourcePin);

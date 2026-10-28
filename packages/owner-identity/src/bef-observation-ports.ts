@@ -1,3 +1,7 @@
+import { validateTaskChainCapturePacket } from './task-chain-capture-packet.js';
+import { validatePaidDataCapturePacket } from './task-paid-data-capture-packet.js';
+import { validateS3CapturePacket } from './task-s3-capture-packet.js';
+import { validateCompositeCapturePacket } from './task-composite-capture-packet.js';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, lstat, realpath } from 'node:fs/promises';
@@ -17,7 +21,7 @@ const RPC_METHODS = new Set([
   'eth_blockNumber', 'eth_call', 'eth_chainId', 'eth_getBalance', 'eth_getBlockByNumber', 'eth_getCode',
   'eth_getLogs', 'eth_getTransactionByHash', 'eth_getTransactionCount', 'eth_getTransactionReceipt',
 ]);
-const TASK_IDS = new Set(['S1', 'S2', 'S4', 'M1']);
+const TASK_IDS = new Set(['S1','S2','S3','S4','M1','M2','M3','M4','H1','H2','H3','U1']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
 const ENV_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -331,7 +335,7 @@ function createRpcPort(environmentId: string, endpoint: string, fetchImpl: typeo
   };
 }
 
-function packetIdentity(packet: unknown): { runId: string; taskId: 'S1' | 'S2' | 'S4' | 'M1'; environmentId: string } {
+function packetIdentity(packet: unknown): { runId: string; taskId: string; environmentId: string } {
   if (!isRecord(packet) || !isRecord(packet.binding) || !isRecord(packet.execution)) {
     throw safeError('bef_observer_packet_invalid');
   }
@@ -340,9 +344,16 @@ function packetIdentity(packet: unknown): { runId: string; taskId: 'S1' | 'S2' |
     taskId === 'S2' ? 'bts-s2-run-observation-capture/v1' :
       taskId === 'S4' ? 'bts-s4-run-observation-capture/v1' :
         taskId === 'M1' ? 'bts-m1-run-observation-capture/v1' : '';
+  const genericSchemas:Record<string,readonly string[]>={
+    'bts-chain-task-observation-capture/v1':['M3','M4','H2','H3','U1'],
+    'bts-paid-data-run-observation-capture/v1':['M1','M2','H1','H3','U1'],
+    'bts-composite-run-observation-capture/v1':['H3','U1'],
+    'bts-s3-run-observation-capture/v1':['S3'],
+  };
+  const generic=typeof packet.schemaVersion==='string'&&genericSchemas[packet.schemaVersion]?.includes(String(taskId));
   const runId = packet.binding.runId;
   const environmentId = packet.binding.environmentId;
-  if (!TASK_IDS.has(String(taskId)) || packet.schemaVersion !== expectedSchema ||
+  if (!TASK_IDS.has(String(taskId)) || (!generic && packet.schemaVersion !== expectedSchema) ||
       packet.classification !== 'run_bound_observations_candidate_not_grade' ||
       typeof runId !== 'string' || !UUID.test(runId) || typeof environmentId !== 'string' || !ENV_ID.test(environmentId) ||
       typeof packet.binding.ownerId !== 'string' || !UUID.test(packet.binding.ownerId) ||
@@ -356,7 +367,7 @@ function packetIdentity(packet: unknown): { runId: string; taskId: 'S1' | 'S2' |
       !UUID.test(packet.execution.leaseId) || typeof packet.execution.generationId !== 'string' || !UUID.test(packet.execution.generationId)) {
     throw safeError('bef_observer_packet_invalid');
   }
-  return { runId: runId.toLowerCase(), taskId: taskId as 'S1' | 'S2' | 'S4' | 'M1', environmentId };
+  return { runId: runId.toLowerCase(), taskId: taskId as string, environmentId };
 }
 
 function allowedPublicTokenAddress(path: readonly (string | number)[], value: unknown, schemaVersion: string): boolean {
@@ -429,14 +440,22 @@ async function createObservationEvidenceSink(repositoryRoot: string): Promise<Be
   return {
     async write(packet: unknown): Promise<EvidenceReference> {
       const identity = packetIdentity(packet);
-      if (identity.taskId === 'M1') {
+      if (isRecord(packet) && packet.schemaVersion === 'bts-m1-run-observation-capture/v1') {
         try { validateM1CapturePacket(packet); }
         catch { throw safeError('bef_observer_packet_invalid'); }
       }
+      try {
+        if(isRecord(packet))switch(packet.schemaVersion){
+          case 'bts-chain-task-observation-capture/v1':validateTaskChainCapturePacket(packet);break;
+          case 'bts-paid-data-run-observation-capture/v1':validatePaidDataCapturePacket(packet);break;
+          case 'bts-s3-run-observation-capture/v1':validateS3CapturePacket(packet);break;
+          case 'bts-composite-run-observation-capture/v1':validateCompositeCapturePacket(packet);break;
+        }
+      }catch{throw safeError('bef_observer_packet_invalid');}
       let json: string;
       try { json = canonicalTaskJson(packet); } catch { throw safeError('bef_observer_packet_invalid'); }
       const bytes = Buffer.from(`${json}\n`, 'utf8');
-      if (bytes.length > MAX_PACKET_BYTES || hasSecretKey(packet, `bts-${identity.taskId.toLowerCase()}-run-observation-capture/v1`)) {
+      if (bytes.length > MAX_PACKET_BYTES || hasSecretKey(packet, isRecord(packet) ? String(packet.schemaVersion) : "")) {
         throw safeError('bef_observer_packet_secret_or_oversized');
       }
       const digest = createHash('sha256').update(bytes).digest('hex');

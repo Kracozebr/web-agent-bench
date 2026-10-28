@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
+import { canonicalTaskJson } from './task-release.js';
 import type { OwnerDatabase } from './db.js';
 import {
   collectBefM1TaskObservationCandidate,
+  m1PreparationHealthMatches,
+  parseM1PreparationEvidence,
+  decodeM1TransferLog,
   validateM1OperationCensus,
   type BefM1ObservationCollectorDependencies,
 } from './bef-m1-observation-collector.js';
@@ -11,6 +15,48 @@ import {
 const RUN_ID = '10000000-0000-4000-8000-000000000001';
 const OWNER_ID = '10000000-0000-4000-8000-000000000002';
 const AGENT_ID = '10000000-0000-4000-8000-000000000003';
+
+test('M1 receipt transfer decoder preserves the original JSON-RPC block quantity', () => {
+  const token=`0x${'1'.repeat(40)}`,payer=`0x${'2'.repeat(40)}`,recipient=`0x${'3'.repeat(40)}`;
+  const raw={address:token,transactionHash:`0x${'4'.repeat(64)}`,blockHash:`0x${'5'.repeat(64)}`,blockNumber:'0x123',logIndex:'0x0',
+    topics:['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',`0x${'0'.repeat(24)}${payer.slice(2)}`,`0x${'0'.repeat(24)}${recipient.slice(2)}`],
+    data:`0x${'0'.repeat(63)}1`,removed:false};
+  assert.deepEqual(decodeM1TransferLog(raw,token,'USDC',payer),{assetId:'USDC',tokenAddress:token,transactionHash:raw.transactionHash,
+    blockNumber:'291',blockHash:raw.blockHash,logIndex:'0',from:payer,to:recipient,amountUnits:'1'});
+  assert.throws(()=>decodeM1TransferLog({...raw,blockNumber:291n},token,'USDC',payer));
+});
+
+test('M1 baseline permits only exact public balance and allowance reads without weakening signed-data checks', () => {
+  const to=`0x${'1'.repeat(40)}`,account=`${'0'.repeat(24)}${'2'.repeat(40)}`,spender=`${'0'.repeat(24)}${'3'.repeat(40)}`;
+  const baseline={evidence:{state:{blockNumber:'0x123',reads:[
+    {method:'eth_call',params:[{to,data:`0x70a08231${account}`},'0x123'],result:'0x0'},
+    {method:'eth_call',params:[{to,data:`0xdd62ed3e${account}${spender}`},'0x123'],result:'0x0'},
+  ]}}};
+  const parse=(value:unknown)=>parseM1PreparationEvidence(Buffer.from(JSON.stringify(value)),'baseline');
+  assert.deepEqual(parse(baseline),baseline);
+  const wrongSelector=structuredClone(baseline);wrongSelector.evidence.state.reads[0]!.params[0]={to,data:`0xa9059cbb${account}${spender}`};
+  assert.throws(()=>parse(wrongSelector));
+  const wrongBlock=structuredClone(baseline);wrongBlock.evidence.state.reads[0]!.params[1]='latest';assert.throws(()=>parse(wrongBlock));
+  assert.throws(()=>parse({...baseline,input:'signed-transaction-material'}));
+  assert.throws(()=>parse({...baseline,evidence:{...baseline.evidence,signature:'not-retained'}}));
+  assert.throws(()=>parseM1PreparationEvidence(Buffer.from(JSON.stringify(baseline)),'fixture'));
+});
+
+test('M1 preparation accepts the API writer boundary while rejecting foreign identities and fork labels', () => {
+  const pins = { environmentId:'bef-env-a', preparationId:RUN_ID, generationId:AGENT_ID,
+    environmentManifestHash:'a'.repeat(64), applicationSourceHash:'b'.repeat(64) };
+  const health = { boundary:'benchmark-environment-api', environmentId:pins.environmentId,
+    environmentManifestSha256:pins.environmentManifestHash, applicationSourceSha256:pins.applicationSourceHash,
+    localNetwork:'eip155:8453', localChainId:8453 };
+  const status = { schemaVersion:'bef-preparation-status/v1', envId:pins.environmentId,
+    preparationId:pins.preparationId, generationId:pins.generationId, status:'ready' };
+  assert.equal(m1PreparationHealthMatches(health,status,pins),true);
+  assert.equal(m1PreparationHealthMatches({...health,boundary:'private_fork'},status,pins),false);
+  assert.equal(m1PreparationHealthMatches({...health,environmentId:'bef-env-b'},status,pins),false);
+  assert.equal(m1PreparationHealthMatches(health,{...status,generationId:OWNER_ID},pins),false);
+  assert.equal(m1PreparationHealthMatches({...health,applicationSourceSha256:'c'.repeat(64)},status,pins),false);
+  assert.equal(m1PreparationHealthMatches(health,{...status,schemaVersion:'bef-public-preparation-status/v1'},pins),false);
+});
 
 function dependencies(results: unknown[][], calls: { transactions: number; observer: number; evidence: number }): BefM1ObservationCollectorDependencies {
   const tx = { execute: async () => results.shift() ?? [] };
@@ -41,7 +87,7 @@ test('M1 collector leaves a closed action cutoff pending until every action rece
   const calls = { transactions: 0, observer: 0, evidence: 0 };
   const run = {
     owner_id: OWNER_ID, agent_id: AGENT_ID, mode: 'training', task_ids: ['M1'], release_identity: 'release', manifest_hash: 'a'.repeat(64),
-    status: 'running', cancellation_reason: null, task_id: 'M1', task_status: 'running', started_at: '2026-10-28T00:00:00.000Z',
+    status: 'running', cancellation_reason: null, task_id: 'M1', task_status: 'active', started_at: '2026-10-28T00:00:00.000Z',
     closure_status: 'closed', closure_id: '10000000-0000-4000-8000-000000000004',
     closure_operation_id: 'finish-operation', closure_payload_hash: 'b'.repeat(64), closure_reason: 'agent_finish',
     action_cutoff_sequence: '1', reconciled_action_sequence: '0',
@@ -68,7 +114,7 @@ test('M1 collector refuses ranked, cancelled, or mismatched task targets before 
       const calls = { transactions: 0, observer: 0, evidence: 0 };
       const run = {
         owner_id: OWNER_ID, agent_id: AGENT_ID, mode: 'training', task_ids: ['M1'], release_identity: 'release', manifest_hash: 'a'.repeat(64),
-        status: 'running', cancellation_reason: null, task_id: 'M1', task_status: 'running', started_at: '2026-10-28T00:00:00.000Z',
+        status: 'running', cancellation_reason: null, task_id: 'M1', task_status: 'active', started_at: '2026-10-28T00:00:00.000Z',
         closure_status: 'closed', closure_id: '10000000-0000-4000-8000-000000000004',
         closure_operation_id: 'finish-operation', closure_payload_hash: 'b'.repeat(64), closure_reason: 'agent_finish',
         action_cutoff_sequence: '0', reconciled_action_sequence: '0', ...change,
@@ -115,8 +161,8 @@ function censusAction(index: number, options: { offerId?: string; amount?: strin
   const body = { operationId: befOperationId, status: 'payment_confirmed', deliveryHandle: befOperationId,
     payment: { transactionHash: tx, receiptStatus: 'success', amount, asset: TOKEN, network: 'eip155:8453', payTo } };
   const command = { kind: 'pay', resourceId: 'm1-resource', offerId, offerReadActionId: '10000000-0000-4000-8000-000000000099' };
-  const request = { method: 'POST', path: `/tools/${ENV}/pay`, body: { resourceId: command.resourceId, offerId,
-    readHandle, acceptedTerms } };
+  const request = { method: 'POST', path: `/tools/${ENV}/pay`, body: JSON.parse(canonicalTaskJson({ resourceId: command.resourceId, offerId,
+    readHandle, acceptedTerms })) };
   const operation = {
     operation_id: befOperationId, env_id: ENV, generation_id: GENERATION, participant_id: PARTICIPANT_ID,
     idempotency_key_sha256: hash(`task-action-${actionId}`), request_sha256: hash(JSON.stringify(request)),
@@ -130,7 +176,7 @@ function censusAction(index: number, options: { offerId?: string; amount?: strin
     row: { id: actionId, operation_id: ownerOperationId, receipt_status: options.rejected ? 'rejected_before_execution' : 'observed' },
     evidence: { environmentId: ENV, befOperationId, transactionHash: options.rejected ? null : tx, rawResponseSha256,
       reasonCode: options.rejected ? 'task_split_pay_challenge_scope_mismatch' : undefined },
-    command, protocol, response: options.rejected ? null : body,
+    command, protocol, response: options.rejected ? null : body, sequence:1,
   };
   const requirement = { scheme: 'exact', network: 'eip155:8453', asset: TOKEN, amount, payTo, maxTimeoutSeconds: '120',
     extra: { assetTransferMethod: 'eip3009', paymentFlow: 'authorization', name: 'USD Coin', version: '2' } };
@@ -168,6 +214,17 @@ test('M1 census preserves multiple independently settled same-resource purchases
   assert.doesNotThrow(() => validateCensusFixture([
     censusAction(1), censusAction(2, { offerId: 'alternate', amount: '125000' }),
   ]));
+});
+
+test('M1 retrieval joins the prior pay idempotency identity with a distinct owner operation', () => {
+  const entry=censusAction(1);
+  const retrieve={...entry.action,sequence:2,row:{id:'10000000-0000-4000-8000-000000000088',operation_id:'retrieve-owner-operation',receipt_status:'observed'},
+    command:{kind:'retrieve',payActionId:entry.action.row.id},evidence:{...entry.action.evidence,transactionHash:null},response:{operationId:entry.operation.operation_id}};
+  const census={operations:[entry.operation],selectedExecutions:[],selectedEvents:[],denials:[],x402Observations:entry.x402,
+    payments:entry.payment,deliveries:[],costs:[]};
+  const check=(actions:unknown[])=>validateM1OperationCensus(census as never,actions as never,ENV,GENERATION,PARTICIPANT_ID,entry.resourcePin as never);
+  assert.doesNotThrow(()=>check([entry.action,retrieve]));
+  assert.throws(()=>check([entry.action,{...retrieve,command:{kind:'retrieve',payActionId:RUN_ID}}]),/rpc_mapping_incomplete/);
 });
 
 test('M1 census recognizes a rejected pre-sign pay attempt only when the pending challenge has no economic effect', () => {

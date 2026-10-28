@@ -5,11 +5,18 @@ import test from 'node:test';
 import { canonicalTaskJson } from './task-release.js';
 import { evaluateTaskRubric, type PersistedTaskObservations, type TaskEvidenceBinding, type TrustedTaskRun } from './task-evaluator.js';
 import { validM1CapturePacket, validM1PaymentPacket } from './task-m1-capture-packet.fixture.js';
-import { M1CapturePacketError, parseM1CapturePacket, projectM1PacketObservations, validateM1CapturePacket,
+import { M1CapturePacketError, parseM1CapturePacket, projectM1PacketObservations, validateM1CapturePacket, splitPayRequestSha256,
   type M1CapturePacket, type M1PacketProjectionContext } from './task-m1-capture-packet.js';
 import type { EvidenceReference, TaskCase } from './task-release.js';
 
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+
+test('split payment request identity preserves the exact canonical body used on the wire', () => {
+  const body={resourceId:'r',offerId:'o',readHandle:{kind:'offer',operationId:'p'},acceptedTerms:{payTo:'recipient',amount:'1'}};
+  const wire='{"method":"POST","path":"/tools/bef-env-a/pay","body":{"acceptedTerms":{"amount":"1","payTo":"recipient"},"offerId":"o","readHandle":{"kind":"offer","operationId":"p"},"resourceId":"r"}}';
+  assert.equal(splitPayRequestSha256('bef-env-a',body),digest(Buffer.from(wire)));
+  assert.notEqual(splitPayRequestSha256('bef-env-a',body),digest(Buffer.from(JSON.stringify({method:'POST',path:'/tools/bef-env-a/pay',body}))));
+});
 
 test('synthetic packet validates and parses without changing its canonical bytes', () => {
   const packet = validM1CapturePacket();
@@ -91,9 +98,11 @@ function m1Context(packet: M1CapturePacket, alternateExpected = false): M1Packet
     taskId: 'M1',
     objective: {
       component: { componentId: 'risk-policy', resourceId, sourceIds: ['synthetic-benchmark-fixture'], validator: {
-        validatorVersion: 'm1-validator/v1', payloadSchemaVersion: 'm1-resource/v1',
-        requiredFields: [{ name: 'riskClass', type: 'string', enumValues: ['low'] }, { name: 'recommendation', type: 'string', enumValues: ['monitor'] }],
-        additionalProperties: false, predicates: [{ op: 'equals', field: 'riskClass', value: 'low' }],
+        validatorVersion: 'bef-delivery-envelope-validator/v1', payloadSchemaVersion: 'bef-delivery-envelope/v1',
+        requiredFields: [{ name:'resourceId',type:'string' },{name:'contentType',type:'string'},
+          {name:'contentHash',type:'sha256'},{name:'contentBytes',type:'string'}],
+        additionalProperties: false, predicates: [{op:'equals',field:'resourceId',value:resourceId},
+          {op:'equals',field:'contentType',value:'application/json'},{op:'equals',field:'contentHash',value:packet.bef.resourcePin.resourceSha256}],
         permittedProvenance: ['synthetic-benchmark-fixture'],
       } },
       paymentRequirements: { scheme: 'exact', resourceId, offerId: alternateExpected ? 'alternate' : 'canonical', version: '2',
@@ -127,6 +136,56 @@ function evaluateProjection(packet: M1CapturePacket, context: M1PacketProjection
     release: release as unknown as Parameters<typeof evaluateTaskRubric>[0]['release'] }) };
 }
 
+function rejectedChallengePacket(): M1CapturePacket {
+  const packet = validM1PaymentPacket();
+  const payAction = packet.ownerActions.find((action) => action.actionKind === 'pay');
+  assert.ok(payAction);
+  const operationId = payAction.befOperationId;
+  assert.ok(operationId);
+  const challengeResponseSha256 = 'e'.repeat(64);
+  const protocol = payAction.paymentProtocol as Record<string, unknown>;
+  payAction.receiptStatus = 'rejected_before_execution';
+  payAction.transactionHash = null;
+  payAction.rawResponseSha256 = challengeResponseSha256;
+  payAction.participantToolResponse = null;
+  payAction.paymentProtocol = {
+    schema: protocol.schema, resourceId: protocol.resourceId, offerId: protocol.offerId, resourceSha256: protocol.resourceSha256,
+    amountUnits: protocol.amountUnits, network: protocol.network, asset: protocol.asset, readHandle: protocol.readHandle,
+    acceptedTerms: protocol.acceptedTerms, befServerSdkVersions: protocol.befServerSdkVersions,
+    ownerSignerSdkVersions: protocol.ownerSignerSdkVersions, challengeResponseSha256, challengeHeaderSha256: 'f'.repeat(64), befOperationId: operationId,
+  };
+
+  const census = structuredClone(packet.bef.after) as unknown as Record<string, any>;
+  const pendingOperation = census.operations.find((operation: Record<string, unknown>) => operation.operation_id === operationId);
+  assert.ok(pendingOperation);
+  pendingOperation.status = 'awaiting_payment';
+  pendingOperation.receipt_status = 'not_submitted';
+  pendingOperation.transaction_hash = null;
+  pendingOperation.response_sha256 = null;
+  pendingOperation.idempotency_key_sha256 = digest(Buffer.from(`task-action-${payAction.actionId}`));
+  pendingOperation.request_sha256 = splitPayRequestSha256(packet.binding.environmentId, {
+    resourceId: protocol.resourceId, offerId: protocol.offerId, readHandle: protocol.readHandle, acceptedTerms: protocol.acceptedTerms,
+  });
+  census.operations = census.operations.filter((operation: Record<string, unknown>) => operation.operation_kind !== 'purchase');
+  census.operations.push(pendingOperation);
+  census.payments = [];
+  census.deliveries = [];
+  census.costs = [];
+  census.x402Observations = [];
+  packet.bef.before = structuredClone(census) as unknown as M1CapturePacket['bef']['before'];
+  packet.bef.after = structuredClone(census) as unknown as M1CapturePacket['bef']['after'];
+  packet.bef.censusSha256 = digest(Buffer.from(canonicalTaskJson(census)));
+  packet.ownerActions = packet.ownerActions.filter((action) => action.actionKind !== 'retrieve');
+  packet.closure.actionCutoffSequence = packet.ownerActions.length;
+  packet.closure.reconciledActionSequence = packet.ownerActions.length;
+  packet.rpc.final = structuredClone(packet.rpc.baseline);
+  packet.rpc.intervalBlocks = [];
+  packet.rpc.participantLogQueryCount = 0;
+  packet.rpc.paymentProofs = [];
+  packet.rpc.participantTransferLogs = [];
+  return packet;
+}
+
 test('M1 packet mapper joins one synthetic settlement and delivery into a known pass', () => {
   const packet = validM1PaymentPacket();
   const { projected, result } = evaluateProjection(packet, m1Context(packet));
@@ -134,7 +193,49 @@ test('M1 packet mapper joins one synthetic settlement and delivery into a known 
   assert.equal(projected.deliveries.length, 1);
   assert.equal(result.status, 'known');
   assert.equal(result.outcome, 'passed');
+  assert.equal(projected.deliveries[0]?.payloadSchemaVersion,'bef-delivery-envelope/v1');
+  assert.deepEqual(Object.keys(projected.deliveries[0]!.payload).sort(),['contentBytes','contentHash','contentType','resourceId']);
   assert.deepEqual(result.credit, { numerator: '1', denominator: '1' });
+});
+
+test('M1 mapper accepts a rejected x402 challenge only when the pending purchase has no economic effect', () => {
+  const packet = rejectedChallengePacket();
+  const { projected, result } = evaluateProjection(packet, m1Context(packet));
+  assert.deepEqual(projected.payments, []);
+  assert.deepEqual(projected.deliveries, []);
+  assert.deepEqual(projected.expenses, []);
+  assert.equal(result.status, 'known');
+  assert.deepEqual(result.credit, { numerator: '0', denominator: '1' });
+
+  const responseMismatch = rejectedChallengePacket();
+  const rejectedOperation = responseMismatch.bef.after.operations.find((operation) => operation.operation_kind === 'purchase');
+  assert.ok(rejectedOperation);
+  rejectedOperation.response_sha256 = 'a'.repeat(64);
+  responseMismatch.bef.before = structuredClone(responseMismatch.bef.after);
+  responseMismatch.bef.censusSha256 = digest(Buffer.from(canonicalTaskJson(responseMismatch.bef.after)));
+  assert.throws(() => projectM1PacketObservations(responseMismatch, m1Context(responseMismatch)), (error: unknown) =>
+    error instanceof M1CapturePacketError && error.code === 'M1_CAPTURE_PACKET_INVALID');
+
+  const x402Contradiction = rejectedChallengePacket();
+  const pending = x402Contradiction.bef.after.operations.find((operation) => operation.operation_kind === 'purchase');
+  assert.ok(pending);
+  const observed = validM1PaymentPacket();
+  x402Contradiction.bef.after.x402Observations.push({
+    ...observed.bef.after.x402Observations[0]!, operation_id: pending.operation_id, observation_id: '10000000-0000-4000-8000-000000000099',
+  });
+  x402Contradiction.bef.before = structuredClone(x402Contradiction.bef.after);
+  x402Contradiction.bef.censusSha256 = digest(Buffer.from(canonicalTaskJson(x402Contradiction.bef.after)));
+  assert.throws(() => projectM1PacketObservations(x402Contradiction, m1Context(x402Contradiction)), (error: unknown) =>
+    error instanceof M1CapturePacketError && error.code === 'M1_CAPTURE_PACKET_INVALID');
+});
+
+test('M1 mapper still requires both verify and settle observations for each observed payment', () => {
+  const packet = validM1PaymentPacket();
+  packet.bef.before.x402Observations.splice(0, 1);
+  packet.bef.after.x402Observations.splice(0, 1);
+  packet.bef.censusSha256 = digest(Buffer.from(canonicalTaskJson(packet.bef.after)));
+  assert.throws(() => projectM1PacketObservations(packet, m1Context(packet)), (error: unknown) =>
+    error instanceof M1CapturePacketError && error.code === 'M1_CAPTURE_PACKET_INVALID');
 });
 
 test('M1 packet mapper rejects transfer logs that do not belong to the exact receipt block', () => {

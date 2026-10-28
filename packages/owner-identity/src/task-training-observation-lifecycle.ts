@@ -1,9 +1,14 @@
+import { collectBefCompositeObservationCandidate } from './bef-composite-observation-collector.js';
+import { TASK_IDS } from './task-catalog.js';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
 import { collectBefS1TaskObservationCandidate } from './bef-s1-observation-collector.js';
 import { collectBefS2TaskObservationCandidate } from './bef-s2-observation-collector.js';
 import { collectBefS4TaskObservationCandidate } from './bef-s4-observation-collector.js';
 import { collectBefM1TaskObservationCandidate } from './bef-m1-observation-collector.js';
+import { collectBefPaidDataObservationCandidate } from './bef-paid-data-observation-collector.js';
+import { collectBefChainTaskObservationCandidate } from './bef-chain-observation-collector.js';
+import { collectBefS3TaskObservationCandidate } from './bef-s3-observation-collector.js';
 import type { BefFenceProof, BefObservationPorts } from './bef-observation-ports.js';
 import { taskPreparationPublicPinsSha256 } from './bef-task-preparation.js';
 import { HttpError } from './http-error.js';
@@ -15,14 +20,43 @@ import { canonicalTaskJson, sha256CanonicalTaskJson, type TaskCase, type TaskRel
 import { readSealedTaskObservationBundle, sealTaskObservationBundle, type TaskObservationBundleCandidate } from './task-observation-store.js';
 import { getTaskEvaluatorBuildHash, readRetainedTaskEvaluationInput, reconstructRetainedTaskEvaluation, recordTaskEvaluation,
   type StoredTaskEvaluation } from './task-result-service.js';
-import { completeKnownTrainingRun, finalizeKnownTrainingTask } from './task-run-completion.js';
+import { completeKnownTrainingRun, finalizeKnownTrainingTask, completeKnownRankedRun, finalizeKnownRankedTask } from './task-run-completion.js';
 
 type Transaction = Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
 type TaskTarget = { runId: string; taskIndex: number };
-const OBSERVATION_TRAINING_TASK_IDS = new Set(['S1', 'S2', 'S4', 'M1']);
+
+export type TaskObservationMode = 'training' | 'ranked';
+export type TaskObservationCollectorKind = 's1' | 's2' | 's4' | 'm1_training' | 'paid_data' | 'chain' | 's3' | 'composite';
+
+/** Maps only collectors whose observation boundary is implemented for the selected run mode. */
+export function taskObservationCollectorFor(mode: TaskObservationMode, taskId: string): TaskObservationCollectorKind | null {
+  if (mode === 'training') {
+    if (taskId === 'S1') return 's1';
+    if (taskId === 'S2') return 's2';
+    if (taskId === 'S4') return 's4';
+    if (taskId === 'M1') return 'm1_training';
+    if (taskId === 'H1') return 'paid_data';
+    if (taskId === 'M3' || taskId === 'M4' || taskId === 'H2') return 'chain';
+    return null;
+  }
+  if (mode === 'ranked') {
+    if (taskId === 'S1') return 's1';
+    if (taskId === 'S2') return 's2';
+    if (taskId === 'S4') return 's4';
+    if (taskId === 'S3') return 's3';
+    if (taskId === 'H3' || taskId === 'U1') return 'composite';
+    if (taskId === 'M1' || taskId === 'M2' || taskId === 'H1') return 'paid_data';
+    if (taskId === 'M3' || taskId === 'M4' || taskId === 'H2') return 'chain';
+  }
+  return null;
+}
+
+export function supportsObservationTask(mode: TaskObservationMode, taskId: string): boolean {
+  return taskObservationCollectorFor(mode, taskId) !== null;
+}
 
 export function supportsTrainingObservationTask(taskId: string): boolean {
-  return OBSERVATION_TRAINING_TASK_IDS.has(taskId);
+  return supportsObservationTask('training', taskId);
 }
 
 export interface TaskTrainingObservationLifecycleDependencies {
@@ -35,6 +69,10 @@ export interface TaskTrainingObservationLifecycleDependencies {
   preparationAdapter: TaskPreparationAdapter;
   assertLeaseHeld(): Promise<void>;
 }
+
+/** Shared read-only dependencies accepted by the versioned observation collectors. */
+export type TaskObservationCollectorDependencies = Pick<TaskTrainingObservationLifecycleDependencies,
+  'db' | 'taskReleaseSource' | 'repositoryRoot' | 'observerPorts'>;
 
 export type TaskTrainingObservationLifecycleStage = 'lease' | 'target' | 'observe' | 'preflight' | 'seal' |
   'reload' | 'evaluate' | 'fence' | 'fence_observation' | 'terminalize';
@@ -149,7 +187,8 @@ async function checkTrainingTarget(db: OwnerDatabase, target: TaskTarget): Promi
       WHERE r.id=${target.runId}`) as unknown as LifecycleTargetRow[];
     const row = rows[0];
     if (!row) return { reasonCode: 'closed_training_task_not_current' };
-    if (row.mode !== 'training') return { reasonCode: 'training_run_required', taskId: row.task_id };
+    if (row.mode !== 'training' && row.mode !== 'ranked') return { reasonCode: 'training_run_required', taskId: row.task_id };
+    if (row.mode === 'ranked' && !same(row.task_ids,TASK_IDS)) return {reasonCode:'ranked_full_task_set_required',taskId:row.task_id};
     if ((row.run_status !== 'running' && row.run_status !== 'completed') || row.terminal_reason !== null ||
         !validTimestamp(row.started_at) || !validTimestamp(row.overall_deadline) ||
         (row.run_status === 'running' && row.finished_at !== null) ||
@@ -159,7 +198,7 @@ async function checkTrainingTarget(db: OwnerDatabase, target: TaskTarget): Promi
     if (row.cancellation_reason !== null || row.cancellation_requested_at !== null) {
       return { reasonCode: 'run_cancellation_history', taskId: row.task_id };
     }
-    if (row.task_ids[target.taskIndex] !== row.task_id || !supportsTrainingObservationTask(row.task_id) ||
+    if (row.task_ids[target.taskIndex] !== row.task_id || !supportsObservationTask(row.mode as TaskObservationMode, row.task_id) ||
         row.task_closure_status !== 'closed' || !['active', 'completed', 'failed'].includes(row.task_status) ||
         ((row.task_status === 'completed' || row.task_status === 'failed') !== validTimestamp(row.task_finished_at)) ||
         (row.run_status === 'completed' && row.task_status !== 'completed' && row.task_status !== 'failed') ||
@@ -234,8 +273,8 @@ async function loadCandidateContext(deps: TaskTrainingObservationLifecycleDepend
       LEFT JOIN oid_task_execution_binding eb ON eb.run_id=r.id AND eb.task_index=t.task_index
       WHERE r.id=${target.runId}`) as unknown as TargetRow[];
     const row = rows[0];
-    if (!row || row.mode !== 'training' || row.task_ids[target.taskIndex] !== row.task_id ||
-        !supportsTrainingObservationTask(row.task_id) || row.run_status !== 'running' || row.task_status !== 'active' ||
+    if (!row || (row.mode !== 'training' && row.mode !== 'ranked') || row.task_ids[target.taskIndex] !== row.task_id ||
+        !supportsObservationTask(row.mode as TaskObservationMode, row.task_id) || row.run_status !== 'running' || row.task_status !== 'active' ||
         row.cancellation_reason !== null || row.cancellation_requested_at !== null || row.closure_status !== 'closed' ||
         !row.closure_id || !row.preparation_id || !row.lease_id || !row.environment_id || !row.generation_id ||
         !row.case_id || !row.case_hash || !row.initial_state_sha256 || !row.execution_identity_hash ||
@@ -258,7 +297,7 @@ async function loadCandidateContext(deps: TaskTrainingObservationLifecycleDepend
         release.benchmarkHash !== row.benchmark_hash || release.benchmarkVersion !== row.benchmark_version ||
         release.policyHash !== row.policy_hash || release.manifest.releaseIdentity !== row.release_identity ||
         release.manifest.manifestHash !== row.manifest_hash) return null;
-    const taskCase = release.manifest.cases.training.find((entry) => entry.taskId === row.task_id);
+    const taskCase = release.manifest.cases[row.mode as TaskObservationMode].find((entry) => entry.taskId === row.task_id);
     if (!taskCase || taskCase.caseId !== row.case_id || taskCase.caseHash !== row.case_hash ||
         taskCase.executionIdentityHash !== row.execution_identity_hash ||
         taskCase.initialState.stateSha256 !== row.initial_state_sha256 ||
@@ -296,18 +335,26 @@ async function hasTaskEvaluation(db: OwnerDatabase, target: TaskTarget): Promise
   return rows.length > 0;
 }
 
-async function collectCandidate(deps: TaskTrainingObservationLifecycleDependencies, target: TaskTarget, taskId: string) {
+export async function collectObservationCandidate(deps: TaskObservationCollectorDependencies, target: TaskTarget,
+  mode: TaskObservationMode, taskId: string) {
   // AICODE-NOTE: Existing collectors own their bounded snapshot transactions; this lifecycle adds no enclosing
   // transaction around observer calls. Their current owner/run lock duration is a collector-level limitation.
   const common = { db: deps.db, taskReleaseSource: deps.taskReleaseSource, repositoryRoot: deps.repositoryRoot,
     postgresByEnvironment: deps.observerPorts.postgresByEnvironment,
     rpcByEnvironment: deps.observerPorts.rpcByEnvironment, evidenceSink: deps.observerPorts.evidenceSink };
-  if (taskId === 'S1') return collectBefS1TaskObservationCandidate(common, target);
-  if (taskId === 'S2') return collectBefS2TaskObservationCandidate(common, target);
-  if (taskId === 'S4') return collectBefS4TaskObservationCandidate(common, target);
-  if (taskId === 'M1') return collectBefM1TaskObservationCandidate(common, target);
-  return { status: 'unavailable' as const, reasonCode: 'unsupported_task' };
+  switch (taskObservationCollectorFor(mode, taskId)) {
+    case 's1': return collectBefS1TaskObservationCandidate(common, target);
+    case 's2': return collectBefS2TaskObservationCandidate(common, target);
+    case 's4': return collectBefS4TaskObservationCandidate(common, target);
+    case 'm1_training': return collectBefM1TaskObservationCandidate(common, target);
+    case 'paid_data': return collectBefPaidDataObservationCandidate(common, target);
+    case 'chain': return collectBefChainTaskObservationCandidate(common, target);
+    case 's3': return collectBefS3TaskObservationCandidate(common, target);
+    case 'composite': return collectBefCompositeObservationCandidate(common, target);
+    default: return { status: 'unavailable' as const, reasonCode: 'unsupported_task' };
+  }
 }
+
 
 function isCandidate(value: unknown): value is CandidateResult {
   return isRecord(value) && value.status === 'candidate' && value.classification === 'run_bound_observations_candidate_not_grade' &&
@@ -385,11 +432,13 @@ export async function processClosedTrainingTask(
       }
       stage = 'observe';
       await deps.assertLeaseHeld();
-      const collection = await collectCandidate(deps, target, taskId);
+      const collection = await collectObservationCandidate(deps, target, targetCheck.row.mode as TaskObservationMode, taskId);
       await deps.assertLeaseHeld();
       if (!isCandidate(collection)) {
-        const reason = isRecord(collection) && typeof collection.reasonCode === 'string' && /^[a-z0-9_]{1,80}$/.test(collection.reasonCode)
-          ? collection.reasonCode : 'observation_unavailable';
+        const collectionValue: unknown = collection;
+        const reasonCode = isRecord(collectionValue) ? collectionValue.reasonCode : null;
+        const reason = typeof reasonCode === 'string' && /^[a-z0-9_]{1,80}$/.test(reasonCode)
+          ? reasonCode : 'observation_unavailable';
         return blocked(target, stage, reason, taskId);
       }
       stage = 'preflight';
@@ -476,13 +525,13 @@ export async function processClosedTrainingTask(
     const selectedCount = countRows[0]?.task_ids.length;
     if (!selectedCount || target.taskIndex >= selectedCount) return blocked(target, stage, 'selected_task_set_unavailable', taskId);
     if (target.taskIndex === selectedCount - 1) {
-      const completed = await completeKnownTrainingRun({ db: deps.db, taskReleaseSource: deps.taskReleaseSource,
+      const completed = await (targetCheck.row.mode === 'ranked' ? completeKnownRankedRun : completeKnownTrainingRun)({ db: deps.db, taskReleaseSource: deps.taskReleaseSource,
         evidenceSource: deps.evidenceSource }, { runId: target.runId });
       await deps.assertLeaseHeld();
       return { status: 'run_completed', stage, runId: target.runId, taskIndex: target.taskIndex, taskId,
         outcome, replayed: completed.replayed };
     }
-    const finalized = await finalizeKnownTrainingTask({ db: deps.db, taskReleaseSource: deps.taskReleaseSource,
+    const finalized = await (targetCheck.row.mode === 'ranked' ? finalizeKnownRankedTask : finalizeKnownTrainingTask)({ db: deps.db, taskReleaseSource: deps.taskReleaseSource,
       evidenceSource: deps.evidenceSource }, target);
     await deps.assertLeaseHeld();
     return { status: 'task_terminalized', stage, runId: target.runId, taskIndex: target.taskIndex, taskId,

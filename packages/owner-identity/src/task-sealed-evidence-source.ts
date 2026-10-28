@@ -10,7 +10,14 @@ import type { TaskEvaluationEvidenceSource } from './task-result-service.js';
 import { verifyS4CapturePacketChildren, S4CapturePacketError } from './task-s4-capture-packet.js';
 import { readOnlyToolResponseMatches } from './bef-task-executor.js';
 import { TaskActionCommandSchema, TaskFinishAnswerSchemas, type TaskActionCommand } from './task-action-service.js';
-import { M1CapturePacketError, parseM1CapturePacket, projectM1PacketObservations, type M1CaptureAction, type M1CapturePacket } from './task-m1-capture-packet.js';
+import { M1CapturePacketError, parseM1CapturePacket, projectM1PacketObservations, splitPayRequestSha256, type M1CaptureAction, type M1CapturePacket } from './task-m1-capture-packet.js';
+import { parsePaidDataCapturePacket, projectPaidDataObservationBundle, validatePaidDataCapturePacketPins, type PaidDataAction, type PaidDataCapturePacket } from './task-paid-data-capture-packet.js';
+import { parseTaskChainCapturePacket, projectTaskChainCapturePacket, verifyTaskChainCapturePacketChildren } from './task-chain-capture-packet.js';
+import type { ChainTaskCase } from './task-chain-capture-packet.js';
+import { sameActionEnvelope } from './bef-chain-observation-collector.js';
+import { parseS3CapturePacket, projectS3PacketObservations, type S3CaptureAction, type S3CapturePacket } from './task-s3-capture-packet.js';
+import { composeTaskObservationCandidates, parseCompositeCapturePacket, verifyCompositeCaptureChildren } from './task-composite-capture-packet.js';
+import type { TaskObservationBundleCandidate } from './task-observation-store.js';
 import {
   canonicalTaskJson,
   sha256CanonicalTaskJson,
@@ -31,12 +38,26 @@ const PREPARATION_EVIDENCE_PREFIX = `${COORDINATOR_EVIDENCE_ROOT}preparation/`;
 const ACTION_EVIDENCE_PREFIX = `${COORDINATOR_EVIDENCE_ROOT}action/`;
 const MAX_EVIDENCE_FILES = 256;
 const DEFAULT_MAX_EVIDENCE_FILE_BYTES = 8 * 1024 * 1024;
-const DEFAULT_MAX_EVIDENCE_TOTAL_BYTES = 32 * 1024 * 1024;
-const SECRET_KEYS = new Set(['privatekey', 'privkey', 'seedphrase', 'mnemonic', 'secret', 'clientsecret', 'bearer', 'bearertoken',
+const DEFAULT_MAX_EVIDENCE_TOTAL_BYTES = 32 * 1024 * 1024;const SECRET_KEYS = new Set(['privatekey', 'privkey', 'seedphrase', 'mnemonic', 'secret', 'clientsecret', 'bearer', 'bearertoken',
   'accesstoken', 'refreshtoken', 'providertoken', 'paymenttoken', 'token', 'apitoken', 'apikey', 'authorization',
   'walletmaterial', 'walletsecret', 'signature', 'signedpayload', 'paymentpayload', 'paymentauthorization', 'paymentauth',
   'paymentproof', 'xpayment', 'xpaymentsignature', 'xpaymentpayload', 'xpaymentauthorization', 'x402authorization',
   'x402signature', 'x402payload', 'x402proof', 'rawsignedtransaction']);
+const M1_COMMON_NO_REQUEST_REJECTIONS = new Set([
+  'owner_admission_fenced', 'agent_access_generation_changed', 'run_or_environment_fenced', 'agent_grant_revoked',
+  'run_mode_permission_revoked', 'run_mode_fenced', 'action_sequence_invalid', 'task_cutoff_fenced', 'task_closed',
+  'task_not_active', 'task_execution_binding_unavailable', 'release_identity_changed',
+]);
+const M1_LOCAL_NO_REQUEST_REJECTIONS: Record<M1CaptureAction['actionKind'], ReadonlySet<string>> = {
+  inspect_catalog: new Set([...M1_COMMON_NO_REQUEST_REJECTIONS, 'bef_environment_health_unavailable', 'bef_environment_identity_mismatch']),
+  inspect_offer: new Set([...M1_COMMON_NO_REQUEST_REJECTIONS, 'bef_environment_health_unavailable', 'bef_environment_identity_mismatch']),
+  pay: new Set([...M1_COMMON_NO_REQUEST_REJECTIONS, 'task_payment_protocol_unavailable', 'task_payment_reference_unavailable',
+    'task_payment_reference_invalid', 'task_payment_offer_not_inspected', 'task_payment_reference_unavailable',
+    'task_x402_local_bef_unavailable', 'bef_environment_identity_mismatch', 'task_split_pay_pinned_context_unavailable']),
+  retrieve: new Set([...M1_COMMON_NO_REQUEST_REJECTIONS, 'task_payment_protocol_unavailable', 'task_payment_reference_unavailable',
+    'task_payment_reference_invalid', 'task_payment_offer_not_inspected', 'task_x402_local_bef_unavailable',
+    'bef_environment_identity_mismatch', 'task_split_retrieve_pinned_context_unavailable', 'task_split_retrieve_pinned_resource_invalid']),
+};
 
 type EvidenceRow = {
   run_id: string;
@@ -213,7 +234,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       WHERE r.id=${input.runId} AND b.closure_id=${input.closureId}`) as unknown as EvidenceRow[];
     const row = rows[0];
     if (!row) return null;
-    if (row.task_id !== 'S1' && row.task_id !== 'S2' && row.task_id !== 'S4' && row.task_id !== 'M1') return null;
+    if (!['S1','S2','S3','S4','M1','M2','H1','H2','H3','M3','M4','U1'].includes(row.task_id)) return null;
     if (rows.length !== 1) fail(409, 'TASK_EVIDENCE_BINDING_CONFLICT', 'More than one sealed evidence binding matches this task');
     if (Number(row.task_index) !== input.taskIndex) fail(409, 'TASK_EVIDENCE_BINDING_MISMATCH', 'The sealed task index does not match PostgreSQL');
 
@@ -232,7 +253,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       fail(409, 'TASK_EVIDENCE_BUNDLE_HASH_MISMATCH', 'The immutable sealed task evidence hash does not match its retained bundle');
     }
     await this.verifyEvidenceFiles(bundle, taskCase, row, tx, release.manifest.executionIdentity.localChainId,
-      release.manifest.executionIdentity.assets);
+      release.manifest.executionIdentity.assets, release.manifest.executionIdentity.contracts, release.manifest.costPolicy.ethValuation);
 
     const actionCutoff = safeSequence(row.action_cutoff_sequence);
     const reconciled = safeSequence(row.reconciled_action_sequence);
@@ -353,6 +374,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     tx: Transaction,
     localChainId: number,
     assets: Array<{ assetId: string; address: string | null; kind: 'native' | 'erc20'; chainId: number }>,
+    contracts: Array<{ contractId: string; address: string; codeHash: string }>,
+    ethValuation: { numerator: string; denominator: string },
   ): Promise<void> {
     const references = new Map<string, EvidenceReference>();
     const addReference = (value: unknown): EvidenceReference => {
@@ -382,7 +405,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       for (const entry of entries) {
         if (!plainObject(entry)) fail(503, 'TASK_EVIDENCE_BUNDLE_UNAVAILABLE', 'A sealed observation entry is malformed');
         const ref = addReference(entry.evidence);
-        if (canonicalTaskJson(ref) !== canonicalTaskJson(captureEvidence)) {
+        const compositeTask = taskCase.taskId === 'H3' || taskCase.taskId === 'U1';
+        if (!compositeTask && canonicalTaskJson(ref) !== canonicalTaskJson(captureEvidence)) {
           fail(409, 'TASK_EVIDENCE_REFERENCE_CONFLICT', 'Observations must reference their sealed capture packet');
         }
       }
@@ -401,9 +425,108 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     const m1ActionsByPath = new Map<string, M1CaptureAction>();
     const m1EvidenceByPath = new Map<string, Record<string, unknown>>();
     let m1Packet: M1CapturePacket | null = null;
+    let paidPacket: PaidDataCapturePacket | null = null;
+    let paidPacketEvidence: EvidenceReference | null = null;
+    let compositePacket: ReturnType<typeof parseCompositeCapturePacket> | null = null;
+    let chainPacket: ReturnType<typeof parseTaskChainCapturePacket> | null = null;
+    let chainPacketEvidence: EvidenceReference | null = null;
+    let s3Packet: S3CapturePacket | null = null;
+    const s3ActionsByPath = new Map<string, S3CaptureAction>();
+    const s3EvidenceByPath = new Map<string, Record<string, unknown>>();
+    const paidActionsByPath = new Map<string, PaidDataAction>();
+    const paidEvidenceByPath = new Map<string, Record<string, unknown>>();
+    const paidResponsesByActionId = new Map<string, Record<string, unknown>>();
+    const chainActionsByPath = new Map<string, Record<string, unknown>>();
+    const chainEvidenceByPath = new Map<string, Record<string, unknown>>();
     const queue: Array<{ reference: EvidenceReference; ancestors: ReadonlySet<string> }> =
       [...references.values()].map((reference) => ({ reference, ancestors: new Set<string>() }));
     let totalBytes = 0;
+    const enqueueChildren = (children: EvidenceReference[], ancestors: ReadonlySet<string>, parentPath: string) => {
+      const nextAncestors = new Set([...ancestors, parentPath]);
+      for (const child of children) {
+        if (nextAncestors.has(child.path)) fail(409, 'TASK_EVIDENCE_REFERENCE_CYCLE', 'Sealed evidence references contain a cycle');
+        const existing = references.get(child.path);
+        if (existing && existing.sha256.toLowerCase() !== child.sha256.toLowerCase())
+          fail(409, 'TASK_EVIDENCE_REFERENCE_CONFLICT', 'One evidence path has conflicting sealed hashes');
+        if (!existing) references.set(child.path, child);
+        if (references.size > MAX_EVIDENCE_FILES) fail(503, 'TASK_EVIDENCE_REFERENCE_COUNT_INVALID', 'The sealed evidence reference count is outside its supported bound');
+        queue.push({ reference: child, ancestors: nextAncestors });
+      }
+    };
+    const verifyPaidPacket = (bytes: Uint8Array, packetRef: EvidenceReference): EvidenceReference[] => {
+      let packet: PaidDataCapturePacket;
+      try { packet = validatePaidDataCapturePacketPins(parsePaidDataCapturePacket(bytes), localChainId); }
+      catch { fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The paid-data capture packet is malformed'); }
+      const closure = packet.closure,execution = packet.execution;
+      if (canonicalTaskJson(packet.binding) !== canonicalTaskJson(bundle.binding) || packet.binding.taskId !== taskCase.taskId ||
+          closure.closureId !== row.closure_id || closure.operationId !== row.closure_operation_id || closure.payloadHash !== row.closure_payload_hash ||
+          closure.reason !== row.closure_reason || closure.actionCutoffSequence !== safeSequence(row.action_cutoff_sequence) ||
+          closure.reconciledActionSequence !== safeSequence(row.reconciled_action_sequence) ||
+          execution.preparationId !== row.preparation_id || execution.leaseId !== row.lease_id || execution.generationId !== row.generation_id ||
+          execution.environmentId !== row.environment_id || execution.environmentManifestHash !== row.environment_manifest_hash ||
+          execution.applicationSourceHash !== row.application_source_hash || execution.executionIdentityHash !== row.execution_identity_hash ||
+          execution.initialStateSha256 !== row.initial_state_sha256 || packet.manifest.sha256 !== row.environment_manifest_hash)
+        fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The paid-data packet does not match its sealed task and execution');
+      paidPacket = packet; paidPacketEvidence = packetRef;
+      for (const action of packet.ownerActions) {
+        paidActionsByPath.set(action.actionEvidence.path, action);
+        chainActionsByPath.set(action.actionEvidence.path, action as unknown as Record<string, unknown>);
+      }
+      return [packet.preparation.fixtureEvidence,packet.preparation.baselineEvidence,...packet.ownerActions.map((action)=>action.actionEvidence)];
+    };
+    const verifyChainPacket = (bytes: Uint8Array, packetRef: EvidenceReference): EvidenceReference[] => {
+      let packet: ReturnType<typeof parseTaskChainCapturePacket>;
+      try { packet = parseTaskChainCapturePacket(bytes, taskCase as never); }
+      catch { fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The chain capture packet is malformed'); }
+      const childBundle = { binding: bundle.binding as unknown as TaskEvidenceBinding,
+        closure: { closureId: row.closure_id, actionCutoffSequence: safeSequence(row.action_cutoff_sequence)!,
+          reconciledActionSequence: safeSequence(row.reconciled_action_sequence)! },
+        execution: { ...(bundle.execution as Record<string, unknown>), environmentId: row.environment_id },
+        observations: { ...bundle.observations, captureEvidence: packetRef }, taskCase: taskCase as never, ethValuation };
+      let children: EvidenceReference[];
+      try { children = verifyTaskChainCapturePacketChildren(bytes, childBundle as never); }
+      catch { fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The chain capture packet does not match its sealed task'); }
+      if (packet.taskId !== taskCase.taskId || packet.binding.runId !== row.run_id || packet.execution.environmentManifestHash !== row.environment_manifest_hash ||
+          packet.execution.applicationSourceHash !== row.application_source_hash || packet.execution.executionIdentityHash !== row.execution_identity_hash ||
+          packet.execution.initialStateSha256 !== row.initial_state_sha256)
+        fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The chain packet execution pins differ from PostgreSQL');
+      chainPacket = packet; chainPacketEvidence = packetRef;
+      for (const action of [...packet.ownerActions, ...packet.externalActions]) {
+        const key = action.actionEvidence.path;
+        const prior = chainActionsByPath.get(key);
+        const normalized = { actionId: action.actionId, actionSequence: action.actionSequence, ownerOperationId: action.ownerOperationId,
+          actionKind: action.actionKind, commandSha256: action.commandSha256,
+          receiptStatus: 'receiptStatus' in action ? action.receiptStatus : 'observed',
+          actionEvidence: action.actionEvidence, befOperationId: action.befOperationId, transactionHash: action.transactionHash,
+          ...('command' in action ? { command: action.command, selectedAction: action.selectedAction, approvalSpender: action.approvalSpender } : {}) };
+        if (prior && canonicalTaskJson({ actionId: prior.actionId, actionSequence: prior.actionSequence, ownerOperationId: prior.ownerOperationId,
+            actionKind: prior.actionKind, commandSha256: prior.commandSha256, receiptStatus: prior.receiptStatus,
+            actionEvidence: prior.actionEvidence, befOperationId: prior.befOperationId, transactionHash: prior.transactionHash }) !== canonicalTaskJson(normalized))
+          fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'Paid and chain child packets disagree about a shared owner action');
+        chainActionsByPath.set(key, normalized);
+      }
+      return children;
+    };
+    const verifyS3Packet = (bytes: Uint8Array, packetRef: EvidenceReference): EvidenceReference[] => {
+      let packet: S3CapturePacket;
+      try { packet = parseS3CapturePacket(bytes); }
+      catch { fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The S3 capture packet is malformed'); }
+      if (canonicalTaskJson(packet.binding) !== canonicalTaskJson(bundle.binding) || canonicalTaskJson(packet.taskCase) !== canonicalTaskJson(taskCase) ||
+          packet.closure.closureId !== row.closure_id || packet.closure.actionCutoffSequence !== safeSequence(row.action_cutoff_sequence) ||
+          packet.closure.reconciledActionSequence !== safeSequence(row.reconciled_action_sequence) || packet.closure.taskIndex !== row.task_index ||
+          packet.execution.preparationId !== row.preparation_id || packet.execution.leaseId !== row.lease_id || packet.execution.generationId !== row.generation_id ||
+          packet.execution.environmentId !== row.environment_id || packet.execution.environmentManifestHash !== row.environment_manifest_hash ||
+          packet.execution.applicationSourceHash !== row.application_source_hash || packet.execution.executionIdentityHash !== row.execution_identity_hash ||
+          packet.execution.initialStateSha256 !== row.initial_state_sha256)
+        fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The S3 packet does not match its sealed task and execution');
+      s3Packet = packet;
+      for (const action of packet.ownerActions) {
+        if (s3ActionsByPath.has(action.actionEvidence.path))
+          fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S3 packet repeats an action evidence path');
+        s3ActionsByPath.set(action.actionEvidence.path, action);
+      }
+      return [packet.preparation.fixtureEvidence,packet.preparation.baselineEvidence,...packet.ownerActions.map((action)=>action.actionEvidence)];
+    };
     for (let index = 0; index < queue.length; index += 1) {
       const { reference: ref, ancestors } = queue[index]!;
       if (ancestors.has(ref.path)) fail(409, 'TASK_EVIDENCE_REFERENCE_CYCLE', 'Sealed evidence references contain a cycle');
@@ -453,41 +576,116 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           fail(409, 'TASK_EVIDENCE_FILE_HASH_MISMATCH', 'A sealed raw evidence file does not match its retained hash');
         }
         verified.set(ref.path, digest.toLowerCase());
+        let discoveredChildren: EvidenceReference[] | null = null;
         if (ref.path === captureEvidence.path) {
-          let children: EvidenceReference[];
           if (taskCase.taskId === 'S2') {
             const parsed = this.readS2CapturePacketChildren(bounded.subarray(0, offset), bundle, row, taskCase, localChainId);
-            s2Packet = parsed.packet;
-            children = parsed.children;
-            for (const action of parsed.actions) {
-              const actionReference = action.actionEvidence as EvidenceReference;
-              s2ActionsByPath.set(actionReference.path, action);
-            }
-          } else if (taskCase.taskId === 'M1') {
+            s2Packet = parsed.packet; discoveredChildren = parsed.children;
+            for (const action of parsed.actions) s2ActionsByPath.set((action.actionEvidence as EvidenceReference).path, action);
+          } else if (taskCase.taskId === 'M1' && row.mode === 'training') {
             const parsed = this.readM1CapturePacketChildren(bounded.subarray(0, offset), bundle, row, taskCase, localChainId);
-            m1Packet = parsed.packet;
-            children = parsed.children;
+            m1Packet = parsed.packet; discoveredChildren = parsed.children;
             for (const action of parsed.actions) m1ActionsByPath.set(action.actionEvidence.path, action);
-          } else if (taskCase.taskId === 'S4') {
-            children = this.readS4CapturePacketChildren(bounded.subarray(0, offset), bundle);
-          } else {
-            children = this.readS1CapturePacketChildren(bounded.subarray(0, offset), bundle);
+          } else if ((taskCase.taskId === 'H3' || taskCase.taskId === 'U1')) {
+            try { compositePacket = parseCompositeCapturePacket(bounded.subarray(0, offset)); }
+            catch { fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The composite capture packet is malformed'); }
+            const expectedExecution = { ...(bundle.execution as Record<string, unknown>), environmentId: row.environment_id };
+            const closure = compositePacket.closure;
+            if (canonicalTaskJson(compositePacket.binding) !== canonicalTaskJson(bundle.binding) ||
+                canonicalTaskJson(compositePacket.execution) !== canonicalTaskJson(expectedExecution) ||
+                closure.closureId !== row.closure_id || closure.operationId !== row.closure_operation_id || closure.payloadHash !== row.closure_payload_hash ||
+                closure.reason !== row.closure_reason || closure.actionCutoffSequence !== safeSequence(row.action_cutoff_sequence) ||
+                closure.reconciledActionSequence !== safeSequence(row.reconciled_action_sequence))
+              fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The composite packet does not match its sealed closure');
+            discoveredChildren = [compositePacket.children.paid.evidence,compositePacket.children.chain.evidence];
+          } else if ((taskCase.taskId === 'M1' && row.mode === 'ranked') || taskCase.taskId === 'M2' || taskCase.taskId === 'H1') {
+            discoveredChildren = verifyPaidPacket(bounded.subarray(0, offset), captureEvidence);
+          } else if (taskCase.taskId === 'M3' || taskCase.taskId === 'M4' || taskCase.taskId === 'H2') {
+            discoveredChildren = verifyChainPacket(bounded.subarray(0, offset), captureEvidence);
+          } else if (taskCase.taskId === 'S3') {
+            discoveredChildren = verifyS3Packet(bounded.subarray(0, offset), captureEvidence);
+          } else if (taskCase.taskId === 'S4') discoveredChildren = this.readS4CapturePacketChildren(bounded.subarray(0, offset), bundle);
+          else discoveredChildren = this.readS1CapturePacketChildren(bounded.subarray(0, offset), bundle);
+        } else if (compositePacket && canonicalTaskJson(ref) === canonicalTaskJson(compositePacket.children.paid.evidence)) {
+          discoveredChildren = verifyPaidPacket(bounded.subarray(0, offset), ref);
+        } else if (compositePacket && canonicalTaskJson(ref) === canonicalTaskJson(compositePacket.children.chain.evidence)) {
+          discoveredChildren = verifyChainPacket(bounded.subarray(0, offset), ref);
+        } else if (paidActionsByPath.has(ref.path)) {
+          const action = paidActionsByPath.get(ref.path)!;
+          let evidenceValue: unknown;
+          try { evidenceValue = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bounded.subarray(0, offset))) as unknown; }
+          catch { fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A paid-data action evidence file is malformed'); }
+          if (!plainObject(evidenceValue) || containsSecretKey(evidenceValue) || evidenceValue.schema !== 'bef-task-action-observation-v1' || evidenceValue.actionId !== action.actionId ||
+              evidenceValue.ownerOperationId !== action.ownerOperationId || evidenceValue.actionKind !== action.actionKind ||
+              evidenceValue.commandSha256 !== action.commandSha256 || evidenceValue.status !== action.receiptStatus ||
+              evidenceValue.rawResponseSha256 !== action.rawResponseSha256 || evidenceValue.befOperationId !== action.befOperationId ||
+              (typeof evidenceValue.transactionHash === 'string' ? evidenceValue.transactionHash.toLowerCase() : null) !== (action.transactionHash?.toLowerCase() ?? null))
+            fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A paid-data action differs from its retained action packet');
+          const response = plainObject(evidenceValue.participantToolResponse) ? evidenceValue.participantToolResponse : null;
+          if (action.receiptStatus === 'observed' && (!response || !action.rawResponseSha256) ||
+              action.receiptStatus === 'rejected_before_execution' && (response || action.transactionHash || action.befOperationId))
+            fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A paid-data action response differs from its receipt status');
+          paidEvidenceByPath.set(ref.path, evidenceValue);
+          if (response) paidResponsesByActionId.set(action.actionId, response);
+        } else if (chainActionsByPath.has(ref.path)) {
+          const action = chainActionsByPath.get(ref.path)!;
+          let evidenceValue: unknown;
+          try { evidenceValue = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bounded.subarray(0, offset))) as unknown; }
+          catch { fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action evidence file is malformed'); }
+          const response = plainObject(evidenceValue) && plainObject(evidenceValue.participantToolResponse)
+            ? evidenceValue.participantToolResponse : null;
+          const selected = response && plainObject(response.selectedAction) ? response.selectedAction : null;
+          const command = plainObject(action.command) ? action.command : null;
+          const tokenAssetId = command?.kind === 'approve' ? String(command.tokenAssetId ?? 'WETH') :
+            command?.kind === 'transfer' ? 'USDC' : null;
+          const releasedToken = tokenAssetId ? assets.find((asset) => asset.assetId === tokenAssetId)?.address?.toLowerCase() ?? null : null;
+          const hasPublicToken = selected && Object.hasOwn(selected, 'token');
+          const tokenMatchesRelease = tokenAssetId === null ? !hasPublicToken :
+            Boolean(releasedToken && typeof selected?.token === 'string' && selected.token.toLowerCase() === releasedToken);
+          const scrubbedEvidence = plainObject(evidenceValue) ? structuredClone(evidenceValue) : null;
+          if (scrubbedEvidence && tokenMatchesRelease && selected && hasPublicToken) {
+            const scrubbedResponse = plainObject(scrubbedEvidence.participantToolResponse) ? scrubbedEvidence.participantToolResponse : null;
+            if (scrubbedResponse && plainObject(scrubbedResponse.selectedAction)) delete scrubbedResponse.selectedAction.token;
           }
-          const nextAncestors = new Set([...ancestors, ref.path]);
-          for (const child of children) {
-            if (nextAncestors.has(child.path)) {
-              fail(409, 'TASK_EVIDENCE_REFERENCE_CYCLE', 'The S1 capture packet references itself');
-            }
-            const existing = references.get(child.path);
-            if (existing && existing.sha256.toLowerCase() !== child.sha256.toLowerCase()) {
-              fail(409, 'TASK_EVIDENCE_REFERENCE_CONFLICT', 'One evidence path has conflicting sealed hashes');
-            }
-            if (!existing) references.set(child.path, child);
-            if (references.size > MAX_EVIDENCE_FILES) {
-              fail(503, 'TASK_EVIDENCE_REFERENCE_COUNT_INVALID', 'The sealed evidence reference count is outside its supported bound');
-            }
-            queue.push({ reference: child, ancestors: nextAncestors });
+          const parsedCommand = plainObject(action.command) ? TaskActionCommandSchema.safeParse(action.command) : null;
+          const chainAction = ['approve', 'transfer', 'wrap', 'unwrap', 'swap'].includes(String(action.actionKind));
+          const selectedEnvelopeMatches = !chainAction || Boolean(selected && parsedCommand?.success && plainObject(action.selectedAction) &&
+            sameActionEnvelope(selected, action.selectedAction, parsedCommand.data, taskCase as ChainTaskCase, assets, contracts) &&
+            (action.actionKind !== 'approve' || (typeof selected.spender === 'string' &&
+              typeof action.approvalSpender === 'string' && selected.spender.toLowerCase() === action.approvalSpender.toLowerCase())));
+          if (!plainObject(evidenceValue) || !scrubbedEvidence || containsSecretKey(scrubbedEvidence) || !tokenMatchesRelease ||
+              evidenceValue.schema !== 'bef-task-action-observation-v1' || evidenceValue.actionId !== action.actionId ||
+              evidenceValue.runId !== row.run_id || Number(evidenceValue.taskIndex) !== row.task_index ||
+              String(evidenceValue.actionSequence) !== String(action.actionSequence) || evidenceValue.ownerOperationId !== action.ownerOperationId ||
+              evidenceValue.actionKind !== action.actionKind || evidenceValue.commandSha256 !== action.commandSha256 ||
+              evidenceValue.environmentId !== row.environment_id || evidenceValue.generationId !== row.generation_id ||
+              evidenceValue.manifestSha256 !== row.environment_manifest_hash.toLowerCase() ||
+              evidenceValue.applicationSourceSha256 !== row.application_source_hash.toLowerCase() ||
+              evidenceValue.idempotencyKey !== `task-action-${action.actionId}` || evidenceValue.status !== action.receiptStatus ||
+              (evidenceValue.befOperationId ?? null) !== action.befOperationId ||
+              (typeof evidenceValue.transactionHash === 'string' ? evidenceValue.transactionHash.toLowerCase() : null) !==
+                (typeof action.transactionHash === 'string' ? action.transactionHash.toLowerCase() : null) ||
+              !selectedEnvelopeMatches)
+            fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action differs from its retained action packet');
+          if (action.receiptStatus === 'observed') {
+            if (!response || !selected) fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action response differs from its receipt status');
+            if (!plainObject(response.transaction) || !plainObject(response.receipt) ||
+                String(response.operationId).toLowerCase() !== String(action.befOperationId).toLowerCase() ||
+                String(response.transaction.hash).toLowerCase() !== String(action.transactionHash).toLowerCase() ||
+                String(response.receipt.transactionHash).toLowerCase() !== String(action.transactionHash).toLowerCase() ||
+                (response.outcome !== 'success' && response.outcome !== 'reverted') ||
+                response.receipt.status !== response.outcome || evidenceValue.receiptStatus !== response.outcome)
+              fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action response does not match its retained transaction receipt');
+          } else if (action.receiptStatus === 'rejected_before_execution' && (response !== null || action.transactionHash !== null)) {
+            fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action response differs from its receipt status');
           }
+          chainEvidenceByPath.set(ref.path, evidenceValue);
+        } else if (taskCase.taskId === 'S3' && s3ActionsByPath.has(ref.path)) {
+          let evidenceValue: unknown;
+          try { evidenceValue = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bounded.subarray(0, offset))) as unknown; }
+          catch { fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S3 action evidence file is malformed'); }
+          if (!plainObject(evidenceValue)) fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S3 action evidence file is malformed');
+          s3EvidenceByPath.set(ref.path, evidenceValue);
         } else if (taskCase.taskId === 'S2' && s2ActionsByPath.has(ref.path)) {
           const evidence = this.validateS2ActionEvidence(bounded.subarray(0, offset), ref, s2ActionsByPath.get(ref.path)!, bundle,
             taskCase, assets, localChainId, row.task_index);
@@ -496,15 +694,94 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           const evidence = this.validateM1ActionEvidence(bounded.subarray(0, offset), ref, m1ActionsByPath.get(ref.path)!, bundle, row);
           m1EvidenceByPath.set(ref.path, evidence);
         }
+        if (discoveredChildren) enqueueChildren(discoveredChildren, ancestors, ref.path);
       } finally {
         await handle.close();
       }
     }
+    if (chainPacket) await this.verifyChainOwnerActions(tx, row, chainPacket, chainEvidenceByPath, paidEvidenceByPath);
+    if (paidPacket) await this.verifyPaidOwnerActions(tx, row, paidPacket, paidEvidenceByPath, taskCase.taskId === 'H3' || taskCase.taskId === 'U1');
+    if (s3Packet) await this.verifyS3OwnerActions(tx, row, s3Packet, s3EvidenceByPath);
+    const verifyProjectedObservations = (candidate: TaskObservationBundleCandidate): void => {
+      if (candidate.schemaVersion !== 'bts-task-observation-bundle-candidate/v1' || candidate.cutoffStatus !== 'authoritative' ||
+          candidate.cutoffEvidence === null || canonicalTaskJson(candidate.cutoffEvidence) !== canonicalTaskJson(captureEvidence) ||
+          !candidate.observations || candidate.observationCutoffSequence !== candidate.observations.coveredThroughSequence ||
+          canonicalTaskJson(candidate.observations) !== canonicalTaskJson(bundle.observations)) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The sealed observations do not match their independently projected capture packet');
+      }
+    };
+    const verifiedPaidPacket = paidPacket as PaidDataCapturePacket | null;
+    const verifiedPaidPacketEvidence = paidPacketEvidence as EvidenceReference | null;
+    const verifiedChainPacket = chainPacket as ReturnType<typeof parseTaskChainCapturePacket> | null;
+    const verifiedChainPacketEvidence = chainPacketEvidence as EvidenceReference | null;
+    const verifiedCompositePacket = compositePacket as ReturnType<typeof parseCompositeCapturePacket> | null;
+    const verifiedS3Packet = s3Packet as S3CapturePacket | null;
+    let paidTypedCandidate: TaskObservationBundleCandidate | null = null;
+    let chainTypedCandidate: TaskObservationBundleCandidate | null = null;
+    if (verifiedPaidPacket) {
+      if (!verifiedPaidPacketEvidence) fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The paid-data packet has no sealed evidence reference');
+      try {
+        paidTypedCandidate = projectPaidDataObservationBundle(verifiedPaidPacket, { taskCase, binding: bundle.binding as unknown as TaskEvidenceBinding,
+          captureEvidence: verifiedPaidPacketEvidence, assets: assets as Array<{ assetId: string; kind: 'native' | 'erc20'; chainId: number; address: string | null }>,
+          actionResponses: paidResponsesByActionId });
+      } catch { fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The paid-data packet cannot be independently projected'); }
+      if (paidTypedCandidate.observationCutoffSequence !== verifiedPaidPacket.coverage.observationCutoffSequence) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The paid-data child cutoff does not match its projected observations');
+      }
+    }
+    if (verifiedChainPacket) {
+      if (!verifiedChainPacketEvidence) fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The chain packet has no sealed evidence reference');
+      try {
+        const projection = projectTaskChainCapturePacket(verifiedChainPacket, { binding: bundle.binding as unknown as TaskEvidenceBinding,
+          taskCase: taskCase as never, evidence: verifiedChainPacketEvidence, ethValuation });
+        const arrays = [projection.transfers, projection.finalStates, projection.allowanceChanges, projection.allowanceUses,
+          projection.trades, projection.conversions, projection.expenses];
+        const coveredThroughSequence = Math.max(0, ...arrays.flatMap((entries) => entries.map((entry) => entry.sequence)));
+        const observations: PersistedTaskObservations = { schemaVersion: 'bts-task-observations/v1', binding: bundle.binding as unknown as TaskEvidenceBinding,
+          coveredThroughSequence, captureEvidence: verifiedChainPacketEvidence, coverage: projection.coverage, transfers: projection.transfers,
+          payments: [], stateMutations: [], finalStates: projection.finalStates, allowanceChanges: projection.allowanceChanges,
+          allowanceUses: projection.allowanceUses, answers: [], selections: [], deliveries: [], trades: projection.trades,
+          conversions: projection.conversions, expenses: projection.expenses };
+        chainTypedCandidate = { schemaVersion: 'bts-task-observation-bundle-candidate/v1', observationCutoffSequence: coveredThroughSequence,
+          cutoffStatus: 'authoritative', cutoffEvidence: verifiedChainPacketEvidence, observations };
+      } catch { fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The chain packet cannot be independently projected'); }
+    }
+    if (verifiedCompositePacket) {
+      if (!verifiedPaidPacket || !verifiedChainPacket || !paidTypedCandidate || !chainTypedCandidate || !verifiedPaidPacketEvidence || !verifiedChainPacketEvidence) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The composite capture is missing a verified child packet');
+      }
+      if (verifiedCompositePacket.children.paid.boundary.observationCutoffSequence !== paidTypedCandidate.observationCutoffSequence ||
+          verifiedCompositePacket.children.chain.boundary.observationCutoffSequence !== chainTypedCandidate.observationCutoffSequence) {
+        fail(409, 'TASK_EVIDENCE_CUTOFF_MISMATCH', 'A composite child observation boundary does not match its projected facts');
+      }
+      try { verifyCompositeCaptureChildren(verifiedCompositePacket, verifiedPaidPacket, verifiedChainPacket); }
+      catch { fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The paid and chain capture packets do not share the sealed execution and block interval'); }
+      let merged: TaskObservationBundleCandidate;
+      try { merged = composeTaskObservationCandidates(verifiedCompositePacket, paidTypedCandidate, chainTypedCandidate, captureEvidence); }
+      catch { fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The independently projected composite children cannot be composed'); }
+      verifyProjectedObservations(merged);
+    } else if (paidTypedCandidate) {
+      verifyProjectedObservations(paidTypedCandidate);
+    } else if (chainTypedCandidate) {
+      verifyProjectedObservations(chainTypedCandidate);
+    } else if (taskCase.taskId === 'S3') {
+      if (!verifiedS3Packet) fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The S3 capture packet was not verified');
+      let projected: PersistedTaskObservations;
+      try { projected = projectS3PacketObservations(verifiedS3Packet, { binding: bundle.binding as unknown as TaskEvidenceBinding,
+        taskCase: taskCase as never, captureEvidence }); }
+      catch { fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The S3 packet cannot be independently projected'); }
+      verifyProjectedObservations({ schemaVersion: 'bts-task-observation-bundle-candidate/v1',
+        observationCutoffSequence: projected.coveredThroughSequence, cutoffStatus: 'authoritative', cutoffEvidence: captureEvidence, observations: projected });
+    } else if ((taskCase.taskId === 'M1' && row.mode === 'ranked') || taskCase.taskId === 'M2' || taskCase.taskId === 'H1' ||
+        taskCase.taskId === 'H3' || taskCase.taskId === 'U1' || taskCase.taskId === 'M3' || taskCase.taskId === 'M4' || taskCase.taskId === 'H2') {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The task capture packet was not verified');
+    }
+
     if (taskCase.taskId === 'S2') {
       if (!s2Packet) fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The S2 capture packet was not verified');
       await this.verifyS2OwnerActions(tx, row, taskCase, s2Packet.ownerActions as Record<string, unknown>[],
         s2EvidenceByPath, (s2Packet.bef as Record<string, unknown>).before as Record<string, unknown>);
-    } else if (taskCase.taskId === 'M1') {
+    } else if (taskCase.taskId === 'M1' && row.mode === 'training') {
       if (!m1Packet) fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The M1 capture packet was not verified');
       await this.verifyM1OwnerActions(tx, row, taskCase, m1Packet, m1EvidenceByPath, bundle, assets, localChainId);
     }
@@ -579,7 +856,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       'receiptEffectiveGasPriceWei','paymentProtocol','environmentHealth'];
     if (!plainObject(value) || containsSecretKey(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         value.schema !== 'bef-task-action-observation-v1' || value.actionId !== action.actionId || value.runId !== row.run_id ||
-        Number(value.taskIndex) !== row.task_index || value.actionSequence !== action.actionSequence ||
+        Number(value.taskIndex) !== row.task_index || safeSequence(value.actionSequence as string | number) !== action.actionSequence ||
         value.ownerOperationId !== action.ownerOperationId || value.actionKind !== action.actionKind ||
         typeof value.commandSha256 !== 'string' || value.commandSha256.toLowerCase() !== action.commandSha256.toLowerCase() ||
         value.environmentId !== bundle.binding.environmentId || value.generationId !== bundle.execution.generationId ||
@@ -590,12 +867,446 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
         canonicalTaskJson(value.participantToolResponse ?? null) !== canonicalTaskJson(action.participantToolResponse) ||
         canonicalTaskJson(value.paymentProtocol ?? null) !== canonicalTaskJson(action.paymentProtocol) ||
         action.receiptStatus === 'rejected_before_execution' &&
-          (typeof value.reasonCode !== 'string' || value.reasonCode.length < 1 || value.reasonCode.length > 128 ||
-            !Number.isSafeInteger(value.httpStatus) || (value.httpStatus as number) < 400 || (value.httpStatus as number) > 499) ||
+          !this.validM1RejectedActionEvidence(value, action) ||
         reference.path !== action.actionEvidence.path || reference.sha256.toLowerCase() !== action.actionEvidence.sha256.toLowerCase()) {
       fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A retained M1 action child does not match its immutable packet projection');
     }
     return value;
+  }
+
+  private validM1RejectedActionEvidence(value: Record<string, unknown>, action: M1CaptureAction): boolean {
+    if (typeof value.reasonCode !== 'string' || value.reasonCode.length < 1 || value.reasonCode.length > 128 ||
+        value.transactionHash !== undefined || value.outcome !== undefined || value.receiptStatus !== undefined ||
+        value.participantToolResponse !== undefined) return false;
+    const hasResponseHash = typeof value.rawResponseSha256 === 'string' && HASH.test(value.rawResponseSha256);
+    const hasHttpStatus = value.httpStatus !== undefined;
+    if (hasHttpStatus) {
+      return Number.isSafeInteger(value.httpStatus) && (value.httpStatus as number) >= 400 && (value.httpStatus as number) <= 499 &&
+        hasResponseHash && (action.actionKind !== 'pay' || action.paymentProtocol === null ||
+          action.paymentProtocol.challengeResponseSha256 === undefined ||
+          String(action.paymentProtocol.challengeResponseSha256).toLowerCase() === String(value.rawResponseSha256).toLowerCase());
+    }
+
+    if (hasResponseHash) {
+      return value.reasonCode === 'task_split_pay_authorization_invalid' && action.actionKind === 'pay' &&
+        action.befOperationId !== null && action.paymentProtocol !== null &&
+        action.paymentProtocol.befOperationId === action.befOperationId &&
+        typeof action.paymentProtocol.challengeResponseSha256 === 'string' &&
+        action.paymentProtocol.challengeResponseSha256.toLowerCase() === String(value.rawResponseSha256).toLowerCase();
+    }
+
+    if (value.rawResponseSha256 !== undefined || action.befOperationId !== null ||
+        !M1_LOCAL_NO_REQUEST_REJECTIONS[action.actionKind].has(value.reasonCode)) return false;
+    if (action.actionKind === 'pay' && action.paymentProtocol !== null) {
+      return action.paymentProtocol.befOperationId === undefined && action.paymentProtocol.challengeResponseSha256 === undefined &&
+        action.paymentProtocol.challengeHeaderSha256 === undefined && action.paymentProtocol.settlementHeaderSha256 === undefined;
+    }
+    return action.paymentProtocol === null;
+  }
+
+  private async verifyChainOwnerActions(
+    tx: Transaction,
+    row: EvidenceRow,
+    packet: ReturnType<typeof parseTaskChainCapturePacket>,
+    chainEvidenceByPath: ReadonlyMap<string, Record<string, unknown>>,
+    paidEvidenceByPath: ReadonlyMap<string, Record<string, unknown>>,
+  ): Promise<void> {
+    const actionRows = await tx.execute(sql`SELECT a.id::text AS id,a.run_id::text AS run_id,a.task_index,a.owner_id::text AS owner_id,
+        a.agent_id::text AS agent_id,a.task_id,a.environment_id,a.action_sequence::text AS action_sequence,a.operation_id,a.payload_hash,
+        a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
+        r.tool_response_json,r.tool_response_hash,h.revision AS history_revision,h.receipt_status AS history_status,
+        h.evidence_hash AS history_evidence_hash,h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash,
+        h.tool_response_json AS history_tool_response_json,h.tool_response_hash AS history_tool_response_hash
+      FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+      LEFT JOIN LATERAL (SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash,tool_response_json,tool_response_hash
+        FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
+      WHERE a.run_id=${row.run_id} AND a.task_index=${row.task_index}
+      ORDER BY a.action_sequence LIMIT ${MAX_EVIDENCE_FILES + 1}`) as unknown as Array<Record<string, unknown>>;
+    const cutoff = safeSequence(row.action_cutoff_sequence);
+    const expectedActions: Array<Record<string, unknown>> = [
+      ...packet.ownerActions.map((action) => ({ ...action, receiptStatus: 'observed' })),
+      ...packet.externalActions.map((action) => ({ ...action })),
+    ];
+    if (cutoff === null || cutoff > MAX_EVIDENCE_FILES || actionRows.length !== cutoff || expectedActions.length !== cutoff) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The sealed chain owner-action list does not match its immutable cutoff');
+    }
+    const expectedById = new Map(expectedActions.map((action) => [String(action.actionId), action]));
+    if (expectedById.size !== expectedActions.length || new Set(expectedActions.map((action) => String(action.ownerOperationId))).size !== expectedActions.length ||
+        new Set(expectedActions.map((action) => Number(action.actionSequence))).size !== expectedActions.length) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The sealed chain packet repeats an owner action identity');
+    }
+    const failAction: () => never = () => fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action differs from its durable owner receipt or retained evidence');
+    for (let index = 0; index < actionRows.length; index += 1) {
+      const value = actionRows[index]!;
+      const sequence = safeSequence(value.action_sequence as string | number);
+      const expected = typeof value.id === 'string' ? expectedById.get(value.id) : undefined;
+      const parsedCommand = TaskActionCommandSchema.safeParse(jsonValue(value.command_json));
+      if (!parsedCommand.success) failAction();
+      const command = parsedCommand.data;
+      const response = value.tool_response_json === null || value.tool_response_json === undefined ? null : jsonValue(value.tool_response_json);
+      const historyResponse = value.history_tool_response_json === null || value.history_tool_response_json === undefined ? null : jsonValue(value.history_tool_response_json);
+      const transactionHash = typeof value.transaction_hash === 'string' ? value.transaction_hash.toLowerCase() : null;
+      const ref = expected && plainObject(expected.actionEvidence) ? expected.actionEvidence as unknown as EvidenceReference : null;
+      const evidence = ref ? chainEvidenceByPath.get(ref.path) ?? paidEvidenceByPath.get(ref.path) : undefined;
+      const expectedStatus = expected?.receiptStatus;
+      if (!expected || sequence !== index + 1 || !UUID.test(String(value.id)) || value.run_id !== row.run_id ||
+          value.owner_id !== row.owner_id || value.agent_id !== row.agent_id || Number(value.task_index) !== row.task_index ||
+          value.task_id !== row.task_id || value.environment_id !== row.environment_id || !HASH.test(String(value.payload_hash)) ||
+          sha256CanonicalTaskJson({ runId: row.run_id, taskIndex: row.task_index, command }).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          command.kind !== value.action_kind || Number(expected.actionSequence) !== sequence || expected.ownerOperationId !== value.operation_id ||
+          expected.actionKind !== command.kind || String(expected.commandSha256).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          !ref || ref.path !== value.evidence_path || ref.sha256.toLowerCase() !== String(value.evidence_hash).toLowerCase() || !evidence ||
+          expectedStatus !== value.receipt_status || !['observed','rejected_before_execution'].includes(String(value.receipt_status)) ||
+          !Number.isSafeInteger(value.receipt_revision) || Number(value.receipt_revision) < 1 ||
+          !Number.isSafeInteger(value.history_revision) || Number(value.history_revision) < 1 ||
+          value.history_revision !== value.receipt_revision || value.history_status !== value.receipt_status ||
+          value.history_evidence_hash !== value.evidence_hash || value.history_evidence_path !== value.evidence_path ||
+          (typeof value.history_transaction_hash === 'string' ? value.history_transaction_hash.toLowerCase() : null) !== transactionHash ||
+          canonicalTaskJson(historyResponse) !== canonicalTaskJson(response) || value.history_tool_response_hash !== value.tool_response_hash ||
+          (typeof value.tool_response_hash === 'string' && value.tool_response_hash.toLowerCase() !== sha256CanonicalTaskJson(response).toLowerCase()) ||
+          (value.tool_response_hash === null && response !== null) ||
+          (typeof expected.transactionHash === 'string' ? expected.transactionHash.toLowerCase() : null) !== transactionHash ||
+          evidence.schema !== 'bef-task-action-observation-v1' || evidence.actionId !== expected.actionId || evidence.runId !== row.run_id ||
+          Number(evidence.taskIndex) !== row.task_index || String(evidence.actionSequence) !== String(sequence) ||
+          evidence.ownerOperationId !== expected.ownerOperationId || evidence.actionKind !== command.kind ||
+          String(evidence.commandSha256).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          evidence.environmentId !== row.environment_id || evidence.generationId !== row.generation_id ||
+          String(evidence.manifestSha256).toLowerCase() !== row.environment_manifest_hash.toLowerCase() ||
+          String(evidence.applicationSourceSha256).toLowerCase() !== row.application_source_hash.toLowerCase() ||
+          evidence.idempotencyKey !== `task-action-${expected.actionId}` || evidence.status !== expectedStatus ||
+          (evidence.befOperationId ?? null) !== (expected.befOperationId ?? null) ||
+          (typeof evidence.transactionHash === 'string' ? evidence.transactionHash.toLowerCase() : null) !== transactionHash ||
+          canonicalTaskJson(evidence.participantToolResponse ?? null) !== canonicalTaskJson(response)) failAction();
+      if (expectedStatus === 'observed' && !plainObject(response)) failAction();
+      if (expectedStatus === 'rejected_before_execution' && (response !== null || transactionHash !== null)) failAction();
+    }
+  }
+
+  private async verifyS3OwnerActions(
+    tx: Transaction,
+    row: EvidenceRow,
+    packet: S3CapturePacket,
+    actionEvidenceByPath: ReadonlyMap<string, Record<string, unknown>>,
+  ): Promise<void> {
+    const actionRows = await tx.execute(sql`SELECT a.id::text AS id,a.run_id::text AS run_id,a.task_index,a.owner_id::text AS owner_id,
+        a.agent_id::text AS agent_id,a.task_id,a.environment_id,a.action_sequence::text AS action_sequence,a.operation_id,a.payload_hash,
+        a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
+        r.tool_response_json,r.tool_response_hash,h.revision AS history_revision,h.receipt_status AS history_status,
+        h.evidence_hash AS history_evidence_hash,h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash,
+        h.tool_response_json AS history_tool_response_json,h.tool_response_hash AS history_tool_response_hash
+      FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+      LEFT JOIN LATERAL (SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash,tool_response_json,tool_response_hash
+        FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
+      WHERE a.run_id=${row.run_id} AND a.task_index=${row.task_index}
+      ORDER BY a.action_sequence LIMIT ${MAX_EVIDENCE_FILES + 1}`) as unknown as Array<Record<string, unknown>>;
+    const cutoff = safeSequence(row.action_cutoff_sequence);
+    if (cutoff === null || cutoff > MAX_EVIDENCE_FILES || actionRows.length !== cutoff || packet.ownerActions.length !== cutoff) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The sealed S3 owner-action list does not match its immutable cutoff');
+    }
+    const actionById = new Map(packet.ownerActions.map((action) => [action.actionId, action]));
+    if (actionById.size !== packet.ownerActions.length ||
+        new Set(packet.ownerActions.map((action) => action.actionSequence)).size !== packet.ownerActions.length ||
+        new Set(packet.ownerActions.map((action) => action.ownerOperationId)).size !== packet.ownerActions.length ||
+        new Set(packet.ownerActions.map((action) => action.actionEvidence.path)).size !== packet.ownerActions.length) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S3 packet repeats an owner action identity');
+    }
+    const census = packet.bef.after;
+    const generation = census.generation;
+    const operations = census.operations;
+    const operationById = new Map(operations.map((operation) => [String(operation.operation_id).toLowerCase(), operation]));
+    if (operationById.size !== operations.length) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S3 BEF census repeats an operation identity');
+    }
+    const observedOperationIds = packet.ownerActions.filter((action) => action.receiptStatus === 'observed')
+      .map((action) => String(action.befOperationId).toLowerCase());
+    if (new Set(observedOperationIds).size !== observedOperationIds.length ||
+        observedOperationIds.length !== operations.length || observedOperationIds.some((id) => !operationById.has(id))) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S3 BEF operations do not match the observed owner actions');
+    }
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').toLowerCase();
+    const requestHash = digest(JSON.stringify({ method: 'GET', path: '/catalog' }));
+    const failAction: () => never = () => fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH',
+      'An S3 action differs from its durable owner receipt or retained BEF evidence');
+    for (let index = 0; index < actionRows.length; index += 1) {
+      const value = actionRows[index]!;
+      const sequence = safeSequence(value.action_sequence as string | number);
+      const action = typeof value.id === 'string' ? actionById.get(value.id) : undefined;
+      const parsedCommand = TaskActionCommandSchema.safeParse(jsonValue(value.command_json));
+      if (!parsedCommand.success) failAction();
+      const command = parsedCommand.data;
+      const response = value.tool_response_json === null || value.tool_response_json === undefined ? null : jsonValue(value.tool_response_json);
+      const historyResponse = value.history_tool_response_json === null || value.history_tool_response_json === undefined ? null : jsonValue(value.history_tool_response_json);
+      const transactionHash = typeof value.transaction_hash === 'string' ? value.transaction_hash.toLowerCase() : null;
+      const ref = action?.actionEvidence;
+      const evidence = ref ? actionEvidenceByPath.get(ref.path) : undefined;
+      if (!action || sequence !== index + 1 || !UUID.test(String(value.id)) || value.run_id !== row.run_id ||
+          value.owner_id !== row.owner_id || value.agent_id !== row.agent_id || Number(value.task_index) !== row.task_index ||
+          value.task_id !== 'S3' || value.environment_id !== row.environment_id || command.kind !== 'inspect_catalog' ||
+          value.action_kind !== 'inspect_catalog' || !HASH.test(String(value.payload_hash)) ||
+          sha256CanonicalTaskJson({ runId: row.run_id, taskIndex: row.task_index, command }).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          action.actionSequence !== sequence || action.ownerOperationId !== value.operation_id || action.command.kind !== command.kind ||
+          action.commandSha256.toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          !ref || ref.path !== value.evidence_path || ref.sha256.toLowerCase() !== String(value.evidence_hash).toLowerCase() ||
+          !evidence || !Number.isSafeInteger(value.receipt_revision) || Number(value.receipt_revision) < 1 ||
+          !Number.isSafeInteger(value.history_revision) || Number(value.history_revision) < 1 || value.history_revision !== value.receipt_revision ||
+          value.history_status !== value.receipt_status || value.history_evidence_hash !== value.evidence_hash ||
+          value.history_evidence_path !== value.evidence_path || value.history_transaction_hash !== value.transaction_hash ||
+          canonicalTaskJson(historyResponse) !== canonicalTaskJson(response) || value.history_tool_response_hash !== value.tool_response_hash ||
+          (response === null ? value.tool_response_hash !== null : typeof value.tool_response_hash !== 'string' ||
+            value.tool_response_hash.toLowerCase() !== sha256CanonicalTaskJson(response).toLowerCase()) ||
+          action.receiptStatus !== value.receipt_status || !['observed','rejected_before_execution'].includes(String(value.receipt_status)) ||
+          transactionHash !== null || evidence.schema !== 'bef-task-action-observation-v1' || evidence.actionId !== action.actionId ||
+          evidence.runId !== row.run_id || Number(evidence.taskIndex) !== row.task_index || String(evidence.actionSequence) !== String(sequence) ||
+          evidence.ownerOperationId !== action.ownerOperationId || evidence.actionKind !== 'inspect_catalog' ||
+          String(evidence.commandSha256).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          evidence.environmentId !== row.environment_id || evidence.generationId !== row.generation_id ||
+          String(evidence.manifestSha256).toLowerCase() !== row.environment_manifest_hash.toLowerCase() ||
+          String(evidence.applicationSourceSha256).toLowerCase() !== row.application_source_hash.toLowerCase() ||
+          evidence.idempotencyKey !== `task-action-${action.actionId}` || evidence.status !== action.receiptStatus ||
+          (typeof evidence.transactionHash === 'string' ? evidence.transactionHash.toLowerCase() : null) !== null) failAction();
+      if (action.receiptStatus === 'rejected_before_execution') {
+        const idempotencyHash = digest(`task-action-${action.actionId}`);
+        if (action.reasonCode !== evidence.reasonCode || action.befOperationId !== null || action.response !== null || response !== null ||
+            evidence.rawResponseSha256 !== undefined || evidence.befOperationId !== undefined || evidence.participantToolResponse !== undefined ||
+            evidence.httpStatus !== undefined || operations.some((operation) => String(operation.idempotency_key_sha256).toLowerCase() === idempotencyHash))
+          failAction();
+        continue;
+      }
+      if (action.befOperationId === null || action.response === null) failAction();
+      const operationId = action.befOperationId.toLowerCase();
+      const operation = operationById.get(operationId);
+      const publicResponse = plainObject(evidence.participantToolResponse) ? evidence.participantToolResponse : null;
+      const rawResponseSha256 = evidence.rawResponseSha256;
+      const idempotencyHash = digest(`task-action-${action.actionId}`);
+      const actionResponse = plainObject(action.response) ? action.response : null;
+      const actionHandle = actionResponse && plainObject(actionResponse.readHandle) ? actionResponse.readHandle : null;
+      if (!operation || !publicResponse || evidence.httpStatus !== 200 || typeof rawResponseSha256 !== 'string' || !HASH.test(rawResponseSha256) ||
+          !plainObject(response) || !actionResponse || !actionHandle ||
+          canonicalTaskJson(publicResponse) !== canonicalTaskJson(actionResponse) ||
+          canonicalTaskJson(response) !== canonicalTaskJson(actionResponse) ||
+          !readOnlyToolResponseMatches(command, publicResponse) || actionResponse.operationId !== operationId ||
+          actionHandle.operationId !== operationId || evidence.befOperationId !== action.befOperationId ||
+          operation.env_id !== row.environment_id || operation.generation_id !== row.generation_id ||
+          operation.participant_id !== generation.participant_id || String(operation.idempotency_key_sha256).toLowerCase() !== idempotencyHash ||
+          String(operation.request_sha256).toLowerCase() !== requestHash || operation.operation_kind !== 'catalog' || operation.status !== 'accepted' ||
+          operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null || typeof operation.response_sha256 !== 'string' ||
+          !HASH.test(operation.response_sha256) || operation.response_sha256.toLowerCase() !== rawResponseSha256.toLowerCase()) failAction();
+    }
+  }
+  private async verifyPaidOwnerActions(
+    tx: Transaction,
+    row: EvidenceRow,
+    packet: PaidDataCapturePacket,
+    actionEvidenceByPath: ReadonlyMap<string, Record<string, unknown>>,
+    composite: boolean,
+  ): Promise<void> {
+    const actionRows = await tx.execute(sql`SELECT a.id::text AS id,a.run_id::text AS run_id,a.task_index,a.owner_id::text AS owner_id,
+        a.agent_id::text AS agent_id,a.task_id,a.environment_id,a.action_sequence::text AS action_sequence,a.operation_id,a.payload_hash,
+        a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
+        r.tool_response_json,r.tool_response_hash,h.revision AS history_revision,h.receipt_status AS history_status,
+        h.evidence_hash AS history_evidence_hash,h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash,
+        h.tool_response_json AS history_tool_response_json,h.tool_response_hash AS history_tool_response_hash
+      FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+      LEFT JOIN LATERAL (SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash,tool_response_json,tool_response_hash
+        FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
+      WHERE a.run_id=${row.run_id} AND a.task_index=${row.task_index}
+      ORDER BY a.action_sequence LIMIT ${MAX_EVIDENCE_FILES + 1}`) as unknown as Array<Record<string, unknown>>;
+    const cutoff = safeSequence(row.action_cutoff_sequence);
+    if (cutoff === null || cutoff > MAX_EVIDENCE_FILES || actionRows.length !== cutoff || packet.ownerActions.length > cutoff ||
+        (!composite && packet.ownerActions.length !== cutoff)) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The sealed paid-data owner-action list does not match its immutable cutoff');
+    }
+    const actionById = new Map(packet.ownerActions.map((action) => [action.actionId, action]));
+    if (actionById.size !== packet.ownerActions.length ||
+        new Set(packet.ownerActions.map((action) => action.actionSequence)).size !== packet.ownerActions.length ||
+        new Set(packet.ownerActions.map((action) => action.ownerOperationId)).size !== packet.ownerActions.length) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The paid-data packet repeats an owner action identity');
+    }
+    const commandById = new Map<string, TaskActionCommand>();
+    const packetOperations = Array.isArray(packet.bef.after.operations) ? packet.bef.after.operations.filter(plainObject) : [];
+    const packetPayments = Array.isArray(packet.bef.after.payments) ? packet.bef.after.payments.filter(plainObject) : [];
+    const packetDeliveries = Array.isArray(packet.bef.after.deliveries) ? packet.bef.after.deliveries.filter(plainObject) : [];
+    const generation = plainObject(packet.bef.after.generation) ? packet.bef.after.generation : null;
+    const operationById = new Map(packetOperations.map((operation) => [String(operation.operation_id).toLowerCase(), operation]));
+    if (operationById.size !== packetOperations.length) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The paid-data census repeats a BEF operation identity');
+    }
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').toLowerCase();
+    const failAction: () => never = () => fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A paid-data action differs from its durable owner receipt or retained BEF evidence');
+    for (let index = 0; index < actionRows.length; index += 1) {
+      const value = actionRows[index]!;
+      const sequence = safeSequence(value.action_sequence as string | number);
+      const action = typeof value.id === 'string' ? actionById.get(value.id) : undefined;
+      const parsedCommand = TaskActionCommandSchema.safeParse(jsonValue(value.command_json));
+      if (!parsedCommand.success) failAction();
+      const durableCommand = parsedCommand.data;
+      const response = value.tool_response_json === null || value.tool_response_json === undefined ? null : jsonValue(value.tool_response_json);
+      const historyResponse = value.history_tool_response_json === null || value.history_tool_response_json === undefined ? null : jsonValue(value.history_tool_response_json);
+      const transactionHash = typeof value.transaction_hash === 'string' ? value.transaction_hash.toLowerCase() : null;
+      const child = action ? actionEvidenceByPath.get(action.actionEvidence.path) : undefined;
+      if (sequence !== index + 1 || !UUID.test(String(value.id)) || value.run_id !== row.run_id || value.owner_id !== row.owner_id ||
+          value.agent_id !== row.agent_id || Number(value.task_index) !== row.task_index || value.task_id !== row.task_id ||
+          value.environment_id !== row.environment_id || !HASH.test(String(value.payload_hash)) ||
+          sha256CanonicalTaskJson({ runId: row.run_id, taskIndex: row.task_index, command: durableCommand }).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          !Number.isSafeInteger(value.receipt_revision) || Number(value.receipt_revision) < 1 ||
+          !Number.isSafeInteger(value.history_revision) || Number(value.history_revision) < 1 ||
+          value.history_revision !== value.receipt_revision || !['observed','rejected_before_execution'].includes(String(value.receipt_status)) ||
+          value.history_status !== value.receipt_status ||
+          value.history_evidence_hash !== value.evidence_hash || value.history_evidence_path !== value.evidence_path ||
+          (typeof value.history_transaction_hash === 'string' ? value.history_transaction_hash.toLowerCase() : null) !== transactionHash ||
+          canonicalTaskJson(historyResponse) !== canonicalTaskJson(response) || value.history_tool_response_hash !== value.tool_response_hash ||
+          (typeof value.tool_response_hash === 'string' && value.tool_response_hash.toLowerCase() !== sha256CanonicalTaskJson(response).toLowerCase()) ||
+          (value.tool_response_hash === null && response !== null)) failAction();
+      if (!action) {
+        if (['inspect_catalog','inspect_offer','purchase','pay','retrieve'].includes(durableCommand.kind)) failAction();
+        continue;
+      }
+      if (action.actionSequence !== sequence || action.ownerOperationId !== value.operation_id ||
+          action.actionKind !== durableCommand.kind || action.commandSha256.toLowerCase() !== String(value.payload_hash).toLowerCase() ||
+          action.receiptStatus !== value.receipt_status || action.actionEvidence.path !== value.evidence_path ||
+          action.actionEvidence.sha256.toLowerCase() !== String(value.evidence_hash).toLowerCase() ||
+          transactionHash !== (action.transactionHash?.toLowerCase() ?? null) || !child ||
+          child.schema !== 'bef-task-action-observation-v1' || child.actionId !== action.actionId || child.runId !== row.run_id ||
+          Number(child.taskIndex) !== row.task_index || String(child.actionSequence) !== String(sequence) ||
+          child.ownerOperationId !== action.ownerOperationId || child.actionKind !== action.actionKind ||
+          child.commandSha256 !== action.commandSha256.toLowerCase() || child.environmentId !== row.environment_id ||
+          child.generationId !== row.generation_id || child.manifestSha256 !== row.environment_manifest_hash.toLowerCase() ||
+          child.applicationSourceSha256 !== row.application_source_hash.toLowerCase() || child.idempotencyKey !== `task-action-${action.actionId}` ||
+          (child.befOperationId ?? null) !== action.befOperationId ||
+          (typeof child.transactionHash === 'string' ? child.transactionHash.toLowerCase() : null) !== transactionHash ||
+          child.status !== action.receiptStatus || canonicalTaskJson(child.participantToolResponse ?? null) !== canonicalTaskJson(response) ||
+          (child.rawResponseSha256 ?? null) !== action.rawResponseSha256) failAction();
+      if (action.receiptStatus === 'observed') {
+        if (!plainObject(response) || typeof action.rawResponseSha256 !== 'string') failAction();
+        if ((durableCommand.kind === 'inspect_catalog' || durableCommand.kind === 'inspect_offer') &&
+            !readOnlyToolResponseMatches(durableCommand, response)) failAction();
+      } else if (response !== null || transactionHash !== null) failAction();
+      commandById.set(action.actionId, durableCommand);
+    }
+    for (const action of packet.ownerActions) {
+      const command = commandById.get(action.actionId);
+      if (!command) failAction();
+      if (action.receiptStatus === 'rejected_before_execution') {
+        if (action.befOperationId) {
+          const operation = operationById.get(action.befOperationId.toLowerCase());
+          const protocol = action.paymentProtocol;
+          let expectedRequestHash: string;
+          let expectedOperationKind: string;
+          let validStatus = false;
+          if (command.kind === 'inspect_catalog' || command.kind === 'inspect_offer') {
+            expectedOperationKind = command.kind === 'inspect_catalog' ? 'catalog' : 'offer';
+            const request = command.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
+              { method: 'GET', path: '/offer', resourceId: command.resourceId };
+            expectedRequestHash = digest(JSON.stringify(request));
+            validStatus = operation?.status === 'accepted';
+          } else if (command.kind === 'pay') {
+            if (!plainObject(protocol) || !plainObject(protocol.readHandle) || !plainObject(protocol.acceptedTerms)) failAction();
+            expectedOperationKind = 'purchase';
+            expectedRequestHash = splitPayRequestSha256(row.environment_id, { resourceId: command.resourceId, offerId: command.offerId,
+              readHandle: protocol.readHandle, acceptedTerms: protocol.acceptedTerms });
+            validStatus = ['awaiting_payment','rejected'].includes(String(operation?.status));
+          } else if (command.kind === 'purchase') {
+            expectedOperationKind = 'purchase';
+            expectedRequestHash = digest(JSON.stringify({ method: 'POST', path: `/tools/${row.environment_id}/purchase`,
+              body: JSON.parse(canonicalTaskJson({ resourceId: command.resourceId, offerId: command.offerId })) }));
+            validStatus = ['awaiting_payment','rejected'].includes(String(operation?.status));
+          } else {
+            failAction();
+          }
+          if (!operation || operation.env_id !== row.environment_id || operation.generation_id !== row.generation_id ||
+              !generation || operation.participant_id !== generation.participant_id ||
+              String(operation.idempotency_key_sha256).toLowerCase() !== digest(`task-action-${action.actionId}`) ||
+              operation.operation_kind !== expectedOperationKind || !validStatus ||
+              operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null ||
+              String(operation.request_sha256).toLowerCase() !== expectedRequestHash.toLowerCase() ||
+              (operation.response_sha256 !== null && (action.rawResponseSha256 === null ||
+                String(operation.response_sha256).toLowerCase() !== action.rawResponseSha256.toLowerCase())) ||
+              packetPayments.some((payment) => String(payment.operation_id).toLowerCase() === action.befOperationId!.toLowerCase()) ||
+              packetDeliveries.some((delivery) => String(delivery.operation_id).toLowerCase() === action.befOperationId!.toLowerCase()) ||
+              (Array.isArray(packet.bef.after.x402Observations) && packet.bef.after.x402Observations.some((observation) => plainObject(observation) &&
+                String(observation.operation_id).toLowerCase() === action.befOperationId!.toLowerCase())) ||
+              (Array.isArray(packet.bef.after.costs) && packet.bef.after.costs.some((cost) => plainObject(cost) &&
+                String(cost.operation_id).toLowerCase() === action.befOperationId!.toLowerCase()))) failAction();
+        }
+        continue;
+      }
+      if (command.kind === 'inspect_catalog' || command.kind === 'inspect_offer') {
+        const response = actionEvidenceByPath.get(action.actionEvidence.path)?.participantToolResponse;
+        if (!plainObject(response) || !readOnlyToolResponseMatches(command, response)) failAction();
+        if (!action.befOperationId) failAction();
+        const operation = operationById.get(action.befOperationId.toLowerCase());
+        const request = command.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
+          { method: 'GET', path: '/offer', resourceId: command.resourceId };
+        const requestHash = digest(JSON.stringify(request));
+        if (!operation || operation.env_id !== row.environment_id || operation.generation_id !== row.generation_id ||
+            !generation || operation.participant_id !== generation.participant_id ||
+            String(operation.idempotency_key_sha256).toLowerCase() !== digest(`task-action-${action.actionId}`) ||
+            operation.operation_kind !== (command.kind === 'inspect_catalog' ? 'catalog' : 'offer') || operation.status !== 'accepted' ||
+            operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null ||
+            String(operation.request_sha256).toLowerCase() !== requestHash ||
+            String(operation.response_sha256).toLowerCase() !== String(action.rawResponseSha256).toLowerCase() ||
+            typeof response.operationId !== 'string' || response.operationId.toLowerCase() !== action.befOperationId.toLowerCase()) failAction();
+      } else if (command.kind === 'pay') {
+        const protocol = action.paymentProtocol, response = actionEvidenceByPath.get(action.actionEvidence.path)?.participantToolResponse;
+        if (!plainObject(protocol) || protocol.schema !== 'bef-x402-split-payment-observation-v1' ||
+            protocol.resourceId !== command.resourceId || protocol.offerId !== command.offerId || !plainObject(protocol.readHandle) ||
+            !plainObject(protocol.acceptedTerms) || action.befOperationId === null || !plainObject(response)) failAction();
+        const priorAction = packet.ownerActions.find((candidate) => candidate.actionId === command.offerReadActionId);
+        const priorCommand = priorAction ? commandById.get(priorAction.actionId) : undefined;
+        const priorResponse = priorAction ? actionEvidenceByPath.get(priorAction.actionEvidence.path)?.participantToolResponse : undefined;
+        const operation = action.befOperationId ? operationById.get(action.befOperationId.toLowerCase()) : undefined;
+        const expectedRequestHash = splitPayRequestSha256(row.environment_id, { resourceId: command.resourceId, offerId: command.offerId,
+          readHandle: protocol.readHandle, acceptedTerms: protocol.acceptedTerms });
+        const responsePayment = plainObject(response.payment) ? response.payment : null;
+        if (!priorAction || priorAction.receiptStatus !== 'observed' || priorAction.actionSequence >= action.actionSequence ||
+            (priorCommand?.kind !== 'inspect_catalog' && priorCommand?.kind !== 'inspect_offer') || !plainObject(priorResponse) ||
+            canonicalTaskJson(protocol.readHandle) !== canonicalTaskJson(priorResponse.readHandle) || !operation ||
+            operation.env_id !== row.environment_id || operation.generation_id !== row.generation_id ||
+            !generation || operation.participant_id !== generation.participant_id ||
+            String(operation.idempotency_key_sha256).toLowerCase() !== digest(`task-action-${action.actionId}`) ||
+            operation.operation_kind !== 'purchase' || !['settled','delivered'].includes(String(operation.status)) ||
+            operation.receipt_status !== 'success' || operation.payment_response_mode !== 'deferred_delivery' ||
+            String(operation.transaction_hash).toLowerCase() !== String(action.transactionHash).toLowerCase() ||
+            String(operation.response_sha256).toLowerCase() !== String(action.rawResponseSha256).toLowerCase() ||
+            operation.selected_resource_id !== command.resourceId || operation.selected_offer_id !== command.offerId ||
+            String(operation.selected_amount_units) !== String(protocol.amountUnits) ||
+            String(operation.selected_resource_sha256).toLowerCase() !== String(protocol.resourceSha256).toLowerCase() ||
+            String(operation.request_sha256).toLowerCase() !== expectedRequestHash.toLowerCase() ||
+            response.operationId !== action.befOperationId || response.status !== 'payment_confirmed' ||
+            response.deliveryHandle !== action.befOperationId ||
+            !responsePayment || String(responsePayment.transactionHash).toLowerCase() !== String(action.transactionHash).toLowerCase() ||
+            responsePayment.receiptStatus !== 'success' ||
+            responsePayment.amount !== String(protocol.amountUnits) || responsePayment.network !== protocol.network ||
+            String(responsePayment.asset).toLowerCase() !== String(protocol.asset).toLowerCase() ||
+            String(responsePayment.payTo).toLowerCase() !== String(protocol.acceptedTerms.payTo).toLowerCase()) failAction();
+      } else if (command.kind === 'retrieve') {
+        const priorAction = packet.ownerActions.find((candidate) => candidate.actionId === command.payActionId);
+        const priorCommand = priorAction ? commandById.get(priorAction.actionId) : undefined;
+        const protocol = action.paymentProtocol;
+        if (!priorAction || priorCommand?.kind !== 'pay' || priorAction.receiptStatus !== 'observed' ||
+            priorAction.actionSequence >= action.actionSequence || priorAction.ownerOperationId === action.ownerOperationId ||
+            !action.befOperationId || action.befOperationId !== priorAction.befOperationId || !plainObject(protocol) ||
+            protocol.schema !== 'bef-x402-retrieve-observation-v1' || protocol.payOperationId !== action.befOperationId ||
+            protocol.deliveryMatchesPinnedResource !== true) failAction();
+        const evidenceResponse = actionEvidenceByPath.get(action.actionEvidence.path)?.participantToolResponse;
+        const content = action.retrievedContent;
+        if (!plainObject(evidenceResponse) || !content || evidenceResponse.operationId !== action.befOperationId ||
+            evidenceResponse.resourceId !== content.resourceId || evidenceResponse.contentType !== content.contentType ||
+            evidenceResponse.contentHash !== content.contentSha256 || typeof evidenceResponse.contentBytes !== 'string') failAction();
+        const delivered = Buffer.from(evidenceResponse.contentBytes, 'base64');
+        if (!delivered.length || delivered.toString('base64') !== evidenceResponse.contentBytes || delivered.length !== content.byteCount ||
+            createHash('sha256').update(delivered).digest('hex').toLowerCase() !== content.contentSha256.toLowerCase()) failAction();
+        let decoded: unknown;
+        try { decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(delivered)) as unknown; }
+        catch { failAction(); }
+        if (canonicalTaskJson(decoded) !== canonicalTaskJson(evidenceResponse.content)) failAction();
+      } else if (command.kind === 'purchase') {
+        // The admitted release currently pins separate payment and retrieval; combined purchase remains unsupported.
+        failAction();
+      } else {
+        failAction();
+      }
+    }
   }
 
   private async verifyM1OwnerActions(

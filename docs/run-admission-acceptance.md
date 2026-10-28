@@ -739,6 +739,112 @@ Successfully paid resources outside the pinned M1 resource still fail closed;
 multi-resource observation remains unfinished. Full twelve-task execution,
 ranked completion and recovery/refund acceptance remain open.
 
+On 2026-10-28 the frozen 257-input M1 worker attempt exited 1 and retained
+`artifacts/runs/genuine-m1-owner-run/0c390186-563d-4221-9e62-ecc97b234b68/capture.json`,
+SHA-256 `7e6439b60c9129316bb20a8782bc853e140ad6761dcdbc57ce59639114656362`.
+Run `6ffa9276-06e6-4dae-84de-a26f9777e80d` used isolated database
+`oid_acceptance_0c390186563d42219e62ecc97b234b68`. Its original capture reports
+`automatic_worker_task_completion_timeout`, no recorded evaluation and stable
+source inputs. The three observed actions are inspect/pay/retrieve; pay and
+retrieve share BEF operation `8d42ef64-a811-4e2f-8824-9bd9ff262bb8` and the
+single payment transaction is
+`0xfc28254b6229f0a6b682abf5cffa244800e2f8c37703288e8ce0ae03e51fed51`.
+The public receipt records 100000 synthetic USDC base units and 298 delivered
+bytes. This is not a passing M1 grade. Cleanup records voluntary cancellation
+and the exact task lease fenced; independent payment/fence reconciliation must
+precede any subsequent actor/reset. No replacement payment was submitted in
+this run.
+
+The worker's safe progress record identifies `owner_cutoff_unavailable`.
+Review found the collector expected an impossible task status `running` rather
+than the actual `active`, and expected different fixture-health boundary/status
+schema labels from those produced by the existing preparation writer. The
+collector now checks the actual API-bound envelope and original pinned identities;
+a read-only smoke against this attempt's retained preparation passed. These are
+implementation defects, not missing payment evidence or demonstrated agent error.
+Reader action-sequence representation and verified pre-execution-rejection
+handling are being reconciled separately before a new genuine attempt.
+
+Before a second actor/reset, repeatable-read/read-only owner and BEF queries,
+rehashing the original action files and independent RPC reads reconciled the
+first attempt's payment, delivery and exact original fence: 13/13 checks,
+`payment-reconciliation.json` beside that capture, SHA-256
+`b7bfb5148bee1aa134a5f9b3221414a795dabd48e0e9412407282112b26c3619`.
+This additive proof establishes observed payment/delivery despite the blocked
+grade; it does not promote the attempt to passed or rewrite its cancellation.
+The corrected collector/packet/reader and shared ports/lifecycle suite then passed
+57/57 with all three retained-packet/PostgreSQL opt-ins and zero skips; the Docker
+owner-identity build passed. The second isolated M1 attempt is separate evidence.
+
+The second frozen attempt `d5d28c87-73ef-4016-8582-6902a746f3f1` also retained
+an observation timeout, SHA-256
+`b821cbc9e95e6b45124cd95d675eee91c252eb2ef66b1e2a2f5df16fe99c3830`.
+Its payment/fence reconciliation passed 13/13, SHA-256
+`052d691218ad7d1cc768ed404944f2d0db3615f5352abdfa3e0f37fe43a80c09`.
+Read-only diagnosis found that the collector's signed-data scan also rejected
+the original baseline's public balanceOf/allowance eth_call arguments. The
+preparation parser now permits only those exact selectors, padded addresses and
+the pinned block tag in the scanner copy. It does not permit signed transaction
+input or remove original hash-bound bytes. Additional fixes preserve original
+RPC log quantities, hash the canonical HTTP payment body exactly as BEF does,
+and bind retrieval to the prior payment's idempotency key. A diagnostic using
+synthetic lifecycle-control labels over the retained actual evidence exercised
+collection and reader joins without actor calls, persisted packets, sealing or
+grading; it is not runtime acceptance.
+
+The third attempt completed through the actual server worker, exit 0:
+`artifacts/runs/genuine-m1-owner-run/e22276ad-d381-46ff-9134-b74c145547f5/capture.json`,
+SHA-256 `0332863e3c21060386c043f7a32557e7692b6e3020e84d13903f0a1e478b22ce`.
+Run `c4f0c984-2816-409e-b5f9-c095cb1bfd8c` retained 257 stable source inputs,
+one 66667-unit tester-bonus run debit, no refund, released claim/slot and an exact
+BEF fence. The harness made no observation-seal, evaluation, fence or completion
+writes; the owner results button/API read the persisted result with HTTP 200.
+The task result was **known failed, 0/1**, not a positive M1 acceptance. The mapper
+projected decoded resource content while the immutable released validator checks
+the four-field `bef-delivery-envelope/v1` transport envelope. The mapper and its
+fixture now project those actual returned fields, retaining independent decoded
+byte/hash checks; the case, evaluator and original result are unchanged.
+
+Read-only third-attempt completion reconciliation passed 16/16:
+`durable-completion-reconciliation-zero-v2.json` beside that capture, SHA-256
+`18c286dbaaa5ace2199c3d2292f975d2d754fa3f08e734814a790bd5b5d207eb`.
+Payment/delivery/fence reconciliation passed 13/13, SHA-256
+`9bdcaef69786627fd96ffe96b1888e4f512b1a6ebab05eca73d9ba0f305fd5bf`.
+The earlier zero-v1 reconciliation remains a diagnostic for its incorrect
+expectation of completed task status rather than the actual failed task status.
+After the envelope correction the combined suite passed 61/61 with zero skips
+and the Docker build passed. A fourth fresh local attempt is separate evidence;
+the third attempt's grade is not rewritten or promoted.
+
+The fourth fresh attempt establishes the positive local M1 worker path:
+`artifacts/runs/genuine-m1-owner-run/69d62caa-e5ce-4b38-aa9a-face7ba29fb0/capture.json`,
+SHA-256 `d10bb178cab942da3f4e36bbc1065ce15a14ffabfa9d00710672f98b1257087c`,
+exit 0. Run `916250f1-cea8-4837-90ad-37a313b10dbf` used isolated database
+`oid_acceptance_69d62caae5ce4b38aa9aface7ba29fb0` and 257 stable source inputs.
+The server worker collected, sealed, evaluated, fenced and completed M1 as
+**known passed, 1/1**. Its operating expense is 100000 synthetic USDC base units;
+the separate one-time platform fixture debit is 66667, with no refund. The
+owner results button/API returned that persisted result with HTTP 200. The
+harness records no seal/evaluation/fence/completion writes.
+
+Independent post-stop completion reconciliation passed 16/16:
+`durable-completion-reconciliation-v1.json` beside that capture, SHA-256
+`9fd7257646080a3efbaa0ba1226d6bfefc82c5aed8f2db30103c10cba787e38a`.
+Independent payment/retrieval/receipt/fence reconciliation passed 13/13:
+`payment-reconciliation.json`, SHA-256
+`209627e0b80a8499f0c9c73c6d1a9f8d050a5274b7f469022ff12403be981eef`.
+The original preparation `79db1021-809a-4d6b-9137-c3783242346f` and generation
+`322185d2-1e93-427d-8181-b04a669a055a` are fenced; the original claim is released
+with no remaining slot. One payment transaction
+`0x0db14df47f9777d902e2ca18d1e732b2ac6f6a1d8c09d3ca1c82d564dd7a6073`
+and the shared pay/retrieve operation `933a575c-1189-45bc-8568-43cba4e06489`
+bind the 298-byte delivery to the original resource digest.
+The result hash is `b08ac3f03c8ac734ca55eb520fe1922b4fb8ceb0cd4cb8d4baab6519e117ec88`;
+bundle hash `518553a7d5d15e67791d8666b0d9441aef5b7d9ce2a13fd4b9d034219f9c1e6d`.
+This proves the positive M1 slice at the declared private boundary. All mandatory
+M1 negative variants, the remaining task collectors, full twelve-task ranked
+completion and the unchanged 74-scenario acceptance packet remain separate gates.
+
 While implementing the separate M1 worker path, the unchanged release candidate
 was revalidated offline with
 `node --import ./packages/owner-identity/node_modules/tsx/dist/loader.mjs infrastructure/owner-identity/validate-difficulty-v2-release.mjs`
@@ -1886,3 +1992,486 @@ facilitator pays gas while the participant has no native gas debit. The M1
 budget is still unresolved and all twelve release cases remain blocked.
 Ten reference projection/validator tests passed in Docker. These observations
 do not supply the missing complete case manifests or difficulty review.
+
+### Remaining-suite integration checkpoint, 2026-10-28
+
+The isolated `remaining-chain-tasks` worktree adds actual owner-cutoff-bound S3,
+paid-data and chain observation collectors, strict retained packet projections,
+ranked successor wiring, and an internal atomic ranked outcome handoff. It does
+not introduce a public leaderboard endpoint. Ranked aggregation keeps exact
+rational outcome credits, release weights and four tier indicators separate from
+latency and service expense. The declared agent version is captured in the
+original reservation transaction and reused at start; later profile edits cannot
+rewrite achieved identity.
+
+The first copied MAIN checkpoint builds successfully. Its combined Docker test
+run executed 121 tests with every requested PostgreSQL opt-in enabled: 119 passed,
+2 failed, 0 skipped. Both failures were successor preparation/activation checks:
+the new mode guard incorrectly required `input.run.mode`, a field absent from the
+typed immutable evaluation input. The worktree fix retains `taskCase.mode` and
+durable run-mode checks; the two opt-in PostgreSQL tests pass after that fix.
+These test results verify implementation boundaries, not the full BTS/BRL gates.
+
+Read-only review also found that a composite cutoff could exceed the original
+chain final-state sequence, and that paid/chain payment transaction evidence
+needed input/log hash joins. H3/U1 now begin chain projection sequences after
+the complete owner action cutoff and the composer rejects a missing final state
+at its merged cutoff. External payment transactions must retain no raw signed
+calldata: `input` is null and only `inputSha256` and `receiptLogsSha256` remain.
+The composite verifies both hashes against the independently captured paid child.
+The five pure composite checks pass. Chain checks pass 12/12. Paid sealed-reader
+review additionally requires independent durable owner action/receipt checks,
+release chain identity, action census invariants and preparation/RPC baseline
+binding; implementation and verification of those fixes are still in progress.
+
+The BDD mirror checks pass for 34 BTS and 25 BRL approved scenarios. The semantic
+harness checks fail because their executable Python adapter modules do not yet
+exist (`tests.bdd.adapters.benchmark_task_suite` and
+`tests.bdd.adapters.benchmark_run_lifecycle`). Do not promote those mandatory
+gates, synchronize, or archive on the strength of module tests or a positive run.
+
+A new genuine H2 worker capture was started in isolated database
+`oid_acceptance_903820f911864f6899d021e1f75069a4`, capture ID
+`903820f9-1186-4f68-99d0-21e1f75069a4`. It pins 280 source inputs; its before-source
+artifact is `artifacts/runs/owner-acceptance-inputs/903820f9-1186-4f68-99d0-21e1f75069a4/source-inputs-before.json`,
+SHA-256 `0f5221559123c783122a86141facbf7165c8fe5dd07dec4f05bb0d3859aac41a`.
+At this checkpoint it is still validating the pinned release, with no admitted
+run or participant payouts observed. This is a pending execution, not a pass.
+All execution remains restricted to the isolated local BEF fork.
+The next MAIN snapshot builds and passes the combined Docker suite: **128/128,
+0 failures, 0 skipped**, including the requested PostgreSQL opt-ins. Both prior
+successor failures are resolved; the paid replay, baseline and chain checks are
+included. This remains implementation verification rather than full BDD acceptance.
+
+The first genuine H2 attempt above retained capture SHA-256
+`3b68f1eac4b3e1703f9df019bc26269cb76ffb56b63edf81d93f7fcb4d7569f0`.
+All six payout receipts were observed, but worker observation was blocked by an
+incorrect comparison between a prefixed Keccak code hash and the release's naked
+64-hex pin. It timed out without a grade, then was independently confirmed
+cancelled with its lease and preparation fenced. All 280 source inputs were stable.
+
+The separate second H2 attempt is capture
+`44ad10f2-5135-45a1-b087-b11b683f04a1`, SHA-256
+`006b87397c007ceca8a2a30b5067343a1abc079f9c3df09cac0f71092945aeae`,
+run `ebedd399-09ae-4b49-bc88-01e93a1e7aff`, database
+`oid_acceptance_44ad10f2513545a1b087b11b683f04a1`. It also observed six payouts,
+then sealed the chain packet at
+`artifacts/runs/owner-identity-bef-task-coordinator/observation/ebedd399-09ae-4b49-bc88-01e93a1e7aff/H2/ed058b9ab43cd818c08b0882c0f5d89fa534063eec85d656f34210c9343eae07.json`.
+Reload failed because the generic secret scanner rejected the exact public token
+address in the retained selected action. The new reader permits only the released
+asset address implied by that action, and verifies the original nested receipt
+status rather than an absent response field. The second attempt remains blocked,
+ungraded, cancelled and fenced; it was not retroactively promoted.
+
+A later read-only diagnostic loaded that original sealed H2 bundle successfully
+with the corrected reader and its independent durable action/receipt joins:
+input hash `69a63307ced0f6ba4a4e623e82f97b91c5bcf89228449d8fa88fd23c9627abe1`.
+It used the observer role and a read-only transaction, sent no participant action,
+and wrote no seal, evaluation or grade. This compatibility proof does not turn
+either original attempt into a successful runtime acceptance.
+The same read-only H2 diagnostic also applied the pure rubric to the loaded
+original input: known passed `1/1`, no mandatory violation, operating expense
+3749 USDC micro-units. No evaluation row or replacement capture was written.
+This mechanical result is separate from the cancelled original runtime outcome.
+
+The next full twelve-task ranked server-worker capture was started as
+`33a1bb01-b65e-492e-8770-0b9d9522faed`, isolated database
+`oid_acceptance_33a1bb01b65e492e87700b9d9522faed`. It uses the exact ranked order,
+real owner UI initiation, scoped agent actions and independent observer reads.
+At this checkpoint it is pending; no complete-run or eligibility claim is made.
+The first full ranked attempt retained capture SHA-256
+`84e81964e3742e1a610373a7fccd8a98b6972bfcf7fd2346dfa10d5175cc3ed5`,
+run `eddc47bf-b4ce-49e5-aaa1-58eddfa174ca`. Worker S1 completed as known passed,
+and the server activated S2 with the same claim and slot. The harness then
+incorrectly required `run.started.payload.runId`, although that original event
+binds the run through its envelope and stores `startedAt`/task/deadline in its
+payload. The original attempt is blocked, cancelled, and all two leases fenced;
+independent PostgreSQL readback confirms zero remaining slots and unfenced leases.
+Its source inventory remained stable. The harness now checks the event envelope
+run identity and its original `startedAt` against the run row, preserving payload
+hash, task, deadline and predecessor checks. No product event schema was changed.
+
+A fresh full ranked attempt is pending as capture
+`acc75194-4185-41e7-882c-eddb2d4a9c46`, isolated database
+`oid_acceptance_acc75194418541e7882ceddb2d4a9c46`.
+The `acc75194` attempt was explicitly stopped before admission after identifying
+an omitted H3 actor wrap step. PostgreSQL readback after stopping confirmed zero
+runs, actions, run debits and preparations. Its stop record is
+`artifacts/runs/genuine-ranked-worker-owner-run/acc75194-4185-41e7-882c-eddb2d4a9c46/pre-admission-stop.json`,
+SHA-256 `2a8211a47b8dc89cfdf0799cb9127fa6921f1b06262ff47f68f2f220b96622fe`.
+This is not a task failure or a completed acceptance capture. H3 now wraps its
+issued exact WETH input before approval and the data-dependent swap, preserving
+the requirement that authenticated reference delivery precedes the trade.
+The harness syntax check passes after that change.
+
+The next isolated full ranked attempt is pending as capture
+`e725f33e-b06d-4406-9bf3-8b654f20efba`, database
+`oid_acceptance_e725f33eb06d44069bf38b654f20efba`.
+Capture `e725f33e-b06d-4406-9bf3-8b654f20efba` is retained at
+`artifacts/runs/genuine-ranked-worker-owner-run/e725f33e-b06d-4406-9bf3-8b654f20efba/capture.json`,
+SHA-256 `1118232ea03541134bdc3f636e844905f7c93d88366a65cd77300a2cdf51ce26`.
+Run `e86d2260-5bb4-47ae-8109-3992d54c683e` completed worker S1, then the harness
+incorrectly paid and retrieved during read-only S2. The S2 collector failed closed;
+no S2 evaluation was recorded. The attempt timed out, then was independently
+confirmed cancelled, all leases fenced and no execution slot retained. This is a
+harness error and incomplete runtime proof, not a passing S2 result. The actor now
+only inspects and answers S2; no rubric, requirement or previous outcome changed.
+
+A separate public-format review found that actual x402 offers expose an ERC-20
+address rather than an `assetId` field. The actor now derives that identifier from
+the task's disclosed chain/address map, rejecting foreign addresses and networks.
+Two Docker actor-selection regression tests pass. These add to the previously
+passing 128 backend checks; they are not additional BDD acceptance scenarios.
+
+The fresh full ranked capture `e4d62c3f-5087-4f08-bb2b-17d613b1de0b`, database
+`oid_acceptance_e4d62c3f50874f08bb2b17d613b1de0b`, is pending.
+Capture `e4d62c3f-5087-4f08-bb2b-17d613b1de0b` is now retained with SHA-256
+`2d52082d9bdddfbd490f4c8954cd240b1f35438e4a67b94998c63bff00a86ec5`.
+Worker S1 was known passed; S2 was known partial `2/5`. S3 closed but its
+candidate evaluation remained unknown, so the full run timed out and was
+cancelled. Independent PostgreSQL readback confirms zero unfenced leases and
+zero execution slots. The capture source inventory stayed stable.
+Investigation found missing selections coverage and reconstruction of a wire
+response hash from canonicalized JSON in the retained S3 packet path. Repairs
+must preserve independent original action/BEF response-hash joins; they do not
+change this cancelled attempt or authorize a replacement evaluation for it.
+The corrected S3 projection was exercised read-only over the retained original
+packet: known passed `1/1`, no mandatory violation. This is a pure diagnostic,
+not a new worker evaluation or promotion of the cancelled capture. Type checking
+and the local actor syntax check also passed. A separate read-only actor audit
+found U1 rejected its disclosed ETH allocation before its existing WETH bridge;
+the local actor now accepts USDC/ETH/WETH allocation terms. No task conditions,
+release pins, rubric, historical grade or benchmark action service changed.
+S3 parser/collector/sealed-reader checks passed 35/35 with the PostgreSQL opt-in,
+zero skips. The owner API typecheck and actual build both passed. The sealed
+reader binds original action evidence to durable action/current receipt/latest
+reconciliation, canonical public response and BEF raw response hash; no wire
+bytes are reconstructed from canonicalized JSON. A fresh isolated full ranked
+worker capture started as `0268d7b4-1f33-4f8d-97dc-65259215c922`, database
+`oid_acceptance_0268d7b41f334f8d97dc65259215c922`. It is pending. MAIN sources are
+frozen for its execution; the historical attempts retain their original results.
+Capture `0268d7b4-1f33-4f8d-97dc-65259215c922`, run
+`20786a64-ea83-4d89-a67f-44ee08765737`, is retained with SHA-256
+`fbfa3e0c1d89cb8485ef5ebef1c91c93f3ffe3bd68474483abdde28b60b60c40`.
+Actual worker outcomes were S1 passed, S2 partial `7/10`, S3 passed, S4 passed.
+M1 closed after its three participant steps but observation failed closed with
+`release_binding_mismatch`; no M1 evaluation was recorded. The full attempt
+is cancelled, with independently confirmed zero unfenced leases and zero slots.
+All 281 captured source inputs remained stable. The generic paid collector's
+manifest scanner treats the public pinned `funding.token` address as a secret
+key. Any repair must limit the exception to that exact released ERC-20 address,
+preserve raw manifest bytes/hash and continue rejecting actual secret fields.
+This attempt is not a passing full release or a replacement M1 acceptance.
+The paid manifest compatibility repair permits only funding.token and the
+contracts.pool/contracts.pool3000 token0/token1 scanner-copy paths after exact
+release-bound USDC/WETH checks. Raw bytes and hashes remain unchanged; actual
+secrets and other token-key paths still reject. The focused checks passed 5/5;
+the paid/composite/ports/sealed regression passed 53/53 including PostgreSQL,
+zero skips. The server build passed. New isolated full ranked worker capture
+`00edf667-a13d-4ae0-a9b0-19b54c1e4623` uses database
+`oid_acceptance_00edf667a13d4ae0a9b019b54c1e4623` and is pending.
+Capture `00edf667-a13d-4ae0-a9b0-19b54c1e4623`, run
+`cad69c09-2ace-4ee7-ac0d-26eb56e0ddb8`, is retained with SHA-256
+`6884fc47f754275ff9fce7ae78bd913bd1c2021b0bdcd2b6bad200e85ee7deed`.
+It again completed S1/S3/S4 as passed and S2 as partial `7/10`. M1 observation
+stopped at `preparation_unavailable`. Independent reads during its active
+generation verified inspect/pay/retrieve action hashes, accepted BEF read,
+delivered payment, x402 verify/settle, delivery digest/850-byte length and
+facilitator gas cost; these are diagnostic observations, not a recorded grade.
+The generic collector read baseline hash fields at the wrong nesting level and
+required decimal block text, whereas the existing producer writes outer evidence
+hashes and a hex JSON-RPC quantity. The compatible repair passes 6/6 focused
+checks and typechecking. This original attempt is cancelled, zero unfenced leases,
+zero slots, source inventory stable; no historical grade was replaced.
+After the compatible baseline-reader repair and successful server build, a fresh
+isolated full ranked worker capture started as
+`bea41624-714a-411b-8414-57651e410816`, database
+`oid_acceptance_bea41624714a411b841457651e410816`. Its 281-file source inventory
+has before SHA-256 `1a82e638a1a5afec6db4b6c088391e14268279f55a953fbf4020b5f48c755cfb`.
+This attempt is pending. Action service/executor byte hashes remain unchanged;
+no historical capture or evaluation has been rewritten.
+Capture `bea41624-714a-411b-8414-57651e410816`, run
+`e3a02c70-cc17-4b13-a0e9-7193b955995c`, retained SHA-256
+`b0fb1e949db1b344b8de1e53c564cdd2cb2a1807dfa85e37db88b3ba7e8b7e53`.
+S1/S3/S4 passed and S2 remained partial `7/10`. M1 collected and sealed its
+actual packet, but reload hit `TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH` with
+`The M1 capture packet was not verified`: the final legacy training-M1 verifier
+was also applied to ranked M1 already verified through the generic paid path.
+The compatible mode guard repair loads the original sealed input read-only,
+even after fencing: input hash
+`d404477d520c4215a322a1a23eb7b1a7746c7b560c45fa56d0a83037383da3ca`,
+pure M1 rubric known passed `1/1`, operating expense 125000 USDC micro-units.
+No new seal, evaluation or grade was written. Original attempt remains cancelled,
+all leases fenced, zero slots, source inventory stable; it is incomplete proof.
+Full ranked capture `08859f22-89ba-4219-80fd-647e371533f6`, run
+`29356386-134e-4552-9885-ff59329fbc54`, retained capture SHA-256
+`be024bc32cb5a8598fc0700a2473e810b41d2f34af109db61f73bab33eefb246`.
+The actual server worker evaluated and terminalized S1, S3, S4, M1, M2 as
+passed; S2 was known partial `7/10`. M1 therefore has new genuine ranked
+worker proof, distinct from the previous training acceptance and read-only
+mechanical diagnostics. M3's approve/swap/unwrap were observed but collection
+failed closed at action-envelope verification. Two independent inspections
+confirmed fee-3000 selectedAction.poolCodeHash uses 0x+64 hex while the pinned
+pool contract codeHash is naked 64 hex; all other selected route/amount/pool pins
+match. The repair must normalize only these strict hash representations, not
+weaken the pin. No M3 evaluation was recorded. Original attempt is cancelled,
+zero unfenced leases and slots, 281 source inputs stable; full12 remains open.
+Fresh full ranked capture `e79bf514-4eb7-4256-881f-b1f0b69d2f28`, run
+`86d0a210-752e-446c-9eaa-0d80f269afd2`, retained SHA-256
+`4bd413e5ac6809d287354d549401ad6c574e0cdbef30cbcae507a83b1e0981d0`.
+Worker outcomes again include known passed M1/M2 and known partial S2 `7/10`.
+M3 collected/sealed its packet, then reload rejected the raw approve/swap BEF
+envelope against a reduced command projection. The reader now reuses the strict
+collector envelope validator against release-pinned assets/contracts/routes and
+checks the approval spender against the packet's separate approvalSpender.
+No unknown fields or raw secret material are permitted by this correction.
+The original sealed M3 loads read-only after fencing: input hash
+`93c4b5c7f043bcc10c3a9849c08c432414abb897c6e64767647c1b86765e4b71`,
+mechanical known passed `1/1`, operating expense 2890 USDC micro-units. This is
+not a new grade. Original run is cancelled, zero unfenced leases/slots, source
+inventory stable. Chain/packet/sealed-reader PG regressions passed 37/37 and
+TypeScript passed. Full12 runtime proof remains pending.
+Full ranked capture `ef9197d1-3f0a-4ae6-8459-30778b44ee20`, run
+`9c2eb618-0ffb-4674-947c-a9a539ff0eca`, retained SHA-256
+`ca3424ef0b04728d6004da7e40145ee3aa0b579cc91bbdb3fefd6cdcd6e09b4b`.
+The actual worker evaluated and terminalized all ten tasks through H2: nine
+passed and S2 partial `7/10`. This includes fresh genuine M3/M4/H1/H2 proof.
+H3 inspect/pay/retrieve were observed, but the local actor applied referenceField
+routeCode to the resource envelope root instead of its verified content object.
+It stopped with `h3_public_reference_route_unmapped` before wrap/approval/swap.
+No H3 evaluation exists. The compatible actor correction requires the issued,
+inspected and retrieved resource identities and schemas to match before reading
+the disclosed field under verified envelope.content; its actual public fixture
+regression passes 3/3. Separate review found H3 typed delivery also omitted that
+required field from its payload; projection must use the verified delivered
+bytes, not the expected route table. Original attempt is cancelled, zero
+unfenced leases/slots, all 281 source inputs stable. Full12 remains open.
+The H3 actor and typed-delivery repairs are implemented. Projection validates
+resource/schema/content-type/hash bindings, decodes the original bytes and
+copies only the released string reference field into the exact five-field H3
+payload before hashing it. Other delivery profiles retain their four fields.
+Combined actor/paid-packet/composite/sealed-reader PostgreSQL regression passed
+42/42, zero skips; focused paid packet checks passed 11/11 and typechecking passed.
+A fresh full12 run is still required; this is not promotion of the original
+cancelled H3 attempt or an end-to-end composite acceptance claim.
+Full ranked capture `4225262c-7895-45d6-b731-ca19e37bf41d`, run
+`2a54d0e0-aaa3-421c-811f-61ddbcc32a5c`, retained SHA-256
+`9d3e8c7cd0e44f3510e9edce2fbcaced648486b193b789b93c2e61b02a1bf318`.
+The worker evaluated and terminalized eleven tasks through H3: ten passed,
+S2 partial `7/10`. H3's six genuine actions and composite paid/chain evidence
+therefore have fresh worker proof. U1 had eleven observed actions through its
+USDC-to-WETH swap; the next unwrap POST returned HTTP 429 before admission.
+The harness failed closed with `linked_action_admission_unknown_do_not_retry`
+and did not retry the write. Independent PostgreSQL readback confirmed zero
+action rows for operation `7a6e3e7d-c199-4ccb-b4d8-4c31392ab2ec`, then cancelled
+run, zero unfenced leases and zero slots. Source inventory stayed stable.
+The real task-operation limiter is 60 requests per 60-second bucket by IP and
+credential, including action writes, receipt reads and finish. The reference
+actor needs request pacing; server limits and unknown-write handling remain
+unchanged. Full12 completion/handoff is not yet proven by this attempt.
+Full ranked capture `4859ba37-b94a-4e92-a499-2477be3accfc`, run
+`db7d8721-8d9f-4d1b-b2af-043cf6b40da9`, retained SHA-256
+`5210f9b8a56c152fb93e959b50bc0cf39e2f168c017f7d94c6f59585cc925fc5`.
+The actor's 1100-ms minimum API request spacing avoided the previous 429;
+all thirteen U1 actions, including unwrap and final zero approval, were observed.
+The public actor plan independently reported allocation within tolerance. All
+previous eleven tasks were worker-evaluated, but U1 preflight remained unknown:
+`successful_u1_trade_output_transfer_missing_or_ambiguous`. The chain packet
+already validates the output token Transfer logs against the pool swap event,
+but projection emitted only swap inputs. The compatible U1-only correction
+projects those existing output logs with exact pool/from, actual recipient,
+asset and amount, aliasing only the actual payer as participant. Rubrics,
+release pins and raw packets remain unchanged. The added fact advances the
+chain child cutoff; old composite boundary/hash is never rewritten.
+A counterfactual pure reprojection from the original child packets with a new
+in-memory, non-persisted root gives U1 known passed `1/1`, expense 238362 USDC
+micro-units, six transfers instead of five. This is not a new runtime grade.
+Focused packet tests passed 11/11 and TypeScript passed. Original attempt is
+cancelled, zero unfenced leases/slots, source inventory stable; full completion
+and ranked handoff still require a fresh continuous run.
+## Full ranked local worker completion — 2026-10-28
+
+Capture `3316a3ed-356c-4184-89fd-a5e44608bb0c`, isolated database
+`oid_acceptance_3316a3ed356c418489fda5e44608bb0c`, run
+`75abe875-5ea4-438b-83ca-dd9cc87580cc` completed the continuous twelve-task
+ranked sequence through the actual owner UI, agent protocol and server worker.
+The runtime CLI exited 0. Release `local-bef-2026-10-27-v1-difficulty-v2-candidate`,
+benchmark `bts-local-v2`, manifest
+`1be1fc3ed3db09f5fbf763b18d5c1f9cd7f396facba608b7fd7011b4cb582b7f`.
+
+| Task | Recorded outcome | Credit |
+| --- | --- | --- |
+| S1 | passed | 1/1 |
+| S2 | partial | 7/10 |
+| S3 | passed | 1/1 |
+| S4 | passed | 1/1 |
+| M1 | passed | 1/1 |
+| M2 | passed | 1/1 |
+| M3 | passed | 1/1 |
+| M4 | passed | 1/1 |
+| H1 | passed | 1/1 |
+| H2 | passed | 1/1 |
+| H3 | passed | 1/1 |
+| U1 | passed | 1/1 |
+
+All twelve results are known and immutable. S2 retains its real partial result;
+missing public name/version/paymentFlow fields were not guessed. The exact
+weighted aggregate is `1285/13` out of 100 (approximately 98.8461538).
+U1's thirteen actions, including unwrap and final zero approval, were observed.
+The 1100-ms actor request spacing respects the unchanged server API limiter;
+latency belongs to this paced local reference-actor profile.
+
+Retained artifacts, relative to the repository root:
+
+- `artifacts/runs/genuine-ranked-worker-owner-run/3316a3ed-356c-4184-89fd-a5e44608bb0c/capture.json`,
+  SHA-256 `d41003dda16501e9d746a8923bd333529ca746bcf2a0ffbb42f17c0d171b1c3d`.
+- `artifacts/runs/genuine-ranked-worker-owner-run/3316a3ed-356c-4184-89fd-a5e44608bb0c/poststop-reconciliation.json`,
+  SHA-256 `090a4ec7bc2a9296dac7e496e6cd56502ce4c1819c002593ba24df0b496eaa2c`.
+- The exact reconciliation program is retained alongside it as
+  `poststop-reconciliation.mjs`, SHA-256
+  `5c398fc3dd03d439bc2777e4aed7394433b3ea1b95f312ec6db6c185e31b36d6`.
+  It writes one additive report with exclusive creation; existing reports are preserved.
+
+Independent post-stop reconciliation exited 0: 15/15 checks passed. It used
+`oid_observer` and `bef_observer` in read-only transactions, rehashed 2256
+workspace artifact/source-pin files, checked all twelve input/result/bundle
+hashes, twelve original generation fences, released original claim and zero
+execution slots. Historical service-local paths remain covered by their parent
+artifact hashes rather than being treated as workspace file paths. A single
+1000000-unit tester-bonus reserve and debit are retained. Worker events contain
+12 evaluations, 11 predecessor terminalizations, 11 successor activations,
+one run completion and one eligibility event. The immutable version snapshot,
+ranked result, first-public-action marker and best-result pointer are consistent.
+
+Internal handoff hash:
+`9b182801a7a6e8273a0294afeab9014942b5692a13e9401fff661830c3d42ef9`.
+Aggregate hash:
+`fc54a964a20d83f03526b0ed5b103e869a2ee5802fec8c677b921d8e043a6c82`.
+All 281 captured source inputs stayed stable during the run; before inventory
+SHA-256 `a28b328576ed363786a683205a01030327e47b357768868bbe8aa3ccd9d93484`.
+The action service and executor byte pins remain unchanged.
+
+The latest focused chain/composite/sealed-reader PostgreSQL suite passed 43/43,
+actor helper/pacing tests 4/4, and the server build passed. Earlier failed
+attempts and read-only/counterfactual diagnostics remain separate evidence.
+This closes the local full12 runtime execution slice. The full mandatory BDD
+acceptance remains open: semantic harness loading is blocked by missing Python
+adapters `tests.bdd.adapters.benchmark_task_suite` and
+`tests.bdd.adapters.benchmark_run_lifecycle`. No OpenSpec sync/archive or complete
+MVP acceptance is recorded. The capture uses only the isolated local BEF fork,
+synthetic assets and temporary keys; external-model benchmarking, public
+leaderboard publication and production release activation remain separate gates.
+## Python adapters and selected Codex client — 28 October
+
+The active BTS/BRL adapters now register all 34/25 approved scenario IDs with
+explicit semantic observation bindings. Structural coverage is complete; this
+is not 59 passed environment gates. Missing live producers and unobserved
+negative variants remain blocked. No scenario assertion or inventory changed.
+
+`release-bdd-runner.mjs` validates the retained local-fork release through the
+production validator in a fresh PostgreSQL database. Capture
+`d6527775-870d-4a1f-8b93-1026da7106ec` recorded 17/17 expected negative rejections,
+unchanged read-only release/run/ledger snapshots and stable source inventories.
+Its initial BDD replay passed BTS-SC-001; BTS-SC-002 exposed a reader NameError,
+which is fixed without changing the production predicate. Later current-source
+captures and their final gate results are recorded below.
+
+The U1 already-satisfied-allocation negative uses bounded base-unit balances
+and the production allocation-tolerance predicate. The original overflowing
+candidate remains retained as diagnostic evidence; a schema rejection does not
+stand in for the required initially-satisfied-allocation rejection.
+
+Historical producer input inventories must match before/after exactly. Current
+producer, policy and normative files must still match those hashes. Only the
+explicit BTS/BRL Python reader/test allowlist can evolve independently: the
+acceptance CLI separately pins its current harness/reader digest before/after.
+This permits a reader bug fix to inspect unchanged producer evidence; it cannot
+promote evidence from changed task execution or changed contracts.
+
+The selected compatibility client is actual Codex CLI `0.165.0`, using native
+MCP with a deterministic local Responses provider and an ephemeral configuration.
+This measures client handoff/acceptance, not an external LLM solving the tasks.
+Setup, copying and approvals are separate observations; no one-click claim is
+made. The six BRL-SC-025 negative client paths remain required.
+
+The full12 runtime proof above remains distinct from the remaining BDD work.
+Read-only audit found additional product gaps: platform-failure attribution and
+exactly-once exhausted-recovery refund (BRL-SC-015), and trusted integrity-finding
+intake/adjudication (BRL-SC-021/022). Other lifecycle/task gates still need their
+own actual negative matrices. An absent detector or runtime producer is not a
+passing reference-model result.
+
+Reproduce only inside the declared local Docker/BEF profile:
+
+```powershell
+Set-Location C:\onchain\Proj\web-agent-bench
+docker compose -f infrastructure/owner-identity/compose.yaml --profile tools run --rm --no-deps runtime node packages/owner-acceptance/src/release-bdd-runner.mjs
+docker compose -f infrastructure/owner-identity/compose.yaml -f infrastructure/owner-identity/compose.genuine-s1.yaml --profile tools run --rm --no-deps -e BEF_API_HOST_PORT=38783 -e OID_ACCEPTANCE_BDD_PROBES=true runtime node packages/owner-acceptance/src/runner.mjs --genuine-ranked-worker-owner-run
+docker compose -f infrastructure/owner-identity/compose.yaml --profile tools run --rm --no-deps runtime python -B tools/run_bdd_acceptance.py --change benchmark-task-suite
+docker compose -f infrastructure/owner-identity/compose.yaml --profile tools run --rm --no-deps runtime python -B tools/run_bdd_acceptance.py --change benchmark-run-lifecycle
+```
+
+The local prerequisites include the retained, hash-pinned reference artifacts,
+existing module volumes and local policy. No install/reset/reseed command is
+part of these checks. Mandatory skips keep acceptance blocked and prevent
+OpenSpec sync/archive. Raw runs remain under `artifacts/runs/acceptance/` and
+the genuine capture directories; they are intentionally excluded from Git.
+### Current control run and compatibility decision boundary
+
+Current-source HTTP control capture:
+`65cf0a43-e514-4d15-8ef6-359c40642bfe`, isolated database
+`oid_acceptance_65cf0a43e5144d158ef6359c40642bfe`, run
+`d11efb47-036b-40c5-9d9f-69391f23d9d8`. Runtime exited 0; capture SHA-256
+`d0a94599c09f97475530529d84e7d6b68db87ef34c5ce012bde38a1c98feecd0`.
+All 12 outcomes are known: 11 passed, S2 partial 7/10. Exact aggregate is
+1285/13 out of 100. The 301 captured source inputs stayed unchanged.
+This is the existing owner UI → authenticated HTTP reference actor → actual
+server-worker path; its `bddProfile` is `not_selected`. It does not prove
+native Codex acceptance or external-model performance.
+
+Independent post-stop owner/BEF observers passed 15/15 checks, rehashed 2,256
+workspace evidence files, confirmed all 12 original generations fenced,
+released dispatch/no execution slots, one 1,000,000-unit reserve and debit,
+and one immutable ranked handoff/result. Report:
+`artifacts/runs/genuine-ranked-worker-owner-run/65cf0a43-e514-4d15-8ef6-359c40642bfe/poststop-reconciliation.json`,
+SHA-256 `780cd632b70865b25b3fbcbd719a03a1ab179d987067f03e2cc3147bb3b351b8`.
+The exact verifier is retained beside it as `poststop-reconciliation.mjs`.
+
+The native compatibility blocker is separately reproduced: real CLI initialization
+uses legacy JSON-RPC; the actual SDK 2.4.0 strict handler rejects it with HTTP 400
+before any tool. A permissive fixture accepts a changed version label, so a
+version-label rewrite is not a compatibility fix. No owner server protocol or
+authorization policy was changed. See `codex-local-mcp-profile-review.md` for the
+bounded profile requiring scope review before implementation.
+
+Safe protocol probes, strict-SDK trace and an independent `oid_observer` read-only
+proof of zero runs/slots/reservations/reserve-or-debit entries for the failed
+native owner capture are retained under
+`artifacts/runs/codex-client-compatibility/fcacd046-88dd-4c9e-90f4-a634125faa28/`.
+Compatibility manifest SHA-256:
+`91de2fb8c78e77f61784101424a0806aaff0c8c4d61a4d4e66dcd0bb4151ad02`.
+
+Final focused regressions: 18 Node tests and 17 Python tests plus 3 subtests,
+all passed without skips. The changed backend build and targeted real PostgreSQL
+checks also passed. These counts remain separate from mandatory BDD acceptance.
+BRL acceptance records 25 blocked scenarios; missing producers/negative cases
+and the selected-client compatibility boundary prevent full acceptance.
+### Final mandatory-gate report for this commit
+
+Current release-only capture `f83a1a13-13d9-4518-bbd2-4f9614940b7b` used database
+`oid_acceptance_f83a1a1313d94518bbd24f9614940b7b` and observed 17/17 expected
+negative rejections with stable source hashes. Immutable scenario manifests:
+
+- BTS-SC-001 run `7f143580-fec3-4fec-940c-729ba929fcab`, SHA-256
+  `5d0ff9b201fa53c830bc641986e7e2cf346a2960a74047b36b53858f21edf699`.
+- BTS-SC-002 run `282bc8d4-f50c-40fa-9e20-6ba5f322c114`, SHA-256
+  `5bcbff13d85edff15f49280d1dda05c641cf0b15bce324376a1defc63f7101a1`.
+
+The independent BTS acceptance run passed those two gates; 32 remain blocked.
+BRL acceptance records 25 blocked gates. Both acceptance invocations exit 1
+because mandatory gates are not passed, although their pytest processes exit 0
+with 2 passed/32 skipped and 25 skipped respectively. No individual scenario
+failed in the final reports. Both reports record unchanged harness sources.
+The top-level `acceptance_state` is therefore `failed`, not release-ready.
+No sync/archive was performed. Registered adapters and passed local full12
+execution must not be reported as complete 59-gate or complete MVP acceptance.

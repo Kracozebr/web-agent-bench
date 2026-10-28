@@ -1,3 +1,4 @@
+import { migrateRankedRuns } from './task-ranked-run-migrate.js';
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
 import { migrateLedger } from "./ledger-migrate.js";
@@ -277,6 +278,7 @@ async function main() {
       await migrateTaskExecutionBindings(tx);
       await migrateTaskPreparations(tx);
       await migrateTaskObservations(tx);
+      await migrateRankedRuns(tx);
       const resource = `${config.publicOrigin}/api/agent`;
       const now = new Date().toISOString();
       await tx.unsafe(

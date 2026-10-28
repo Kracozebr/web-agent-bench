@@ -6,7 +6,7 @@ import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, typ
 import type { TaskMode } from './task-catalog.js';
 import type { CancellationExecutor } from './run-service.js';
 import { readSuccessorPreparationPolicySnapshot } from './run-service.js';
-import { finalizeKnownTrainingTask } from './task-run-completion.js';
+import { finalizeKnownRankedTask, finalizeKnownTrainingTask } from './task-run-completion.js';
 import { evaluateTaskRubric, type EvaluateTaskInput, type TaskEvaluationResult } from './task-evaluator.js';
 import type { TaskEvaluationEvidenceSource } from './task-result-service.js';
 
@@ -77,9 +77,11 @@ export interface SuccessorTaskPreparationDependencies extends TaskPreparationDep
 }
 
 export type TaskPreparationTransaction = Transaction;
-export type CanonicalKnownTrainingEvaluation = TaskEvaluationResult & {
+export type CanonicalKnownTaskEvaluation = TaskEvaluationResult & {
   status: 'known'; outcome: 'passed' | 'partial' | 'failed'; credit: NonNullable<TaskEvaluationResult['credit']>; unknownReasons: [];
 };
+export type CanonicalKnownTrainingEvaluation = CanonicalKnownTaskEvaluation;
+export type CanonicalKnownRankedEvaluation = CanonicalKnownTaskEvaluation;
 
 /** Internal start boundary. A configured port is authoritative and does not use global readiness. */
 export interface PreparedTaskStartPort {
@@ -205,12 +207,13 @@ function object(value: unknown): Record<string, unknown> | null {
  * treating it as known. A mandatory violation is an allowed terminal failure only when the
  * evaluator itself reproduces the exact failed, zero-credit result and observation-backed claim.
  */
-export function readKnownCanonicalTrainingEvaluation(
+function readKnownCanonicalTaskEvaluation(
   resultValue: unknown,
   inputValue: unknown,
   taskId: string,
   runId: string,
-): CanonicalKnownTrainingEvaluation | null {
+  mode: TaskMode,
+): CanonicalKnownTaskEvaluation | null {
   const result = object(resultValue);
   const input = object(inputValue);
   const taskCase = object(input?.taskCase);
@@ -222,7 +225,7 @@ export function readKnownCanonicalTrainingEvaluation(
       result.taskId !== taskId || result.status !== 'known' ||
       !['passed', 'partial', 'failed'].includes(String(result.outcome)) ||
       !Array.isArray(result.unknownReasons) || result.unknownReasons.length !== 0 ||
-      taskCase.taskId !== taskId || run.runId !== runId || run.taskId !== taskId ||
+      taskCase.taskId !== taskId || taskCase.mode !== mode || run.runId !== runId || run.taskId !== taskId ||
       release.releaseIdentity !== run.releaseIdentity || release.manifestHash !== run.manifestHash ||
       taskCase.caseId !== run.caseId || taskCase.caseHash !== run.caseHash || taskCase.rubricHash !== run.rubricHash) return null;
   for (const key of ['ownerId', 'agentId', 'runId', 'environmentId', 'releaseIdentity', 'manifestHash',
@@ -244,10 +247,27 @@ export function readKnownCanonicalTrainingEvaluation(
         canonicalTaskJson(reconstructed) !== canonicalTaskJson(result)) return null;
     if (reconstructed.mandatoryViolation !== null && (reconstructed.outcome !== 'failed' ||
         reconstructed.credit?.numerator !== '0' || reconstructed.mandatoryViolation.observationIds.length === 0)) return null;
-    return reconstructed as CanonicalKnownTrainingEvaluation;
+    return reconstructed as CanonicalKnownTaskEvaluation;
   } catch {
     return null;
   }
+}
+export function readKnownCanonicalTrainingEvaluation(
+  resultValue: unknown, inputValue: unknown, taskId: string, runId: string,
+): CanonicalKnownTrainingEvaluation | null {
+  return readKnownCanonicalTaskEvaluation(resultValue, inputValue, taskId, runId, 'training');
+}
+export function readKnownCanonicalRankedEvaluation(
+  resultValue: unknown, inputValue: unknown, taskId: string, runId: string,
+): CanonicalKnownRankedEvaluation | null {
+  return readKnownCanonicalTaskEvaluation(resultValue, inputValue, taskId, runId, 'ranked');
+}
+function readKnownCanonicalEvaluationForMode(
+  resultValue: unknown, inputValue: unknown, taskId: string, runId: string, mode: TaskMode,
+): CanonicalKnownTaskEvaluation | null {
+  return mode === 'training'
+    ? readKnownCanonicalTrainingEvaluation(resultValue, inputValue, taskId, runId)
+    : readKnownCanonicalRankedEvaluation(resultValue, inputValue, taskId, runId);
 }
 function validDate(value: unknown): Date | null {
   const parsed = value instanceof Date ? new Date(value.getTime()) : typeof value === 'string' ? new Date(value) : null;
@@ -354,8 +374,8 @@ async function assertKnownPredecessorProof(tx: Transaction, run: RunRow, targetI
   if (evaluations.length !== targetIndex) fail(409, 'RUN_EVALUATIONS_INCOMPLETE', 'Every preceding task requires an immutable known evaluation');
   for (let index = 0; index < targetIndex; index += 1) {
     const evaluation = evaluations[index]!;
-    const result = readKnownCanonicalTrainingEvaluation(evaluation.result_json, evaluation.input_json,
-      tasks[index]!.task_id, run.id);
+    const result = readKnownCanonicalEvaluationForMode(evaluation.result_json, evaluation.input_json,
+      tasks[index]!.task_id, run.id, run.mode);
     if (evaluation.task_index !== index || evaluation.task_id !== tasks[index]!.task_id || !hash(evaluation.input_hash) || !hash(evaluation.result_hash) ||
         sha256CanonicalTaskJson(asJson(evaluation.input_json)) !== evaluation.input_hash ||
         sha256CanonicalTaskJson(asJson(evaluation.result_json)) !== evaluation.result_hash || !result || result.taskId !== tasks[index]!.task_id ||
@@ -374,8 +394,8 @@ async function assertKnownPredecessorProof(tx: Transaction, run: RunRow, targetI
       case_hash: string; rubric_hash: string; input_hash: string; result_hash: string; input_json: unknown; result_json: unknown;
     }>;
   const evaluation = evaluationRows[0];
-  const result = evaluation ? readKnownCanonicalTrainingEvaluation(evaluation.result_json, evaluation.input_json,
-    predecessor.task_id, run.id) : null;
+  const result = evaluation ? readKnownCanonicalEvaluationForMode(evaluation.result_json, evaluation.input_json,
+    predecessor.task_id, run.id, run.mode) : null;
   const evaluationInput = asJson(evaluation?.input_json);
   const evaluationInputObject = object(evaluationInput);
   const evaluationTaskCase = object(evaluationInputObject?.taskCase);
@@ -698,24 +718,25 @@ async function assertSuccessorPredecessorReplay(deps: SuccessorPredecessorReplay
     FROM oid_benchmark_run r JOIN oid_run_task t ON t.run_id=r.id AND t.task_index=${target.taskIndex - 1}
     LEFT JOIN oid_run_task_evaluation e ON e.run_id=r.id AND e.task_index=${target.taskIndex - 1}
     WHERE r.id=${target.runId}`) as unknown as Array<{
-      id: string; status: string; mode: string; task_ids: string[]; task_id: string; task_status: string; finished_at: Date | string | null;
+      id: string; status: string; mode: TaskMode; task_ids: string[]; task_id: string; task_status: string; finished_at: Date | string | null;
       evaluation_task_id: string | null; input_hash: string | null; result_hash: string | null; input_json: unknown; result_json: unknown;
     }>;
   const predecessor = rows[0];
-  if (!predecessor || predecessor.status !== 'running' || predecessor.mode !== 'training' ||
+  if (!predecessor || predecessor.status !== 'running' || !['training', 'ranked'].includes(predecessor.mode) ||
       target.taskIndex >= predecessor.task_ids.length || predecessor.task_ids[target.taskIndex - 1] !== predecessor.task_id ||
       (predecessor.task_status !== 'completed' && predecessor.task_status !== 'failed') || !validDate(predecessor.finished_at)) {
-    fail(409, 'RUN_TASK_PREDECESSOR_NOT_TERMINAL', 'Successor preparation requires an already terminal training predecessor');
+    fail(409, 'RUN_TASK_PREDECESSOR_NOT_TERMINAL', 'Successor preparation requires an already terminal predecessor');
   }
   const result = predecessor.evaluation_task_id === predecessor.task_id && hash(predecessor.input_hash) && hash(predecessor.result_hash) &&
       sha256CanonicalTaskJson(asJson(predecessor.input_json)) === predecessor.input_hash &&
       sha256CanonicalTaskJson(asJson(predecessor.result_json)) === predecessor.result_hash
-    ? readKnownCanonicalTrainingEvaluation(predecessor.result_json, predecessor.input_json, predecessor.task_id, predecessor.id)
+    ? readKnownCanonicalEvaluationForMode(predecessor.result_json, predecessor.input_json, predecessor.task_id, predecessor.id, predecessor.mode)
     : null;
   if (!result || (result.outcome === 'failed') !== (predecessor.task_status === 'failed')) {
     fail(409, 'RUN_TASK_PREDECESSOR_NOT_KNOWN', 'Successor preparation requires the exact canonical known predecessor evaluation');
   }
-  const proof = await finalizeKnownTrainingTask({
+  const finalize = predecessor.mode === 'ranked' ? finalizeKnownRankedTask : finalizeKnownTrainingTask;
+  const proof = await finalize({
     db: deps.db, taskReleaseSource: deps.releaseSource, evidenceSource: deps.predecessorEvidenceSource,
   }, { runId: target.runId, taskIndex: target.taskIndex - 1 });
   if (!proof.replayed || proof.runId !== target.runId || proof.taskIndex !== target.taskIndex - 1 ||

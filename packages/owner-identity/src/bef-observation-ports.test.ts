@@ -1,3 +1,6 @@
+import { makeChainCaptureFixture } from './task-chain-capture-packet.fixture.js';
+import { validPaidDataCapturePacket } from './task-paid-data-capture-packet.fixture.js';
+import { createS3CapturePacketFixture } from './task-s3-capture-packet.fixture.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink } from 'node:fs/promises';
@@ -339,4 +342,16 @@ test('observation writer accepts retained positive S1/S2/S4 packet shapes withou
     }
     await ports.close();
   } finally { await rm(temporaryRoot, { recursive: true, force: true }); }
+});
+
+test('observation sink accepts strict chain, paid-data and S3 packets and rejects unknown variants',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bef-new-observation-packets-'));
+ try{const {ports}=await makePorts(root);
+  for(const packet of [makeChainCaptureFixture('M3').packet,validPaidDataCapturePacket(),createS3CapturePacketFixture().packet]){
+   let retained!: Awaited<ReturnType<typeof ports.evidenceSink.write>>; await assert.doesNotReject(async()=>{retained=await ports.evidenceSink.write(packet);},packet.schemaVersion);assert.match(retained.sha256,/^[0-9a-f]{64}$/);
+   assert.deepEqual(await ports.evidenceSink.write(packet),retained);
+   await assert.rejects(ports.evidenceSink.write({...packet,schemaVersion:'bts-unreviewed-capture/v1'}),/bef_observer_packet_invalid/);
+   await assert.rejects(ports.evidenceSink.write({...packet,signature:'must-not-be-retained'}));
+  }
+ }finally{await rm(root,{recursive:true,force:true});}
 });

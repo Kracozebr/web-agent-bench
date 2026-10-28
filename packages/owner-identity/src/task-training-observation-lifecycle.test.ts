@@ -14,7 +14,8 @@ import { getTaskEvaluatorBuildHash, recordTaskEvaluation } from './task-result-s
 import { getTaskPreparation, type TaskPreparationAdapter } from './task-preparation.js';
 import type { TaskReleaseQuerySource } from './task-release.js';
 import { addFixture } from './task-run-completion.test-fixture.js';
-import { preflightAndSealKnownCandidate, processClosedTrainingTask, supportsTrainingObservationTask } from './task-training-observation-lifecycle.js';
+import { preflightAndSealKnownCandidate, processClosedTrainingTask, supportsObservationTask,
+  supportsTrainingObservationTask, taskObservationCollectorFor } from './task-training-observation-lifecycle.js';
 
 const evidence: EvidenceReference = {
   path: 'synthetic-lifecycle/s1-observation.json',
@@ -23,10 +24,35 @@ const evidence: EvidenceReference = {
 };
 const txHash = `0x${'b'.repeat(64)}`;
 
-test('training observation lifecycle supports only the implemented S1, S2, S4, and M1 collectors', () => {
-  for (const taskId of ['S1', 'S2', 'S4', 'M1']) assert.equal(supportsTrainingObservationTask(taskId), true);
-  for (const taskId of ['S3', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3', 'U1', 'unknown']) {
+test('training observation routing preserves legacy collectors and supports open paid and chain tasks', () => {
+  const routes = new Map<string, string>([
+    ['S1', 's1'], ['S2', 's2'], ['S4', 's4'], ['M1', 'm1_training'],
+    ['H1', 'paid_data'], ['M3', 'chain'], ['M4', 'chain'], ['H2', 'chain'],
+  ]);
+  for (const [taskId, route] of routes) {
+    assert.equal(taskObservationCollectorFor('training', taskId), route);
+    assert.equal(supportsTrainingObservationTask(taskId), true);
+    assert.equal(supportsObservationTask('training', taskId), true);
+  }
+  for (const taskId of ['S3', 'M2', 'H3', 'U1', 'unknown']) {
+    assert.equal(taskObservationCollectorFor('training', taskId), null);
     assert.equal(supportsTrainingObservationTask(taskId), false);
+  }
+});
+
+test('ranked observation routing selects only collectors with a complete task boundary', () => {
+  const routes = new Map<string, string>([
+    ['S1','s1'], ['S2','s2'], ['S4','s4'], ['S3', 's3'], ['M1', 'paid_data'], ['M2', 'paid_data'], ['H1', 'paid_data'],
+    ['H3','composite'], ['U1','composite'],
+    ['M3', 'chain'], ['M4', 'chain'], ['H2', 'chain'],
+  ]);
+  for (const [taskId, route] of routes) {
+    assert.equal(taskObservationCollectorFor('ranked', taskId), route);
+    assert.equal(supportsObservationTask('ranked', taskId), true);
+  }
+  for (const taskId of ['unknown']) {
+    assert.equal(taskObservationCollectorFor('ranked', taskId), null);
+    assert.equal(supportsObservationTask('ranked', taskId), false);
   }
 });
 
@@ -280,7 +306,7 @@ test('synthetic isolated-PG resume reloads an evaluated bundle, proves the exact
         [{ status: 'running', taskStatus: 'active', leaseState: 'leased', terminalEvents: 0 }]);
       }
 
-      await assertRejectedBeforeResume({ ranked: true }, 'training_run_required');
+      await assertRejectedBeforeResume({ ranked: true }, 'ranked_full_task_set_required');
       await assertRejectedBeforeResume({ cancellationHistory: true }, 'run_cancellation_history');
     } finally {
       try {

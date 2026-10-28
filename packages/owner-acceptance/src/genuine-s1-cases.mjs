@@ -5,12 +5,20 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import pg from 'pg';
 import { assertSecretFree, sha256 } from './evidence.mjs';
 import { createCard, issueThroughUi } from './credential-cases.mjs';
+import { runReleaseBddCases } from './release-bdd-cases.mjs';
+import { runRankedBddCases } from './ranked-bdd-cases.mjs';
+import { runCodexNativeOwnerAcceptance } from './codex-client-cases.mjs';
+import { runBrlLaunchAdmissionPreAcceptCases, runBrlLaunchAdmissionPrimaryOnlyCase, captureBrlPrimaryMcpAcceptance,
+  runBrlLaunchAdmissionPostCompletionCases } from './benchmark-run-lifecycle-launch-probe.mjs';
 
 const { Pool } = pg;
 const ROOT = '/workspace';
 const EVIDENCE_ROOT = 'artifacts/runs/genuine-s1-owner-run';
 const SEQUENCE_EVIDENCE_ROOT = 'artifacts/runs/genuine-training-sequence-owner-run';
-const SUPPORTED_TASKS = new Set(['S1', 'S2', 'S4', 'M1']);
+const RANKED_EVIDENCE_ROOT = 'artifacts/runs/genuine-ranked-worker-owner-run';
+const OPEN_TASK_IDS = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'];
+const RANKED_TASK_IDS = ['S1', 'S2', 'S3', 'S4', 'M1', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3', 'U1'];
+const SUPPORTED_TASKS = new Set(OPEN_TASK_IDS);
 const evidenceRootForTask = (taskId = 'S1') => {
   demand(SUPPORTED_TASKS.has(taskId), 'unsupported_genuine_task');
   return taskId === 'S1' ? EVIDENCE_ROOT : 'artifacts/runs/genuine-' + taskId.toLowerCase() + '-owner-run';
@@ -35,7 +43,8 @@ function demand(condition, code) {
 }
 
 function safeErrorCode(error, fallback = 'genuine_s1_case_failed') {
-  const code = typeof error?.code === 'string' ? error.code : '';
+  const code = typeof error?.code === 'string' ? error.code
+    : typeof error?.message === 'string' ? error.message : '';
   return /^[A-Za-z0-9_]{1,96}$/.test(code) ? code : fallback;
 }
 
@@ -100,7 +109,7 @@ function bindMinimumReview(manifest, minimum, taskRelease) {
   return taskRelease.TaskReleaseManifestSchema.parse(bound);
 }
 
-async function validateAndActivatePinnedRelease({ repositoryRoot, databaseUrl }) {
+export async function validateAndActivatePinnedRelease({ repositoryRoot, databaseUrl, observerDatabaseUrl, bddContext = null }) {
   const pinnedDocuments = {};
   for (const [name, row] of Object.entries(PIN)) {
     const read = await safeBytes(repositoryRoot, row.path, row.sha256);
@@ -159,7 +168,7 @@ async function validateAndActivatePinnedRelease({ repositoryRoot, databaseUrl })
     minimumReview.executionIdentityHash === original.executionIdentityHash && referenceReview.executionIdentityHash === original.executionIdentityHash,
   'review_case_or_identity_binding_mismatch');
   const parsedCases = candidateCases.cases.map((value) => TaskCaseSchema.parse(value));
-  demand(parsedCases.length === 20 && [...SUPPORTED_TASKS].every((taskId) =>
+  demand(parsedCases.length === 20 && OPEN_TASK_IDS.every((taskId) =>
     parsedCases.filter((taskCase) => taskCase.taskId === taskId && taskCase.mode === 'training').length === 1),
     'case_inventory_invalid');
   const byKey = new Map(parsedCases.map((taskCase) => [taskCase.taskId + ':' + taskCase.mode, taskCase]));
@@ -204,16 +213,54 @@ async function validateAndActivatePinnedRelease({ repositoryRoot, databaseUrl })
     const active = await taskReleaseSource.getActiveAdmissionRelease('training');
     demand(active?.releaseIdentity === bound.releaseIdentity && active.manifestHash === bound.manifestHash,
       'active_release_database_binding_mismatch');
+    const positiveReferenceCount = verifiedReferences.length;
+    const positiveDifficultyStatus = difficultyEvidence.status;
+    if (bddContext) {
+      const observerPool = new Pool({connectionString: observerDatabaseUrl, max: 1,
+        application_name: 'bdd-release-readonly-observer'});
+      try {
+        bddContext.releaseProbe = await runReleaseBddCases({db, observerPool, manifest: bound, verifier,
+          positiveActivation: activation, referenceResults: [...verifiedReferences], difficultyEvidence});
+      } finally { await observerPool.end(); }
+      const { LOCAL_BEF_RUN_SERVICE_POLICY } = await import('../../owner-identity/dist/bef-task-coordinator.js');
+      bddContext.ownerPendingLimit = LOCAL_BEF_RUN_SERVICE_POLICY?.maxPendingIntentsPerOwner;
+      const activate = async (candidate) => {
+        const created = createDatabase(dbConfig);
+        verifiedReferences.length = 0;
+        difficultyEvidence = null;
+        try {
+          const result = await activatePostgresTaskReleaseCandidate(created.db, candidate, verifier);
+          demand(result.status === 'validated', 'bdd_release_callback_validation_failed');
+          return {status: result.status, releaseIdentity: candidate.releaseIdentity,
+            benchmarkVersion: candidate.benchmarkVersion, manifestHash: candidate.manifestHash,
+            rankedPriceUnits: candidate.pricing.rankedPriceUnits};
+        } finally { await created.client.end({timeout: 5}); }
+      };
+      const next = structuredClone(bound);
+      next.releaseIdentity += '-bdd-next';
+      next.benchmarkVersion += '-bdd-next';
+      next.pricing.rankedPriceUnits = (BigInt(next.pricing.rankedPriceUnits) + 1n).toString();
+      next.policyHash = taskPolicyHash(next);
+      next.benchmarkHash = taskBenchmarkHash(next);
+      const {manifestHash: _prior, ...withoutHash} = next;
+      next.manifestHash = sha256CanonicalTaskJson(withoutHash);
+      bddContext.activateNextRelease = () => activate(TaskReleaseManifestSchema.parse(next));
+      bddContext.restoreRelease = () => activate(bound);
+    }
     return {
       status: 'activated_in_isolated_acceptance_database', releaseIdentity: bound.releaseIdentity,
       manifestHash: bound.manifestHash, candidatePath: PIN.release.path, candidateSha256: PIN.release.sha256,
       environmentManifestSha256: bound.executionIdentity.environmentManifestSha256,
       validationPath: PIN.validation.path, validationSha256: PIN.validation.sha256,
       sourceInputCount: currentPins.length, sourceInputPinSetSha256, feasibilityStatus: 'verified',
-      semanticReferenceCount: verifiedReferences.length, difficultyStatus: difficultyEvidence.status,
+      benchmarkVersion: bound.benchmarkVersion, benchmarkHash: bound.benchmarkHash, policyHash: bound.policyHash,
+      semanticReferenceCount: positiveReferenceCount, difficultyStatus: positiveDifficultyStatus,
       participantToolProtocol: bound.participantToolProtocol, precision: bound.pricing.precision,
       trainingPriceUnits: bound.pricing.openTrainingPriceUnits,
+      rankedPriceUnits: bound.pricing.rankedPriceUnits,
       trainingTasks: bound.cases.training.map((taskCase) => ({ taskId: taskCase.taskId, taskWeight: taskCase.taskWeight,
+        taskDeadlineSeconds: taskCase.taskDeadlineSeconds })),
+      rankedTasks: bound.cases.ranked.map((taskCase) => ({ taskId: taskCase.taskId, taskWeight: taskCase.taskWeight, caseHash: taskCase.caseHash, rubricHash: taskCase.rubricHash,
         taskDeadlineSeconds: taskCase.taskDeadlineSeconds })),
     };
   } finally { await client.end({ timeout: 5 }); }
@@ -236,6 +283,11 @@ function eventPayloadHash(value) {
   return digest(Buffer.from(JSON.stringify(sortedJsonValue(value))));
 }
 
+function formatUsdcUnits(value) {
+  const units = typeof value === 'bigint' ? value : BigInt(value);
+  demand(units >= 0n, 'usdc_units_negative');
+  return (units / 1_000_000n).toString() + '.' + (units % 1_000_000n).toString().padStart(6, '0');
+}
 function exactUsdcUnits(value) {
   if (typeof value !== 'string') return null;
   const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/.exec(value);
@@ -258,13 +310,14 @@ function acceptedEventMatches(snapshot, expected) {
   const event = events[0];
   const payload = event.payload;
   const expectedTaskIds = expected.taskIds ?? [expected.taskId ?? 'S1'];
+  const expectedMode = expected.mode ?? 'training';
   return Boolean(payload && typeof payload === 'object' && !Array.isArray(payload) &&
     event.source === 'agent' && event.eventType === 'run.accepted' && event.runId === expected.runId &&
     event.intentId === expected.intentId && event.ownerId === expected.ownerId && event.agentId === expected.agentId &&
-    event.manifestHash === expected.manifestHash && event.mode === 'training' &&
+    event.manifestHash === expected.manifestHash && event.mode === expectedMode &&
     Array.isArray(event.taskIds) && JSON.stringify(event.taskIds) === JSON.stringify(expectedTaskIds) &&
     payload.intentId === expected.intentId && payload.operationId === expected.acceptOperationId &&
-    payload.mode === 'training' && Array.isArray(payload.taskIds) && JSON.stringify(payload.taskIds) === JSON.stringify(expectedTaskIds) &&
+    payload.mode === expectedMode && Array.isArray(payload.taskIds) && JSON.stringify(payload.taskIds) === JSON.stringify(expectedTaskIds) &&
     typeof event.payloadHash === 'string' && event.payloadHash.toLowerCase() === eventPayloadHash(payload).toLowerCase());
 }
 
@@ -369,7 +422,26 @@ async function checkBonusGrant(pool, grantId, ownerId, operationId) {
   });
 }
 
+function createMinimumIntervalPacer(intervalMs, now = () => performance.now(), sleep = delay) {
+  demand(Number.isFinite(intervalMs) && intervalMs >= 0 && typeof now === 'function' && typeof sleep === 'function',
+    'agent_request_pacer_configuration_invalid');
+  let queue = Promise.resolve();
+  let nextStartAt = 0;
+  return () => {
+    const slot = queue.then(async () => {
+      const waitMs = Math.max(0, nextStartAt - now());
+      if (waitMs > 0) await sleep(waitMs);
+      nextStartAt = now() + intervalMs;
+    });
+    queue = slot.catch(() => undefined);
+    return slot;
+  };
+}
+
+const paceAgentRequest = createMinimumIntervalPacer(1100);
+
 async function agentRequest({ publicOrigin, path, method = 'GET', bearer, body }) {
+  await paceAgentRequest();
   let response;
   try {
     response = await fetch(new URL(path, publicOrigin), {
@@ -383,14 +455,16 @@ async function agentRequest({ publicOrigin, path, method = 'GET', bearer, body }
   return { status: response.status, payload };
 }
 
-async function waitForActiveTask({ publicOrigin, bearer, runId, observerPool, taskId = 'S1', taskIndex = 0, timeoutMs = 180_000 }) {
+async function waitForActiveTask({ publicOrigin, bearer, runId, observerPool, taskId = 'S1', taskIndex = 0,
+  mode = 'training', timeoutMs = 180_000 }) {
   const end = Date.now() + timeoutMs;
   let latestRun = null;
   while (Date.now() < end) {
     const response = await agentRequest({ publicOrigin, path: '/api/agent/runs/' + runId + '/current-task', bearer });
     if (response.status === 200 && response.payload?.task) {
       const task = response.payload.task;
-      demand(task.runId === runId && task.taskIndex === taskIndex && task.taskId === taskId && task.mode === 'training', 'issued_task_binding_mismatch');
+      demand(task.runId === runId && task.taskIndex === taskIndex && task.taskId === taskId && task.mode === mode,
+        'issued_task_binding_mismatch');
       return task;
     }
     if (response.status >= 400 && response.status !== 404 && response.status !== 409 && response.status !== 503) {
@@ -447,17 +521,429 @@ function answerFromPublicS2Read(task, body) {
     body?.readHandle?.kind === 'offer' && Array.isArray(body.offers), 's2_public_offer_unavailable');
   const offer = body.offers.find((entry) => entry?.id === task.conditions.offerId);
   const payment = offer?.payment;
-  const asset = task.execution?.assets?.find((entry) => entry.address?.toLowerCase() === payment?.asset?.toLowerCase());
-  demand(payment?.network === 'eip155:8453' && asset?.assetId === 'USDC' && payment?.transferMethod === 'eip3009' &&
+  const assetId = task.execution.assets.find((asset) => typeof asset.address === 'string' && typeof payment?.asset === 'string' &&
+    asset.address.toLowerCase() === payment.asset.toLowerCase() && payment.network === 'eip155:' + asset.chainId)?.assetId;
+  demand(payment?.network === 'eip155:8453' && typeof assetId === 'string' && payment?.transferMethod === 'eip3009' &&
     /^\d+$/.test(payment.amount) && /^0x[0-9a-f]{40}$/i.test(payment.payTo ?? ''), 's2_public_payment_profile_unsupported');
-  // AICODE-NOTE: The client uses the published Base USDC/x402-v2 profile here.
-  // Quantities, payee, resource and selected offer come only from its agent-visible read.
-  return { amountUnits: payment.amount, network: payment.network, assetId: asset.assetId,
+  const paymentFields = { assetTransferMethod: payment.transferMethod, paymentFlow: payment.paymentFlow,
+    name: payment.name ?? offer?.assetName ?? body.assetName, version: payment.version ?? body.version };
+  const authFields = task.conditions.requiredAnswerFields.flatMap((name) =>
+    Object.prototype.hasOwnProperty.call(paymentFields, name) && typeof paymentFields[name] === 'string'
+      ? [{ name, value: paymentFields[name] }] : []);
+  return { amountUnits: payment.amount, network: payment.network, assetId,
     recipient: payment.payTo, scheme: payment.scheme, resourceId: body.resourceId,
-    offerId: offer.id, version: '2', authFields: [
-      { name: 'assetTransferMethod', value: payment.transferMethod }, { name: 'paymentFlow', value: 'authorization' },
-      { name: 'name', value: 'USD Coin' }, { name: 'version', value: '2' },
-    ] };
+    offerId: offer.id, ...(typeof payment.version === 'string' ? { version: payment.version } : {}),
+    authFields };
+}
+function taskObject(value, code) {
+  demand(value !== null && typeof value === 'object' && !Array.isArray(value), code);
+  return value;
+}
+
+function taskUnits(value, code, { allowZero = true } = {}) {
+  const normalized = typeof value === 'string' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '';
+  demand((allowZero ? /^(?:0|[1-9][0-9]{0,77})$/ : /^[1-9][0-9]{0,77}$/).test(normalized), code);
+  return BigInt(normalized);
+}
+
+function publicTaskBody(result, code) {
+  demand(result?.action?.receiptStatus === 'observed' && result.action.kind === result.action.command?.kind,
+    code + '_action_not_observed');
+  return taskObject(result.apiPayload?.toolResponse, code + '_public_response_unavailable');
+}
+
+function paymentAmount(offer) {
+  const payment = offer?.payment;
+  const candidate = offer?.advertisedTotalPriceUsdcUnits ?? offer?.fullCostUsdcUnits ?? payment?.amount;
+  if (typeof candidate !== 'string' || !/^(?:0|[1-9][0-9]{0,77})$/.test(candidate)) return null;
+  return BigInt(candidate);
+}
+
+function offerTermsMatch(offer, constraints = {}) {
+  const payment = offer?.payment;
+  if (!payment || typeof payment !== 'object' || Array.isArray(payment) || paymentAmount(offer) === null) return false;
+  const resource = constraints.resource ?? {};
+  const dataType = offer.dataType ?? resource.dataType;
+  const disclosedAsset = constraints.assets?.find((asset) => typeof asset.address === 'string' && typeof payment.asset === 'string' &&
+    asset.address.toLowerCase() === payment.asset.toLowerCase() && payment.network === 'eip155:' + asset.chainId);
+  const assetId = Array.isArray(constraints.assets) ? disclosedAsset?.assetId : offer.assetId ?? resource.assetId;
+  const network = offer.network ?? payment.network;
+  const recipient = offer.recipient ?? payment.payTo;
+  return (!constraints.dataType || dataType === constraints.dataType) &&
+    (!constraints.assetId || assetId === constraints.assetId) &&
+    (!constraints.scheme || payment.scheme === constraints.scheme) &&
+    (!constraints.network || network === constraints.network) &&
+    (!constraints.recipient || typeof recipient === 'string' && recipient.toLowerCase() === constraints.recipient.toLowerCase()) &&
+    (!constraints.sourceIds?.length || !Array.isArray(offer.sourceIds) && typeof offer.sourceId !== 'string' ||
+      constraints.sourceIds.some((id) => id === offer.sourceId || offer.sourceIds?.includes?.(id))) &&
+    (!constraints.maxAmount || paymentAmount(offer) <= constraints.maxAmount);
+}
+
+function selectPublicOffer(body, constraints = {}) {
+  const offers = Array.isArray(body?.offers) ? body.offers : [];
+  const matching = offers.filter((offer) => offerTermsMatch(offer, constraints));
+  matching.sort((left, right) => {
+    const delta = paymentAmount(left) - paymentAmount(right);
+    return delta < 0n ? -1 : delta > 0n ? 1 : String(left.id).localeCompare(String(right.id));
+  });
+  return matching[0] ?? null;
+}
+
+function selectCatalogOffer(body, required, assets) {
+  const catalog = Array.isArray(body?.catalog) ? body.catalog : [];
+  const maxAmount = taskUnits(required?.maxAdvertisedTotalPriceUsdcUnits, 'catalog_budget_invalid', { allowZero: false });
+  const candidates = [];
+  for (const resource of catalog) {
+    if (resource?.dataType !== required.requiredDataType || !Array.isArray(resource.offers)) continue;
+    for (const offer of resource.offers) {
+      if (offerTermsMatch(offer, { resource, dataType: required.requiredDataType, assetId: required.assetId,
+        network: required.network, recipient: required.recipient, maxAmount, assets })) {
+        candidates.push({ resourceId: resource.resourceId, offerId: offer.id, fullCostUsdcUnits: paymentAmount(offer).toString() });
+      }
+    }
+  }
+  candidates.sort((left, right) => {
+    const delta = BigInt(left.fullCostUsdcUnits) - BigInt(right.fullCostUsdcUnits);
+    return delta < 0n ? -1 : delta > 0n ? 1 : (left.resourceId + '\0' + left.offerId).localeCompare(right.resourceId + '\0' + right.offerId);
+  });
+  return candidates[0] ?? null;
+}
+
+async function performPublicPaidComponent(context, task, component, constraints = {}) {
+  constraints = { ...constraints, assets: task.execution.assets };
+  const resourceId = component?.resourceId;
+  demand(typeof resourceId === 'string' && resourceId.length > 0, 'paid_component_resource_id_unavailable');
+  const inspected = constraints.inspectionResult ?? await submitLinkedTrainingAction(context, { kind: 'inspect_offer', resourceId,
+    ...(constraints.offerId ? { offerId: constraints.offerId } : {}) }, false);
+  const body = publicTaskBody(inspected, 'paid_component_inspect');
+  demand(body.freeInspection === true && body.deliveryState === 'not_delivered' && body.resourceId === resourceId &&
+    body.readHandle?.kind === 'offer' && body.readHandle.operationId === body.operationId && HEX_HASH.test(body.resourceSha256 ?? ''),
+  'paid_component_inspection_binding_mismatch');
+  const offer = constraints.offerId
+    ? body.offers?.find((item) => item?.id === constraints.offerId && offerTermsMatch(item, { resource: body, ...constraints }))
+    : selectPublicOffer(body, { resource: body, ...constraints });
+  demand(offer && typeof offer.id === 'string' && offerTermsMatch(offer, { resource: body, ...constraints }),
+    'paid_component_offer_not_selected_from_public_read');
+  const cost = paymentAmount(offer);
+  demand(cost !== null && cost > 0n, 'paid_component_cost_unavailable');
+  const paidTotal = context.paidDataSpendUsdcUnits ?? 0n;
+  if (constraints.remainingBudget !== undefined) {
+    demand(paidTotal + cost <= constraints.remainingBudget, 'paid_component_budget_exceeded');
+  }
+  const paid = await submitLinkedTrainingAction(context, { kind: 'pay', resourceId, offerId: offer.id,
+    offerReadActionId: inspected.action.actionId }, true);
+  const receipt = publicTaskBody(paid, 'paid_component_payment');
+  demand(receipt.status === 'payment_confirmed' && UUID.test(receipt.operationId ?? '') && receipt.deliveryHandle === receipt.operationId &&
+    receipt.payment?.transactionHash?.toLowerCase() === paid.action.transactionHash?.toLowerCase() &&
+    receipt.payment.receiptStatus === 'success' && receipt.payment.amount === offer.payment.amount &&
+    receipt.payment.network === offer.payment.network && receipt.payment.payTo?.toLowerCase() === offer.payment.payTo?.toLowerCase() &&
+    receipt.payment.asset?.toLowerCase() === offer.payment.asset?.toLowerCase(), 'paid_component_settlement_mismatch');
+  const retrieved = await submitLinkedTrainingAction(context, { kind: 'retrieve', payActionId: paid.action.actionId }, false);
+  const delivery = publicTaskBody(retrieved, 'paid_component_retrieval');
+  demand(delivery.operationId === receipt.operationId && delivery.resourceId === resourceId &&
+    delivery.contentType === body.contentType && delivery.contentHash === body.resourceSha256 && typeof delivery.contentBytes === 'string',
+  'paid_component_delivery_binding_mismatch');
+  const bytes = Buffer.from(delivery.contentBytes, 'base64');
+  demand(bytes.length > 0 && bytes.length <= 1024 * 1024 && bytes.toString('base64') === delivery.contentBytes &&
+    sha256(bytes) === body.resourceSha256 && eventPayloadHash(JSON.parse(bytes.toString('utf8'))) === eventPayloadHash(delivery.content),
+  'paid_component_delivery_content_mismatch');
+  context.paidDataSpendUsdcUnits = paidTotal + cost;
+  const fact = { componentId: component.componentId ?? null, resourceId, offerId: offer.id, inspectActionId: inspected.action.actionId,
+    payActionId: paid.action.actionId, retrieveActionId: retrieved.action.actionId, amountUnits: offer.payment.amount,
+    contentSha256: body.resourceSha256, decodedBytes: bytes.length };
+  context.output.paidDataActions ??= [];
+  context.output.paidDataActions.push(fact);
+  return { inspected, paid, retrieved, offer, content: delivery.content, contentBytes: bytes, resource: body, fact };
+}
+
+function participantAddressFromToolResponse(value) {
+  const address = value?.receipt?.from ?? value?.transaction?.from ?? value?.selectedAction?.receipt?.from;
+  return typeof address === 'string' && /^0x[0-9a-f]{40}$/i.test(address) ? address : null;
+}
+
+function readH3PublicReferenceField(reference, component, field) {
+  const resource = taskObject(reference?.resource, 'h3_public_reference_resource_unavailable');
+  const envelope = taskObject(reference?.content, 'h3_public_reference_envelope_unavailable');
+  demand(typeof component?.resourceId === 'string' && resource.resourceId === component.resourceId &&
+    envelope.resourceId === resource.resourceId && typeof resource.schema === 'string' && resource.schema.length > 0 &&
+    envelope.schema === resource.schema, 'h3_public_reference_envelope_binding_mismatch');
+  demand(typeof field === 'string' && field.length > 0, 'h3_public_reference_field_invalid');
+  const path = field.split('.');
+  demand(path.every((key) => key.length > 0), 'h3_public_reference_field_invalid');
+  const content = taskObject(envelope.content, 'h3_public_reference_content_unavailable');
+  return path.reduce((current, key) => current && typeof current === 'object' && !Array.isArray(current)
+    ? current[key] : undefined, content);
+}
+
+function routeFor(conditions, inputAssetId, outputAssetId, routeId) {
+  const routes = Array.isArray(conditions?.permittedRoutes) ? conditions.permittedRoutes : [];
+  return routes.find((route) => route && route.tokenInAssetId === inputAssetId &&
+    (!outputAssetId || route.tokenOutAssetId === outputAssetId) &&
+    (!routeId || route.routeId === routeId)) ?? null;
+}
+
+async function performM3Actions(context, task) {
+  const conditions = task.conditions;
+  const route = routeFor(conditions, conditions.inputAssetId, 'WETH');
+  demand(conditions.inputAssetId === 'USDC' && route && route.tokenOutAssetId === 'WETH', 'm3_permitted_route_unavailable');
+  const approval = await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId: 'USDC',
+    amountUnits: String(conditions.exactInputUnits), gasLimit: '100000' }, true);
+  const recipient = participantAddressFromToolResponse(approval.apiPayload?.toolResponse);
+  demand(recipient, 'm3_participant_receipt_address_unavailable');
+  const swapped = await submitLinkedTrainingAction(context, { kind: 'swap', inputAssetId: 'USDC', outputAssetId: 'WETH',
+    feeTier: route.feeTier, amountInUnits: String(conditions.exactInputUnits),
+    amountOutMinimumUnits: String(conditions.minimumNativeOutputWei), recipient, gasLimit: '300000' }, true);
+  const state = taskObject(swapped.apiPayload?.toolResponse?.after, 'm3_swap_after_state_unavailable');
+  const before = taskObject(swapped.apiPayload?.toolResponse?.before, 'm3_swap_before_state_unavailable');
+  const amountWei = taskUnits(state.payerWethUnits, 'm3_after_weth_balance_invalid') -
+    taskUnits(before.payerWethUnits, 'm3_before_weth_balance_invalid');
+  demand(amountWei > 0n, 'm3_observed_weth_delta_not_positive');
+  const unwrapped = await submitLinkedTrainingAction(context, { kind: 'unwrap', amountWei: amountWei.toString(), gasLimit: '100000' }, true);
+  return { actions: [approval, swapped, unwrapped] };
+}
+
+async function performM4Actions(context, task) {
+  const conditions = task.conditions;
+  const route = routeFor(conditions, conditions.inputAssetId, conditions.outputAssetId);
+  const allowance = Array.isArray(conditions.initialAllowanceScope)
+    ? conditions.initialAllowanceScope.find((item) => item?.tokenAssetId === conditions.inputAssetId && typeof item.spender === 'string') : null;
+  const exactInput = taskUnits(conditions.exactInputUnits, 'm4_exact_input_invalid', { allowZero: false });
+  demand(route && allowance, 'm4_permitted_route_or_cleanup_scope_unavailable');
+  const wrapped = await submitLinkedTrainingAction(context, { kind: 'wrap', amountWei: exactInput.toString(), gasLimit: '100000' }, true);
+  const recipient = participantAddressFromToolResponse(wrapped.apiPayload?.toolResponse);
+  demand(recipient, 'm4_participant_receipt_address_unavailable');
+  const overInput = (exactInput + 1n).toString();
+  const approval = await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId: conditions.inputAssetId,
+    amountUnits: overInput, gasLimit: '100000' }, true);
+  const swapped = await submitLinkedTrainingAction(context, { kind: 'swap', inputAssetId: conditions.inputAssetId,
+    outputAssetId: conditions.outputAssetId, feeTier: route.feeTier, amountInUnits: exactInput.toString(),
+    amountOutMinimumUnits: String(conditions.minimumOutputUnits), recipient, gasLimit: '300000' }, true);
+  const cleanup = await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId: conditions.inputAssetId,
+    amountUnits: '0', gasLimit: '100000' }, true);
+  return { actions: [wrapped, approval, swapped, cleanup] };
+}
+
+function stateBalance(state, assetId) {
+  const key = assetId === 'USDC' ? 'payerUsdcUnits' : assetId === 'WETH' ? 'payerWethUnits'
+    : assetId === 'ETH' ? 'payerNativeWei' : null;
+  if (!key) return null;
+  try { return taskUnits(state?.[key], 'u1_balance_invalid'); } catch { return null; }
+}
+
+async function performU1Actions(context, task) {
+  const conditions = task.conditions;
+  demand(Array.isArray(conditions.requiredComponents) && conditions.requiredComponents.length > 0 &&
+    Array.isArray(conditions.payoutObligations) && conditions.payoutObligations.length > 0 &&
+    Array.isArray(conditions.allocationAssets) && conditions.allocationAssets.length >= 2 &&
+    Array.isArray(conditions.temporarySpenderScope) && conditions.temporarySpenderScope.length > 0,
+  'u1_disclosed_plan_incomplete');
+  const budget = taskUnits(conditions.expenseBudgetUsdcUnits, 'u1_budget_invalid', { allowZero: false });
+  for (const component of conditions.requiredComponents) await performPublicPaidComponent(context, task, component,
+    { sourceIds: component.sourceIds, remainingBudget: budget });
+  let stateResponse = null;
+  for (const scope of conditions.temporarySpenderScope) {
+    demand(scope?.owner === 'participant' && ['USDC', 'WETH'].includes(scope.tokenAssetId) && /^0x[0-9a-f]{40}$/i.test(scope.spender ?? ''),
+      'u1_cleanup_scope_invalid');
+    const cleared = await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId: scope.tokenAssetId,
+      amountUnits: '0', gasLimit: '100000' }, true);
+    stateResponse = cleared.apiPayload?.toolResponse;
+  }
+  let state = taskObject(stateResponse?.after, 'u1_initial_public_state_unavailable');
+  for (const obligation of conditions.payoutObligations) {
+    demand(obligation.assetId === 'USDC' && /^0x[0-9a-f]{40}$/i.test(obligation.recipient ?? ''), 'u1_payout_asset_or_recipient_unsupported');
+    taskUnits(obligation.exactAmountUnits, 'u1_payout_amount_invalid', { allowZero: false });
+    const paid = await submitLinkedTrainingAction(context, { kind: 'transfer', amountUnits: String(obligation.exactAmountUnits),
+      recipient: obligation.recipient, gasLimit: '100000' }, true);
+    stateResponse = paid.apiPayload?.toolResponse;
+    state = taskObject(stateResponse?.after, 'u1_post_payout_public_state_unavailable');
+  }
+  const allocations = conditions.allocationAssets;
+  demand(allocations.every((asset) => ['USDC', 'ETH', 'WETH'].includes(asset.assetId) &&
+    asset.usdcBaseUnitsPerAssetBaseUnit && /^(0|[1-9][0-9]*)$/.test(String(asset.usdcBaseUnitsPerAssetBaseUnit.numerator)) &&
+    /^[1-9][0-9]*$/.test(String(asset.usdcBaseUnitsPerAssetBaseUnit.denominator)) &&
+    Number.isInteger(asset.targetShareBps) && asset.targetShareBps >= 0 && asset.targetShareBps <= 10000 &&
+    Number.isInteger(asset.toleranceBps) && asset.toleranceBps >= 0 && asset.toleranceBps <= 10000), 'u1_allocation_terms_invalid');
+  const totalShare = allocations.reduce((sum, item) => sum + item.targetShareBps, 0);
+  demand(totalShare === 10000, 'u1_allocation_share_total_invalid');
+  const valued = allocations.map((item) => {
+    const units = stateBalance(state, item.assetId);
+    demand(units !== null, 'u1_allocation_state_unavailable');
+    const numerator = BigInt(item.usdcBaseUnitsPerAssetBaseUnit.numerator);
+    const denominator = BigInt(item.usdcBaseUnitsPerAssetBaseUnit.denominator);
+    return { ...item, units, value: units * numerator / denominator, numerator, denominator };
+  });
+  const totalValue = valued.reduce((sum, item) => sum + item.value, 0n);
+  demand(totalValue > 0n, 'u1_allocation_value_empty');
+  let over = null, under = null;
+  for (const item of valued) {
+    const targetValue = totalValue * BigInt(item.targetShareBps) / 10000n;
+    const difference = item.value - targetValue;
+    const within = item.value === 0n ? targetValue === 0n :
+      (difference >= 0n ? difference : -difference) * 10000n <= totalValue * BigInt(item.toleranceBps);
+    if (!within && difference > 0n) over = { item, targetValue, difference };
+    if (!within && difference < 0n) under = { item, targetValue, difference: -difference };
+  }
+  if (over && under) {
+    // The public action protocol swaps ERC-20 assets; native ETH is reached through WETH.
+    const routeOutputAssetId = under.item.assetId === 'ETH' ? 'WETH' : under.item.assetId;
+    const route = routeFor(conditions, over.item.assetId, routeOutputAssetId);
+    demand(route, 'u1_allocation_conversion_route_unavailable');
+    const unwrapToEth = under.item.assetId === 'ETH' && route.tokenOutAssetId === 'WETH';
+    demand(under.item.assetId !== 'ETH' || unwrapToEth, 'u1_native_allocation_requires_weth_bridge');
+    const inputUnits = (over.difference * over.item.denominator + over.item.numerator - 1n) / over.item.numerator;
+    demand(inputUnits > 0n && inputUnits <= over.item.units, 'u1_allocation_input_unavailable');
+    const scope = conditions.temporarySpenderScope.find((item) => item.tokenAssetId === over.item.assetId);
+    demand(scope, 'u1_conversion_allowance_scope_unavailable');
+    const approval = await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId: over.item.assetId,
+      amountUnits: inputUnits.toString(), gasLimit: '100000' }, true);
+    const recipient = participantAddressFromToolResponse(approval.apiPayload?.toolResponse);
+    demand(recipient, 'u1_participant_receipt_address_unavailable');
+    const expectedOutput = inputUnits * over.item.numerator * under.item.denominator /
+      (over.item.denominator * under.item.numerator);
+    // Allocation tolerance is a final portfolio predicate, not a swap slippage setting.
+    // The local reference actor budgets the disclosed route fee and 1% price movement.
+    const afterFee = expectedOutput * (1000000n - BigInt(route.feeTier)) / 1000000n;
+    const minimumOutput = afterFee * 9900n / 10000n;
+    const swapped = await submitLinkedTrainingAction(context, { kind: 'swap', inputAssetId: over.item.assetId,
+      outputAssetId: route.tokenOutAssetId, feeTier: route.feeTier, amountInUnits: inputUnits.toString(),
+      amountOutMinimumUnits: minimumOutput.toString(), recipient, gasLimit: '300000' }, true);
+    stateResponse = swapped.apiPayload?.toolResponse;
+    state = taskObject(stateResponse?.after, 'u1_post_conversion_public_state_unavailable');
+    if (unwrapToEth) {
+      const before = taskObject(stateResponse?.before, 'u1_weth_bridge_before_state_unavailable');
+      const beforeWeth = stateBalance(before, 'WETH');
+      const afterWeth = stateBalance(state, 'WETH');
+      demand(beforeWeth !== null && afterWeth !== null, 'u1_weth_bridge_balance_unavailable');
+      const wethDelta = afterWeth - beforeWeth;
+      demand(wethDelta > 0n, 'u1_weth_bridge_delta_not_positive');
+      const unwrapped = await submitLinkedTrainingAction(context, { kind: 'unwrap', amountWei: wethDelta.toString(),
+        gasLimit: '100000' }, true);
+      stateResponse = unwrapped.apiPayload?.toolResponse;
+      state = taskObject(stateResponse?.after, 'u1_post_unwrap_public_state_unavailable');
+    }
+  }
+  for (const tokenAssetId of new Set(conditions.temporarySpenderScope.map((item) => item.tokenAssetId))) {
+    const cleared = await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId, amountUnits: '0', gasLimit: '100000' }, true);
+    stateResponse = cleared.apiPayload?.toolResponse;
+    state = taskObject(stateResponse?.after, 'u1_post_cleanup_public_state_unavailable');
+  }
+  const finalValued = allocations.map((item) => {
+    const units = stateBalance(state, item.assetId);
+    demand(units !== null, 'u1_final_allocation_state_unavailable');
+    const ratio = item.usdcBaseUnitsPerAssetBaseUnit;
+    const value = units * BigInt(ratio.numerator) / BigInt(ratio.denominator);
+    return { assetId: item.assetId, value, targetShareBps: item.targetShareBps, toleranceBps: item.toleranceBps };
+  });
+  const finalTotalValue = finalValued.reduce((sum, item) => sum + item.value, 0n);
+  const allocationWithinTolerance = finalTotalValue > 0n && finalValued.every((item) => {
+    const target = finalTotalValue * BigInt(item.targetShareBps) / 10000n;
+    const delta = item.value - target;
+    const absoluteDelta = delta >= 0n ? delta : -delta;
+    return absoluteDelta * 10000n <= finalTotalValue * BigInt(item.toleranceBps);
+  });
+  context.output.u1PublicPlan = { paidComponentCount: conditions.requiredComponents.length,
+    payoutCount: conditions.payoutObligations.length, allocationAssetIds: allocations.map((item) => item.assetId),
+    conversionObserved: Boolean(over && under), allocationWithinTolerance,
+    cleanupScopes: conditions.temporarySpenderScope.map((item) => ({ tokenAssetId: item.tokenAssetId, spender: item.spender })) };
+}
+async function performGenuineActorActions(context, task) {
+  const { taskId, output, record } = context;
+  const conditions = task.conditions;
+  const disclosure = { runId: context.runId, taskIndex: context.taskIndex, taskId, caseHash: task.caseHash,
+    environmentId: task.environmentId, conditions };
+  output.taskDisclosures ??= [];
+  output.taskDisclosures.push(disclosure);
+  if (output.taskIds.length === 1) output.taskDisclosure = disclosure;
+  record('strict_preparation_start_and_agent_task_disclosure', 'verified', { taskIndex: context.taskIndex, taskId,
+    environmentId: task.environmentId, mode: task.mode });
+  let answer;
+  if (taskId === 'S1') {
+    demand(conditions?.tokenAssetId === 'USDC' && conditions?.sender === 'participant' && /^0x[0-9a-f]{40}$/i.test(conditions.recipient ?? ''),
+      'issued_s1_conditions_malformed');
+    taskUnits(conditions.exactPrincipalUnits, 'issued_s1_amount_malformed', { allowZero: false });
+    taskUnits(conditions.nativeReserveWei, 'issued_s1_reserve_malformed', { allowZero: false });
+    await submitLinkedTrainingAction(context, { kind: 'transfer', amountUnits: String(conditions.exactPrincipalUnits),
+      recipient: conditions.recipient, gasLimit: '100000' }, true);
+  } else if (taskId === 'S2') {
+    demand(typeof conditions?.resourceId === 'string' && typeof conditions?.offerId === 'string', 'issued_s2_conditions_malformed');
+    const inspected = await submitLinkedTrainingAction(context, { kind: 'inspect_offer', resourceId: conditions.resourceId }, false);
+    answer = answerFromPublicS2Read(task, publicTaskBody(inspected, 's2_public_offer'));
+
+  } else if (taskId === 'S3') {
+    const inspected = await submitLinkedTrainingAction(context, { kind: 'inspect_catalog' }, false);
+    const body = publicTaskBody(inspected, 's3_public_catalog');
+    const selected = selectCatalogOffer(body, conditions.required, task.execution.assets);
+    demand(selected, 's3_required_offer_not_in_public_catalog');
+    answer = { offerId: selected.offerId };
+    output.s3PublicSelection = { inspectActionId: inspected.action.actionId, resourceId: selected.resourceId,
+      offerId: selected.offerId, selectedFromPublicCatalog: true };
+  } else if (taskId === 'S4') {
+    demand(conditions?.tokenAssetId === 'USDC' && conditions?.owner === 'participant' && /^0x[0-9a-f]{40}$/i.test(conditions.spender ?? ''),
+      'issued_s4_conditions_unsupported');
+    await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId: conditions.tokenAssetId,
+      amountUnits: '0', gasLimit: '100000' }, true);
+  } else if (taskId === 'M1') {
+    demand(task.participantToolProtocol === 'separate_payment_delivery_v2' && conditions?.component && conditions?.paymentScope &&
+      typeof conditions.paymentScope.offerId === 'string', 'issued_m1_conditions_unsupported');
+    await performPublicPaidComponent(context, task, conditions.component, { offerId: conditions.paymentScope.offerId,
+      network: conditions.paymentScope.network, recipient: conditions.paymentScope.recipient,
+      assetId: conditions.paymentScope.assetId, scheme: conditions.paymentScope.scheme,
+      remainingBudget: taskUnits(conditions.expenseBudgetUsdcUnits, 'm1_budget_invalid', { allowZero: false }) });
+  } else if (taskId === 'M2') {
+    const inspected = await submitLinkedTrainingAction(context, { kind: 'inspect_catalog' }, false);
+    const selected = selectCatalogOffer(publicTaskBody(inspected, 'm2_public_catalog'), conditions.required, task.execution.assets);
+    demand(selected, 'm2_no_public_offer_matches_conditions');
+    const paid = await performPublicPaidComponent(context, task, { resourceId: selected.resourceId }, { offerId: selected.offerId,
+      dataType: conditions.required.requiredDataType, assetId: conditions.required.assetId,
+      network: conditions.required.network, recipient: conditions.required.recipient,
+      remainingBudget: taskUnits(conditions.expenseBudgetUsdcUnits, 'm2_budget_invalid', { allowZero: false }) });
+    output.m2PublicSelection = { catalogActionId: inspected.action.actionId, resourceId: selected.resourceId, offerId: selected.offerId,
+      fullCostUsdcUnits: selected.fullCostUsdcUnits, retrievedContentSha256: paid.fact.contentSha256 };
+  } else if (taskId === 'M3') {
+    await performM3Actions(context, task);
+  } else if (taskId === 'M4') {
+    await performM4Actions(context, task);
+  } else if (taskId === 'H1') {
+    demand(Array.isArray(conditions.requiredComponents) && conditions.requiredComponents.length > 0, 'h1_components_unavailable');
+    const budget = taskUnits(conditions.expenseBudgetUsdcUnits, 'h1_budget_invalid', { allowZero: false });
+    for (const component of conditions.requiredComponents) await performPublicPaidComponent(context, task, component,
+      { sourceIds: component.sourceIds, remainingBudget: budget });
+  } else if (taskId === 'H2') {
+    demand(Array.isArray(conditions.obligations) && conditions.obligations.length === 6, 'h2_six_disclosed_payouts_unavailable');
+    for (const obligation of conditions.obligations) {
+      demand(obligation.assetId === 'USDC' && /^0x[0-9a-f]{40}$/i.test(obligation.recipient ?? ''), 'h2_payout_scope_unsupported');
+      taskUnits(obligation.exactAmountUnits, 'h2_payout_amount_invalid', { allowZero: false });
+      await submitLinkedTrainingAction(context, { kind: 'transfer', amountUnits: obligation.exactAmountUnits,
+        recipient: obligation.recipient, gasLimit: '100000' }, true);
+    }
+  } else if (taskId === 'H3') {
+    const component = conditions.referenceComponent;
+    const budget = taskUnits(conditions.combinedExpenseBudgetUsdcUnits, 'h3_budget_invalid', { allowZero: false });
+    const reference = await performPublicPaidComponent(context, task, component,
+      { sourceIds: component?.sourceIds, remainingBudget: budget });
+    const field = String(conditions.routeObjective?.referenceField ?? '');
+    const value = readH3PublicReferenceField(reference, component, field);
+    const mapped = conditions.routeObjective?.expectedRouteByValue?.find((item) => item?.value === value);
+    demand(mapped && conditions.routeObjective.allowedRouteIds?.includes(mapped.routeId), 'h3_public_reference_route_unmapped');
+    const route = routeFor(conditions, conditions.inputAssetId, undefined, mapped.routeId);
+    demand(route, 'h3_reference_selected_route_unavailable');
+    const exactInput = taskUnits(conditions.exactInputUnits, 'h3_exact_input_invalid', { allowZero: false });
+    if (conditions.inputAssetId === 'WETH') await submitLinkedTrainingAction(context, { kind: 'wrap', amountWei: exactInput.toString(), gasLimit: '100000' }, true);
+    const approval = await submitLinkedTrainingAction(context, { kind: 'approve', tokenAssetId: conditions.inputAssetId,
+      amountUnits: exactInput.toString(), gasLimit: '100000' }, true);
+    const recipient = participantAddressFromToolResponse(approval.apiPayload?.toolResponse);
+    demand(recipient, 'h3_participant_receipt_address_unavailable');
+    await submitLinkedTrainingAction(context, { kind: 'swap', inputAssetId: conditions.inputAssetId,
+      outputAssetId: route.tokenOutAssetId, feeTier: route.feeTier, amountInUnits: exactInput.toString(),
+      amountOutMinimumUnits: String(conditions.minimumOutputUnits), recipient, gasLimit: '300000' }, true);
+    output.h3PublicRouteChoice = { componentId: component.componentId, resourceId: component.resourceId,
+      contentField: field, routeId: route.routeId, selectedFromRetrievedContent: true };
+  } else if (taskId === 'U1') {
+    await performU1Actions(context, task);
+  } else {
+    throw fail('unsupported_genuine_task');
+  }
+  return { answer };
 }
 
 async function createObserverPorts({ repositoryRoot, runId, environmentId, taskId = 'S1', taskIndex = 0 }) {
@@ -557,9 +1043,9 @@ async function createObserverPorts({ repositoryRoot, runId, environmentId, taskI
     close: () => befPool.end() };
 }
 
-async function readOwnerRunCompletionState(observerPool, { runId, ownerId }) {
+async function readOwnerRunCompletionState(observerPool, { runId, ownerId, includeRanked = false }) {
   return readonlyTransaction(observerPool, async (query) => {
-    const run = pgRows(await query(`SELECT id::text,owner_id::text,mode,status,finished_at,quote_price_units::text
+    const run = pgRows(await query(`SELECT id::text,owner_id::text,agent_id::text,mode,status,started_at::text,finished_at::text,quote_price_units::text,manifest_hash,benchmark_version,release_identity,benchmark_hash,policy_hash
       FROM oid_benchmark_run WHERE id=$1 AND owner_id=$2`, [runId, ownerId]));
     const tasks = pgRows(await query(`SELECT task_index,task_id,status,finished_at FROM oid_run_task
       WHERE run_id=$1 ORDER BY task_index`, [runId]));
@@ -590,7 +1076,32 @@ async function readOwnerRunCompletionState(observerPool, { runId, ownerId }) {
     const ownerLedger = pgRows(await query(`SELECT id::text,entry_type,source_kind,operation_id,amount_units::text,
         available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,bonus_grant_id::text,reason
       FROM oid_ledger_entry WHERE owner_id=$1 ORDER BY created_at,id`, [ownerId]));
-    const projection = { run: run[0] ?? null, tasks, evaluations, terminalizationEvents, completionEvents, claims, slots, reservations, budgetHolds, ledger,
+    const rankedEligibilityEvents = includeRanked ? pgRows(await query(`SELECT id::text,sequence::text,source,event_type,payload_hash,payload_json,created_at::text
+      FROM oid_run_event WHERE run_id=$1 AND event_type='run.ranked_eligible' ORDER BY sequence`, [runId])) : [];
+    const rankedVersionSnapshots = includeRanked ? pgRows(await query(`SELECT run_id::text,owner_id::text,agent_id::text,snapshot_hash,snapshot_json,created_at::text
+      FROM oid_ranked_run_version_snapshot WHERE run_id=$1`, [runId])) : [];
+    const rankedHandoffs = includeRanked ? pgRows(await query(`SELECT run_id::text,owner_id::text,agent_id::text,benchmark_version,manifest_hash,
+        version_snapshot_hash,aggregate_hash,completion_event_hash,handoff_hash,handoff_json
+      FROM oid_ranked_run_handoff WHERE run_id=$1`, [runId])) : [];
+    const rankedResults = includeRanked ? pgRows(await query(`SELECT run_id::text,owner_id::text,agent_id::text,benchmark_version,aggregate_hash,
+        aggregate_json,version_snapshot_hash,version_snapshot_json
+      FROM oid_ranked_verified_result WHERE run_id=$1`, [runId])) : [];
+    const rankedBestResults = includeRanked ? pgRows(await query(`SELECT benchmark_version,agent_id::text,run_id::text
+      FROM oid_ranked_best_result WHERE run_id=$1`, [runId])) : [];
+    const rankedFirstActionMarkers = includeRanked ? pgRows(await query(`SELECT agent_id::text,owner_id::text,source_kind,source_id,source_hash
+      FROM oid_agent_first_public_action WHERE source_kind='ranked_run' AND source_id=$1`, [runId])) : [];
+    const parseJson = (value) => {
+      if (typeof value !== 'string') return value;
+      try { return JSON.parse(value); } catch { return null; }
+    };
+    for (const row of rankedVersionSnapshots) row.snapshot_json = parseJson(row.snapshot_json);
+    for (const row of rankedHandoffs) row.handoff_json = parseJson(row.handoff_json);
+    for (const row of rankedResults) {
+      row.aggregate_json = parseJson(row.aggregate_json);
+      row.version_snapshot_json = parseJson(row.version_snapshot_json);
+    }
+    const projection = { run: run[0] ?? null, tasks, evaluations, terminalizationEvents, completionEvents, rankedEligibilityEvents,
+      rankedVersionSnapshots, rankedHandoffs, rankedResults, rankedBestResults, rankedFirstActionMarkers, claims, slots, reservations, budgetHolds, ledger,
       ownerLedgerSha256: digest(Buffer.from(JSON.stringify(ownerLedger))), ownerLedgerCount: ownerLedger.length,
       ownerRefundCount: ownerLedger.filter((row) => row.entry_type === 'refund').length };
     const money = { reservations, budgetHolds, ledger, ownerLedger };
@@ -833,8 +1344,202 @@ async function verifyTrainingSuccessorActivation({ input, record, observerPool, 
   } finally { await close(); }
 }
 
-async function observeWorkerTrainingTask(context, issuedTask) {
-  const { input, output, record, observerPool, runId, taskIndex, taskId, created, taskReleaseSource, evidenceSource } = context;
+async function verifyRankedSuccessorActivation({ input, record, observerPool, runId, task,
+  release, predecessorTerminalization, priorTaskResult, dispatchIdentity }) {
+  const timestampMillis = (value) => value instanceof Date ? value.getTime() : Date.parse(value ?? '');
+  const taskIndex = task.taskIndex;
+  demand(Number.isSafeInteger(taskIndex) && taskIndex > 0 && task.mode === 'ranked' &&
+    task.taskId === RANKED_TASK_IDS[taskIndex], 'ranked_successor_public_task_binding_mismatch');
+  const snapshot = await readRunSnapshot(observerPool, { runId });
+  const run = snapshot.run[0];
+  const predecessorIndex = taskIndex - 1;
+  const predecessorTaskId = RANKED_TASK_IDS[predecessorIndex];
+  const predecessor = snapshot.tasks.find((item) => item.task_index === predecessorIndex);
+  const successor = snapshot.tasks.find((item) => item.task_index === taskIndex);
+  const predecessorExecution = snapshot.execution.find((item) => item.task_index === predecessorIndex);
+  const predecessorPreparation = snapshot.preparations.find((item) => item.task_index === predecessorIndex);
+  const execution = snapshot.execution.find((item) => item.task_index === taskIndex);
+  const preparation = snapshot.preparations.find((item) => item.task_index === taskIndex);
+  const activatedEvents = snapshot.runEvents.filter((event) => event.eventType === 'task.activated');
+  const activationMatches = activatedEvents.filter((event) => event.payload?.toTaskIndex === taskIndex);
+  const activationEvent = activationMatches[0];
+  const payload = activationEvent?.payload;
+  const taskCase = release.rankedTasks?.[taskIndex];
+  const startedEvents = snapshot.runEvents.filter((event) => event.eventType === 'run.started');
+  const terminalizationEvents = snapshot.runEvents.filter((event) => event.eventType === 'task.terminalized');
+  const predecessorEvents = terminalizationEvents.filter((event) => event.payload?.taskIndex === predecessorIndex);
+  const predecessorEvent = predecessorEvents[0];
+  const finishedAt = timestampMillis(predecessorTerminalization?.finishedAt ?? '');
+  const activatedAt = timestampMillis(payload?.activatedAt ?? '');
+  const priorActivation = taskIndex === 1 ? null : activatedEvents.find((event) =>
+    event.payload?.toTaskIndex === predecessorIndex);
+  const startedDeadline = startedEvents[0]?.payload?.overallDeadline;
+  const previousDeadlineValue = taskIndex === 1 ? startedDeadline : priorActivation?.payload?.overallDeadline;
+  const previousDeadline = timestampMillis(previousDeadlineValue ?? '');
+  const currentDeadline = timestampMillis(run?.overall_deadline ?? '');
+  const interval = activatedAt - finishedAt;
+  const timeoutSeconds = Number(run?.successor_preparation_timeout_seconds);
+  const expectedDeadline = previousDeadline + interval;
+  const expectedTaskDeadline = Math.min(activatedAt + Number(taskCase?.taskDeadlineSeconds) * 1000, expectedDeadline);
+  const conditions = [
+    ['ranked running run with no cancellation', () => run?.mode === 'ranked' && run.status === 'running' &&
+      run.cancellation_reason === null && run.finished_at == null],
+    ['immutable ordered task list', () => JSON.stringify(run.task_ids) === JSON.stringify(RANKED_TASK_IDS) &&
+      snapshot.tasks.length === RANKED_TASK_IDS.length && snapshot.tasks.every((row, index) =>
+        row.task_index === index && row.task_id === RANKED_TASK_IDS[index])],
+    ['one start event and one activation per reached successor', () => startedEvents.length === 1 &&
+      activatedEvents.length === taskIndex && activationMatches.length === 1 &&
+      activatedEvents.every((event, index) => event.payload?.toTaskIndex === index + 1)],
+    ['one indexed terminalization per predecessor', () => terminalizationEvents.length === taskIndex &&
+      predecessorEvents.length === 1 && terminalizationEvents.every((event, index) => event.payload?.taskIndex === index)],
+    ['predecessor terminalization agrees with worker and persisted result', () =>
+      predecessorTerminalization?.status === 'verified' && predecessorTerminalization.taskIndex === predecessorIndex &&
+      predecessorTerminalization.taskId === predecessorTaskId && priorTaskResult?.taskIndex === predecessorIndex &&
+      priorTaskResult?.taskId === predecessorTaskId && predecessorTerminalization.outcome === priorTaskResult.result?.outcome &&
+      predecessorTerminalization.inputHash === priorTaskResult.inputHash && predecessorTerminalization.resultHash === priorTaskResult.resultHash &&
+      predecessorTerminalization.closureId === predecessor?.closure_id && predecessorTerminalization.finishedAt != null],
+    ['predecessor owner preparation and execution rows retain the fenced identity', () =>
+      Boolean(predecessorPreparation && predecessorExecution) && predecessorPreparation.task_id === predecessorTaskId &&
+      predecessorPreparation.preparation_id === predecessorTerminalization.preparationId &&
+      predecessorPreparation.lease_id === predecessorTerminalization.leaseId &&
+      predecessorPreparation.environment_id === predecessorTerminalization.environmentId &&
+      predecessorPreparation.observed_generation_id === predecessorTerminalization.generationId &&
+      predecessorPreparation.preparation_status === 'fenced' && predecessorPreparation.lease_state === 'fenced' &&
+      predecessorExecution.generation_id === predecessorTerminalization.generationId &&
+      predecessorExecution.lease_state === 'fenced'],
+    ['event order is start, predecessor activation, predecessor terminalization, successor activation', () =>
+      BigInt(startedEvents[0]?.sequence ?? 0) < BigInt(predecessorEvent?.sequence ?? 0) &&
+      (taskIndex === 1 || BigInt(priorActivation?.sequence ?? 0) < BigInt(predecessorEvent?.sequence ?? 0)) &&
+      BigInt(predecessorEvent?.sequence ?? 0) < BigInt(activationEvent?.sequence ?? 0)],
+    ['start event binds the first task and initial deadline', () => startedEvents[0]?.source === 'coordinator' &&
+      startedEvents[0]?.runId === runId &&
+      timestampMillis(startedEvents[0]?.payload?.startedAt ?? '') === timestampMillis(run.started_at ?? '') &&
+      startedEvents[0]?.payload?.taskId === RANKED_TASK_IDS[0] &&
+      Number.isFinite(timestampMillis(startedEvents[0]?.payload?.overallDeadline ?? '')) &&
+      startedEvents[0]?.payloadHash === eventPayloadHash(startedEvents[0]?.payload)],
+    ['predecessor task is terminal with the verified closure', () =>
+      ['completed', 'failed'].includes(predecessor?.status) && predecessor.finished_at != null &&
+      timestampMillis(predecessor.finished_at) === finishedAt && predecessorEvent?.source === 'coordinator' &&
+      predecessorEvent?.payloadHash === eventPayloadHash(predecessorEvent.payload) &&
+      predecessorEvent?.payload?.runId === runId && predecessorEvent?.payload?.taskId === predecessorTaskId &&
+      predecessorEvent?.payload?.inputHash === predecessorTerminalization.inputHash &&
+      predecessorEvent?.payload?.resultHash === predecessorTerminalization.resultHash &&
+      predecessorEvent?.payload?.outcome === predecessorTerminalization.outcome &&
+      predecessorEvent?.payload?.status === predecessor.status &&
+      predecessorEvent?.payload?.closureId === predecessorTerminalization.closureId &&
+      predecessorEvent?.payload?.finishedAt === predecessorTerminalization.finishedAt &&
+      predecessorEvent?.payload?.preparationId === predecessorTerminalization.preparationId &&
+      predecessorEvent?.payload?.leaseId === predecessorTerminalization.leaseId &&
+      predecessorEvent?.payload?.generationId === predecessorTerminalization.generationId &&
+      predecessorEvent?.payload?.fenceEvidenceHash === predecessorTerminalization.fenceEvidenceHash],
+    ['successor row is the currently issued active task', () => successor?.task_id === task.taskId &&
+      successor.status === 'active' && successor.started_at != null && taskCase?.taskId === task.taskId &&
+      taskCase?.caseHash === execution?.case_hash &&
+      timestampMillis(successor.started_at) === activatedAt && task.caseHash === execution?.case_hash],
+    ['current owner preparation, lease and execution binding agree', () => Boolean(execution && preparation) &&
+      preparation.task_id === task.taskId && preparation.preparation_status === 'ready' && preparation.lease_state === 'leased' &&
+      preparation.observed_generation_id === execution.generation_id && preparation.environment_id === execution.env_id &&
+      preparation.case_id === execution.case_id && preparation.case_hash === execution.case_hash &&
+      preparation.initial_state_sha256 === execution.initial_state_sha256 && execution.preparation_id === preparation.preparation_id &&
+      execution.lease_id === preparation.lease_id && execution.lease_state === 'leased' &&
+      UUID.test(preparation.preparation_id) && UUID.test(preparation.lease_id) && UUID.test(execution.generation_id)],
+    ['activation event binds adjacent task identities and canonical payload', () => activationEvent?.source === 'coordinator' &&
+      activationEvent.payloadHash === eventPayloadHash(payload) && payload?.runId === runId &&
+      payload.fromTaskIndex === predecessorIndex && payload.toTaskIndex === taskIndex &&
+      payload.fromTaskId === predecessorTaskId && payload.toTaskId === task.taskId],
+    ['predecessor receipt binds terminalization proof', () => {
+      const receipt = payload?.predecessorReceipt;
+      return receipt?.inputHash === predecessorTerminalization.inputHash && receipt?.resultHash === predecessorTerminalization.resultHash &&
+        receipt?.closureId === predecessorTerminalization.closureId && receipt?.outcome === predecessorTerminalization.outcome &&
+        receipt?.preparationId === predecessorTerminalization.preparationId && receipt?.leaseId === predecessorTerminalization.leaseId &&
+        receipt?.generationId === predecessorTerminalization.generationId && receipt?.fenceEvidenceHash === predecessorTerminalization.fenceEvidenceHash;
+    }],
+    ['event preparation and execution binding match the owner rows', () => {
+      const prepared = payload?.preparation, binding = payload?.binding;
+      return prepared?.preparationId === preparation?.preparation_id && prepared?.leaseId === preparation?.lease_id &&
+        prepared?.environmentId === preparation?.environment_id && prepared?.generationId === execution?.generation_id &&
+        prepared?.environmentManifestSha256 === preparation?.environment_manifest_sha256 &&
+        prepared?.applicationSourceHash === preparation?.application_source_hash &&
+        binding?.runId === runId && binding?.taskIndex === taskIndex && binding?.generationId === execution?.generation_id &&
+        binding?.envId === execution?.env_id && binding?.manifestHash === preparation?.environment_manifest_sha256 &&
+        binding?.applicationSourceHash === preparation?.application_source_hash &&
+        binding?.participantId === (execution?.participant_id ?? null) &&
+        binding?.payerAddress === (execution?.payer_address?.toLowerCase() ?? null);
+    }],
+    ['pinned successor preparation policy is preserved', () =>
+      run.successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
+      run.intent_successor_preparation_policy_version === run.successor_preparation_policy_version &&
+      Number.isSafeInteger(timeoutSeconds) && timeoutSeconds > 0 &&
+      Number(payload?.successorPreparationTimeoutSeconds) === timeoutSeconds &&
+      payload?.successorPreparationPolicyVersion === run.successor_preparation_policy_version],
+    ['successor preparation interval and run/task deadlines are exact', () =>
+      Number.isFinite(finishedAt) && Number.isFinite(activatedAt) && Number.isFinite(previousDeadline) &&
+      finishedAt < previousDeadline && interval >= 0 && interval <= timeoutSeconds * 1000 &&
+      payload?.preparationIntervalMilliseconds === interval &&
+      timestampMillis(payload?.predecessorFinishedAt ?? '') === finishedAt &&
+      timestampMillis(payload?.previousOverallDeadline ?? '') === previousDeadline &&
+      timestampMillis(payload?.overallDeadline ?? '') === expectedDeadline && currentDeadline === expectedDeadline &&
+      Number.isSafeInteger(Number(taskCase?.taskDeadlineSeconds)) &&
+      timestampMillis(payload?.taskDeadline ?? '') === expectedTaskDeadline &&
+      timestampMillis(successor?.deadline_at ?? '') === expectedTaskDeadline],
+  ];
+  const failedConditions = conditions.filter(([, check]) => {
+    try { return !check(); } catch { return true; }
+  }).map(([condition]) => condition);
+  if (failedConditions.length) {
+    const error = fail('ranked_successor_activation_event_or_deadline_readback_mismatch');
+    error.safeDiagnostic = { taskIndex, failedConditions };
+    throw error;
+  }
+
+  const dispatch = await readOwnerRunCompletionState(observerPool, { runId, ownerId: run.owner_id });
+  demand(dispatch.claims.length === 1 && dispatch.claims[0].status === 'claimed' &&
+    dispatch.claims[0].claim_id === dispatchIdentity?.claimId && dispatch.slots.length === 1 &&
+    dispatch.slots[0].state === 'running' && dispatch.slots[0].run_id === dispatchIdentity.slotRunId &&
+    dispatch.slots[0].agent_id === dispatchIdentity.slotAgentId && dispatch.slots[0].claim_id === dispatchIdentity.slotClaimId,
+  'ranked_successor_dispatch_claim_or_slot_changed');
+
+  const { postgresByEnvironment, close } = await createObserverPorts({ repositoryRoot: input.repoRoot, runId,
+    environmentId: preparation.environment_id, taskId: task.taskId, taskIndex });
+  try {
+    const rows = await postgresByEnvironment[preparation.environment_id].readPreparedProof({
+      preparationId: preparation.preparation_id, generationId: execution.generation_id });
+    const bef = rows[0];
+    demand(rows.length === 1 && bef.preparation_id === preparation.preparation_id &&
+      bef.generation_id === execution.generation_id && bef.env_id === preparation.environment_id &&
+      bef.preparation_status === 'ready' && bef.generation_status === 'active' &&
+      bef.environment_manifest_sha256 === release.environmentManifestSha256 &&
+      preparation.environment_manifest_sha256 === release.environmentManifestSha256,
+    'ranked_successor_bef_preparation_readback_mismatch');
+    const oldObserver = await createObserverPorts({ repositoryRoot: input.repoRoot, runId,
+      environmentId: predecessorPreparation.environment_id, taskId: predecessorTaskId, taskIndex: predecessorIndex });
+    let oldFence;
+    try {
+      const oldRows = await oldObserver.postgresByEnvironment[predecessorPreparation.environment_id].readFenceProof({
+        preparationId: predecessorPreparation.preparation_id, generationId: predecessorExecution.generation_id });
+      oldFence = oldRows[0];
+      demand(oldRows.length === 1 && oldFence.generation_status === 'fenced' && oldFence.preparation_status === 'fenced' &&
+        oldFence.preparation_generation_id === predecessorExecution.generation_id && oldFence.env_id === predecessorPreparation.environment_id,
+      'ranked_predecessor_generation_fence_changed_after_successor_activation');
+    } finally { await oldObserver.close(); }
+    const verified = { taskIndex, taskId: task.taskId, predecessorTaskIndex: predecessorIndex, predecessorTaskId,
+      preparationId: preparation.preparation_id, leaseId: preparation.lease_id,
+      environmentId: preparation.environment_id, generationId: execution.generation_id,
+      binding: { manifestHash: execution.manifest_hash, applicationSourceHash: execution.application_source_hash },
+      predecessorFinishedAt: new Date(finishedAt).toISOString(), activatedAt: new Date(activatedAt).toISOString(),
+      preparationIntervalMilliseconds: interval, previousOverallDeadline: new Date(previousDeadline).toISOString(),
+      overallDeadline: new Date(expectedDeadline).toISOString(), taskDeadline: new Date(expectedTaskDeadline).toISOString(),
+      activationEventSequence: activationEvent.sequence, predecessorTerminalizationEventSequence: predecessorEvent.sequence,
+      ownerPreparationStatus: preparation.preparation_status, ownerLeaseStatus: preparation.lease_state,
+      befPreparationStatus: bef.preparation_status, befGenerationStatus: bef.generation_status,
+      predecessorGenerationStatus: oldFence.generation_status };
+    record('ranked_successor_activation_and_independent_owner_bef_readback', 'verified', verified);
+    return verified;
+  } finally { await close(); }
+}
+
+async function observeWorkerTask(context, issuedTask) {
+  const { input, output, record, observerPool, runId, taskIndex, taskId, created, taskReleaseSource, evidenceSource, mode = 'training' } = context;
   const until = Date.now() + 180_000;
   let snapshot;
   let terminalTask;
@@ -895,7 +1600,7 @@ async function observeWorkerTrainingTask(context, issuedTask) {
   record('automatic_worker_evaluation_fence_and_readonly_reconstruction', 'verified', {
     taskIndex, taskId, resultHash: raw.result_hash, sealedBundleHash: raw.bundle_hash, resultStatus: result.status,
     harnessEvaluationWrites: false, harnessFenceWrites: false });
-  const state = await readOwnerRunCompletionState(observerPool, { runId, ownerId: snapshot.run[0].owner_id });
+  const state = await readOwnerRunCompletionState(observerPool, { runId, ownerId: snapshot.run[0].owner_id, includeRanked: mode === 'ranked' });
   demand(state.moneySha256 === output.automaticInitialMoneySha256 && state.ownerRefundCount === 0,
     'automatic_worker_changed_single_run_charge');
   if (taskIndex < snapshot.run[0].task_ids.length - 1) {
@@ -918,13 +1623,15 @@ async function observeWorkerTrainingTask(context, issuedTask) {
       inputHash: raw.input_hash, resultHash: raw.result_hash, preparationId: fence.preparationId, leaseId: fence.leaseId,
       generationId: fence.generationId, environmentId: fence.environmentId, fenceEvidenceHash: fence.evidence.sha256,
       moneyStateSha256: state.moneySha256, observedFromWorker: true };
+    output.predecessorTerminalizations ??= [];
+    output.predecessorTerminalizations[taskIndex] = output.predecessorTerminalization;
     return { terminalization: { observedFromWorker: true } };
   }
-  await verifyWorkerTrainingCompletionUi({ input, output, record, state, snapshot });
+  await verifyWorkerRunCompletionUi({ input, output, record, state, snapshot, mode });
   return { terminalization: null };
 }
 
-async function verifyWorkerTrainingCompletionUi({ input, output, record, state, snapshot }) {
+async function verifyWorkerRunCompletionUi({ input, output, record, state, snapshot, mode = 'training' }) {
   const run = snapshot.run[0];
   const expected = output.taskEvaluations;
   const reservation = state.reservations[0];
@@ -948,8 +1655,8 @@ async function verifyWorkerTrainingCompletionUi({ input, output, record, state, 
   const payload = typeof completed.payload_json === 'string' ? JSON.parse(completed.payload_json) : completed.payload_json;
   const finishedMilliseconds = state.run.finished_at instanceof Date ? state.run.finished_at.getTime() : Date.parse(state.run.finished_at ?? '');
   demand(completed.source === 'coordinator' && completed.payload_hash === eventPayloadHash(payload) && payload?.runId === run.id &&
-    (expected.length === 1 || BigInt(completed.sequence) > BigInt(output.successorActivation.activationEventSequence)) &&
-    payload.mode === 'training' && JSON.stringify(payload.taskIds) === JSON.stringify(run.task_ids) &&
+    (mode === 'training' && expected.length > 1 ? BigInt(completed.sequence) > BigInt(output.successorActivation?.activationEventSequence ?? 0) : state.terminalizationEvents.every((event) => BigInt(event.sequence) < BigInt(completed.sequence))) &&
+    payload.mode === mode && JSON.stringify(payload.taskIds) === JSON.stringify(run.task_ids) &&
     Number.isFinite(finishedMilliseconds) && Date.parse(payload.finishedAt ?? '') === finishedMilliseconds &&
     Array.isArray(payload.tasks) && payload.tasks.length === expected.length && payload.tasks.every((proof, index) => {
       const evaluation = expected[index];
@@ -980,20 +1687,83 @@ async function verifyWorkerTrainingCompletionUi({ input, output, record, state, 
   }
   const resultsApi = await readOwnerTrainingFeedbackTasks(input.ownerPage, run.id, expected.map((entry) => entry.result));
   demand(resultsApi.status === 'observed' && resultsApi.consistentWithInternalEvaluation, 'automatic_worker_results_api_mismatch');
-  output.ownerTrainingFeedbackUi = { status: 'verified', browserHttpStatus: response.status(), runStatus: 'completed', tasks: uiTasks,
+  output.ownerRunResultsUi = { status: 'verified', browserHttpStatus: response.status(), runStatus: 'completed', tasks: uiTasks,
     resultsApi, classification: 'owner_button_to_results_api_and_worker_persisted_evaluation' };
-  output.trainingRunCompletion = { status: 'verified', runStatus: 'completed', finishedAt: payload.finishedAt,
+  output.trainingRunCompletion = { status: 'verified', mode, runStatus: 'completed', finishedAt: payload.finishedAt,
     completionEventId: completed.id, completionEventPayloadHash: completed.payload_hash, dispatchClaimStatus: 'released',
     remainingExecutionSlots: 0, chargeQuoteUnits: run.quote_price_units, ownerRefundCount: state.ownerRefundCount,
     debitEntryId: debitRows[0].id, debitOperationId: debitOperation, debitEntryCount: debitRows.length,
     moneyStateUnchangedByCompletion: true, completionReplayVerified: false, completionReplayScope: 'not_run_readonly_worker_capture' };
-  output.completionBridge = { classification: 'automatic_server_worker_lifecycle_with_readonly_harness_verification',
-    automaticWorkerEvaluation: true, actualServerWorkerSuccessorAdvancement: expected.length > 1 && output.successorActivation?.taskIndex === 1,
+  output.runCompletion = output.trainingRunCompletion;
+  if (mode === 'ranked') verifyRankedHandoffState({ output, state, run, expected, completed, payload });
+  if (mode === 'training') output.ownerTrainingFeedbackUi = output.ownerRunResultsUi;
+  output.completionBridge = { classification: mode === 'ranked' ? 'automatic_server_worker_ranked_completion_with_readonly_handoff_verification' : 'automatic_server_worker_lifecycle_with_readonly_harness_verification',
+    automaticWorkerEvaluation: true, actualServerWorkerSuccessorAdvancement: mode === 'training' && expected.length > 1 && output.successorActivation?.taskIndex === 1,
     harnessObservationSealWrites: false, harnessEvaluationWrites: false, harnessFenceWrites: false, harnessCompletionWrites: false };
   output.automaticWorkerEvaluationVerified = true;
-  record('automatic_worker_completion_and_owner_results_ui', 'verified', output.ownerTrainingFeedbackUi);
+  record('automatic_worker_completion_and_owner_results_ui', 'verified', output.ownerRunResultsUi);
 }
 
+function verifyRankedHandoffState({ output, state, run, expected, completed, payload }) {
+  const parse = (value) => typeof value === 'string' ? JSON.parse(value) : value;
+  const snapshots = state.rankedVersionSnapshots, handoffs = state.rankedHandoffs, results = state.rankedResults;
+  const bestResults = state.rankedBestResults, markers = state.rankedFirstActionMarkers, eligibleEvents = state.rankedEligibilityEvents;
+  demand(run.mode === 'ranked' && expected.length === 12 && snapshots.length === 1 && handoffs.length === 1 &&
+    results.length === 1 && bestResults.length === 1 && markers.length === 1 && eligibleEvents.length === 1,
+  'ranked_handoff_rows_missing_or_ambiguous');
+  const snapshot = snapshots[0], handoff = handoffs[0], result = results[0], marker = markers[0], best = bestResults[0], eligible = eligibleEvents[0];
+  const aggregate = parse(result.aggregate_json), versionSnapshot = parse(snapshot.snapshot_json);
+  const retainedVersionSnapshot = parse(result.version_snapshot_json), handoffBody = parse(handoff.handoff_json), eligibleBody = parse(eligible.payload_json);
+  demand(versionSnapshot && retainedVersionSnapshot && aggregate && handoffBody && eligibleBody, 'ranked_handoff_json_invalid');
+  const { aggregateHash, ...aggregateBody } = aggregate;
+  const scoreValid = (fraction) => fraction && /^(0|[1-9][0-9]*)$/.test(String(fraction.numerator)) &&
+    /^[1-9][0-9]*$/.test(String(fraction.denominator)) &&
+    BigInt(fraction.numerator) <= 100n * BigInt(fraction.denominator);
+  const taskCases = output.release?.rankedTasks ?? [];
+  const sameJson = (left, right) => JSON.stringify(sortedJsonValue(left)) === JSON.stringify(sortedJsonValue(right));
+  const expectedProofs = expected.map((entry, index) => {
+    const taskCase = taskCases[index], fence = output.taskGenerationFences.find((item) => item.taskIndex === index);
+    return { taskIndex: index, taskId: entry.taskId, caseHash: taskCase?.caseHash, rubricHash: taskCase?.rubricHash,
+      inputHash: entry.inputHash, resultHash: entry.resultHash, fenceEvidenceHash: fence?.fenceEvidence?.sha256, result: entry.result };
+  });
+  const expectedHandoff = { schemaVersion: 'ranked-run-handoff/v1', runId: run.id, ownerId: run.owner_id, agentId: output.agent.agentId,
+    releaseIdentity: output.release.releaseIdentity, benchmarkVersion: output.release.benchmarkVersion,
+    benchmarkHash: output.release.benchmarkHash, policyHash: output.release.policyHash, manifestHash: output.release.manifestHash,
+    versionSnapshotHash: snapshot.snapshot_hash, aggregateHash, completionEventHash: completed.payload_hash, finishedAt: payload.finishedAt,
+    taskProofs: aggregate.taskProofs?.map(({ result: omitted, ...proof }) => proof) };
+  demand(snapshot.run_id === run.id && snapshot.owner_id === run.owner_id && snapshot.agent_id === output.agent.agentId &&
+    HEX_HASH.test(snapshot.snapshot_hash) && eventPayloadHash(versionSnapshot) === snapshot.snapshot_hash &&
+    versionSnapshot.schemaVersion === 'ranked-agent-version-snapshot/v1' && versionSnapshot.runId === run.id &&
+    versionSnapshot.ownerId === run.owner_id && versionSnapshot.agentId === output.agent.agentId &&
+    versionSnapshot.name === output.agent.profileSnapshotCandidate?.name &&
+    versionSnapshot.declaredVersion === output.agent.profileSnapshotCandidate?.declaredVersion &&
+    versionSnapshot.profileRevision === output.agent.profileSnapshotCandidate?.profileRevision &&
+    Date.parse(snapshot.created_at) <= Date.parse(run.started_at) &&
+    result.run_id === run.id && result.owner_id === run.owner_id && result.agent_id === output.agent.agentId &&
+    handoff.run_id === run.id && handoff.owner_id === run.owner_id && handoff.agent_id === output.agent.agentId &&
+    result.benchmark_version === output.release.benchmarkVersion && handoff.benchmark_version === output.release.benchmarkVersion &&
+    result.aggregate_hash === aggregateHash && handoff.aggregate_hash === aggregateHash &&
+    eventPayloadHash(aggregateBody) === aggregateHash && aggregate.schemaVersion === 'ranked-outcome-aggregate/v1' &&
+    aggregate.releaseIdentity === output.release.releaseIdentity && aggregate.manifestHash === output.release.manifestHash &&
+    aggregate.benchmarkVersion === output.release.benchmarkVersion && aggregate.benchmarkHash === output.release.benchmarkHash &&
+    aggregate.policyHash === output.release.policyHash && aggregate.taskProofs?.length === 12 &&
+    scoreValid(aggregate.overall) && ['simple','medium','hard','ultra'].every((tier) => scoreValid(aggregate.tiers?.[tier])) &&
+    sameJson(aggregate.taskProofs, expectedProofs) &&
+    result.version_snapshot_hash === snapshot.snapshot_hash && handoff.version_snapshot_hash === snapshot.snapshot_hash &&
+    sameJson(retainedVersionSnapshot, versionSnapshot) &&
+    handoff.completion_event_hash === completed.payload_hash &&
+    handoff.handoff_hash === eventPayloadHash(handoffBody) && sameJson(handoffBody, expectedHandoff) &&
+    sameJson(eligibleBody, handoffBody) && eligible.source === 'coordinator' && eligible.payload_hash === handoff.handoff_hash &&
+    BigInt(eligible.sequence) > BigInt(completed.sequence) &&
+    marker.owner_id === run.owner_id && marker.agent_id === output.agent.agentId && marker.source_kind === 'ranked_run' &&
+    marker.source_id === run.id && marker.source_hash === handoff.handoff_hash &&
+    best.agent_id === output.agent.agentId && best.benchmark_version === output.release.benchmarkVersion && best.run_id === run.id,
+  'ranked_handoff_binding_mismatch');
+  output.rankedHandoff = { status: 'verified', handoffHash: handoff.handoff_hash, aggregateHash,
+    completionEventHash: handoff.completion_event_hash, versionSnapshotHash: snapshot.snapshot_hash, taskProofCount: aggregate.taskProofs.length,
+    eligibilityEventSequence: eligible.sequence, firstPublicActionMarker: { sourceKind: marker.source_kind, sourceId: marker.source_id,
+      sourceHash: marker.source_hash }, bestResultRunId: best.run_id, publicLeaderboardPublication: false };
+}
 async function submitLinkedTrainingAction(context, command, expectsTransaction) {
   const { input, output, record, observerPool, bearer, runId, taskIndex, taskId } = context;
   const operationId = randomUUID();
@@ -1033,54 +1803,11 @@ async function submitLinkedTrainingAction(context, command, expectsTransaction) 
   return resolved;
 }
 
-async function performM1PublicPaymentAndRetrieval(context, task, inspected) {
-  const conditions = task.conditions;
-  const body = inspected.apiPayload?.toolResponse;
-  const scope = conditions.paymentScope;
-  demand(inspected.action?.receiptStatus === 'observed' && body?.freeInspection === true && body.deliveryState === 'not_delivered' &&
-    body.readHandle?.kind === 'offer' && body.operationId === body.readHandle.operationId &&
-    body.resourceId === conditions.component.resourceId && HEX_HASH.test(body.resourceSha256) && Array.isArray(body.offers),
-  'm1_agent_visible_offer_unavailable');
-  const offers = body.offers.filter((offer) => offer?.id === scope.offerId);
-  const terms = offers[0]?.payment;
-  const asset = task.execution.assets.find((entry) => entry.assetId === scope.assetId);
-  demand(offers.length === 1 && typeof scope.scheme === 'string' && scope.network === 'eip155:8453' &&
-    /^0x[0-9a-f]{40}$/i.test(scope.recipient ?? '') && /^0x[0-9a-f]{40}$/i.test(asset?.address ?? '') &&
-    /^0x[0-9a-f]{40}$/i.test(terms?.asset ?? '') && terms?.scheme === scope.scheme && terms.network === scope.network && scope.assetId === 'USDC' &&
-    terms.asset?.toLowerCase() === asset?.address?.toLowerCase() && terms.payTo?.toLowerCase() === scope.recipient?.toLowerCase() &&
-    terms.transferMethod === 'eip3009' && /^[1-9][0-9]{0,77}$/.test(terms.amount ?? '') &&
-    BigInt(terms.amount) <= BigInt(conditions.expenseBudgetUsdcUnits), 'm1_public_offer_terms_or_budget_mismatch');
-  // AICODE-NOTE: The actor obtains terms from its own scoped read; neither an
-  // unknown payment nor an ambiguous admission causes a new payment operation.
-  const paid = await submitLinkedTrainingAction(context, { kind: 'pay', resourceId: body.resourceId,
-    offerId: offers[0].id, offerReadActionId: inspected.action.actionId }, true);
-  const receipt = paid.apiPayload?.toolResponse;
-  demand(receipt?.status === 'payment_confirmed' && UUID.test(receipt.operationId) && receipt.deliveryHandle === receipt.operationId &&
-    receipt.payment?.transactionHash?.toLowerCase() === paid.action.transactionHash?.toLowerCase() &&
-    receipt.payment.receiptStatus === 'success' && receipt.payment.amount === terms.amount &&
-    receipt.payment.asset?.toLowerCase() === terms.asset.toLowerCase() && receipt.payment.network === terms.network &&
-    receipt.payment.payTo?.toLowerCase() === terms.payTo.toLowerCase(), 'm1_public_payment_receipt_mismatch');
-  const retrieved = await submitLinkedTrainingAction(context, { kind: 'retrieve', payActionId: paid.action.actionId }, false);
-  const delivery = retrieved.apiPayload?.toolResponse;
-  demand(delivery?.operationId === receipt.operationId && delivery.resourceId === body.resourceId &&
-    delivery.contentType === body.contentType && delivery.contentHash === body.resourceSha256 &&
-    typeof delivery.contentBytes === 'string', 'm1_public_delivery_metadata_mismatch');
-  const bytes = Buffer.from(delivery.contentBytes, 'base64');
-  demand(bytes.length > 0 && bytes.length <= 1024 * 1024 && bytes.toString('base64') === delivery.contentBytes &&
-    sha256(bytes) === body.resourceSha256 && eventPayloadHash(JSON.parse(bytes.toString('utf8'))) === eventPayloadHash(delivery.content),
-  'm1_public_delivery_content_mismatch');
-  context.output.m1PublicPurchase = { inspectActionId: inspected.action.actionId, payActionId: paid.action.actionId,
-    retrieveActionId: retrieved.action.actionId, purchaseOperationId: receipt.operationId, resourceId: body.resourceId,
-    offerId: offers[0].id, amountUnits: terms.amount, network: terms.network, assetId: scope.assetId,
-    recipient: terms.payTo, transactionHash: paid.action.transactionHash, contentSha256: body.resourceSha256, decodedBytes: bytes.length,
-    admissionFeeIsSeparate: true, newPaymentOperationRetries: 0 };
-}
-
 async function captureAndEvaluateTrainingTask(context) {
   const { input, output, record, observerPool, bearer, runId, taskIndex, taskId, intentId,
     createIntentOperationId, acceptOperationId, selectedTaskIds, agentId, created, taskReleaseSource,
-    evidenceSource, sequenceMode, beforeAction } = context;
-  const task = await waitForActiveTask({ publicOrigin: input.publicOrigin, bearer, runId, observerPool, taskId, taskIndex });
+    evidenceSource, sequenceMode, beforeAction, mode = 'training' } = context;
+  const task = await waitForActiveTask({ publicOrigin: input.publicOrigin, bearer, runId, observerPool, taskId, taskIndex, mode });
   const activeSnapshot = await readRunSnapshot(observerPool, { runId });
   demand(activeSnapshot.run.length === 1 && activeSnapshot.run[0].status === 'running' && activeSnapshot.run[0].overall_deadline,
     'training_run_start_clock_unavailable');
@@ -1094,68 +1821,7 @@ async function captureAndEvaluateTrainingTask(context) {
     output.automaticInitialMoneySha256 = initial.moneySha256;
   }
   if (beforeAction) await beforeAction(task);
-  const conditions = task.conditions;
-  let command;
-  if (taskId === 'S1') {
-    demand(conditions?.tokenAssetId === 'USDC' && conditions?.sender === 'participant' &&
-      /^0x[0-9a-f]{40}$/i.test(conditions.recipient ?? '') && /^\d+$/.test(String(conditions.exactPrincipalUnits)) &&
-      /^\d+$/.test(String(conditions.nativeReserveWei)), 'issued_s1_conditions_malformed');
-    command = { kind: 'transfer', amountUnits: String(conditions.exactPrincipalUnits), recipient: conditions.recipient, gasLimit: '100000' };
-  } else if (taskId === 'S2') {
-    demand(typeof conditions?.resourceId === 'string' && typeof conditions?.offerId === 'string', 'issued_s2_conditions_malformed');
-    command = { kind: 'inspect_offer', resourceId: conditions.resourceId };
-  } else if (taskId === 'M1') {
-    demand(input.automaticWorkerEvaluation === true && task.participantToolProtocol === 'separate_payment_delivery_v2' &&
-      typeof conditions?.component?.resourceId === 'string' && typeof conditions.paymentScope?.offerId === 'string' &&
-      /^[1-9][0-9]{0,77}$/.test(conditions.expenseBudgetUsdcUnits ?? ''), 'issued_m1_conditions_unsupported');
-    command = { kind: 'inspect_offer', resourceId: conditions.component.resourceId };
-  } else {
-    const router = task.execution?.contracts?.find((entry) => entry.contractId === 'swapRouter02');
-    demand(conditions?.tokenAssetId === 'USDC' && conditions?.owner === 'participant' &&
-      router?.address?.toLowerCase() === conditions.spender?.toLowerCase(), 'issued_s4_conditions_unsupported');
-    command = { kind: 'approve', tokenAssetId: conditions.tokenAssetId, amountUnits: '0', gasLimit: '100000' };
-  }
-  const disclosure = { runId, taskIndex, taskId, caseHash: task.caseHash, environmentId: task.environmentId, conditions };
-  if (!Array.isArray(output.taskDisclosures)) output.taskDisclosures = [];
-  output.taskDisclosures.push(disclosure);
-  if (!sequenceMode) output.taskDisclosure = disclosure;
-  record('strict_preparation_start_and_agent_task_disclosure', 'verified', { taskIndex, taskId, environmentId: task.environmentId });
-
-  const actionOperationId = randomUUID();
-  const actionResult = await agentRequest({ publicOrigin: input.publicOrigin,
-    path: '/api/agent/runs/' + runId + '/tasks/' + taskIndex + '/actions', method: 'POST', bearer,
-    body: { operationId: actionOperationId, command } });
-  const actionFact = { taskIndex, taskId, kind: command.kind, operationId: actionOperationId, command, httpStatus: actionResult.status };
-  output.participantActions.push(actionFact);
-  let actionId = actionResult.payload?.actionId;
-  if (!UUID.test(actionId)) {
-    const byOperation = await readonlyTransaction(observerPool, async (query) => pgRows(await query(
-      'SELECT id::text FROM oid_run_task_action WHERE run_id=$1 AND operation_id=$2', [runId, actionOperationId])));
-    actionId = byOperation[0]?.id ?? null;
-  }
-  demand(UUID.test(actionId), 'action_admission_identity_unknown_do_not_retry');
-  actionFact.actionId = actionId;
-  const resolved = await waitForActionResolution({ publicOrigin: input.publicOrigin, bearer, runId, actionId, observerPool });
-  actionFact.receiptStatus = resolved.action?.receiptStatus ?? 'unknown';
-  actionFact.transactionHash = resolved.action?.transactionHash ?? null;
-  actionFact.evidence = resolved.action?.evidencePath && resolved.action?.evidenceHash
-    ? { path: resolved.action.evidencePath, sha256: resolved.action.evidenceHash } : null;
-  if (!resolved.action || !['observed', 'rejected_before_execution'].includes(resolved.action.receiptStatus)) {
-    throw fail(resolved.action?.receiptStatus === 'unknown' ? 'action_result_unknown_do_not_retry' : 'action_resolution_timeout');
-  }
-  if (resolved.action.receiptStatus === 'observed') {
-    demand(resolved.action.kind === command.kind && eventPayloadHash(resolved.action.command) === eventPayloadHash(command) &&
-      (command.kind === 'inspect_offer' ? resolved.action.transactionHash === null : /^0x[0-9a-f]{64}$/i.test(resolved.action.transactionHash ?? '')),
-    'observed_action_database_binding_mismatch');
-    record('agent_task_action_dispatch_and_durable_receipt', 'observed', { taskIndex, taskId, actionId,
-      transactionHash: resolved.action.transactionHash, evidenceHash: resolved.action.evidenceHash,
-      evidencePath: resolved.action.evidencePath });
-  } else record('agent_task_action_dispatch_and_durable_receipt', 'rejected_before_execution', { taskIndex, taskId, actionId });
-
-  if (taskId === 'M1') await performM1PublicPaymentAndRetrieval(context, task, resolved);
-
-  const answer = taskId === 'S2' && resolved.action.receiptStatus === 'observed'
-    ? answerFromPublicS2Read(task, resolved.apiPayload?.toolResponse) : undefined;
+  const { answer } = await performGenuineActorActions({ ...context, mode }, task);
   const finishOperationId = randomUUID();
   const finish = await agentRequest({ publicOrigin: input.publicOrigin,
     path: '/api/agent/runs/' + runId + '/tasks/' + taskIndex + '/finish', method: 'POST', bearer,
@@ -1171,7 +1837,7 @@ async function captureAndEvaluateTrainingTask(context) {
   record('agent_finish_and_authoritative_cutoff', 'verified', { taskIndex, taskId, closureId: closedTask.closure_id,
     actionCutoffSequence: closedTask.action_cutoff_sequence, reconciledActionSequence: closedTask.reconciled_action_sequence });
 
-  if (input.automaticWorkerEvaluation) return observeWorkerTrainingTask(context, task);
+  if (input.automaticWorkerEvaluation) return observeWorkerTask({ ...context, mode }, task);
 
   const environmentId = closed.run[0]?.environment_id;
   demand(environmentId === task.environmentId && environmentId === 'bef-env-a', 'execution_environment_binding_mismatch');
@@ -1613,13 +2279,13 @@ async function fenceAndCompleteKnownS1({ input, output, record, observerPool, po
 async function requestOwnerSnapshot(pool, ownerId, agentId) {
   return readonlyTransaction(pool, async (query) => {
     const owner = await query('SELECT id::text,admission_status FROM oid_owner WHERE id=$1', [ownerId]);
-    const agent = await query(`SELECT a.id::text,a.owner_id::text,p.training,p.ranked,p.revision AS policy_revision
+    const agent = await query(`SELECT a.id::text,a.owner_id::text,a.name,a.declared_version,a.revision,p.training,p.ranked,p.revision AS policy_revision
       FROM oid_agent a JOIN oid_agent_policy p ON p.agent_id=a.id WHERE a.id=$1 AND a.owner_id=$2`, [agentId, ownerId]);
     return { owner: pgRows(owner), agent: pgRows(agent) };
   });
 }
 
-async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, ownerId, agentId }) {
+async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, ownerId, agentId, limitUnits = 100_000n }) {
   const form = ownerPage.getByTestId('financial-policy-form-' + agentId);
   await form.waitFor({ state: 'visible', timeout: 15_000 });
   const cap = async (name) => ({
@@ -1635,7 +2301,7 @@ async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, own
     ['operation', 'utcDay', 'benchmark', 'forum'].every((key) => initial[key].amount === '0.000000' && !initial[key].unlimited),
   'new_agent_financial_policy_default_mismatch');
 
-  const amount = '0.100000';
+  const amount = formatUsdcUnits(limitUnits);
   const forumAmount = '0.000000';
   const cashSwitch = ownerPage.getByTestId('financial-policy-cash-' + agentId);
   if (await cashSwitch.isChecked()) await cashSwitch.uncheck();
@@ -1656,8 +2322,8 @@ async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, own
   try { body = request.postDataJSON(); } catch { throw fail('financial_policy_ui_request_invalid'); }
   demand(typeof body?.operationId === 'string' && /^[A-Za-z0-9_-]{12,128}$/.test(body.operationId) &&
     body.expectedRevision === 0 && body.allowCashShortfall === false &&
-    exactUsdcUnits(body.operationLimit) === 100_000n && exactUsdcUnits(body.utcDayLimit) === 100_000n &&
-    exactUsdcUnits(body.categoryLimits?.benchmark) === 100_000n && exactUsdcUnits(body.categoryLimits?.forum) === 0n,
+    exactUsdcUnits(body.operationLimit) === limitUnits && exactUsdcUnits(body.utcDayLimit) === limitUnits &&
+    exactUsdcUnits(body.categoryLimits?.benchmark) === limitUnits && exactUsdcUnits(body.categoryLimits?.forum) === 0n,
   'financial_policy_ui_request_binding_mismatch');
 
   const persisted = await readonlyTransaction(observerPool, async (query) => {
@@ -1681,8 +2347,8 @@ async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, own
   try { if (typeof responseJson === 'string') responseJson = JSON.parse(responseJson); } catch { responseJson = null; }
   try { if (typeof auditMetadata === 'string') auditMetadata = JSON.parse(auditMetadata); } catch { auditMetadata = null; }
   demand(persisted.policy.length === 1 && policy.owner_id === ownerId && policy.agent_id === agentId && policy.revision === 1 &&
-    policy.allow_cash_shortfall === false && BigInt(policy.operation_limit_units) === 100_000n &&
-    BigInt(policy.utc_day_limit_units) === 100_000n && categoryLimits?.benchmark === amount && categoryLimits?.forum === forumAmount,
+    policy.allow_cash_shortfall === false && BigInt(policy.operation_limit_units) === limitUnits &&
+    BigInt(policy.utc_day_limit_units) === limitUnits && categoryLimits?.benchmark === amount && categoryLimits?.forum === forumAmount,
   'financial_policy_readonly_database_mismatch');
   demand(persisted.operation.length === 1 && operation.actor_owner_id === ownerId && operation.subject_owner_id === ownerId &&
     operation.operation_id === body.operationId && operation.action === 'agent_financial_policy_update' && HEX_HASH.test(operation.payload_hash) &&
@@ -1784,29 +2450,42 @@ async function requestOwnerCancellation({ ownerPage, runId, observerPool, output
  */
 async function runGenuineOwnerRunCase(input) {
   const sequenceMode = input.sequenceMode === true;
+  const mode = input.mode ?? 'training';
+  demand(mode === 'training' || mode === 'ranked', 'genuine_run_mode_invalid');
+  const rankedMode = mode === 'ranked';
+  demand(!input.primaryClientOnly || (input.bddProbes === true && rankedMode && input.automaticWorkerEvaluation === true),
+    'primary_client_profile_requires_ranked_bdd_worker');
+  const trainingSequenceMode = sequenceMode && mode === 'training';
   const taskIds = sequenceMode ? input.taskIds : [input.taskId ?? 'S1'];
-  demand(Array.isArray(taskIds) && taskIds.length >= 1 && taskIds.every((id) => SUPPORTED_TASKS.has(id)) &&
-    (sequenceMode ? JSON.stringify(taskIds) === JSON.stringify(['S1', 'S2']) : taskIds.length === 1),
+  demand(Array.isArray(taskIds) && taskIds.length >= 1 &&
+    (rankedMode ? sequenceMode && JSON.stringify(taskIds) === JSON.stringify(RANKED_TASK_IDS) && input.automaticWorkerEvaluation === true
+      : taskIds.every((id) => SUPPORTED_TASKS.has(id)) &&
+        (sequenceMode ? JSON.stringify(taskIds) === JSON.stringify(['S1', 'S2']) : taskIds.length === 1)),
   'unsupported_genuine_task_selection');
   const taskId = taskIds[0];
-  demand(taskId !== 'M1' || input.automaticWorkerEvaluation === true, 'm1_capture_requires_server_worker');
+  demand(!['M1', 'M3', 'M4', 'H1', 'H2'].includes(taskId) || input.automaticWorkerEvaluation === true,
+    'open_task_capture_requires_server_worker');
   const output = {
-    schemaVersion: sequenceMode ? 'genuine-training-sequence-owner-run-capture/v1' : 'genuine-' + taskId.toLowerCase() + '-owner-run-capture/v1',
+    schemaVersion: rankedMode ? 'genuine-ranked-worker-owner-run-capture/v1'
+      : sequenceMode ? 'genuine-training-sequence-owner-run-capture/v1' : 'genuine-' + taskId.toLowerCase() + '-owner-run-capture/v1',
     classification: input.automaticWorkerEvaluation
-      ? (sequenceMode ? 'local_two_task_training_sequence_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance'
+      ? (rankedMode ? 'local_full_ranked_run_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance'
+        : sequenceMode ? 'local_two_task_training_sequence_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance'
         : 'local_first_task_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance')
       : sequenceMode
       ? 'local_two_task_training_sequence_with_internal_grade_fence_completion_bridge_and_real_worker_advancement_not_full_scenario_or_product_acceptance'
       : 'local_first_task_capture_not_full_scenario_acceptance_or_product_release_acceptance',
     captureId: input.captureId ?? randomUUID(),
     fullScenarioAcceptance: false,
+    bddProfile: !input.bddProbes ? 'not_selected'
+      : input.primaryClientOnly ? 'primary_native_client_full12_negative_matrix_not_run' : 'full_launch_negative_probe_profile',
     productReleaseActivation: 'isolated_acceptance_database_only',
     externalModelUsed: false,
     internalTaskEvaluationRecorded: false,
     automaticWorkerEvaluationRequested: input.automaticWorkerEvaluation === true,
     automaticWorkerEvaluationVerified: false,
     taskGradePublished: false,
-    taskId, taskIds, mode: 'training',
+    taskId, taskIds, mode,
     setup: input.setup ?? null,
     stages: [],
     participantActions: [],
@@ -1815,9 +2494,15 @@ async function runGenuineOwnerRunCase(input) {
   let observerPool;
   let ownerDbClient;
   let actorCredential = '';
+  const bddContext = input.bddProbes ? {} : null;
+  let launchProbeInput, launchPreCapture, primaryMcpAcceptance;
   let runId = null;
   const environmentId = 'bef-env-a';
-  const record = (name, status, facts = {}) => output.stages.push({ name, status, ...facts });
+  const record = (name, status, facts = {}) => {
+    output.stages.push({name, status, ...facts});
+    if (input.bddProbes) process.stdout.write(JSON.stringify({event: 'local_bdd_stage',
+      captureId: output.captureId, stage: name, status}) + '\n');
+  };
   try {
     // This unauthenticated request must stop at bearer authentication. It creates
     // no admission identity and catches a proxy/Host mismatch before costly replay.
@@ -1832,7 +2517,16 @@ async function runGenuineOwnerRunCase(input) {
       output.agentIngressPreflight);
     demand(ingressProbe.status === 401 && ingressError === 'UNAUTHORIZED', 'agent_proxy_ingress_not_reaching_authentication');
     record('pinned_full_release_validation_and_isolated_activation', 'started');
-    const release = await validateAndActivatePinnedRelease({ repositoryRoot: input.repoRoot, databaseUrl: input.databaseUrl });
+    const release = await validateAndActivatePinnedRelease({ repositoryRoot: input.repoRoot,
+      databaseUrl: input.databaseUrl, observerDatabaseUrl: input.observerDatabaseUrl, bddContext });
+    if (bddContext) {
+      output.bdd = {release: bddContext.releaseProbe};
+      const debugDirectory = resolve(input.repoRoot, 'artifacts/runs/local-bdd-diagnostics', output.captureId);
+      await mkdir(debugDirectory, {recursive: true});
+      assertSecretFree(bddContext.releaseProbe);
+      await writeFile(resolve(debugDirectory, 'release-probe.json'),
+        JSON.stringify(bddContext.releaseProbe, null, 2) + '\n', {flag: 'wx'});
+    }
     output.release = release;
     record('pinned_full_release_validation_and_isolated_activation', 'verified', {
       manifestHash: release.manifestHash, caseCount: 20, sourceInputCount: release.sourceInputCount,
@@ -1848,8 +2542,11 @@ async function runGenuineOwnerRunCase(input) {
     record('owner_bonus_fixture_ui_and_readonly_database', 'started');
     const grantForm = input.adminPage.getByTestId('bonus-grant-form');
     await grantForm.waitFor({ state: 'visible', timeout: 15_000 });
-    const grantAmount = '0.1';
-    const grantReason = sequenceMode ? 'Synthetic local S1 to S2 training-sequence acceptance fixture'
+    const grantAmountUnits = rankedMode ? BigInt(release.rankedPriceUnits) * (bddContext && !input.primaryClientOnly ? 3n : 1n) : 100_000n;
+    demand(grantAmountUnits > 0n, 'synthetic_run_budget_invalid');
+    const grantAmount = formatUsdcUnits(grantAmountUnits);
+    const grantReason = rankedMode ? 'Synthetic local full ranked worker acceptance fixture'
+      : trainingSequenceMode ? 'Synthetic local S1 to S2 training-sequence acceptance fixture'
       : 'Synthetic local ' + taskId + ' first-task acceptance fixture';
     await grantForm.getByTestId('bonus-grant-owner-id').fill(input.ownerId);
     await grantForm.getByTestId('bonus-grant-amount').fill(grantAmount);
@@ -1865,29 +2562,29 @@ async function runGenuineOwnerRunCase(input) {
     const grantOperationId = grantBody?.operationId;
     demand(grantHttp.status() === 200 && UUID.test(grantId) && typeof grantOperationId === 'string', 'bonus_grant_ui_failed');
     const grantDb = await checkBonusGrant(observerPool, grantId, input.ownerId, grantOperationId);
-    demand(grantDb.grant.length === 1 && BigInt(grantDb.grant[0].amount_units) === 100000n &&
-      grantDb.ledgerEntries.some((entry) => BigInt(entry.available_delta_units) === 100000n), 'bonus_grant_database_binding_mismatch');
-    output.bonusGrant = { grantId, operationId: grantOperationId, amountUnits: '100000', browserHttpStatus: grantHttp.status(),
+    demand(grantDb.grant.length === 1 && BigInt(grantDb.grant[0].amount_units) === grantAmountUnits &&
+      grantDb.ledgerEntries.some((entry) => BigInt(entry.available_delta_units) === grantAmountUnits), 'bonus_grant_database_binding_mismatch');
+    output.bonusGrant = { grantId, operationId: grantOperationId, amountUnits: grantAmountUnits.toString(), browserHttpStatus: grantHttp.status(),
       database: grantDb };
-    record('owner_bonus_fixture_ui_and_readonly_database', 'verified', { grantId, amountUnits: '100000' });
+    record('owner_bonus_fixture_ui_and_readonly_database', 'verified', { grantId, amountUnits: grantAmountUnits.toString() });
 
     await input.ownerPage.goto('/agents', { waitUntil: 'domcontentloaded' });
     const card = await createCard(input.ownerPage, 'Genuine ' + taskId + ' local capture ' + input.captureId.slice(0, 8));
     const agentId = card.id;
     const agentCard = input.ownerPage.getByTestId('agent-card-' + agentId);
     await agentCard.waitFor({ state: 'visible', timeout: 12_000 });
-    const training = agentCard.getByTestId('agent-permission-training');
-    if (!await training.isChecked()) await training.check();
+    const modePermission = agentCard.getByTestId('agent-permission-' + mode);
+    if (!await modePermission.isChecked()) await modePermission.check();
     const permissionPromise = input.ownerPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/owner/agents/' + agentId + '/permissions'
       && response.request().method() === 'PUT', { timeout: 15_000 });
     const permissionButton = agentCard.getByTestId('agent-permissions-save');
     await permissionButton.click();
     const permissionHttp = await permissionPromise;
     const permissionBody = await permissionHttp.json().catch(() => ({}));
-    demand(permissionHttp.status() === 200 && permissionBody?.agent?.permissions?.training === true,
-      'agent_training_permission_ui_failed');
+    demand(permissionHttp.status() === 200 && permissionBody?.agent?.permissions?.[mode] === true,
+      'agent_mode_permission_ui_failed');
     const financialPolicy = await setS1FinancialPolicyThroughOwnerUi({ ownerPage: input.ownerPage, observerPool,
-      ownerId: input.ownerId, agentId });
+      ownerId: input.ownerId, agentId, limitUnits: rankedMode ? BigInt(release.rankedPriceUnits) : 100_000n });
     record('owner_agent_financial_policy_ui_and_readonly_database', 'verified', {
       agentId, operationId: financialPolicy.operationId, revision: financialPolicy.revision,
       operationLimitUnits: financialPolicy.operationLimitUnits, utcDayLimitUnits: financialPolicy.utcDayLimitUnits,
@@ -1898,44 +2595,78 @@ async function runGenuineOwnerRunCase(input) {
     actorCredential = credential.secret;
     credential.secret = '';
     const accountSnapshot = await requestOwnerSnapshot(observerPool, input.ownerId, agentId);
-    demand(accountSnapshot.owner[0]?.admission_status === 'admitted' && accountSnapshot.agent[0]?.training === true,
+    demand(accountSnapshot.owner[0]?.admission_status === 'admitted' && accountSnapshot.agent[0]?.[mode] === true,
       'agent_permission_database_mismatch');
     output.agent = { agentId, createdOperationId: card.operationId, permissionRevision: permissionBody.agent.policyRevision,
       financialPolicy,
       credentialIssuedThroughOwnerUi: true, credentialOperationId: credential.operationId,
       credentialId: credential.credential.id, accessGrantId: credential.credential.grantId,
-      database: accountSnapshot };
-    record('owner_agent_card_permission_and_credential_ui', 'verified', { agentId, trainingPermission: true });
+      profileSnapshotCandidate: { name: accountSnapshot.agent[0]?.name, declaredVersion: accountSnapshot.agent[0]?.declared_version,
+        profileRevision: accountSnapshot.agent[0]?.revision }, database: accountSnapshot };
+    record('owner_agent_card_permission_and_credential_ui', 'verified', { agentId, modePermission: mode });
 
+    if (bddContext) {
+      bddContext.extraAgents = [];
+      output.bdd.fixtureAgents = [];
+      for (const label of (input.primaryClientOnly ? [] : ['race', 'post-cancel'])) {
+        const card = await createCard(input.ownerPage, 'BDD ' + label + ' ' + input.captureId.slice(0, 8));
+        const panel = input.ownerPage.getByTestId('agent-card-' + card.id);
+        const permission = panel.getByTestId('agent-permission-ranked');
+        if (!await permission.isChecked()) await permission.check();
+        const saved = input.ownerPage.waitForResponse(response =>
+          new URL(response.url()).pathname === '/api/owner/agents/' + card.id + '/permissions'
+          && response.request().method() === 'PUT');
+        await panel.getByTestId('agent-permissions-save').click();
+        demand((await saved).status() === 200, 'bdd_fixture_agent_permission_failed');
+        await setS1FinancialPolicyThroughOwnerUi({ownerPage: input.ownerPage, observerPool,
+          ownerId: input.ownerId, agentId: card.id, limitUnits: BigInt(release.rankedPriceUnits)});
+        const issued = await issueThroughUi(input.ownerPage, card.id, 'issue');
+        bddContext.extraAgents.push({agentId: card.id, bearer: issued.secret});
+        issued.secret = '';
+        output.bdd.fixtureAgents.push({agentId: card.id, label, createdOperationId: card.operationId,
+          credentialOperationId: issued.operationId});
+      }
+    }
     await input.ownerPage.goto('/runs?agentId=' + encodeURIComponent(agentId), { waitUntil: 'domcontentloaded' });
     await input.ownerPage.getByTestId('run-intent-form').waitFor({ state: 'visible', timeout: 15_000 });
     await input.ownerPage.getByTestId('run-agent-select').selectOption(agentId);
-    await input.ownerPage.getByTestId('run-mode-select').selectOption('training');
+    await input.ownerPage.getByTestId('run-mode-select').selectOption(mode);
     const catalog = await input.ownerPage.request.get('/api/owner/runs/catalog').then((response) => response.json());
     demand(catalog?.intentCreationReady === true && catalog?.activeRelease?.manifestHash === output.release.manifestHash &&
       catalog?.activeRelease?.completeRankedRelease === true && Array.isArray(catalog.activeRelease.openTaskIds) &&
-      (sequenceMode ? JSON.stringify(catalog.activeRelease.openTaskIds.slice(0, taskIds.length)) === JSON.stringify(taskIds)
+      JSON.stringify(catalog.activeRelease.taskIds) === JSON.stringify(RANKED_TASK_IDS) &&
+      JSON.stringify(catalog.activeRelease.openTaskIds) === JSON.stringify(OPEN_TASK_IDS) &&
+      (rankedMode ? JSON.stringify(taskIds) === JSON.stringify(catalog.activeRelease.taskIds)
+        : sequenceMode ? JSON.stringify(catalog.activeRelease.openTaskIds.slice(0, taskIds.length)) === JSON.stringify(taskIds)
         : taskIds.every((id) => catalog.activeRelease.openTaskIds.includes(id))),
     'owner_run_catalog_not_bound_to_full_release');
-    for (const id of catalog.activeRelease.openTaskIds) {
-      const checkbox = input.ownerPage.getByTestId('run-task-checkbox-' + id);
-      if (taskIds.includes(id) && !await checkbox.isChecked()) await checkbox.check();
-      if (!taskIds.includes(id) && await checkbox.isChecked()) await checkbox.uncheck();
+    if (!rankedMode) {
+      for (const id of catalog.activeRelease.openTaskIds) {
+        const checkbox = input.ownerPage.getByTestId('run-task-checkbox-' + id);
+        if (taskIds.includes(id) && !await checkbox.isChecked()) await checkbox.check();
+        if (!taskIds.includes(id) && await checkbox.isChecked()) await checkbox.uncheck();
+      }
     }
     const currentTasks = input.ownerPage.locator('[data-testid^="run-task-checkbox-"]:checked');
     const checkedCount = await currentTasks.count();
-    demand(checkedCount === taskIds.length, 'run_intent_task_selection_mismatch');
+    demand(rankedMode ? checkedCount === 0 &&
+      (await input.ownerPage.getByTestId('run-ranked-task-selection').innerText()).includes(RANKED_TASK_IDS.join(', '))
+      : checkedCount === taskIds.length, 'run_intent_task_selection_mismatch');
     const cashCeiling = input.ownerPage.getByTestId('run-cash-ceiling');
     await cashCeiling.fill('0');
     const quoteText = (await input.ownerPage.getByTestId('run-selected-quote').innerText()).trim();
-    const selectedWeight = output.release.trainingTasks.filter((entry) => taskIds.includes(entry.taskId))
+    const selectedTasksForQuote = rankedMode ? output.release.rankedTasks : output.release.trainingTasks;
+    const selectedWeight = selectedTasksForQuote.filter((entry) => taskIds.includes(entry.taskId))
       .reduce((sum, entry) => sum + entry.taskWeight, 0);
-    const totalWeight = output.release.trainingTasks.reduce((sum, entry) => sum + entry.taskWeight, 0);
-    const fullPrice = BigInt(output.release.trainingPriceUnits);
-    demand(output.release.precision === 6 && output.release.trainingTasks.length === catalog.activeRelease.openTaskIds.length &&
-      output.release.trainingTasks.every((entry, index) => entry.taskId === catalog.activeRelease.openTaskIds[index]) &&
-      totalWeight === 15 && selectedWeight > 0, 'validated_release_pricing_projection_invalid');
-    const quoteUnits = ((fullPrice * BigInt(selectedWeight)) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
+    const totalWeight = selectedTasksForQuote.reduce((sum, entry) => sum + entry.taskWeight, 0);
+    const fullPrice = BigInt(rankedMode ? output.release.rankedPriceUnits : output.release.trainingPriceUnits);
+    demand(output.release.precision === 6 &&
+      (rankedMode ? output.release.rankedTasks.length === RANKED_TASK_IDS.length &&
+        output.release.rankedTasks.every((entry, index) => entry.taskId === RANKED_TASK_IDS[index]) && totalWeight === 26
+        : output.release.trainingTasks.length === catalog.activeRelease.openTaskIds.length &&
+          output.release.trainingTasks.every((entry, index) => entry.taskId === catalog.activeRelease.openTaskIds[index]) && totalWeight === 15) &&
+      selectedWeight > 0, 'validated_release_pricing_projection_invalid');
+    const quoteUnits = rankedMode ? fullPrice : ((fullPrice * BigInt(selectedWeight)) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
     const quoteMatch = /Server quote for this selection:\s*([0-9]+(?:\.[0-9]+)?)\s+USDC/i.exec(quoteText);
     demand(quoteMatch && exactUsdcUnits(quoteMatch[1]) === quoteUnits, 'owner_quote_does_not_match_validated_release_weights');
     const intentPromise = input.ownerPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/owner/runs/intents'
@@ -1947,28 +2678,91 @@ async function runGenuineOwnerRunCase(input) {
     const intentId = intentBody?.intent?.id;
     demand([200, 201].includes(intentHttp.status()) && UUID.test(intentId), 'owner_run_intent_ui_failed');
     const intentSnapshot = await readonlyTransaction(observerPool, async (query) => {
-      const result = await query(`SELECT id::text,owner_id::text,agent_id::text,operation_id,mode,task_ids,release_identity,manifest_hash,
+      const result = await query(`SELECT id::text,owner_id::text,agent_id::text,operation_id,mode,task_ids,release_identity,manifest_hash,benchmark_hash,policy_hash,benchmark_version,expires_at::text,
           quote_price_units::text,cash_ceiling_units::text,status,run_id::text,
           successor_preparation_policy_version,successor_preparation_timeout_seconds
         FROM oid_run_launch_intent WHERE id=$1`, [intentId]);
       return pgRows(result);
     });
     demand(intentSnapshot.length === 1 && intentSnapshot[0].owner_id === input.ownerId && intentSnapshot[0].agent_id === agentId &&
-      intentSnapshot[0].status === 'pending' && intentSnapshot[0].mode === 'training' &&
+      intentSnapshot[0].status === 'pending' && intentSnapshot[0].mode === mode &&
       JSON.stringify(intentSnapshot[0].task_ids) === JSON.stringify(taskIds) && intentSnapshot[0].manifest_hash === output.release.manifestHash &&
       BigInt(intentSnapshot[0].quote_price_units) === quoteUnits && BigInt(intentSnapshot[0].cash_ceiling_units) === 0n &&
-      (sequenceMode ? intentSnapshot[0].successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
+      (trainingSequenceMode ? intentSnapshot[0].successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
         Number(intentSnapshot[0].successor_preparation_timeout_seconds) === 180
         : true),
     'owner_intent_database_binding_mismatch');
     output.launchIntent = { intentId, operationId: intentSnapshot[0].operation_id, browserHttpStatus: intentHttp.status(),
-      selectedTasks: taskIds, mode: 'training', cashCeilingUnits: '0', quoteDisplay: quoteText, quotePriceUnits: quoteUnits.toString(),
+      selectedTasks: taskIds, mode, cashCeilingUnits: '0', quoteDisplay: quoteText, quotePriceUnits: quoteUnits.toString(),
       successorPreparationPolicyVersion: intentSnapshot[0].successor_preparation_policy_version,
       successorPreparationTimeoutSeconds: intentSnapshot[0].successor_preparation_timeout_seconds,
       database: intentSnapshot[0] };
     record('owner_run_intent_ui_and_readonly_database', 'verified', { intentId, runUiAction: 'Create private intent' });
 
     const acceptOperationId = randomUUID();
+    if (bddContext) {
+      const pendingText = await input.ownerPage.getByTestId('run-intent-' + intentId).innerText();
+      output.bdd.browser = {pendingBeforeAcceptance: {intentId,
+        statusText: await input.ownerPage.getByTestId('run-intent-status-' + intentId).innerText(),
+        admissionCopy: pendingText.includes('No run admitted and no funds or queue slot reserved')
+          ? 'No run admitted and no funds or queue slot reserved' : null,
+        linkedRunId: null, url: input.ownerPage.url(), database: output.launchIntent.database}};
+      launchProbeInput = {publicOrigin: input.publicOrigin, ownerPage: input.ownerPage,
+        ownerId: input.ownerId, agentId, agentBearer: actorCredential,
+        observerDatabaseUrl: input.observerDatabaseUrl, intent: output.launchIntent,
+        liveValidatedRelease: output.release, ownerPendingLimit: bddContext.ownerPendingLimit,
+        activateNextRelease: bddContext.activateNextRelease, restoreRelease: bddContext.restoreRelease,
+        restartApi: input.restartApi, foreignOwnerPage: input.foreignOwnerPage,
+        raceProbeAgent: bddContext.extraAgents[0], foreignAgent: bddContext.extraAgents[0],
+        postCancelProbeAgent: bddContext.extraAgents[1]};
+      record('bdd_launch_pre_accept_negatives', 'started');
+      launchPreCapture = input.primaryClientOnly
+        ? await runBrlLaunchAdmissionPrimaryOnlyCase(launchProbeInput)
+        : await runBrlLaunchAdmissionPreAcceptCases(launchProbeInput);
+      output.bdd.launch = launchPreCapture;
+      output.bdd.browser.pendingBeforeAcceptance.databaseSnapshot = launchPreCapture['BRL-SC-023'].cases.preAcceptance.after;
+      record('codex_native_mcp_primary_acceptance', 'started');
+      let nativeClient;
+      try {
+        nativeClient = await runCodexNativeOwnerAcceptance({publicOrigin: input.publicOrigin,
+          agentBearer: actorCredential, intentId, acceptOperationId, ownerPage: input.ownerPage, repoRoot: input.repoRoot});
+      } finally {
+        const admitted = await readonlyTransaction(observerPool, async query => pgRows(await query(
+          'SELECT run_id::text FROM oid_run_launch_intent WHERE id=$1 AND owner_id=$2 AND agent_id=$3 AND status=\'accepted\'',
+          [intentId, input.ownerId, agentId])));
+        if (UUID.test(admitted[0]?.run_id ?? '')) runId = admitted[0].run_id;
+      }
+      output.bdd.client = nativeClient;
+      const result = nativeClient.mcp?.toolResult;
+      demand(nativeClient.outcome === 'accepted_result_observed' && UUID.test(result?.runId ?? ''),
+        'codex_native_primary_acceptance_not_observed');
+      runId = result.runId;
+      primaryMcpAcceptance = await captureBrlPrimaryMcpAcceptance(launchProbeInput, launchPreCapture,
+        {toolName: 'runs.accept_launch_intent', clientBoundary: 'codex_native_mcp_agent_case',
+          operationId: acceptOperationId, isError: false, status: 200,
+          body: {run: {id: result.runId, status: result.status}}},
+{externalModelCalls: nativeClient.model.externalModelCalls, llmBenchmarkInvocation: nativeClient.model.llmBenchmarkInvocation});
+      await input.ownerPage.getByTestId('run-intents-refresh').click();
+      await input.ownerPage.getByTestId('owner-run-' + runId).waitFor({state: 'visible', timeout: 15000});
+      const acceptedText = await input.ownerPage.getByTestId('run-intent-' + intentId).innerText();
+      output.bdd.browser.acceptedAfterMcp = {intentId, runId,
+        statusText: await input.ownerPage.getByTestId('run-intent-status-' + intentId).innerText(),
+        linkedRunId: acceptedText.includes(runId) ? runId : null, url: input.ownerPage.url(),
+        databaseSnapshot: primaryMcpAcceptance.cases.acceptance.after};
+      await input.ownerPage.reload({waitUntil: 'domcontentloaded'});
+      await input.ownerPage.getByTestId('owner-run-' + runId).waitFor({state: 'visible', timeout: 15000});
+      output.bdd.browser.afterReload = {intentId, runId,
+        statusText: await input.ownerPage.getByTestId('run-intent-status-' + intentId).innerText(),
+        linkedRunId: (await input.ownerPage.getByTestId('run-intent-' + intentId).innerText()).includes(runId) ? runId : null,
+        url: input.ownerPage.url()};
+      const reloadObserved = await captureBrlPrimaryMcpAcceptance(launchProbeInput, launchPreCapture,
+        {toolName: 'runs.accept_launch_intent', clientBoundary: 'codex_native_mcp_agent_case',
+          operationId: acceptOperationId, isError: false, status: 200,
+          body: {run: {id: result.runId, status: result.status}}},
+        {externalModelCalls: nativeClient.model.externalModelCalls, llmBenchmarkInvocation: nativeClient.model.llmBenchmarkInvocation});
+      output.bdd.browser.afterReload.databaseSnapshot = reloadObserved.cases.acceptance.after;
+      record('codex_native_mcp_primary_acceptance', 'verified', {clientVersion: nativeClient.client.version, runId});
+    }
     record('agent_accept_http_and_readonly_database', 'started', { operationId: acceptOperationId });
     let accept = { status: null, payload: {} };
     let acceptTransportUnknown = false;
@@ -2005,15 +2799,15 @@ async function runGenuineOwnerRunCase(input) {
       acceptedSnapshot.run[0].intent_operation_id === createIntentOperationId && acceptedSnapshot.run[0].manifest_hash === output.release.manifestHash,
     'agent_accept_database_binding_mismatch');
     demand(acceptedSnapshot.run[0].owner_id === input.ownerId && acceptedSnapshot.run[0].agent_id === agentId &&
-      acceptedSnapshot.run[0].intentId === intentId && acceptedSnapshot.run[0].mode === 'training' &&
+      acceptedSnapshot.run[0].intentId === intentId && acceptedSnapshot.run[0].mode === mode &&
       Array.isArray(acceptedSnapshot.run[0].task_ids) && JSON.stringify(acceptedSnapshot.run[0].task_ids) === JSON.stringify(taskIds) &&
       BigInt(acceptedSnapshot.run[0].quote_price_units) === quoteUnits &&
-      (sequenceMode ? acceptedSnapshot.run[0].successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
+      (trainingSequenceMode ? acceptedSnapshot.run[0].successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
         Number(acceptedSnapshot.run[0].successor_preparation_timeout_seconds) === 180 &&
         acceptedSnapshot.run[0].intent_successor_preparation_policy_version === 'local-bef-successor-preparation/v1' &&
         Number(acceptedSnapshot.run[0].intent_successor_preparation_timeout_seconds) === 180
         : true) &&
-      acceptedEventMatches(acceptedSnapshot, { runId, intentId, taskIds,
+      acceptedEventMatches(acceptedSnapshot, { runId, intentId, taskIds, mode,
         ownerId: input.ownerId, agentId, manifestHash: output.release.manifestHash, acceptOperationId }),
     'agent_accept_event_or_owner_binding_mismatch');
     output.runInitial = { overallDeadline: acceptedSnapshot.run[0].overall_deadline,
@@ -2041,23 +2835,64 @@ async function runGenuineOwnerRunCase(input) {
       let successorActivation = null;
       const captured = await captureAndEvaluateTrainingTask({ input, output, record, observerPool, bearer: actorCredential,
         runId, taskIndex, taskId: currentTaskId, intentId, createIntentOperationId, acceptOperationId,
-        selectedTaskIds: taskIds, agentId, created, taskReleaseSource, evidenceSource, sequenceMode,
-        beforeAction: sequenceMode && taskIndex === 1 ? async (task) => {
+        selectedTaskIds: taskIds, agentId, created, taskReleaseSource, evidenceSource, sequenceMode, mode,
+        beforeAction: rankedMode && taskIndex > 0 ? async (task) => {
+          successorActivation = await verifyRankedSuccessorActivation({ input, record, observerPool, runId, task,
+            release: output.release, predecessorTerminalization: output.predecessorTerminalizations?.[taskIndex - 1],
+            priorTaskResult: output.taskEvaluations?.find((entry) => entry.taskIndex === taskIndex - 1),
+            dispatchIdentity: output.dispatchIdentity });
+          output.rankedSuccessorActivations ??= [];
+          output.rankedSuccessorActivations.push(successorActivation);
+        } : trainingSequenceMode && taskIndex === 1 ? async (task) => {
           successorActivation = await verifyTrainingSuccessorActivation({ input, record, observerPool, runId, task,
             oldOverallDeadline: output.runInitial.overallDeadline, release: output.release,
             priorTaskResult: output.taskEvaluations[0].result, predecessorTerminalization: output.predecessorTerminalization,
             dispatchIdentity: output.dispatchIdentity });
           output.successorActivation = successorActivation;
         } : null });
-      if (sequenceMode && taskIndex === 0) {
+      if (rankedMode && taskIndex < taskIds.length - 1) {
+        demand(captured.terminalization?.observedFromWorker === true &&
+          output.predecessorTerminalizations?.[taskIndex]?.status === 'verified',
+          'ranked_successor_worker_waited_before_known_predecessor_terminalization');
+        output.rankedWorkerAdvancements ??= [];
+        output.rankedWorkerAdvancements.push({ status: 'awaited_from_real_server_worker',
+          terminalizedTaskIndex: taskIndex, nextTaskIndex: taskIndex + 1,
+          trigger: 'known_terminalization_after_exact_generation_fence', manualPreparationOrActivation: false });
+      }
+      if (trainingSequenceMode && taskIndex === 0) {
         demand((input.automaticWorkerEvaluation ? captured.terminalization?.observedFromWorker === true
           : captured.terminalization?.replayed === false) && output.predecessorTerminalization?.status === 'verified',
           'successor_worker_waited_before_known_predecessor_terminalization');
         output.workerAdvancement = { status: 'awaited_from_real_server_worker', nextTaskIndex: 1,
           trigger: 'known_terminalization_after_exact_generation_fence', manualPreparationOrActivation: false };
       }
-      if (sequenceMode && taskIndex === 1) demand(successorActivation?.taskIndex === 1,
+      if (trainingSequenceMode && taskIndex === 1) demand(successorActivation?.taskIndex === 1,
         'successor_activation_not_independently_verified');
+    }
+    if (rankedMode) demand(output.rankedSuccessorActivations?.length === RANKED_TASK_IDS.length - 1 &&
+      output.rankedSuccessorActivations.every((entry, index) => entry.taskIndex === index + 1 &&
+        entry.predecessorTaskIndex === index && entry.taskId === RANKED_TASK_IDS[index + 1] &&
+        entry.predecessorTaskId === RANKED_TASK_IDS[index]) &&
+      output.rankedWorkerAdvancements?.length === RANKED_TASK_IDS.length - 1,
+    'ranked_successor_transition_chain_incomplete');
+    if (bddContext && !input.primaryClientOnly && rankedMode && output.runCompletion?.status === 'verified') {
+      record('bdd_ranked_replay_forgery_restart', 'started');
+      output.bdd.ranked = await runRankedBddCases({runId, ownerId: input.ownerId, agentId,
+        publicOrigin: input.publicOrigin, agentBearer: actorCredential, ownerPage: input.ownerPage,
+        observerPool, db: created.db, taskReleaseSource, evidenceSource, evidenceRoot: input.repoRoot,
+        restartApi: input.restartApi});
+      record('bdd_ranked_replay_forgery_restart', output.bdd.ranked.status);
+      record('bdd_launch_post_completion_retries_and_expiry', 'started');
+      output.bdd.launch = await runBrlLaunchAdmissionPostCompletionCases(launchProbeInput,
+        {preCapture: launchPreCapture, primaryAcceptance: primaryMcpAcceptance,
+          httpReplay: {method: 'POST', status: accept.status, body: accept.payload,
+            request: {operationId: acceptOperationId}}});
+      record('bdd_launch_post_completion_retries_and_expiry', 'observed');
+    }
+    if (bddContext && input.primaryClientOnly && primaryMcpAcceptance) {
+      output.bdd.launch['BRL-SC-023'] = {...primaryMcpAcceptance, status: 'blocked',
+        missingFixtures: ['post_acceptance_transport_version_expiry_negative_matrix_not_selected']};
+      record('primary_native_client_profile_boundary', 'verified', {negativeMatrixAcceptance: false});
     }
   } catch (error) {
     output.status = 'blocked';
@@ -2066,18 +2901,21 @@ async function runGenuineOwnerRunCase(input) {
     record(output.blocker.stage, 'blocked', { reasonCode: output.blocker.reasonCode });
   } finally {
     actorCredential = '';
-    if (runId && observerPool && output.trainingRunCompletion?.status !== 'verified') {
+    if (bddContext?.extraAgents) for (const agent of bddContext.extraAgents) agent.bearer = '';
+    if (runId && observerPool && output.runCompletion?.status !== 'verified') {
       await requestOwnerCancellation({ ownerPage: input.ownerPage, runId, observerPool, output });
     }
     if (ownerDbClient) await ownerDbClient.end({ timeout: 5 }).catch(() => undefined);
     if (observerPool) await observerPool.end().catch(() => undefined);
   }
-  if (!output.status) output.status = output.trainingRunCompletion?.status === 'verified'
-    ? (input.automaticWorkerEvaluation ? (sequenceMode ? 'captured_s1_s2_training_sequence_completed_by_server_worker'
+  output.runCompletion ??= output.trainingRunCompletion;
+  if (!output.status) output.status = output.runCompletion?.status === 'verified'
+    ? (rankedMode ? 'captured_full_ranked_run_completed_by_server_worker_with_internal_handoff'
+      : input.automaticWorkerEvaluation ? (sequenceMode ? 'captured_s1_s2_training_sequence_completed_by_server_worker'
       : 'captured_' + taskId.toLowerCase() + '_training_run_completed_by_server_worker')
       : sequenceMode ? 'captured_s1_s2_training_sequence_completed_by_internal_bridge_and_real_worker_advancement'
       : 'captured_' + taskId.toLowerCase() + '_training_run_completed_by_internal_bridge')
-    : (sequenceMode ? 'captured_partial_training_sequence' : 'captured_first_task_only');
+    : (rankedMode ? 'captured_partial_ranked_run' : sequenceMode ? 'captured_partial_training_sequence' : 'captured_first_task_only');
   output.runId = runId;
   output.fullScenarioAcceptance = false;
   output.productReleaseActivated = false;
@@ -2094,6 +2932,9 @@ export async function runGenuineTrainingSequenceOwnerCase(input) {
   return runGenuineOwnerRunCase({ ...input, sequenceMode: true, taskIds: ['S1', 'S2'] });
 }
 
+export async function runGenuineRankedOwnerCase(input) {
+  return runGenuineOwnerRunCase({ ...input, mode: 'ranked', sequenceMode: true, taskIds: RANKED_TASK_IDS });
+}
 export async function writeGenuineS1Capture({ repositoryRoot, capture, provenance }) {
   const captureId = capture.captureId;
   demand(UUID.test(captureId), 'capture_id_invalid');
@@ -2160,6 +3001,38 @@ export async function writeGenuineTrainingSequenceStartupBlock({ repositoryRoot,
   }, provenance: { startupFailure: true, sourceStableDuringRun: false } });
 }
 
+export async function writeGenuineRankedCapture({ repositoryRoot, capture, provenance }) {
+  demand(UUID.test(capture.captureId) && capture.schemaVersion === 'genuine-ranked-worker-owner-run-capture/v1' &&
+    capture.mode === 'ranked' && JSON.stringify(capture.taskIds) === JSON.stringify(RANKED_TASK_IDS),
+  'ranked_capture_identity_invalid');
+  const directory = resolve(repositoryRoot, RANKED_EVIDENCE_ROOT, capture.captureId);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const payload = { ...capture, provenance, fullScenarioAcceptance: false,
+    claims: { productReleaseActivation: false, internalTaskEvaluationRecorded: capture.internalTaskEvaluationRecorded === true,
+      internalRankedHandoffVerified: capture.rankedHandoff?.status === 'verified', publicLeaderboardPublication: false,
+      taskGradePublished: false, ownerAcceptance: false, bddLifecycleChanged: false,
+      automaticWorkerEvaluation: capture.automaticWorkerEvaluationVerified === true } };
+  assertSecretFree(payload, 'genuine-ranked-owner-run-capture');
+  const bytes = Buffer.from(JSON.stringify(payload, null, 2) + '\n');
+  await writeFile(resolve(directory, 'capture.json'), bytes, { flag: 'wx', mode: 0o600 });
+  const manifest = { schemaVersion: 'genuine-ranked-worker-owner-run-artifact/v1', captureId: capture.captureId,
+    classification: payload.classification, status: capture.status, fullScenarioAcceptance: false,
+    artifacts: [{ path: 'capture.json', sha256: sha256(bytes),
+      boundary: 'local full ranked server-worker run and internal handoff proof; not public leaderboard or full scenario acceptance' }] };
+  await writeFile(resolve(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  return { directory: relative(repositoryRoot, directory).split(sep).join('/'), manifest, sha256: sha256(bytes) };
+}
+
+export async function writeGenuineRankedStartupBlock({ repositoryRoot, captureId, phase, reasonCode }) {
+  return writeGenuineRankedCapture({ repositoryRoot, capture: {
+    schemaVersion: 'genuine-ranked-worker-owner-run-capture/v1', captureId, mode: 'ranked', taskId: RANKED_TASK_IDS[0],
+    taskIds: RANKED_TASK_IDS, status: 'blocked',
+    classification: 'local_full_ranked_server_worker_run_requested_not_public_leaderboard_or_full_scenario_acceptance',
+    automaticWorkerEvaluationRequested: true, automaticWorkerEvaluationVerified: false,
+    fullScenarioAcceptance: false, productReleaseActivation: false, internalTaskEvaluationRecorded: false,
+    taskGradePublished: false, stages: [{ name: phase, status: 'blocked', reasonCode }], participantActions: [],
+  }, provenance: { startupFailure: true, sourceStableDuringRun: false } });
+}
 /** Provision coordinator credentials only inside the compose tmpfs mount. */
 export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, automaticWorkerEvaluation = false }) {
   demand(process.platform === 'linux' && repositoryRoot === ROOT, 'genuine_s1_requires_pinned_docker_runtime');
@@ -2223,3 +3096,7 @@ export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, auto
   process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG = configPath;
   return { configPath, environmentId: 'bef-env-a', manifestSha256: manifestBytes.sha256, secretMaterialRetained: false };
 }
+
+export { offerTermsMatch as matchGenuinePublicOffer, selectCatalogOffer as selectGenuinePublicCatalogOffer,
+  readH3PublicReferenceField as readGenuineH3PublicReferenceField,
+  createMinimumIntervalPacer as createGenuineAgentRequestPacer };

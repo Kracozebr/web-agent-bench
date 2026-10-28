@@ -116,6 +116,9 @@ test('successor locator admits only bounded non-final predecessor identities', (
   const runId = '10000000-0000-4000-8000-000000000001';
   const claimId = '20000000-0000-4000-8000-000000000002';
   assert.equal(isValidSuccessorLocator({ run_id: runId, predecessor_task_index: 0, claim_id: claimId }), true);
+  assert.equal(isValidSuccessorLocator({ run_id: runId, predecessor_task_index: 0, claim_id: claimId, mode: 'training' }), true);
+  assert.equal(isValidSuccessorLocator({ run_id: runId, predecessor_task_index: 0, claim_id: claimId, mode: 'ranked' }), true);
+  assert.equal(isValidSuccessorLocator({ run_id: runId, predecessor_task_index: 0, claim_id: claimId, mode: 'evaluation' }), false);
   assert.equal(isValidSuccessorLocator({ run_id: runId, predecessor_task_index: 10, claim_id: claimId }), true);
   assert.equal(isValidSuccessorLocator({ run_id: runId, predecessor_task_index: 11, claim_id: claimId }), false);
   assert.equal(isValidSuccessorLocator({ run_id: runId, predecessor_task_index: 0.5, claim_id: claimId }), false);
@@ -199,7 +202,7 @@ function fencedKnownClosedRecoveryRow(): Record<string, unknown> {
   const bundle = { schemaVersion: 'bts-task-observation-bundle/v1', binding, closure, execution,
     cutoff: { observationSequence: 1, status: 'authoritative', evidence: observations.captureEvidence }, observations };
   const result = { status: 'known', taskId: 'S1', outcome: 'passed', mandatoryViolation: null };
-  const input = { taskCase: { taskId: 'S1', caseId, caseHash, rubricHash },
+  const input = { taskCase: { taskId: 'S1', mode: 'training', caseId, caseHash, rubricHash },
     release: { releaseIdentity, manifestHash: releaseManifestHash },
     run: { ...binding, acceptedActionCutoffSequence: 0, reconciledThroughActionSequence: 0,
       observationCutoffSequence: 1, cutoffStatus: 'authoritative', cutoffEvidence: observations.captureEvidence }, observations };

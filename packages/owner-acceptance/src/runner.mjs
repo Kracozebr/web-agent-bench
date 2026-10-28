@@ -24,9 +24,10 @@ import { saveBillingEvidence } from "./billing-evidence.mjs";
 import { runFinancialUiCases } from "./financial-ui-cases.mjs";
 import { runLaunchBoundaryCases, saveLaunchBoundaryCapture } from "./run-cases.mjs";
 import { runTransactionCases } from "./run-transaction-cases.mjs";
-import { provisionGenuineS1CoordinatorConfig, runGenuineS1OwnerCase, runGenuineTrainingSequenceOwnerCase,
+import { benchmarkBddCaptureDecision, saveBenchmarkBddEvidence } from "./bdd-evidence.mjs";
+import { provisionGenuineS1CoordinatorConfig, runGenuineS1OwnerCase, runGenuineTrainingSequenceOwnerCase, runGenuineRankedOwnerCase,
   writeGenuineS1Capture, writeGenuineS1StartupBlock, writeGenuineTrainingSequenceCapture,
-  writeGenuineTrainingSequenceStartupBlock } from "./genuine-s1-cases.mjs";
+  writeGenuineTrainingSequenceStartupBlock, writeGenuineRankedCapture, writeGenuineRankedStartupBlock } from "./genuine-s1-cases.mjs";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(packageRoot, "../..");
@@ -36,10 +37,11 @@ const adminSubject = "oid-admin-fixture-sub";
 const clientId = "oid-local-" + randomBytes(8).toString("hex") + ".apps.example.invalid";
 const clientSecret = randomBytes(32).toString("base64url");
 const runId = randomUUID();
+const genuineRankedOptIn = process.argv.includes("--genuine-ranked-worker-owner-run");
 const genuineWorkerSequenceOptIn = process.argv.includes("--genuine-training-sequence-worker-owner-run");
-const genuineSequenceOptIn = genuineWorkerSequenceOptIn || process.argv.includes("--genuine-training-sequence-owner-run");
-const genuineWorkerTaskId = ["S1", "S2", "S4", "M1"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
-const genuineWorkerOptIn = genuineWorkerSequenceOptIn || genuineWorkerTaskId !== undefined;
+const genuineSequenceOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || process.argv.includes("--genuine-training-sequence-owner-run");
+const genuineWorkerTaskId = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
+const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || genuineWorkerTaskId !== undefined;
 const genuineTaskId = genuineWorkerTaskId ?? ["S1", "S2", "S4"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
 const activeContract = JSON.parse(await readFile(resolve(repoRoot, "tests/bdd/changes/owner-identity-and-pilot-admission/harness-contracts.json"), "utf8"));
@@ -500,6 +502,15 @@ async function collectSourceHashes() {
     resolve(repoRoot, "openspec/changes/benchmark-task-suite"),
     resolve(repoRoot, "tests/bdd/changes/benchmark-run-lifecycle"),
     resolve(repoRoot, "tests/bdd/changes/benchmark-task-suite"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_task_suite.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_task_suite_verifier.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_run_lifecycle.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_run_lifecycle_verifier.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_run_lifecycle_codex_verifier.py"),
+    resolve(repoRoot, "tests/bdd/mappers/test_benchmark_task_suite_bdd.py"),
+    resolve(repoRoot, "tests/bdd/mappers/test_benchmark_run_lifecycle_bdd.py"),
+    resolve(repoRoot, "tests/bdd/features/benchmark_task_suite.feature"),
+    resolve(repoRoot, "tests/bdd/features/benchmark_run_lifecycle.feature"),
     resolve(repoRoot, "tools/harness_contracts.py"),
     resolve(repoRoot, "tools/run_bdd_acceptance.py"),
     resolve(repoRoot, "package.json"),
@@ -670,16 +681,22 @@ async function main() {
     if (confirmed.owner?.id !== ownerId || confirmed.owner?.admissionStatus !== "admitted") throw new Error("Activation did not confirm the same admitted owner in the real owner projection");
     const activationOperation = ownerLogin.capture.requests.filter((item) => item.path === "/api/admission/activate" && item.method === "POST").at(-1)?.operationId;
     if (genuineS1OptIn) {
-      phase = genuineSequenceOptIn ? "genuine_training_sequence_owner_run" : "genuine_s1_first_task_owner_run";
+      phase = genuineRankedOptIn ? "genuine_ranked_worker_owner_run" : genuineSequenceOptIn ? "genuine_training_sequence_owner_run" : "genuine_s1_first_task_owner_run";
       const captureInput = {
         captureId: runId,
+        bddProbes: process.env.OID_ACCEPTANCE_BDD_PROBES === "true",
+        primaryClientOnly: process.env.OID_ACCEPTANCE_PRIMARY_CLIENT_ONLY === "true",
+        restartApi: restartOwnerApi,
+        mode: genuineRankedOptIn ? "ranked" : "training",
         automaticWorkerEvaluation: genuineWorkerOptIn,
+        ...(genuineRankedOptIn ? { sequenceMode: true, taskIds: ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"] } : {}),
         ...(genuineSequenceOptIn ? {} : { taskId: genuineTaskId }),
         repoRoot,
         databaseUrl: process.env.OID_DATABASE_URL,
         observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
         publicOrigin,
         adminPage: admin.page,
+        foreignOwnerPage: admin.page,
         ownerPage: ownerLogin.page,
         ownerId,
         setup: {
@@ -692,7 +709,9 @@ async function main() {
           ownerAdmissionStatus: confirmed.owner?.admissionStatus,
         },
       };
-      const capture = genuineSequenceOptIn
+      const capture = genuineRankedOptIn
+        ? await runGenuineRankedOwnerCase(captureInput)
+        : genuineSequenceOptIn
         ? await runGenuineTrainingSequenceOwnerCase(captureInput)
         : await runGenuineS1OwnerCase(captureInput);
       const adminBrowser = projectGenuineBrowserCapture(admin.capture, (path) => path === "/api/admin/bonus-grants" || path.startsWith("/api/admin/invitations"));
@@ -708,7 +727,7 @@ async function main() {
         correlateGenuineUiOperation(admin.capture, "admin_bonus_grant_submit", capture.bonusGrant?.operationId, "/api/admin/bonus-grants"),
         correlateGenuineUiOperation(ownerLogin.capture, "owner_activation", capture.setup?.ownerActivationOperationId, "/api/admission/activate"),
         correlateGenuineUiOperation(ownerLogin.capture, "owner_agent_create", capture.agent?.createdOperationId, "/api/owner/agents"),
-        correlateGenuineUiOperation(ownerLogin.capture, "owner_training_permission_save",
+        correlateGenuineUiOperation(ownerLogin.capture, "owner_mode_permission_save",
           operationForPath(/^\/api\/owner\/agents\/[^/]+\/permissions$/, "PUT"), "/api/owner/agents/"),
         correlateGenuineUiOperation(ownerLogin.capture, "owner_financial_policy_save",
           capture.agent?.financialPolicy?.operationId, "/api/owner/agents/"),
@@ -726,7 +745,32 @@ async function main() {
         capture.blocker = { stage: "source_provenance", reasonCode: "source_inputs_changed_during_run" };
         capture.stages.push({ name: "source_provenance", status: "blocked", reasonCode: "source_inputs_changed_during_run" });
       }
-      const savedGenuine = genuineSequenceOptIn
+      if (process.env.OID_ACCEPTANCE_BDD_PROBES === "true") {
+        capture.bddEvidence = [];
+        const scenarioCaptures = {
+          "BTS-SC-001": capture.bdd?.release,
+          "BTS-SC-002": capture.bdd?.release,
+          "BTS-SC-009": capture.bdd?.ranked,
+          ...(capture.bdd?.launch ?? {}),
+          ...(capture.bdd?.client ? {"BRL-SC-025": {
+            schemaVersion: "benchmark-run-lifecycle-codex-runtime-evidence/v1", scenarioId: "BRL-SC-025",
+            status: "blocked", client: capture.bdd.client, launchCaptures: capture.bdd.launch ?? {},
+            observations: {browser: capture.bdd.browser ?? {}, browserWitness: capture.browserWitness,
+              browserActionManifest: capture.browserActionManifest},
+            reasonCode: "remaining_client_negative_variants_unverified",
+          }} : {}),
+        };
+        for (const [scenarioId, raw] of Object.entries(scenarioCaptures)) {
+          if (!raw) continue;
+          const decision = benchmarkBddCaptureDecision(raw, provenance.sourceStableDuringRun);
+          capture.bddEvidence.push(await saveBenchmarkBddEvidence({ repositoryRoot: repoRoot,
+            changeName: scenarioId.startsWith("BTS") ? "benchmark-task-suite" : "benchmark-run-lifecycle",
+            scenarioId, capture: raw, provenance, ...decision }));
+        }
+      }
+      const savedGenuine = genuineRankedOptIn
+        ? await writeGenuineRankedCapture({ repositoryRoot: repoRoot, capture, provenance })
+        : genuineSequenceOptIn
         ? await writeGenuineTrainingSequenceCapture({ repositoryRoot: repoRoot, capture, provenance })
         : await writeGenuineS1Capture({ repositoryRoot: repoRoot, capture, provenance });
       genuineArtifactWritten = true;
@@ -734,7 +778,7 @@ async function main() {
       await adminContext.close();
       console.log(JSON.stringify({ ...savedGenuine, status: capture.status, fullScenarioAcceptance: false,
         runId: capture.runId ?? null, stageCount: capture.stages.length, blocker: capture.blocker ?? null }, null, 2));
-      if (capture.status === "blocked") process.exitCode = 2;
+      if (capture.status === "blocked" || capture.bddEvidence?.some(row => row.status === "failed")) process.exitCode = 2;
       return;
     }
     phase = "wallet_link_and_return";
@@ -1008,7 +1052,9 @@ main().catch(async (error) => {
     const code = typeof error?.code === "string" && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
       ? error.code : "genuine_s1_startup_or_owner_setup_failed";
     try {
-      const saved = genuineSequenceOptIn
+      const saved = genuineRankedOptIn
+        ? await writeGenuineRankedStartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code })
+        : genuineSequenceOptIn
         ? await writeGenuineTrainingSequenceStartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code,
           automaticWorkerEvaluation: genuineWorkerOptIn })
         : await writeGenuineS1StartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code, taskId: genuineTaskId,

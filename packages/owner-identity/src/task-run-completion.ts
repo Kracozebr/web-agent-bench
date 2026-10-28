@@ -1,8 +1,8 @@
 /**
- * Private normal completion for a fully known training run.
+ * Private normal completion for fully known training and ranked runs.
  *
  * This module does not choose or activate a successor, resolve unknown
- * evidence, refund a run, publish ranked eligibility, or call an executor.
+ * evidence, refund a run, or call an executor. Ranked completion includes an atomic verified handoff.
  * It commits a known non-final task terminalization or the final run transition
  * only after immutable task records and original environment fences verify.
  */
@@ -14,6 +14,8 @@ import type { TaskEvaluationResult, EvaluateTaskInput } from './task-evaluator.j
 import { canonicalTaskJson, sha256CanonicalTaskJson, type TaskReleaseQuerySource, type ValidatedTaskReleaseRecord } from './task-release.js';
 import type { TaskEvaluationEvidenceSource } from './task-result-service.js';
 import type { TaskId } from './task-catalog.js';
+import { aggregateVerifiedRankedOutcomes, type RankedTaskProof } from './task-ranked-aggregate.js';
+import { publishRankedHandoff } from './task-ranked-handoff.js';
 
 type Transaction = Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
 
@@ -150,8 +152,10 @@ function terminalTaskStatus(result: TaskEvaluationResult): 'completed' | 'failed
   return result.outcome === 'failed' ? 'failed' : 'completed';
 }
 
-function expectedTaskOrder(record: ValidatedTaskReleaseRecord, taskIds: string[]): boolean {
-  const cases = record.manifest.cases.training;
+function expectedTaskOrder(record: ValidatedTaskReleaseRecord, taskIds: string[], mode: string): boolean {
+  if (mode !== 'training' && mode !== 'ranked') return false;
+  const cases = record.manifest.cases[mode];
+  if (mode === 'ranked' && taskIds.length !== cases.length) return false;
   const order = cases.map((entry) => entry.taskId).filter((taskId) => taskIds.includes(taskId));
   return order.length === taskIds.length && order.every((taskId, index) => taskId === taskIds[index]);
 }
@@ -219,7 +223,7 @@ async function validateTaskEvidence(tx: Transaction, row: RunRow, task: TaskRow,
   record: ValidatedTaskReleaseRecord, evaluation: EvaluationRow, evidenceSource: TaskEvaluationEvidenceSource): Promise<{
     result: TaskEvaluationResult; fenceEvidenceHash: string; preparationId: string; leaseId: string; generationId: string;
   }> {
-  const taskCase = record.manifest.cases.training.find((entry) => entry.taskId === task.task_id);
+  const taskCase = record.manifest.cases[row.mode as 'training' | 'ranked'].find((entry) => entry.taskId === task.task_id);
   if (!taskCase || evaluation.run_id !== row.id || evaluation.task_index !== taskIndex || evaluation.closure_id !== task.closure_id ||
       evaluation.task_id !== task.task_id || evaluation.release_identity !== row.release_identity ||
       evaluation.manifest_hash !== row.manifest_hash || evaluation.case_hash !== taskCase.caseHash ||
@@ -370,7 +374,7 @@ function completionPayload(run: RunRow, taskIds: string[], finishedAt: string,
 async function validateTaskSet(tx: Transaction, row: RunRow, record: ValidatedTaskReleaseRecord, replayed: boolean) {
   if (!Array.isArray(row.task_ids) || row.task_ids.length === 0 || row.task_ids.length > 12 ||
       row.task_ids.some((taskId) => typeof taskId !== 'string') || new Set(row.task_ids).size !== row.task_ids.length ||
-      !expectedTaskOrder(record, row.task_ids)) {
+      !expectedTaskOrder(record, row.task_ids, row.mode)) {
     fail(409, 'RUN_TASK_SELECTION_MISMATCH', 'The selected training tasks do not match the immutable release order');
   }
   const tasks = await query<TaskRow & { result_json: unknown }>(tx, sql`SELECT run_id,task_index,task_id,status,closure_status,closure_id,
@@ -468,9 +472,10 @@ async function taskEvaluation(tx: Transaction, runId: string, taskIndex: number)
  * generation has been fenced. The run charge, overall clock, claim and slot
  * remain owned by the run; this function does not prepare or activate a successor.
  */
-export async function finalizeKnownTrainingTask(
+async function finalizeKnownTask(
   deps: TaskRunCompletionDependencies,
   input: { runId: string; taskIndex: number },
+  mode: 'training' | 'ranked',
 ): Promise<FinalizedTrainingTask> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.runId) ||
       !Number.isSafeInteger(input.taskIndex) || input.taskIndex < 0 || input.taskIndex > 11) {
@@ -488,7 +493,7 @@ export async function finalizeKnownTrainingTask(
     const agents = await query<{ id: string; owner_id: string; access_generation: number; access_revoked_at: Date | string | null }>(tx,
       sql`SELECT id,owner_id,access_generation,access_revoked_at FROM oid_agent
         WHERE id=${candidate.agent_id} AND owner_id=${candidate.owner_id} FOR NO KEY UPDATE`);
-    const policyRows = await query<{ training: boolean }>(tx, sql`SELECT training FROM oid_agent_policy
+    const policyRows = await query<{ training: boolean; ranked: boolean }>(tx, sql`SELECT training,ranked FROM oid_agent_policy
       WHERE agent_id=${candidate.agent_id} FOR UPDATE`);
     const runRows = await query<RunRow>(tx, sql`SELECT id,intent_id,owner_id,agent_id,mode,task_ids,release_identity,benchmark_version,
         manifest_hash,benchmark_hash,policy_hash,access_generation,agent_policy_revision,status,started_at,overall_deadline,
@@ -500,7 +505,7 @@ export async function finalizeKnownTrainingTask(
     if (!row || !agent || !policy || row.owner_id !== candidate.owner_id || row.agent_id !== candidate.agent_id) {
       fail(404, 'RUN_NOT_FOUND', 'The run does not exist');
     }
-    if (row.mode !== 'training') fail(409, 'TRAINING_TASK_REQUIRED', 'Only selected training tasks use this terminalization path');
+    if (row.mode !== mode) fail(409, 'TRAINING_TASK_REQUIRED', 'Only selected training tasks use this terminalization path');
     if (!date(row.started_at) || !date(row.overall_deadline) || row.terminal_reason !== null ||
         (row.status !== 'running' && row.status !== 'completed')) {
       fail(409, 'RUN_NOT_TERMINALIZABLE', 'Only a started, non-cancelled training run can terminalize a selected task');
@@ -509,7 +514,7 @@ export async function finalizeKnownTrainingTask(
     const completedAt = completedRunReplay ? date(row.finished_at) : null;
     if (completedRunReplay && !completedAt) fail(409, 'RUN_NOT_TERMINALIZABLE', 'A completed run requires its immutable finish time');
     if (!completedRunReplay && (owners[0]?.admission_status !== 'admitted' || agent.access_revoked_at !== null ||
-        agent.access_generation !== row.access_generation || !policy.training)) {
+        agent.access_generation !== row.access_generation || !policy[mode])) {
       fail(409, 'RUN_ACCESS_NOT_CURRENT', 'Current owner and agent access is required to terminalize a task');
     }
 
@@ -596,9 +601,10 @@ export async function finalizeKnownTrainingTask(
  * wall clock is used only to timestamp completion after the persisted cutoffs
  * have been resolved. No overall-deadline comparison is made here.
  */
-export async function completeKnownTrainingRun(
+async function completeKnownRun(
   deps: TaskRunCompletionDependencies,
   input: { runId: string },
+  mode: 'training' | 'ranked',
 ): Promise<CompletedTrainingRun> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.runId)) {
     fail(400, 'INVALID_RUN_ID', 'A run UUID is required');
@@ -625,7 +631,7 @@ export async function completeKnownTrainingRun(
     if (!row || !agent || !policy || row.owner_id !== candidate.owner_id || row.agent_id !== candidate.agent_id) {
       fail(404, 'RUN_NOT_FOUND', 'The run does not exist');
     }
-    if (row.mode !== 'training') fail(409, 'RANKED_COMPLETION_REQUIRES_HANDOFF', 'Ranked completion must include its atomic eligibility handoff');
+    if (row.mode !== mode) fail(409, 'RANKED_COMPLETION_REQUIRES_HANDOFF', 'Ranked completion must include its atomic eligibility handoff');
     if (!date(row.started_at) || !date(row.overall_deadline) || row.terminal_reason !== null ||
         (row.status !== 'running' && row.status !== 'completed')) {
       fail(409, 'RUN_NOT_COMPLETABLE', 'Only a normally running or identically completed run can use this completion path');
@@ -634,7 +640,7 @@ export async function completeKnownTrainingRun(
     const completedAt = replayed ? date(row.finished_at) : null;
     if (replayed && !completedAt) fail(409, 'RUN_NOT_COMPLETABLE', 'A completed run requires its immutable completion timestamp');
     if (!replayed && (owners[0]?.admission_status !== 'admitted' || agent.access_revoked_at !== null ||
-        agent.access_generation !== row.access_generation || !policy.training)) {
+        agent.access_generation !== row.access_generation || !policy[mode])) {
       fail(409, 'RUN_ACCESS_NOT_CURRENT', 'Current owner and agent access is required for normal completion');
     }
     await assertNoCancellationHistory(tx, row, completedAt ?? undefined);
@@ -655,6 +661,7 @@ export async function completeKnownTrainingRun(
     const verified: Array<{ taskIndex: number; taskId: string; closureId: string; inputHash: string; resultHash: string;
       preparationId: string; leaseId: string; generationId: string; fenceEvidenceHash: string }> = [];
     const desiredStatuses: Array<'completed' | 'failed'> = [];
+    const rankedProofs: RankedTaskProof[] = [];
     for (let index = 0; index < tasks.length; index += 1) {
       const task = tasks[index]!;
       const evaluation = evaluationRows[index]!;
@@ -668,6 +675,8 @@ export async function completeKnownTrainingRun(
       } else if (task.status !== 'active' || task.finished_at !== null) {
         fail(409, 'RUN_FINAL_TASK_NOT_ACTIVE', 'Only the final active task may be terminalized by this service');
       }
+      if (mode === 'ranked') rankedProofs.push({ taskIndex: index, taskId: task.task_id as TaskId, caseHash: evaluation.case_hash, rubricHash: evaluation.rubric_hash,
+        inputHash: evaluation.input_hash, resultHash: evaluation.result_hash, fenceEvidenceHash: evidence.fenceEvidenceHash, result: evidence.result });
       desiredStatuses.push(desired);
       verified.push({ taskIndex: index, taskId: task.task_id, closureId: task.closure_id!, inputHash: evaluation.input_hash,
         resultHash: evaluation.result_hash, preparationId: evidence.preparationId, leaseId: evidence.leaseId,
@@ -681,6 +690,8 @@ export async function completeKnownTrainingRun(
       if (priorCompletionEvents[0]!.payload_hash !== eventHash(expected) || !same(priorCompletionEvents[0]!.payload_json, expected)) {
         fail(409, 'RUN_COMPLETION_EVENT_MISMATCH', 'The stored run completion event differs from verified task evidence');
       }
+      if (mode === 'ranked') await publishRankedHandoff(tx, { runId: row.id, ownerId: row.owner_id, agentId: row.agent_id,
+        aggregate: aggregateVerifiedRankedOutcomes(record.manifest, rankedProofs), completionEventHash: eventHash(expected), finishedAt: finishedAt.toISOString(), replayed: true });
       return { runId: row.id, status: 'completed', finishedAt: finishedAt.toISOString(), replayed: true };
     }
     if (priorCompletionEvents.length !== 0 || row.finished_at !== null) {
@@ -706,6 +717,8 @@ export async function completeKnownTrainingRun(
     await tx.execute(sql`INSERT INTO oid_run_event(id,run_id,sequence,source,event_type,payload_hash,payload_json,created_at)
       VALUES (${randomUUID()},${row.id},${nextSequence[0]?.sequence ?? 1},'coordinator','run.completed',${eventHash(payload)},
         ${canonicalTaskJson(payload)}::jsonb,${finishedAt})`);
+    if (mode === 'ranked') await publishRankedHandoff(tx, { runId: row.id, ownerId: row.owner_id, agentId: row.agent_id,
+      aggregate: aggregateVerifiedRankedOutcomes(record.manifest, rankedProofs), completionEventHash: eventHash(payload), finishedAt, replayed: false });
     const released = await query<{ run_id: string }>(tx, sql`UPDATE oid_run_dispatch_claim SET status='released',released_at=${finishedAt}
       WHERE run_id=${row.id} AND status='claimed' RETURNING run_id`);
     if (released.length !== 1) fail(409, 'RUN_CLAIM_RELEASE_CONFLICT', 'The run dispatch claim is no longer active');
@@ -716,3 +729,7 @@ export async function completeKnownTrainingRun(
   });
 }
 
+export function finalizeKnownTrainingTask(deps: TaskRunCompletionDependencies, input: {runId:string;taskIndex:number}) { return finalizeKnownTask(deps,input,'training'); }
+export function finalizeKnownRankedTask(deps: TaskRunCompletionDependencies, input: {runId:string;taskIndex:number}) { return finalizeKnownTask(deps,input,'ranked'); }
+export function completeKnownTrainingRun(deps: TaskRunCompletionDependencies, input: {runId:string}) { return completeKnownRun(deps,input,'training'); }
+export function completeKnownRankedRun(deps: TaskRunCompletionDependencies, input: {runId:string}) { return completeKnownRun(deps,input,'ranked'); }
