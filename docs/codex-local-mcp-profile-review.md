@@ -1,9 +1,9 @@
 # Codex local MCP compatibility: approved scope and evidence
 
-Status: bounded scope approved on 2026-10-28; implementation and runtime acceptance remain separate.
-This document records the observations and approved profile. It is not evidence
-that the server supports the profile or that any AAP/BRL gate has passed. The
-active AAP/BRL deltas and approval addenda remain authoritative.
+Status: bounded scope approved and implemented on 2026-10-28; local profile acceptance verified.
+This document records the approved profile and bounded runtime evidence below.
+It does not close the full AAP/BRL scenario gates; the active deltas and approval
+addenda remain authoritative.
 
 ## Observed boundary
 
@@ -74,5 +74,57 @@ not close that gate or justify a one-click claim. Platform-recovery refunds and
 trusted integrity findings remain separate unfinished lifecycle requirements.
 
 Approval record: the owner approved only this additional local manual-bearer
-profile on 2026-10-28; the AAP and BRL approval addenda record the scope. No
-runtime acceptance or scenario-gate pass is claimed here.
+profile on 2026-10-28; the AAP and BRL approval addenda record the scope.
+The bounded runtime acceptance is recorded below; full scenario gates remain open.
+
+## Implemented profile and actual local acceptance, 28 October
+
+`OID_MCP_TRANSPORT_PROFILE=codex-local-manual-2025-06-18` selects the SDK 2.4.0
+stateless legacy adapter only for a resolved manual credential in the verified
+local BEF coordinator, development/test mode and loopback HTTP runtime. The
+strict 2026-07-28 transport remains the default. OAuth still uses that strict
+profile. Both paths reuse current principal resolution and domain authorization.
+The startup coordinator already verifies the local fork; no server.ts change
+was needed. Existing task action/executor source pins remain unchanged.
+
+Actual owner-UI capture `7ca6d301-d862-42f5-bd61-8463f45785b4`:
+`artifacts/runs/genuine-ranked-worker-owner-run/7ca6d301-d862-42f5-bd61-8463f45785b4/capture.json`,
+SHA-256 `5a53271b000520d32c880a840ed8bf14870147622a008fec4ae02187e773aa57`.
+Run `2b312199-b6b1-4102-84b8-8daa41e5e62b` used isolated database
+`oid_acceptance_7ca6d301d86242f5bd618463f45785b4`; all 304 source inputs stayed stable.
+The `bdd.codexProfile` observation verified all 17 scoped checks:
+
+- Pinned real Codex CLI 0.165.0 listed tools, performed allowed free preflight,
+  then accepted the actual owner-created intent through MCP.
+- Wrong origin, protocol, client and agent binding were rejected; SDK 2.4.0's
+  modern 2026-07-28 transport connected and replayed acceptance to the same run.
+- HTTP replay also returned that run; read-only financial snapshots stayed equal.
+- The real owner Agents page revoked access. `oid_observer` read-only queries
+  confirmed generation/revision increments and grant revocation.
+- Previous bearer requests returned HTTP/MCP 401. The real Codex revocation probe
+  observed exactly one upstream initialize response with 401 and WWW-Authenticate
+  through an ephemeral loopback relay, with zero tool calls/actions. Only bounded
+  status/count metadata and hashes were retained, never bearer values or raw stderr.
+- The completed run and its debit remained unchanged after revocation.
+
+The deterministic reference actor separately executed all 12 tasks through the
+server worker; the Codex fixture is a transport/authorization check, not an LLM
+benchmark score. External model calls were zero. This is local-fork evidence only.
+The full BRL-SC-025 matrix and other mandatory MVP gates remain unfinished.
+
+Final Docker checks: backend build passed, configuration/profile tests 5/5,
+Codex adapter tests 11/11 and public selection tests 4/4, without skips.
+The earlier full12 capture `ff402dbb-7271-4436-8bce-1e92a17c6751` retained a blocked
+profile result (16/17): it lacked direct native 401 observation. It was not
+rewritten as a pass; the newer capture supplies that missing evidence.
+Independent post-stop reconciliation verified 16/16 checks against `oid_observer`
+and `bef_observer` read-only transactions and 2,256 original evidence files.
+All 12 outcomes were known, original leases fenced, dispatch claim released,
+execution slots empty, and exactly one reserve plus one debit of 1,000,000 units
+was recorded. Aggregate remained `1285/13`; completion is distinct from perfect
+benchmark performance (S2 is partial).
+
+Report: same capture directory, `poststop-reconciliation.json`, SHA-256
+`2fa7b7bfc667957bae7cb5de0982cf50acac56947fef6a97eb64c1ca6b60e068`.
+The retained read-only verifier `poststop-reconciliation.mjs` has SHA-256
+`412c866bbcd0664eacaaf21d47f71fb6b877c8ffeee64a95f335e29cc5cec4a0`.

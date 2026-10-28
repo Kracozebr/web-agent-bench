@@ -35,3 +35,13 @@ test('local BEF coordinator rejects production and externally bound API hosts', 
     OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: '.local/owner-identity/worker.json',
   }), /loopback OID_API_HOST/);
 });
+
+test('Codex transport profile is opt-in and limited to local BEF loopback development', () => {
+  assert.equal(loadConfig(baseEnv).mcpTransportProfile, 'strict-2026-07-28');
+  assert.throws(() => loadConfig({...baseEnv, OID_MCP_TRANSPORT_PROFILE:'unknown'}), /supported pinned profile/);
+  assert.throws(() => loadConfig({...baseEnv, OID_MCP_TRANSPORT_PROFILE:'codex-local-manual-2025-06-18'}), /requires the local BEF/);
+  const local = {...baseEnv, OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED:'true', OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG:'.local/owner-identity/local.json',
+    OID_MCP_TRANSPORT_PROFILE:'codex-local-manual-2025-06-18'};
+  assert.equal(loadConfig(local).mcpTransportProfile, 'codex-local-manual-2025-06-18');
+  assert.throws(() => loadConfig({...local, OID_PUBLIC_ORIGIN:'http://external.example'}), /loopback HTTP origin/);
+});

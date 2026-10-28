@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { selectAgentMcpTransport } from "./agent-mcp-profile.js";
 import { withOAuthSelection, type OAuthSelectionContext } from "./auth.js";
 import type { createAuth } from "./auth.js";
 import type { OwnerIdentityConfig } from "./config.js";
@@ -470,6 +471,7 @@ function validAgentId(value: string): boolean {
 const uuidError = () => new HttpError(404, "AGENT_NOT_FOUND", "Agent was not found");
 
 export interface AgentPrincipal {
+  credentialSource?: "manual" | "oauth";
   ownerId: string;
   agentId: string;
   grantId: string;
@@ -523,6 +525,7 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
     if (!row || row.role !== "agent" || row.admissionStatus !== "admitted" || row.grantRevokedAt || row.accessRevokedAt ||
       row.grantGeneration !== row.accessGeneration || row.grantExpiresAt <= now || row.resource !== dependencies.agentResource) return undefined;
     return {
+      credentialSource: "manual",
       ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, credentialId: row.credentialId,
       resource: row.resource, role: row.role, accessGeneration: row.accessGeneration, accessRevision: row.accessRevision,
       policyRevision: row.policyRevision,
@@ -592,6 +595,7 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
     row.grantGeneration !== row.accessGeneration || row.grantGeneration !== generation || row.authorizationGeneration !== generation ||
     row.grantExpiresAt <= now) return undefined;
   return {
+    credentialSource: "oauth",
     ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, credentialId: row.grantId,
     resource: row.resource, role: row.role, accessGeneration: row.accessGeneration, accessRevision: row.accessRevision,
     policyRevision: row.policyRevision,
@@ -618,6 +622,8 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     if (!principal) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
     await dependencies.rateLimit(request, `agent-preflight-${principal.credentialId}`, dependencies.preflightRateLimitMax);
 
+    const localCodexTransport = selectAgentMcpTransport(dependencies.config,
+      principal.credentialSource === "manual", request.body, request.headers) === "codex-local";
     const outputSchema = z.object({
       status: z.enum(["allowed", "denied"]),
       operationId: z.string(),
@@ -626,7 +632,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     });
     const mcpHandler = createMcpHandler(() => {
       const server = new McpServer({ name: "Web3 Agent Bench", version: "1.0.0" }, {
-        supportedProtocolVersions: ["2026-07-28"],
+        supportedProtocolVersions: localCodexTransport ? ["2026-07-28", "2025-06-18"] : ["2026-07-28"],
         maxToolInputElements: 8
       });
       server.registerTool("identity.preflight", {
@@ -648,7 +654,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
       });
       dependencies.registerMcpTools?.(server, principal);
       return server;
-    }, { legacy: "reject", responseMode: "json", keepAliveMs: 0, maxRequestBodySize: 64 * 1024 });
+    }, { legacy: localCodexTransport ? "stateless" : "reject", responseMode: "json", keepAliveMs: 0, maxRequestBodySize: 64 * 1024 });
 
     const headers = new Headers();
     for (const key of ["accept", "authorization", "content-type", "mcp-protocol-version", "mcp-method", "mcp-name", "mcp-session-id", "last-event-id", "origin", "user-agent"]) {

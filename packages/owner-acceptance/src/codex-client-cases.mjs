@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +28,81 @@ function loopbackMcpUrl(value, allowedPaths = ["/api/agent/mcp"]) {
     throw new Error("codex_mcp_server_must_be_the_local_owner_agent_endpoint");
   }
   return `${url.origin}${url.pathname}`;
+}
+
+function ownerMcpMethodName(value) {
+  return typeof value === "string" && ["initialize", "notifications/initialized", "ping", "tools/list", "tools/call"].includes(value)
+    ? value : null;
+}
+
+/** Forwards only the local Codex revocation probe and retains response metadata only. */
+async function startOwnerMcpRevocationForwarder(publicOrigin) {
+  const upstreamUrl = new URL(loopbackMcpUrl(new URL("/api/agent/mcp", publicOrigin).href));
+  const observations = [];
+  let requestCount = 0;
+  const server = createServer((incoming, outgoing) => {
+    void (async () => {
+      requestCount += 1;
+      let methodName = null;
+      let responseStatus = 502;
+      let wwwAuthenticatePresent = false;
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string" || incoming.method !== "POST" ||
+            incoming.url !== "/api/agent/mcp" || incoming.headers.host !== `127.0.0.1:${address.port}`) {
+          responseStatus = 404;
+          outgoing.writeHead(responseStatus, { "cache-control": "no-store" });
+          outgoing.end();
+          return;
+        }
+        const chunks = [];
+        let bytes = 0;
+        for await (const chunk of incoming) {
+          bytes += chunk.length;
+          if (bytes > 64 * 1024) throw new Error("codex_revocation_request_too_large");
+          chunks.push(chunk);
+        }
+        const body = Buffer.concat(chunks, bytes);
+        try { methodName = ownerMcpMethodName(JSON.parse(body.toString("utf8"))?.method); } catch { /* method remains null */ }
+        const headers = new Headers();
+        for (const key of ["accept", "authorization", "content-type", "mcp-protocol-version", "mcp-method",
+          "mcp-name", "mcp-session-id", "last-event-id", "origin", "user-agent"]) {
+          const value = incoming.headers[key];
+          if (typeof value === "string") headers.set(key, value);
+        }
+        const upstream = await fetch(upstreamUrl, { method: "POST", headers, body, redirect: "manual",
+          signal: AbortSignal.timeout(120_000) });
+        responseStatus = upstream.status;
+        wwwAuthenticatePresent = upstream.headers.has("www-authenticate");
+        const responseBody = Buffer.from(await upstream.arrayBuffer());
+        const responseHeaders = new Headers({ "cache-control": "no-store" });
+        for (const key of ["content-type", "mcp-protocol-version", "mcp-session-id", "www-authenticate", "allow"]) {
+          const value = upstream.headers.get(key);
+          if (value) responseHeaders.set(key, value);
+        }
+        outgoing.writeHead(responseStatus, Object.fromEntries(responseHeaders.entries()));
+        outgoing.end(responseBody);
+      } catch {
+        if (!outgoing.headersSent) outgoing.writeHead(502, { "cache-control": "no-store" });
+        outgoing.end();
+      } finally {
+        if (observations.length < 32) observations.push({ methodName, responseStatus, wwwAuthenticatePresent });
+      }
+    })();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("codex_revocation_forwarder_bind_failed");
+  return {
+    serverUrl: `http://127.0.0.1:${address.port}/api/agent/mcp`,
+    evidence: () => ({ requestCount, ownerUnauthorizedResponseCount: observations.filter((item) => item.responseStatus === 401).length,
+      ownerAuthChallengeObserved: observations.some((item) => item.responseStatus === 401 && item.wwwAuthenticatePresent),
+      requests: observations.slice() }),
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
 }
 
 function safeRunMetadata(value) {
@@ -492,6 +568,112 @@ function ownerAcceptTool(request) {
   return namespace && child ? { namespace: namespace.name, name: child.name } : null;
 }
 
+function ownerPreflightTool(request) {
+  const namespace = (Array.isArray(request?.tools) ? request.tools : []).find((tool) =>
+    tool?.type === "namespace" && tool.name === "mcp__owner_agent");
+  const child = Array.isArray(namespace?.tools) ? namespace.tools.find((tool) =>
+    typeof tool?.name === "string" && tool.name.toLowerCase().replaceAll("_", ".").includes("identity.preflight")) : null;
+  return namespace && child ? { namespace: namespace.name, name: child.name } : null;
+}
+
+function normalizedOwnerToolName(value) {
+  return typeof value === "string" ? value.toLowerCase().replaceAll("_", ".") : "";
+}
+
+/** Project only status, run identity, error flag, and argument hashes from MCP events. */
+export function projectCodexOwnerMcpEvents(mcpTools) {
+  const events = Array.isArray(mcpTools) ? mcpTools : [];
+  const preflights = events.filter((item) => normalizedOwnerToolName(item?.name).includes("identity.preflight"));
+  const acceptances = events.filter((item) => normalizedOwnerToolName(item?.name).includes("runs.accept.launch.intent"));
+  const callOrder = events.map((item) => {
+    const name = normalizedOwnerToolName(item?.name);
+    if (name.includes("identity.preflight")) return "identity.preflight";
+    if (name.includes("runs.accept.launch.intent")) return "runs.accept_launch_intent";
+    return null;
+  }).filter(Boolean).slice(0, 8);
+  const first = (items) => items[0] ?? null;
+  const preflight = first(preflights);
+  const acceptance = first(acceptances);
+  return {
+    callOrder,
+    preflight: { callCount: preflights.length, status: safeName(preflight?.result?.status),
+      argumentsSha256: preflight?.argumentsSha256 ?? null, isError: preflight?.isError ?? null },
+    acceptance: { callCount: acceptances.length, runId: acceptance?.result?.runId ?? null,
+      status: safeName(acceptance?.result?.status), argumentsSha256: acceptance?.argumentsSha256 ?? null,
+      isError: acceptance?.isError ?? null },
+  };
+}
+
+function inspectPreflightToolOutput(value, operationId, facts, depth = 0, seen = new Set()) {
+  if (depth > 8 || value === null || value === undefined) return;
+  if (typeof value === "string") {
+    if (value.length > 64 * 1024) return;
+    let parsed;
+    try { parsed = JSON.parse(value); }
+    catch {
+      // Codex wraps MCP text results in a short label. Parse only the bounded
+      // JSON object embedded in the tool output; never scan prompt text.
+      const start = value.indexOf("{");
+      const end = value.lastIndexOf("}");
+      if (start < 0 || end <= start) return;
+      try { parsed = JSON.parse(value.slice(start, end + 1)); }
+      catch { return; }
+    }
+    inspectPreflightToolOutput(parsed, operationId, facts, depth + 1, seen);
+    return;
+  }
+  if (typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const child of value.slice(0, 64)) inspectPreflightToolOutput(child, operationId, facts, depth + 1, seen);
+  } else {
+    if (typeof value.type === "string" && facts.inputTypes.length < 16) {
+      const type = safeName(value.type);
+      if (type && !facts.inputTypes.includes(type)) facts.inputTypes.push(type);
+    }
+    if (value.status === "allowed") facts.allowedStatusSeen = true;
+    if (value.status === "denied") facts.deniedStatusSeen = true;
+    for (const key of ["operationId", "operation_id"]) {
+      if (typeof value[key] === "string") {
+        facts.operationIdSeen = true;
+        if (value[key] === operationId) facts.operationIdMatched = true;
+      }
+    }
+    const children = ["input", "output", "content", "result", "structuredContent", "structured_content", "text"]
+      .filter((key) => Object.hasOwn(value, key)).slice(0, 16).map((key) => value[key]);
+    for (const child of children) inspectPreflightToolOutput(child, operationId, facts, depth + 1, seen);
+  }
+  seen.delete(value);
+}
+
+/** Return only preflight status, operation-binding booleans, and bounded input item type names. */
+export function projectCodexOwnerPreflightGate(request, operationId) {
+  const facts = { allowedStatusSeen: false, deniedStatusSeen: false, operationIdSeen: false,
+    operationIdMatched: false, inputTypes: [] };
+  const inputs = Array.isArray(request?.input) ? request.input : [];
+  const preflightCallIds = new Set(inputs.filter((item) => item?.type === "function_call" &&
+    normalizedOwnerToolName(item?.name).includes("identity.preflight") && typeof item.call_id === "string")
+    .map((item) => item.call_id));
+  for (const item of inputs) {
+    if (item?.type === "function_call_output" && typeof item.call_id === "string" && preflightCallIds.has(item.call_id)) {
+      inspectPreflightToolOutput(item.output, operationId, facts);
+    }
+  }
+  return { allowedStatusSeen: facts.allowedStatusSeen, deniedStatusSeen: facts.deniedStatusSeen,
+    operationIdSeen: facts.operationIdSeen, operationIdMatched: facts.operationIdMatched };
+}
+
+/** Verifies the deterministic client fixture received an allowed MCP result for this preflight operation. */
+export function codexOwnerPreflightWasAllowed(request, operationId) {
+  if (typeof operationId !== "string") return false;
+  const facts = projectCodexOwnerPreflightGate(request, operationId);
+  return facts.allowedStatusSeen && (!facts.operationIdSeen || facts.operationIdMatched);
+}
+
+function validOperationId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{12,128}$/.test(value);
+}
+
 /**
  * Invoke the real local owner MCP route through the pinned Codex CLI. The
  * caller must have already obtained an agent bearer from the owner browser flow
@@ -499,11 +681,18 @@ function ownerAcceptTool(request) {
  * placed in the child process environment; evidence contains allowlisted
  * tool-result metadata and hashes, never the credential or raw tool payload.
  */
-export async function runCodexNativeOwnerAcceptance({ publicOrigin, agentBearer, intentId,
-  acceptOperationId, ownerPage = null, repoRoot }) {
+export async function runCodexNativeOwnerAcceptance({ publicOrigin, agentBearer, agentId = null, intentId,
+  preflightOperationId = null, acceptOperationId, ownerPage = null, repoRoot }) {
   if (!validIntentId(intentId)) throw new Error("codex_owner_intent_id_invalid");
   if (typeof acceptOperationId !== "string" || !/^[A-Za-z0-9_-]{12,128}$/.test(acceptOperationId)) {
     throw new Error("codex_owner_accept_operation_id_invalid");
+  }
+  if (agentId !== null && !validIntentId(agentId)) throw new Error("codex_owner_agent_id_invalid");
+  if (agentId !== null) {
+    preflightOperationId ??= `codex-${randomUUID()}`;
+    if (!validOperationId(preflightOperationId)) throw new Error("codex_owner_preflight_operation_id_invalid");
+  } else if (preflightOperationId !== null) {
+    throw new Error("codex_owner_preflight_requires_agent_id");
   }
   if (typeof agentBearer !== "string" || agentBearer.length < 16 || agentBearer.length > 8192 ||
       /\s/.test(agentBearer) || /\bBearer\s/i.test(agentBearer)) throw new Error("codex_owner_agent_bearer_invalid");
@@ -512,7 +701,27 @@ export async function runCodexNativeOwnerAcceptance({ publicOrigin, agentBearer,
   if (!repository?.isDirectory()) throw new Error("codex_owner_repo_root_unavailable");
   const endpoint = loopbackMcpUrl(new URL("/api/agent/mcp", publicOrigin).href);
   const responsesFixture = await startCodexResponsesFixture({ model: CODEX_FIXTURE_MODEL,
-    respond: ({ request, index }) => {
+    respond: ({ request, index, summary }) => {
+      if (agentId !== null) {
+        if (index === 1) {
+          const target = ownerPreflightTool(request);
+          if (!target) return { type: "message", text: "OWNER_MCP_PREFLIGHT_NOT_ADVERTISED" };
+          return { type: "function_call", namespace: target.namespace, name: target.name,
+            arguments: { agentId, operationId: preflightOperationId } };
+        }
+        if (index === 2) {
+          const preflightGate = projectCodexOwnerPreflightGate(request, preflightOperationId);
+          summary.preflightGate = preflightGate;
+          if (!codexOwnerPreflightWasAllowed(request, preflightOperationId)) {
+            return { type: "message", text: "OWNER_MCP_PREFLIGHT_DENIED" };
+          }
+          const target = ownerAcceptTool(request);
+          if (!target) return { type: "message", text: "OWNER_ACCEPT_TOOL_NOT_ADVERTISED" };
+          return { type: "function_call", namespace: target.namespace, name: target.name,
+            arguments: { intentId, operationId: acceptOperationId } };
+        }
+        return { type: "message", text: "OWNER_MCP_RESULT_RECEIVED" };
+      }
       if (index > 1) return { type: "message", text: "OWNER_MCP_RESULT_RECEIVED" };
       const target = ownerAcceptTool(request);
       if (!target) return { type: "message", text: "OWNER_ACCEPT_TOOL_NOT_ADVERTISED" };
@@ -521,7 +730,8 @@ export async function runCodexNativeOwnerAcceptance({ publicOrigin, agentBearer,
     } });
   const mcp = { serverId: "owner_agent", serverUrl: endpoint,
     bearerTokenEnvironmentVariable: "OID_CODEX_MCP_BEARER_TOKEN",
-    enabledTools: ["runs.accept_launch_intent"], approvalMode: "approve", required: true,
+    enabledTools: agentId === null ? ["runs.accept_launch_intent"] : ["identity.preflight", "runs.accept_launch_intent"],
+    approvalMode: "approve", required: true,
     startupTimeoutSeconds: 20, toolTimeoutSeconds: 90 };
   const sandbox = await prepareCodexHome(responsesFixture.baseUrl, mcp);
   try {
@@ -530,34 +740,55 @@ export async function runCodexNativeOwnerAcceptance({ publicOrigin, agentBearer,
     // Use the same empty workspace as the local transport smoke. The repository
     // path is only a required fixture-presence check; loading its agent files or
     // local Codex configuration would make this handoff depend on repo policy.
-    const turn = await runCodexTurn({ ...sandbox, workingDirectory: sandbox.workingDirectory,
-      prompt: `Accept the owner-authorized benchmark run request by calling runs.accept_launch_intent exactly once with intentId ${intentId} and operationId ${acceptOperationId}. Do not call any other tool. After the MCP tool returns, reply with exactly OWNER_MCP_RESULT_RECEIVED.`,
-      expectedMessage: "OWNER_MCP_RESULT_RECEIVED", timeoutMs: 120_000 });
-    const acceptCalls = turn.mcpTools.filter((item) =>
-      item.name?.toLowerCase().replaceAll("_", ".").includes("runs.accept.launch.intent"));
-    const successfulCall = acceptCalls.find((item) => !item.isError && typeof item.result?.runId === "string");
-    const runId = successfulCall?.result?.runId ?? null;
-    const runStatus = successfulCall?.result?.status ?? null;
-    const confirmed = Boolean(runId && successfulCall);
+    let turn;
+    try {
+      const prompt = agentId === null
+        ? `Accept the owner-authorized benchmark run request by calling runs.accept_launch_intent exactly once with intentId ${intentId} and operationId ${acceptOperationId}. Do not call any other tool. After the MCP tool returns, reply with exactly OWNER_MCP_RESULT_RECEIVED.`
+        : `First call identity.preflight exactly once with agentId ${agentId} and operationId ${preflightOperationId}. Only if it returns status allowed, call runs.accept_launch_intent exactly once with intentId ${intentId} and operationId ${acceptOperationId}. If preflight is denied or errors, do not call acceptance. Do not call any other tool. After an allowed preflight and acceptance result, reply with exactly OWNER_MCP_RESULT_RECEIVED.`;
+      turn = await runCodexTurn({ ...sandbox, workingDirectory: sandbox.workingDirectory, prompt,
+        expectedMessage: "OWNER_MCP_RESULT_RECEIVED", timeoutMs: 120_000 });
+    } catch (error) {
+      turn = { completed: false, mcpToolEventCount: 0, mcpTools: [],
+        safeDiagnostic: error?.safeDiagnostic && typeof error.safeDiagnostic === "object" ? error.safeDiagnostic : null };
+    }
+    const ownerEvents = projectCodexOwnerMcpEvents(turn.mcpTools);
+    const preflightAllowed = agentId === null || (ownerEvents.preflight.callCount === 1 &&
+      ownerEvents.preflight.status === "allowed" && ownerEvents.preflight.isError !== true);
+    const preflightOrderedFirst = agentId === null || ownerEvents.callOrder[0] === "identity.preflight" &&
+      ownerEvents.callOrder.indexOf("identity.preflight") < ownerEvents.callOrder.indexOf("runs.accept_launch_intent");
+    const successfulCall = ownerEvents.acceptance.callCount > 0 && !ownerEvents.acceptance.isError && ownerEvents.acceptance.runId
+      ? ownerEvents.acceptance : null;
+    const runId = successfulCall?.runId ?? null;
+    const runStatus = successfulCall?.status ?? null;
+    const confirmed = preflightAllowed && preflightOrderedFirst && Boolean(runId && successfulCall);
+    const reason = confirmed ? null : agentId !== null && ownerEvents.preflight.callCount === 0
+      ? "codex_owner_preflight_not_observed" : agentId !== null && ownerEvents.preflight.isError
+        ? "codex_owner_preflight_returned_error" : agentId !== null && ownerEvents.preflight.status !== "allowed"
+          ? "codex_owner_preflight_not_allowed" : agentId !== null && !preflightOrderedFirst
+            ? "codex_owner_preflight_order_invalid" : ownerEvents.acceptance.callCount === 0
+            ? "codex_owner_accept_tool_not_observed" : ownerEvents.acceptance.isError
+              ? "codex_owner_accept_tool_returned_error" : "codex_owner_accept_result_metadata_missing";
     return {
       schemaVersion: "brl-codex-owner-mcp-observation/v1",
       outcome: confirmed ? "accepted_result_observed" : "acceptance_result_unverified",
-      reason: confirmed ? null : acceptCalls.length === 0 ? "codex_owner_accept_tool_not_observed" :
-        acceptCalls.some((item) => item.isError) ? "codex_owner_accept_tool_returned_error" :
-          "codex_owner_accept_result_metadata_missing",
+      reason,
       client: { name: "Codex CLI", package: clientPin.package, version: clientPin.version,
         isolatedCodexHome: true, ephemeralTurn: true, workspaceWritable: false, repoRootDirectoryAvailable: true },
       model: { providerId: "oid_local_fixture", model: CODEX_FIXTURE_MODEL,
         providerClass: "deterministic_local_responses_fixture", providerAuthConfigured: false,
         externalModelCalls: 0, llmBenchmarkInvocation: false },
-      mcp: { configured: true, serverId: "owner_agent", allowlistedTools: ["runs.accept_launch_intent"],
+      mcp: { configured: true, serverId: "owner_agent", allowlistedTools: mcp.enabledTools,
         approvalMode: "approve", nativeApprovalPromptCount: 0, ownerMcpServerUsed: true,
-        toolCallCount: turn.mcpToolEventCount, acceptanceCallAttemptCount: acceptCalls.length,
-        ownerActionAttemptCount: acceptCalls.length, confirmedAcceptanceResultCount: confirmed ? 1 : 0,
+        toolCallCount: turn.mcpToolEventCount, callOrder: ownerEvents.callOrder,
+        preflight: agentId === null ? null : { toolName: "identity.preflight", operationId: preflightOperationId,
+          callAttemptCount: ownerEvents.preflight.callCount, status: ownerEvents.preflight.status,
+          argumentsSha256: ownerEvents.preflight.argumentsSha256, isError: ownerEvents.preflight.isError },
+        acceptanceCallAttemptCount: ownerEvents.acceptance.callCount,
+        ownerActionAttemptCount: ownerEvents.acceptance.callCount, confirmedAcceptanceResultCount: confirmed ? 1 : 0,
         durableOwnerRunCount: null,
         toolResult: { toolName: "runs.accept_launch_intent", operationId: acceptOperationId,
-          runId, status: runStatus, argumentsSha256: successfulCall?.argumentsSha256 ??
-            acceptCalls[0]?.argumentsSha256 ?? null, isError: acceptCalls[0]?.isError ?? null } },
+          runId, status: runStatus, argumentsSha256: ownerEvents.acceptance.argumentsSha256,
+          isError: ownerEvents.acceptance.isError } },
       turn,
       responsesFixture: responsesFixture.evidence(),
       handoff: { ownerPageProvided: Boolean(ownerPage), nativeClient: "codex-cli",
@@ -567,6 +798,88 @@ export async function runCodexNativeOwnerAcceptance({ publicOrigin, agentBearer,
   } finally {
     delete sandbox.env.OID_CODEX_MCP_BEARER_TOKEN;
     await responsesFixture.close().catch(() => undefined);
+    await rm(sandbox.root, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Recheck only identity.preflight with the same owner-issued bearer after the
+ * owner UI has revoked it. The caller owns the revocation and independent DB
+ * verification; this helper never calls an acceptance or task action tool.
+ */
+export async function runCodexNativeOwnerRevocationProbe({ publicOrigin, agentBearer, agentId,
+  preflightOperationId = null, ownerPage = null, repoRoot }) {
+  if (!validIntentId(agentId)) throw new Error("codex_owner_agent_id_invalid");
+  preflightOperationId ??= `codex-${randomUUID()}`;
+  if (!validOperationId(preflightOperationId)) throw new Error("codex_owner_preflight_operation_id_invalid");
+  if (typeof agentBearer !== "string" || agentBearer.length < 16 || agentBearer.length > 8192 ||
+      /\s/.test(agentBearer) || /\bBearer\s/i.test(agentBearer)) throw new Error("codex_owner_agent_bearer_invalid");
+  if (typeof repoRoot !== "string" || !repoRoot) throw new Error("codex_owner_repo_root_required");
+  const repository = await stat(repoRoot).catch(() => null);
+  if (!repository?.isDirectory()) throw new Error("codex_owner_repo_root_unavailable");
+  const forwarder = await startOwnerMcpRevocationForwarder(publicOrigin);
+  const endpoint = forwarder.serverUrl;
+  const responsesFixture = await startCodexResponsesFixture({ model: CODEX_FIXTURE_MODEL,
+    respond: ({ request, index }) => {
+      if (index > 1) return { type: "message", text: "OWNER_MCP_PREFLIGHT_RESULT_RECEIVED" };
+      const target = ownerPreflightTool(request);
+      if (!target) return { type: "message", text: "OWNER_MCP_PREFLIGHT_NOT_ADVERTISED" };
+      return { type: "function_call", namespace: target.namespace, name: target.name,
+        arguments: { agentId, operationId: preflightOperationId } };
+    } });
+  const mcp = { serverId: "owner_agent", serverUrl: endpoint,
+    bearerTokenEnvironmentVariable: "OID_CODEX_MCP_BEARER_TOKEN",
+    enabledTools: ["identity.preflight"], approvalMode: "approve", required: true,
+    startupTimeoutSeconds: 20, toolTimeoutSeconds: 90 };
+  const sandbox = await prepareCodexHome(responsesFixture.baseUrl, mcp);
+  try {
+    const clientPin = await verifyCodexVersion(sandbox.env, sandbox.workingDirectory);
+    sandbox.env.OID_CODEX_MCP_BEARER_TOKEN = agentBearer;
+    let turn;
+    try {
+      turn = await runCodexTurn({ ...sandbox, workingDirectory: sandbox.workingDirectory,
+        prompt: `Call identity.preflight exactly once with agentId ${agentId} and operationId ${preflightOperationId}. This is a post-revocation check. Do not call any other tool. After the result, reply with exactly OWNER_MCP_PREFLIGHT_RESULT_RECEIVED.`,
+        expectedMessage: "OWNER_MCP_PREFLIGHT_RESULT_RECEIVED", timeoutMs: 120_000 });
+    } catch (error) {
+      turn = { completed: false, mcpToolEventCount: 0, mcpTools: [],
+        safeDiagnostic: error?.safeDiagnostic && typeof error.safeDiagnostic === "object" ? error.safeDiagnostic : null };
+    }
+    const ownerEvents = projectCodexOwnerMcpEvents(turn.mcpTools);
+    const errorCodeClasses = turn.safeDiagnostic?.errorCodeClasses ?? [];
+    const forwarderEvidence = forwarder.evidence();
+    const preflightDenied = ownerEvents.preflight.callCount === 1 && ownerEvents.preflight.status === "denied" &&
+      ownerEvents.preflight.isError !== true;
+    const credentialRejected = forwarderEvidence.ownerAuthChallengeObserved && ownerEvents.preflight.callCount === 0;
+    const preflightAllowed = ownerEvents.preflight.callCount === 1 && ownerEvents.preflight.status === "allowed" &&
+      ownerEvents.preflight.isError !== true;
+    return {
+      schemaVersion: "brl-codex-owner-mcp-revocation-probe/v1",
+      outcome: preflightDenied ? "preflight_denied" : credentialRejected ? "credential_rejected_before_preflight" :
+        preflightAllowed ? "preflight_still_allowed" : "preflight_outcome_unverified",
+      reason: preflightDenied ? null : credentialRejected ? "owner_credential_rejected_before_tool_invocation" :
+        preflightAllowed ? "owner_preflight_still_allowed_after_revocation" : "owner_preflight_denial_not_observed",
+      client: { name: "Codex CLI", package: clientPin.package, version: clientPin.version,
+        isolatedCodexHome: true, ephemeralTurn: true, workspaceWritable: false, repoRootDirectoryAvailable: true },
+      model: { providerId: "oid_local_fixture", model: CODEX_FIXTURE_MODEL,
+        providerClass: "deterministic_local_responses_fixture", providerAuthConfigured: false,
+        externalModelCalls: 0, llmBenchmarkInvocation: false },
+      mcp: { configured: true, serverId: "owner_agent", allowlistedTools: ["identity.preflight"],
+        approvalMode: "approve", ownerMcpServerUsed: true, toolCallCount: turn.mcpToolEventCount,
+        forwarder: forwarderEvidence,
+        preflight: { toolName: "identity.preflight", operationId: preflightOperationId,
+          callAttemptCount: ownerEvents.preflight.callCount, status: ownerEvents.preflight.status,
+          argumentsSha256: ownerEvents.preflight.argumentsSha256, isError: ownerEvents.preflight.isError },
+        acceptanceToolConfigured: false, ownerActionAttemptCount: 0 },
+      turn: { completed: turn.completed === true, expectedMessageSeen: turn.expectedMessageSeen === true,
+        eventTypes: turn.eventTypes ?? turn.safeDiagnostic?.parsedEventTypes ?? [],
+        errorCodeClasses, safeDiagnostic: turn.safeDiagnostic ?? null },
+      handoff: { ownerPageProvided: Boolean(ownerPage), nativeClient: "codex-cli", manualCopyFallbackUsed: false },
+      executionBoundary: "docker_codex_cli_local_owner_mcp_revocation_probe_preflight_only",
+    };
+  } finally {
+    delete sandbox.env.OID_CODEX_MCP_BEARER_TOKEN;
+    await responsesFixture.close().catch(() => undefined);
+    await forwarder.close().catch(() => undefined);
     await rm(sandbox.root, { recursive: true, force: true }).catch(() => undefined);
   }
 }

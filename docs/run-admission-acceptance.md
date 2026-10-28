@@ -2475,3 +2475,36 @@ failed in the final reports. Both reports record unchanged harness sources.
 The top-level `acceptance_state` is therefore `failed`, not release-ready.
 No sync/archive was performed. Registered adapters and passed local full12
 execution must not be reported as complete 59-gate or complete MVP acceptance.
+### Approved local Codex profile acceptance, 28 October
+
+The opt-in profile is implemented and verified in capture
+`7ca6d301-d862-42f5-bd61-8463f45785b4`, run
+`2b312199-b6b1-4102-84b8-8daa41e5e62b`. The real Codex CLI 0.165.0 performed
+preflight and intent acceptance; the deterministic reference actor and server
+worker separately completed all 12 tasks. The profile observation passed 17/17
+checks, including modern SDK/HTTP replay without new economic effects, real
+owner-UI revocation, read-only database confirmation and the actual native
+request's upstream 401 challenge with zero tool calls after revocation.
+
+Capture path:
+`artifacts/runs/genuine-ranked-worker-owner-run/7ca6d301-d862-42f5-bd61-8463f45785b4/capture.json`.
+SHA-256: `5a53271b000520d32c880a840ed8bf14870147622a008fec4ae02187e773aa57`.
+All 304 source inputs stayed stable. Full scenario acceptance remains false;
+this observation does not close BRL-SC-025 or the remaining 57 BTS/BRL gates.
+See [profile evidence](codex-local-mcp-profile-review.md) for measured boundaries.
+
+Reproduce only with the isolated local BEF fork and its temporary secrets:
+
+```powershell
+docker compose -f infrastructure/owner-identity/compose.yaml -f infrastructure/owner-identity/compose.genuine-s1.yaml --profile tools run --rm --no-deps -e BEF_API_HOST_PORT=38783 -e OID_MCP_TRANSPORT_PROFILE=codex-local-manual-2025-06-18 -e OID_ACCEPTANCE_BDD_PROBES=true -e OID_ACCEPTANCE_PRIMARY_CLIENT_ONLY=true runtime node packages/owner-acceptance/src/runner.mjs --genuine-ranked-worker-owner-run
+```
+
+The owner chose to finish and commit this bounded work, then continue under a
+shortened PoC plan. The remaining MVP requirements keep their actual status;
+they are not automatically included in the next implementation iteration.
+Independent post-stop reconciliation passed 16/16 checks and verified 2,256 raw
+files, one reserve/debit, all 12 known outcomes and fenced leases, and released
+claim/slots. The aggregate is `1285/13`, with S2 partial; closed tasks do not mean
+12 perfect outcomes. Report `poststop-reconciliation.json` in the capture directory
+has SHA-256 `2fa7b7bfc667957bae7cb5de0982cf50acac56947fef6a97eb64c1ca6b60e068`;
+retained verifier SHA-256 is `412c866bbcd0664eacaaf21d47f71fb6b877c8ffeee64a95f335e29cc5cec4a0`.

@@ -8,6 +8,7 @@ import { createCard, issueThroughUi } from './credential-cases.mjs';
 import { runReleaseBddCases } from './release-bdd-cases.mjs';
 import { runRankedBddCases } from './ranked-bdd-cases.mjs';
 import { runCodexNativeOwnerAcceptance } from './codex-client-cases.mjs';
+import { runCodexOwnerProfileCases } from './codex-owner-profile-cases.mjs';
 import { runBrlLaunchAdmissionPreAcceptCases, runBrlLaunchAdmissionPrimaryOnlyCase, captureBrlPrimaryMcpAcceptance,
   runBrlLaunchAdmissionPostCompletionCases } from './benchmark-run-lifecycle-launch-probe.mjs';
 
@@ -2725,7 +2726,7 @@ async function runGenuineOwnerRunCase(input) {
       let nativeClient;
       try {
         nativeClient = await runCodexNativeOwnerAcceptance({publicOrigin: input.publicOrigin,
-          agentBearer: actorCredential, intentId, acceptOperationId, ownerPage: input.ownerPage, repoRoot: input.repoRoot});
+          agentBearer: actorCredential, agentId, intentId, acceptOperationId, ownerPage: input.ownerPage, repoRoot: input.repoRoot});
       } finally {
         const admitted = await readonlyTransaction(observerPool, async query => pgRows(await query(
           'SELECT run_id::text FROM oid_run_launch_intent WHERE id=$1 AND owner_id=$2 AND agent_id=$3 AND status=\'accepted\'',
@@ -2892,6 +2893,13 @@ async function runGenuineOwnerRunCase(input) {
     if (bddContext && input.primaryClientOnly && primaryMcpAcceptance) {
       output.bdd.launch['BRL-SC-023'] = {...primaryMcpAcceptance, status: 'blocked',
         missingFixtures: ['post_acceptance_transport_version_expiry_negative_matrix_not_selected']};
+      demand(output.runCompletion?.status === 'verified', 'codex_profile_run_completion_required');
+      record('codex_local_profile_compatibility_and_revocation', 'started');
+      output.bdd.codexProfile = await runCodexOwnerProfileCases({ownerPage: input.ownerPage,
+        observerPool, publicOrigin: input.publicOrigin, agentBearer: actorCredential, agentId,
+        runId, intentId, acceptOperationId, repoRoot: input.repoRoot, nativeClient: output.bdd.client});
+      demand(output.bdd.codexProfile.status === 'verified', 'codex_local_profile_acceptance_incomplete');
+      record('codex_local_profile_compatibility_and_revocation', 'verified');
       record('primary_native_client_profile_boundary', 'verified', {negativeMatrixAcceptance: false});
     }
   } catch (error) {

@@ -20,6 +20,7 @@ export interface OwnerIdentityConfig {
   manualCredentialTtlSeconds: number;
   mcpClientId: string;
   mcpClientRedirectUri: string;
+  mcpTransportProfile?: "strict-2026-07-28" | "codex-local-manual-2025-06-18";
   agentCredentialRateLimitMax: number;
   agentPreflightRateLimitMax: number;
   authRateLimitMax: number;
@@ -58,7 +59,7 @@ function booleanFlag(env: NodeJS.ProcessEnv, key: string, fallback: boolean): bo
   throw new Error(`${key} must be true or false`);
 }
 
-function isLoopbackHost(value: string): boolean {
+export function isLoopbackHost(value: string): boolean {
   const host = value.trim().toLowerCase().replace(/^\[|\]$/g, "");
   if (host === "localhost" || host === "::1") return true;
   const version = isIP(host);
@@ -154,6 +155,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     throw new Error("OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG is required when the local BEF task coordinator is enabled");
   }
 
+  const mcpTransportProfile = optional(env, "OID_MCP_TRANSPORT_PROFILE") ?? "strict-2026-07-28";
+  if (mcpTransportProfile !== "strict-2026-07-28" && mcpTransportProfile !== "codex-local-manual-2025-06-18") {
+    throw new Error("OID_MCP_TRANSPORT_PROFILE is not a supported pinned profile");
+  }
+  if (mcpTransportProfile === "codex-local-manual-2025-06-18") {
+    const publicUrl = new URL(origin(env));
+    if (!localBefTaskCoordinatorEnabled || !localBefTaskCoordinatorConfigPath ||
+        !["development", "test"].includes(nodeEnv) || publicUrl.protocol !== "http:" || !isLoopbackHost(publicUrl.hostname)) {
+      throw new Error("The Codex MCP compatibility profile requires the local BEF coordinator and loopback HTTP origin");
+    }
+  }
   return {
     databaseUrl,
     authSecret,
@@ -171,6 +183,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     manualCredentialTtlSeconds: integer(env, "OID_MANUAL_CREDENTIAL_TTL_SECONDS", 86400, 300, 2592000),
     mcpClientId,
     mcpClientRedirectUri,
+    mcpTransportProfile,
     agentCredentialRateLimitMax: integer(env, "OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX", 30, 1, 1000),
     agentPreflightRateLimitMax: integer(env, "OID_AGENT_PREFLIGHT_RATE_LIMIT_MAX", 60, 1, 1000),
     authRateLimitMax: integer(env, "OID_AUTH_RATE_LIMIT_MAX", 10, 1, 1000),
