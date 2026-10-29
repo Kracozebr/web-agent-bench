@@ -746,7 +746,9 @@ async function verifyExpiredReportAccess({ commonCapture, reportReceipt }) {
   demand(listResponse.status() === 410 && listBody?.error?.code === 'REPORT_RETENTION_EXPIRED',
     'combined_expired_report_list_not_denied');
   try {
-    await ownerPage.getByRole('alert').waitFor({ state: 'visible', timeout: 15_000 });
+    // AICODE-NOTE: Next's route announcer can also expose role=alert. Bind
+    // this check to the visible report error instead of the framework live region.
+    await ownerPage.locator('p.status-error[role="alert"]').waitFor({ state: 'visible', timeout: 15_000 });
   } catch {
     const error = Object.assign(new Error('combined_expired_report_notice_missing'), {
       code: 'combined_expired_report_notice_missing',
@@ -755,6 +757,7 @@ async function verifyExpiredReportAccess({ commonCapture, reportReceipt }) {
         listStatus: listResponse.status(), listErrorCode: listBody.error.code,
         pagePath: new URL(ownerPage.url()).pathname,
         alertCount: await ownerPage.getByRole('alert').count(),
+        reportErrorAlertCount: await ownerPage.locator('p.status-error[role="alert"]').count(),
         reportHeadingCount: await ownerPage.getByRole('heading', { name: 'Reports', exact: true }).count(),
         formCount: await ownerPage.getByLabel('Submit a support report', { exact: true }).count(),
       },
