@@ -65,12 +65,51 @@ URL сайта/политики конфиденциальности. Если �
 | `OID_AUTH_SECRET` | Отдельный стабильный секрет приложения, подготовит агент |
 | `OID_ADMIN_PROVIDER` / `OID_ADMIN_SUBJECT` | `google` и проверенный Google `sub` будущего администратора |
 
-Сейчас код читает Google-настройки из окружения; сам JSON автоматически
-не загружается. Агент подготовит приватную загрузку/монтирование для конкретного
-стенда и не изменит сохранённые acceptance-базы. Email администратора не является
-Google `sub`: сначала владелец выполнит настоящий вход, затем агент проверит
-идентичность и настроит admin bootstrap. Настройки с секретами не должны
+Локальный launcher ниже читает JSON и передаёт настройки только backend.
+Email администратора не является Google `sub`: сначала владелец выполняет
+настоящий вход, затем оператор проверяет идентичность и настраивает admin bootstrap.
+Настройки с секретами не должны
 получать префикс `NEXT_PUBLIC_` и попадать в клиентскую сборку.
+
+## Повторный запуск локального стенда
+
+Предварительные условия: Docker Desktop, подготовленные image/dependencies и
+PostgreSQL из `infrastructure/owner-identity/compose.yaml`, приватные секреты
+из шага 5. Выполнять из корня репозитория в PowerShell:
+
+```powershell
+$env:OID_DATABASE_HOST_PORT = '65433'
+./infrastructure/owner-identity/google-local.ps1 -Action Start
+./infrastructure/owner-identity/google-local.ps1 -Action Status
+```
+
+Дождаться `status: ready` и открыть `http://127.0.0.1:3000/sign-in`.
+Если контейнер уже существует, использовать `-Action Restart`. Команда
+`-Action Stop` останавливает и удаляет только контейнер `oid-google-local`.
+База, бонусы, учётные записи, приватный runtime state и Docker volumes сохраняются.
+Не удалять `.local/owner-identity/google-local/runtime.json`: он связывает
+существующую базу со стабильными секретами сессий и бонусов.
+
+Для локального синтетического исполнителя и настоящего подключения Codex:
+
+```powershell
+./infrastructure/owner-identity/google-local.ps1 -Action Restart -EnableExecutor
+```
+
+Этот режим дополнительно требует работающий локальный BEF с закреплённым
+manifest, source proxy и observer-секретами; стандартные host-порты:
+gateway 38783, PostgreSQL 56432, source proxy 18544, RPC окружения A 18545.
+Он активирует проверенный локальный release и coordinator; решения заданий
+должен присылать подключённый агент. Сам launcher задания не решает.
+Скриншоты хранятся в Docker volume `google-local-data`, а тексты репортов,
+их связи и статусы — в выделенной PostgreSQL-базе.
+Режим ограничен loopback и отдельной базой `oid_google_local_*`; его нельзя
+использовать как конфигурацию внешней беты.
+
+29 октября 2026 владелец подтвердил успешный настоящий Google-вход и открытие
+админки. Проверка идентичности и admin bootstrap выполнены на локальном стенде;
+Google `sub`, cookie, OAuth JSON и runtime state остаются только в `.local`.
+Эта проверка входа сама по себе не подтверждает выполнение бенчмарка агентом.
 
 ## После выбора домена
 

@@ -1,0 +1,28 @@
+# Real Google qualification on the operator's machine. Public origin remains loopback.
+services:
+  runtime:
+    environment:
+      OID_GOOGLE_LOCAL_EXECUTOR_ENABLED: "${OID_GOOGLE_LOCAL_EXECUTOR_ENABLED:-false}"
+      BEF_API_HOST_PORT: "${BEF_API_HOST_PORT:-38783}"
+      BEF_DATABASE_HOST_PORT: "${BEF_DATABASE_HOST_PORT:-56432}"
+      BEF_SOURCE_PROXY_HOST_PORT: "${BEF_SOURCE_PROXY_HOST_PORT:-18544}"
+      BEF_LOCAL_RPC_A_HOST_PORT: "${BEF_LOCAL_RPC_A_HOST_PORT:-18545}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - google-local-data:/local-google-data
+      - google-local-coordinator:/workspace/.local/owner-identity/coordinator-runtime
+      - google-local-coordinator:/workspace/.local/owner-identity/secrets/coordinator-runtime
+    secrets:
+      - bef_admin_key
+      - bef_database_observer_password
+
+secrets:
+  bef_admin_key:
+    file: ../benchmark-environment/.local/secrets/admin-key
+  bef_database_observer_password:
+    file: ../benchmark-environment/.local/secrets/database-observer-password
+
+volumes:
+  google-local-data:
+  google-local-coordinator:

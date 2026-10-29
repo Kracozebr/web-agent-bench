@@ -36,6 +36,7 @@ export interface OwnerIdentityConfig {
   nodeEnv: string;
   localBefTaskCoordinatorEnabled: boolean;
   localReportAcceptanceEnabled: boolean;
+  localGoogleQualificationEnabled: boolean;
   localBefTaskCoordinatorConfigPath?: string;
   localReportCaptureRoot?: string;
   localBefTaskCoordinatorTickMs: number;
@@ -122,6 +123,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
   if (!authSecret || authSecret.length < 32) throw new Error("OID_AUTH_SECRET must contain at least 32 characters");
   const nodeEnv = env.NODE_ENV?.toLowerCase() ?? "development";
   const localReportAcceptanceEnabled = booleanFlag(env, "OID_LOCAL_REPORT_ACCEPTANCE_ENABLED", false);
+  const localGoogleQualificationEnabled = booleanFlag(env, "OID_LOCAL_GOOGLE_QUALIFICATION_ENABLED", false);
+  if (localGoogleQualificationEnabled && !["development", "test"].includes(env.NODE_ENV?.toLowerCase() ?? "")) {
+    throw new Error("OID_LOCAL_GOOGLE_QUALIFICATION_ENABLED requires NODE_ENV=development or test");
+  }
+  if (localGoogleQualificationEnabled && !localReportAcceptanceEnabled) {
+    throw new Error("OID_LOCAL_GOOGLE_QUALIFICATION_ENABLED requires OID_LOCAL_REPORT_ACCEPTANCE_ENABLED=true");
+  }
   if (localReportAcceptanceEnabled && nodeEnv !== "development" && nodeEnv !== "test") {
     throw new Error("OID_LOCAL_REPORT_ACCEPTANCE_ENABLED is allowed only in development or test");
   }
@@ -218,8 +226,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     const restoreRoot = localReportCaptureRootRaw && /^oid_restore_[0-9a-f]{32}$/i.test(basename(localReportCaptureRootRaw));
     const restoreIdentityValid = Boolean(restoreRoot && !localBefTaskCoordinatorEnabled &&
       new URL(databaseUrl).pathname === `/${basename(localReportCaptureRootRaw!)}`);
+    const googleQualificationRootName = localReportCaptureRootRaw ? basename(localReportCaptureRootRaw) : "";
+    let googleQualificationDatabaseIdentityValid = false;
+    if (/^oid_google_local_[0-9a-f]{32}$/.test(googleQualificationRootName)) {
+      try {
+        googleQualificationDatabaseIdentityValid = new URL(databaseUrl).pathname === `/${googleQualificationRootName}`;
+      } catch {
+        googleQualificationDatabaseIdentityValid = false;
+      }
+    }
+    const googleQualificationRootValid = Boolean(localGoogleQualificationEnabled &&
+      /^oid_google_local_[0-9a-f]{32}$/.test(googleQualificationRootName) && googleQualificationDatabaseIdentityValid);
+    if (localGoogleQualificationEnabled && !googleQualificationRootValid) {
+      throw new Error("OID_LOCAL_GOOGLE_QUALIFICATION_ENABLED requires an oid_google_local_<32 lowercase hex> capture root matching OID_DATABASE_URL");
+    }
+    const ordinaryCaptureRootValid = Boolean(/^oid_acceptance_[0-9a-f]{32}$/i.test(basename(localReportCaptureRootRaw ?? "")) ||
+      restoreIdentityValid);
     const captureRootValid = Boolean(localReportCaptureRootRaw && isAbsolute(localReportCaptureRootRaw) &&
-      (/^oid_acceptance_[0-9a-f]{32}$/i.test(basename(localReportCaptureRootRaw)) || restoreIdentityValid));
+      (localGoogleQualificationEnabled ? googleQualificationRootValid : ordinaryCaptureRootValid));
     if (captureRootValid) localReportCaptureRoot = resolve(localReportCaptureRootRaw!);
     if (betaManifest || !rawPrivateDataDir ||
         !betaReportClosureStateFile || !isAbsolute(betaReportClosureStateFile) ||
@@ -229,6 +253,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
         !isPathWithinDirectory(localReportCaptureRoot, betaReportClosureStateFile) ||
         resolve(betaReportClosureStateFile) === localReportCaptureRoot) {
       throw new Error("Local report acceptance requires a named per-capture loopback runtime with private data and external closure state beneath its capture root");
+    }
+    if (localGoogleQualificationEnabled && (!googleClientId || !googleClientSecret || googleFixtureOrigin)) {
+      throw new Error("OID_LOCAL_GOOGLE_QUALIFICATION_ENABLED requires Google client ID and secret without OID_GOOGLE_FIXTURE_ORIGIN");
     }
   }
   const configuredMcpTransportProfile = optional(env, "OID_MCP_TRANSPORT_PROFILE");
@@ -302,6 +329,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     nodeEnv,
     localBefTaskCoordinatorEnabled,
     localReportAcceptanceEnabled,
+    localGoogleQualificationEnabled,
     ...(localBefTaskCoordinatorConfigPath ? { localBefTaskCoordinatorConfigPath } : {}),
     ...(localReportCaptureRoot ? { localReportCaptureRoot } : {}),
     localBefTaskCoordinatorTickMs: integer(env, "OID_LOCAL_BEF_TASK_COORDINATOR_TICK_MS", 1000, 500, 10000),
