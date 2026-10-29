@@ -649,6 +649,7 @@ async function collectSourceHashes() {
     resolve(repoRoot, "tools/replay_bpc_bonus_local.py"),
     resolve(repoRoot, "tools/replay_bpc_reports_local.py"),
     resolve(repoRoot, "tools/replay_bpc_recovery_restore_local.py"),
+    resolve(repoRoot, "tools/replay_bpc_combined_restore_live.mjs"),
     resolve(repoRoot, "tools/replay_bpc_operations_local.mjs"),
     resolve(repoRoot, "infrastructure/owner-identity/compose.reports-acceptance.yaml"),
     resolve(repoRoot, "openspec/changes/benchmark-run-lifecycle"),

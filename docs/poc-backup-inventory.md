@@ -274,3 +274,28 @@ This fixture has no benchmark-run/bonus ledger rows, so it proves no bonus resto
 or official grade/ledger preservation. The retention closure was synthetic and
 clone-only. The run does not establish a daily scheduler, off-host backup,
 cross-user key recovery, production RPO/RTO, or the full BPC-SC-022/026 gate.
+
+## Independent combined-restore replay
+
+`tools/replay_bpc_combined_restore_live.mjs` independently checks a completed
+combined-restore capture against read-only PostgreSQL snapshots and the physical
+source, normal-clone and expired-clone files. Run it in the pinned Docker runtime
+with the report-capture volume mounted; replace the two identifiers with the
+capture ID and source database recorded in `capture.json`:
+
+```powershell
+$captureId = '<capture-id>'
+$sourceDatabase = 'oid_acceptance_<32 lowercase hex>'
+docker compose -f infrastructure/owner-identity/compose.yaml `
+  -f infrastructure/owner-identity/compose.reports-acceptance.yaml `
+  run --rm --no-deps runtime `
+  node /workspace/tools/replay_bpc_combined_restore_live.mjs `
+  "/workspace/artifacts/runs/beta-combined-restore/$captureId/capture.json" `
+  --source-private-dir "/local-report-captures/$sourceDatabase/private-data" `
+  --restore-private-base /local-report-captures/beta-restores
+```
+
+The helper requires explicit private roots and uses the runtime's read-only
+observer connection. A verified result is local replay evidence for that capture;
+it does not promote the BDD gate or establish target-host, off-host, or production
+recovery acceptance.
