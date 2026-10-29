@@ -3,12 +3,17 @@
 Implementation note for BPC-SC-022/026. This file describes the v1 file verifier,
 the v2 combined checkpoint provider and local report-aware rehearsals. The results
 below are bounded local evidence, not a passed target-host backup or restore gate.
-Combined attempt R33 (`39cb93bd-8d5b-4ecd-9297-19080e876b69`) created a sealed
-checkpoint and two fresh clones. The normal clone passed owner/admin report and
-screenshot reads and original-operation retries. The expired clone was purged,
-but its UI check failed before a complete combined result could be recorded.
-The cause of that UI failure is still under investigation; the final independent
-replay and physical-file verification remain pending. The callable daily rotation
+R37 (`0c1330a5-7e0e-4988-b94d-34323d9b73df`, runtime `e0b5932`) passed
+the complete local combined cycle with exit 0 and stable inputs. Independent raw
+replay passes eight observations; live replay matches all 88 source tables,
+normal-clone business state and two private screenshots, expired-clone removal
+of all reports/images with five complete deletion receipts, and 21 retained
+official-evidence files plus manifest/receipt in each clone. Financial and
+benchmark state survive both restores and original-operation retries. Local
+restore times were 8.563 and 9.631 seconds; checkpoint ages were 3.559 and 16.818
+seconds. These do not establish target RPO/RTO. See the current result in
+[implementation progress](poc-implementation-progress.md#current-verified-local-result).
+The callable daily rotation
 implementation has focused local checks, but installation under a selected host
 scheduler, unattended daily operation, off-host recovery and target-host acceptance
 remain unverified.
@@ -41,8 +46,8 @@ checkpoint/build/run bindings. It copies the manifest to
 permissions; they are operator artifacts, not a new public evidence endpoint.
 The raw reader checks both clone inventories, while the separate live replay
 reads actual clone files, manifest bytes and receipt bytes under an explicitly
-supplied restore root. Focused tests pass; the full combined runtime must still
-prove this materialization in both real restored clones.
+supplied restore root. The R37 full runtime and independent live replay prove
+this materialization in both local restored clones.
 
 The runner-side call shape is:
 
@@ -277,7 +282,7 @@ cross-user key recovery, production RPO/RTO, or the full BPC-SC-022/026 gate.
 
 ## Independent combined-restore replay
 
-`tools/replay_bpc_combined_restore_live.mjs` independently checks a completed
+`tools/replay_bpc_restored_stores_live.mjs` independently checks a completed
 combined-restore capture against read-only PostgreSQL snapshots and the physical
 source, normal-clone and expired-clone files. Run it in the pinned Docker runtime
 with the report-capture volume mounted; replace the two identifiers with the
@@ -289,7 +294,7 @@ $sourceDatabase = 'oid_acceptance_<32 lowercase hex>'
 docker compose -f infrastructure/owner-identity/compose.yaml `
   -f infrastructure/owner-identity/compose.reports-acceptance.yaml `
   run --rm --no-deps runtime `
-  node /workspace/tools/replay_bpc_combined_restore_live.mjs `
+  node /workspace/tools/replay_bpc_restored_stores_live.mjs `
   "/workspace/artifacts/runs/beta-combined-restore/$captureId/capture.json" `
   --source-private-dir "/local-report-captures/$sourceDatabase/private-data" `
   --restore-private-base /local-report-captures/beta-restores
@@ -299,3 +304,10 @@ The helper requires explicit private roots and uses the runtime's read-only
 observer connection. A verified result is local replay evidence for that capture;
 it does not promote the BDD gate or establish target-host, off-host, or production
 recovery acceptance.
+
+The older `replay_bpc_combined_restore_live.mjs` is retained unchanged because
+R37 pins its bytes in the historical input inventory. The current tool corrects
+two operator-only errors: the repository-root argument in clone-file verification
+and a returned report-hash variable name. R37's independent verification manifest
+records the current tool SHA-256 and raw/live result hashes. No frozen product or
+capture bytes were rewritten to repair the separate replay command.

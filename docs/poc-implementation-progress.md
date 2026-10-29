@@ -6,6 +6,68 @@ verification separately; agent reports are not accepted as runtime proof.
 
 ## 29 October: recovery and combined-restore continuation
 
+### Current verified local result
+
+R37 (`0c1330a5-7e0e-4988-b94d-34323d9b73df`, frozen runtime `e0b5932`)
+finished on 29 October at approximately 19:45 MSK with exit 0,
+`status: verified` and stable hashes for all 433 pinned inputs. The combined
+capture SHA-256 is `b6abb5b4c59626f22965519a8378afa1da261ab561cb616d300a5c2347199ab4`;
+the complete recovery-stage SHA-256 is
+`207e433d572a9736c7f0898cf5fdb1eb9c5aac910d1b16907e172e391edd6cbf`.
+S1/S4/M3 lost-response recovery and the real 180-second observer outage/API
+restart passed without resubmitting the original effects. Exhaustion retained
+unknown, refunded the original bonus once, fenced the generation and released
+the run's claim/slot. The broader cancellation/revoke/forgery race matrix is
+still `not_run`; this is the requested local recovery slice.
+
+The same run created a sealed combined checkpoint, restored two fresh clones,
+authenticated the original owner/admin in each, read results/reports/screenshots,
+and retried the original run intents, accepts and bonus redemption without new
+financial or benchmark effects. The normal clone also replayed the report
+receipt. The synthetic 31-day-expired clone denied report/detail/image reads,
+purged contents and retained grades/ledger and five completed deletion receipts.
+The source remained stopped and its 88 public-table fingerprints were unchanged.
+
+Independent raw replay passes all eight combined observations, with no errors.
+Independent live replay confirms all 88 source tables, normal-clone financial,
+benchmark and report state, two actual screenshot files in source and normal
+clone, zero reports/uploads/chunks/image files in the expired clone, and exact
+bytes/hashes for 21 official-evidence files (863,840 bytes) plus manifest and
+operator receipt in **each** clone. Normal restore took 8.563 seconds; expired
+restore took 9.631 seconds. Checkpoint ages at restore start were 3.559 and
+16.818 seconds. These are local measurements, not target RPO/RTO or an actual
+30-day wall-clock test.
+
+Evidence: `artifacts/runs/beta-combined-restore/0c1330a5-7e0e-4988-b94d-34323d9b73df/capture.json`
+and `artifacts/runs/beta-combined-restore-verification/0c1330a5-7e0e-4988-b94d-34323d9b73df/verification.json`.
+The latter hashes separate raw/live read-only replay results and the corrected
+operator replay tool. The original pinned replay-tool file is retained to keep
+the historical input inventory verifiable; use
+`tools/replay_bpc_restored_stores_live.mjs` for current live checks. Its corrections
+pass the repository root to both clone checks and fix the returned report hash
+field; they do not change product code or the frozen runtime result.
+
+Focused checks: 34 Node provider/checkpoint/combined/report checks, then 14
+combined-helper checks after the final projection regression; 50 Python recovery/
+combined-reader tests; semantic BDD audit 26/26 and strict OpenSpec validation.
+The successful full runtime and independent raw/live replay are separate from
+these tests. Target-host gates remain unaccepted, restored writes remain disabled,
+and no sync/archive or external-beta readiness is claimed.
+
+### Historical attempts and fixes
+
+R36 (`df415b62-017a-46af-bbcf-377879ede5cf`, frozen `bc28f9a`)
+completed both clone UI/retry paths, post-purge reconciliation, source stability
+and final BEF operation readback. The report builder then failed because
+`projectRestore` treated `observations.fileRestore` (a file receipt) as a
+PostgreSQL snapshot. The projection now explicitly handles the two database
+snapshots and bounded file receipt separately; a regression verifies this actual
+mixed provider shape and excludes private fields. The focused combined suite
+passes 14/14. R36 remains a blocked capture; the full recovery-stage artifact
+SHA-256 is `827c7241cb5a1bf357e05fbb6eb79ec6885ba6958042f6fa44af37fc4c0e8293`.
+R37 (`0c1330a5-7e0e-4988-b94d-34323d9b73df`, frozen `e0b5932`)
+is running to produce the complete report and independent raw/live replay.
+
 R34 (`4aba56f1-1c00-4313-84ff-1560e442740b`, frozen `7f889a7`)
 repeated the complete recovery block successfully; independent raw replay
 confirms the five core recovery observations with stable source. Its complete
