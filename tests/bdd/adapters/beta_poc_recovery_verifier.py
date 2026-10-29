@@ -435,16 +435,20 @@ def _verify_exhausted_case(case: Any, database_name: str, repository_root: Path)
         raise AssertionError("Exhaustion recovery deadline or clock exclusion is invalid")
     deadline_observation = _obj(recovery.get("deadlineObservation"), "recoveryDeadlineExhaustion.deadlineObservation")
     deadline_row = _obj(deadline_observation.get("row"), "recoveryDeadlineExhaustion.deadlineObservation.row")
+    # AICODE-NOTE: API restart consumes part of the fixed window before this callback
+    # starts. The database cutoff and containing outage interval prove the full wait.
     if _epoch_ms(deadline_row.get("deadline_at"), "deadline observation deadline") != deadline_ms \
             or type(deadline_observation.get("wallWaitMs")) is not int \
-            or deadline_observation["wallWaitMs"] < RECOVERY_WINDOW_MS \
+            or not 0 <= deadline_observation["wallWaitMs"] <= 240_000 \
             or _epoch_ms(deadline_observation.get("observedAtDatabase"), "deadline database observation") < deadline_ms:
         raise AssertionError("Exhaustion did not wait through the real persisted recovery deadline")
     intervals = _rows(_obj(case.get("observerFault"), "recoveryDeadlineExhaustion.observerFault").get("intervals"),
                       "recoveryDeadlineExhaustion.observerFault.intervals")
     interval = _one(intervals, "observer outage interval")
-    outage_ms = _epoch_ms(interval.get("endedAt"), "observer outage endedAt") - _epoch_ms(interval.get("startedAt"), "observer outage startedAt")
-    if outage_ms < RECOVERY_WINDOW_MS:
+    outage_started = _epoch_ms(interval.get("startedAt"), "observer outage startedAt")
+    outage_ended = _epoch_ms(interval.get("endedAt"), "observer outage endedAt")
+    outage_ms = outage_ended - outage_started
+    if outage_ms < RECOVERY_WINDOW_MS or outage_started > start_ms or outage_ended < deadline_ms:
         raise AssertionError("Read-only source observer outage did not span the recovery deadline")
 
     proxy_ok = _proxy_fault(case.get("proxy"), action["actionId"])

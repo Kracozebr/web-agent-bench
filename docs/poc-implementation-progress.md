@@ -691,3 +691,14 @@ original preparation is fenced, claim released and active slot count zero.
 The original action remains unknown, with no new action, intent, run, charge,
 grade or platform refund; owner-voluntary cancellation is preserved. Capture
 and attempt file hashes remain unchanged. This cleanup does not promote R23.
+
+Capture `a4df1bb2-5be3-4554-9284-53863ec1c21f` then exposed an acceptance-only
+race: the first post-restart snapshot preceded the monitor's asynchronous
+recovery-row insert. The waiter now polls within its existing bound and verifies
+the observer/database/run/action identities on every snapshot; missing forever,
+foreign and unrelated terminal states fail closed (17/17 focused tests pass).
+Independent R24 readback confirms its ordinary cancellation fenced both retained
+preparations; no refund or grade was claimed for the failed exhausted case.
+The reader now proves the entire persisted recovery window is contained in the
+actual outage interval instead of incorrectly demanding another full 180-second
+callback wait after API restart (25/25 raw-reader tests pass).

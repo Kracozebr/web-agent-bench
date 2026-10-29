@@ -481,6 +481,17 @@ def test_restart_variant_requires_new_process_and_health_receipt(tmp_path: Path)
     assert facts["restart"] is False
 
 
+def test_restart_time_is_part_of_the_full_outage_not_repeated_by_the_callback_wait(tmp_path: Path) -> None:
+    result = _make_result(tmp_path)
+    case = result["cases"]["recoveryDeadlineExhaustion"]
+    case["recovery"]["deadlineObservation"]["wallWaitMs"] = 174_000
+    assert derive_observations("BPC-SC-017", result, repository_root=tmp_path)["recovery_exhaustion"] is True
+    case["observerFault"]["intervals"][0].update(
+        startedAt="2026-10-29T10:00:01.000Z", endedAt="2026-10-29T10:03:02.000Z")
+    with pytest.raises(AssertionError, match="outage did not span"):
+        derive_observations("BPC-SC-017", result, repository_root=tmp_path)
+
+
 @pytest.mark.parametrize("started,finished,expected", [
     ("2026-10-29T09:59:59.500Z", "2026-10-29T10:00:01.000Z", True),
     ("2026-10-29T09:59:58.000Z", "2026-10-29T10:00:01.000Z", False),

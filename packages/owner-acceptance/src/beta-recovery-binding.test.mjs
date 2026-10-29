@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { recoveryDeadlineObservationState, recoveryExhaustionTerminalConditions,
-  selectRecoveryActionBinding, waitForRecoveryExhaustionFinalization } from './beta-recovery-cases.mjs';
+  selectRecoveryActionBinding, waitForRecoveryDeadline, waitForRecoveryExhaustionFinalization } from './beta-recovery-cases.mjs';
 
 const environmentId = 'bef-env-a';
 const generationId = '10000000-0000-4000-8000-000000000001';
@@ -100,6 +100,87 @@ test('recovery deadline rejects a row whose persisted duration differs from 180 
   assert.throws(() => recoveryDeadlineObservationState({ started_at: '2030-01-01T00:00:00.000Z',
     deadline_at: '2030-01-01T00:03:00.001Z', status: 'unknown' }, '2030-01-01T00:02:00.000Z'),
   { code: 'recovery_deadline_identity_invalid' });
+});
+
+const deadlineWaitTarget = { databaseName: 'oid_acceptance_fixture', runId: recoveryRunId, actionId };
+const deadlineStartedAt = '2030-01-01T00:00:00.000Z';
+const deadlineAt = '2030-01-01T00:03:00.000Z';
+
+function deadlineWaitSnapshot({ recovery = null, databaseNow = deadlineStartedAt, runStatus = 'running',
+  runId = recoveryRunId, databaseName = deadlineWaitTarget.databaseName,
+  terminalReason = null, cancellationReason = null } = {}) {
+  return { identity: { role: 'oid_observer', transactionReadOnly: 'on', databaseName, databaseNow },
+    result: { run: { id: runId, status: runStatus, terminal_reason: terminalReason,
+      cancellation_reason: cancellationReason }, recovery } };
+}
+
+function deadlineWaitRecovery(overrides = {}) {
+  return { action_id: actionId, run_id: recoveryRunId, started_at: deadlineStartedAt,
+    deadline_at: deadlineAt, status: 'unknown', ...overrides };
+}
+
+test('deadline waiter polls a briefly absent recovery row then honors its persisted database deadline', async () => {
+  let reads = 0;
+  let wallNow = 0;
+  const progressEvents = [];
+  const snapshots = [deadlineWaitSnapshot(),
+    deadlineWaitSnapshot({ recovery: deadlineWaitRecovery(), databaseNow: '2030-01-01T00:02:59.000Z' }),
+    deadlineWaitSnapshot({ recovery: deadlineWaitRecovery(), databaseNow: '2030-01-01T00:03:01.000Z' })];
+  const result = await waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000,
+    async (event) => progressEvents.push(event), {
+      readSnapshot: async () => snapshots[Math.min(reads++, snapshots.length - 1)],
+      now: () => wallNow,
+      sleep: async (durationMs) => { wallNow += durationMs; },
+    });
+  assert.equal(reads, 3);
+  assert.equal(result.row.action_id, actionId);
+  assert.equal(result.observedAtDatabase, '2030-01-01T00:03:01.000Z');
+  assert.equal(result.wallWaitMs, 1_500);
+  assert.deepEqual(progressEvents.map((event) => event.phase), ['platform_recovery_record_pending']);
+});
+
+test('deadline waiter bounds a recovery record that never appears', async () => {
+  let reads = 0;
+  let wallNow = 0;
+  await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 1_000, undefined, {
+    readSnapshot: async () => { reads += 1; return deadlineWaitSnapshot(); },
+    now: () => wallNow,
+    sleep: async (durationMs) => { wallNow += durationMs; },
+  }), { message: 'recovery_window_wait_exceeded_bound' });
+  assert.equal(reads, 2);
+  assert.equal(wallNow, 1_500);
+});
+
+test('deadline waiter rejects a foreign recovery row or terminal run without a row', async () => {
+  await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+    readSnapshot: async () => deadlineWaitSnapshot({ recovery: deadlineWaitRecovery({ action_id: laterActionId }) }),
+    now: () => 0,
+    sleep: async () => assert.fail('foreign row must not be polled'),
+  }), { code: 'recovery_exhaustion_record_identity_invalid' });
+  await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+    readSnapshot: async () => deadlineWaitSnapshot({ runStatus: 'failed' }),
+    now: () => 0,
+    sleep: async () => assert.fail('terminal run without recovery row must not be polled'),
+  }), { code: 'recovery_exhaustion_run_terminal_without_record' });
+});
+
+test('deadline waiter accepts only the exact exhausted terminal state after the persisted cutoff', async () => {
+  let reads = 0;
+  let wallNow = 0;
+  const snapshots = [deadlineWaitSnapshot({ recovery: deadlineWaitRecovery({ status: 'refunded' }),
+    databaseNow: deadlineAt, runStatus: 'failed', terminalReason: 'platform_failure_recovery_exhausted',
+    cancellationReason: 'coordinator_platform_failure' }),
+  deadlineWaitSnapshot({ recovery: deadlineWaitRecovery({ status: 'refunded' }),
+    databaseNow: '2030-01-01T00:03:01.000Z', runStatus: 'failed',
+    terminalReason: 'platform_failure_recovery_exhausted', cancellationReason: 'coordinator_platform_failure' })];
+  const result = await waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+    readSnapshot: async () => snapshots[Math.min(reads++, snapshots.length - 1)],
+    now: () => wallNow,
+    sleep: async (durationMs) => { wallNow += durationMs; },
+  });
+  assert.equal(reads, 2);
+  assert.equal(result.row.status, 'refunded');
+  assert.equal(result.observedAtDatabase, '2030-01-01T00:03:01.000Z');
 });
 
 function exhaustionSnapshot({ finalized = false, refundCount = finalized ? 1 : 0, includeFenceEvent = true,

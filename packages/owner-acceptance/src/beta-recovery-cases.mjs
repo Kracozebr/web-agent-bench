@@ -592,24 +592,53 @@ async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, pr
   }
 }
 
-async function waitForRecoveryDeadline(pool, target, maxWaitMs, progressFn) {
-  const startedAt = Date.now();
+export async function waitForRecoveryDeadline(pool, target, maxWaitMs, progressFn, testDependencies = {}) {
+  const now = testDependencies.now ?? Date.now;
+  const sleep = testDependencies.sleep ?? ((durationMs) => new Promise((done) => setTimeout(done, durationMs)));
+  const readSnapshot = testDependencies.readSnapshot ?? readOwnerRecoverySnapshot;
+  const startedAt = now();
   let nextProgress = startedAt;
   for (;;) {
-    const snapshot = await readOwnerRecoverySnapshot(pool, target);
+    if (now() - startedAt > maxWaitMs) throw new Error('recovery_window_wait_exceeded_bound');
+    const snapshot = await readSnapshot(pool, target);
+    demand(snapshot?.identity?.role === 'oid_observer' && snapshot.identity.transactionReadOnly === 'on' &&
+      snapshot.identity.databaseName === target.databaseName, 'recovery_exhaustion_observer_identity_invalid');
+    const run = snapshot.result?.run;
+    demand(run && typeof run.id === 'string' && run.id.toLowerCase() === target.runId.toLowerCase(),
+      'recovery_exhaustion_run_identity_invalid');
     const row = snapshot.result.recovery;
-    demand(row, 'recovery_exhaustion_row_missing');
+    if (row) {
+      demand(typeof row.action_id === 'string' && row.action_id.toLowerCase() === target.actionId.toLowerCase() &&
+        typeof row.run_id === 'string' && row.run_id.toLowerCase() === target.runId.toLowerCase(),
+      'recovery_exhaustion_record_identity_invalid');
+    } else {
+      demand(!['completed', 'failed', 'cancelled'].includes(run.status),
+        'recovery_exhaustion_run_terminal_without_record');
+      if (now() >= nextProgress) {
+        await progress(progressFn, { phase: 'platform_recovery_record_pending', runId: target.runId,
+          actionId: target.actionId, elapsedMs: now() - startedAt, observerProxyBlocked: true });
+        nextProgress = now() + 15_000;
+      }
+      if (now() - startedAt > maxWaitMs) throw new Error('recovery_window_wait_exceeded_bound');
+      await sleep(750);
+      continue;
+    }
     const timing = recoveryDeadlineObservationState(row, snapshot.identity.databaseNow);
+    if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+      demand(run.status === 'failed' && run.terminal_reason === 'platform_failure_recovery_exhausted' &&
+        run.cancellation_reason === 'coordinator_platform_failure' && ['exhausted', 'refunded'].includes(row.status),
+      'recovery_exhaustion_run_terminal_invalid');
+    }
     if (timing.deadlineReached) return { row, observedAtDatabase: snapshot.identity.databaseNow,
-      wallWaitMs: Date.now() - startedAt };
-    if (Date.now() >= nextProgress) {
+      wallWaitMs: now() - startedAt };
+    if (now() >= nextProgress) {
       await progress(progressFn, { phase: 'platform_recovery_window_open', runId: target.runId,
         recoveryStatus: row.status, deadlineAt: new Date(timing.deadlineMs).toISOString(),
-        elapsedMs: Date.now() - startedAt, observerProxyBlocked: true });
-      nextProgress = Date.now() + 15_000;
+        elapsedMs: now() - startedAt, observerProxyBlocked: true });
+      nextProgress = now() + 15_000;
     }
-    if (Date.now() - startedAt > maxWaitMs) throw new Error('recovery_window_wait_exceeded_bound');
-    await new Promise((done) => setTimeout(done, 750));
+    if (now() - startedAt > maxWaitMs) throw new Error('recovery_window_wait_exceeded_bound');
+    await sleep(750);
   }
 }
 
