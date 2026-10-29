@@ -490,7 +490,7 @@ async function verifyEvidenceFiles(commonCapture, references) {
     const info = await lstat(absolute);
     demand(info.isFile() && !info.isSymbolicLink(), 'combined_official_evidence_file_invalid');
     const bytes = await readFile(absolute);
-    demand(sha256(bytes) === reference.sha256, 'combined_official_evidence_hash_mismatch');
+    demand(bytes.length > 0 && sha256(bytes) === reference.sha256, 'combined_official_evidence_hash_mismatch');
     verified.push({ path: reference.path, sha256: reference.sha256, bytes: bytes.length,
       role: reference.role ?? 'runtime_evidence' });
   }
@@ -1107,8 +1107,10 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
     const evidenceFiles = [];
     const add = async (name, value) => {
       assertSecretFree(value, `combined-restore-${name}`);
-      evidenceFiles.push(await writeEvidenceFile(commonCapture.repoRoot,
-        `${evidenceRootRelative}/${name}.json`, value));
+      const reference = await writeEvidenceFile(commonCapture.repoRoot,
+        `${evidenceRootRelative}/${name}.json`, value);
+      evidenceFiles.push(reference);
+      return reference;
     };
     const reportEvidence = { schemaVersion: 'bpc-combined-report-evidence/v1',
       databaseName: expectedDatabase, runContext: { runId: completedCredential.runId, taskId: 'S1', actionId: completedActionId },
@@ -1149,12 +1151,12 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
     }
     const uniqueOfficialFiles = [...uniqueOfficialFilesByPath.values()];
     const verifiedEvidenceFiles = (await verifyEvidenceFiles(commonCapture, uniqueOfficialFiles.map((row) => ({
-      path: row.sourcePath, sha256: row.sha256 ?? null,
-    })).filter((row) => row.sha256))).map((row) => ({ ...row,
+      path: row.sourcePath, sha256: row.sha256,
+    })))).map((row) => ({ ...row,
       role: uniqueOfficialFilesByPath.get(row.path.toLowerCase())?.role }));
     const officialEvidenceRefs = { sourceProfile: 'local_isolated_beta_combined_restore', runIds: [...new Set(sourceRunIds)],
       sourceBuildSha256: commonCapture.sourceBuildSha256,
-      files: uniqueOfficialFiles.map(({ relativePath, sourcePath, role }) => ({ relativePath, sourcePath, role })) };
+      files: uniqueOfficialFiles.map(({ relativePath, sourcePath, role, sha256 }) => ({ relativePath, sourcePath, role, sha256 })) };
 
     await progressFn?.({ component: 'beta_combined_restore', phase: 'checkpoint_freeze_begin', runId: completedCredential.runId,
       queuedRunId: queue.runId, reports: 1 });

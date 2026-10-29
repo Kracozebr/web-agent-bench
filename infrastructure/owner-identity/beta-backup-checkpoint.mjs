@@ -12,6 +12,11 @@ const CLOSURE_SCHEMA = 'beta-report-closure-state/v1';
 const ENCRYPTED_DUMP_HEADER = Buffer.from('BPC-SC022-DBENC-V1\n', 'ascii');
 const DAY_SECONDS = 30 * 24 * 60 * 60;
 const CHECKPOINT_SCHEMA_V2 = 'beta-backup-inventory/v2';
+// AICODE-NOTE: Keep these limits aligned with beta-backup-restore.mjs and combined restore verifiers so a verified checkpoint is reopenable.
+const MAX_OFFICIAL_FILE_COUNT = 4096;
+const MAX_OFFICIAL_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_OFFICIAL_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_OFFICIAL_MANIFEST_BYTES = 16 * 1024 * 1024;
 
 function fail(code) { throw new Error(`beta_backup_checkpoint_${code}`); }
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
@@ -36,6 +41,43 @@ function validIso(value) {
     Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 }
 function requireHash(value, code) { if (typeof value !== 'string' || !HASH.test(value)) fail(code); return value; }
+
+export function validateOfficialEvidenceBounds({ fileCount, observedFileCount, minFileBytes, maxFileBytes, totalBytes, manifestBytes } = {}) {
+  if (!Number.isSafeInteger(fileCount) || fileCount < 1 || fileCount > MAX_OFFICIAL_FILE_COUNT) {
+    fail('official_evidence_file_count_invalid');
+  }
+  if (observedFileCount !== undefined && (!Number.isSafeInteger(observedFileCount) || observedFileCount < 1 ||
+      observedFileCount > fileCount)) fail('official_evidence_file_count_invalid');
+  if (minFileBytes !== undefined || maxFileBytes !== undefined) {
+    if (!Number.isSafeInteger(minFileBytes) || minFileBytes < 1 ||
+        !Number.isSafeInteger(maxFileBytes) || maxFileBytes < minFileBytes ||
+        maxFileBytes > MAX_OFFICIAL_FILE_BYTES) fail('official_evidence_file_size_invalid');
+  }
+  if (totalBytes !== undefined) {
+    if (!Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_OFFICIAL_TOTAL_BYTES ||
+        (maxFileBytes !== undefined && totalBytes < maxFileBytes) ||
+        (minFileBytes !== undefined && totalBytes < minFileBytes * (observedFileCount ?? fileCount))) {
+      fail('official_evidence_total_size_invalid');
+    }
+  }
+  if (manifestBytes !== undefined && (!Number.isSafeInteger(manifestBytes) || manifestBytes < 1 ||
+      manifestBytes > MAX_OFFICIAL_MANIFEST_BYTES)) fail('official_evidence_manifest_size_invalid');
+  return true;
+}
+
+export function validateOfficialEvidenceSourceBinding({ expectedBytes, expectedSha256, actualBytes, actualSha256 } = {}) {
+  if (!Number.isSafeInteger(actualBytes) || actualBytes < 1 || !HASH.test(actualSha256 ?? '')) {
+    fail('official_evidence_source_observation_invalid');
+  }
+  if (expectedBytes !== undefined && (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1 || expectedBytes !== actualBytes)) {
+    fail('official_evidence_expected_bytes_mismatch');
+  }
+  if (expectedSha256 !== undefined) {
+    if (typeof expectedSha256 !== 'string' || !HASH.test(expectedSha256)) fail('official_evidence_expected_hash_invalid');
+    if (expectedSha256 !== actualSha256) fail('official_evidence_expected_hash_mismatch');
+  }
+  return true;
+}
 
 async function inspectPathChain(path, expectedType) {
   const absolute = resolve(path);
@@ -329,17 +371,28 @@ async function copyOfficialEvidence({ sourceRoot, payloadRoot, officialEvidence,
   if (!officialEvidence || typeof officialEvidence.sourceProfile !== 'string' || !officialEvidence.sourceProfile ||
       !Array.isArray(officialEvidence.runIds) || officialEvidence.runIds.length < 1 ||
       !Array.isArray(officialEvidence.files) || officialEvidence.files.length < 1) fail('official_evidence_missing');
+  validateOfficialEvidenceBounds({ fileCount: officialEvidence.files.length });
   const sourceBase = await inspectPathChain(sourceRoot, 'directory').then((row) => row.canonicalPath);
   const rows = [];
   const sourceRows = [];
   const manifestFiles = [];
   const targetPaths = new Set();
+  let totalBytes = 0;
+  let minFileBytes = Number.POSITIVE_INFINITY;
+  let maxFileBytes = 0;
   for (const file of officialEvidence.files) {
     const relativePath = safeRelative(file.relativePath);
     if (targetPaths.has(relativePath.toLowerCase())) fail('official_evidence_duplicate_path');
     targetPaths.add(relativePath.toLowerCase());
     const sourcePath = resolve(sourceBase, safeRelative(file.sourcePath));
     const source = await observeAbsoluteFile(sourcePath);
+    validateOfficialEvidenceSourceBinding({ expectedBytes: file.bytes, expectedSha256: file.sha256,
+      actualBytes: source.bytes, actualSha256: source.sha256 });
+    totalBytes += source.bytes;
+    minFileBytes = Math.min(minFileBytes, source.bytes);
+    maxFileBytes = Math.max(maxFileBytes, source.bytes);
+    validateOfficialEvidenceBounds({ fileCount: officialEvidence.files.length, observedFileCount: rows.length + 1, minFileBytes,
+      maxFileBytes, totalBytes });
     if (!within(sourceBase, source.canonicalPath) || !file.role || !/^[a-z][a-z0-9_-]{1,63}$/.test(file.role)) fail('official_evidence_path_invalid');
     const targetRelative = `evidence/official/${relativePath}`;
     const targetPath = resolve(payloadRoot, ...targetRelative.split('/'));
@@ -355,6 +408,9 @@ async function copyOfficialEvidence({ sourceRoot, payloadRoot, officialEvidence,
     runIds: safeIdList(officialEvidence.runIds, 'official_run_ids'), sourceBuildSha256: officialEvidence.sourceBuildSha256,
     files: manifestFiles };
   if (!HASH.test(manifest.sourceBuildSha256 ?? '') || manifest.sourceBuildSha256 !== expectedSourceBuildSha256) fail('official_source_build_missing');
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  validateOfficialEvidenceBounds({ fileCount: officialEvidence.files.length, minFileBytes,
+    maxFileBytes, totalBytes, manifestBytes: manifestBytes.length });
   const manifestPath = resolve(payloadRoot, 'evidence/official-evidence-manifest.json');
   await mkdir(parse(manifestPath).dir, { recursive: true, mode: 0o700 });
   await writeJsonNew(manifestPath, manifest);

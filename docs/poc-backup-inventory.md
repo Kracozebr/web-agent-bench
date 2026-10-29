@@ -2,12 +2,16 @@
 
 Implementation note for BPC-SC-022/026. This file describes the v1 file verifier,
 the v2 combined checkpoint provider and local report-aware rehearsals. The results
-below are bounded local evidence, not a passed backup or restore gate. The latest
-combined acceptance attempt did not reach the backup phase, so full browser-to-
-PostgreSQL restore and retry evidence is still pending. The callable daily rotation
+below are bounded local evidence, not a passed target-host backup or restore gate.
+Combined attempt R33 (`39cb93bd-8d5b-4ecd-9297-19080e876b69`) created a sealed
+checkpoint and two fresh clones. The normal clone passed owner/admin report and
+screenshot reads and original-operation retries. The expired clone was purged,
+but its UI check failed before a complete combined result could be recorded.
+The cause of that UI failure is still under investigation; the final independent
+replay and physical-file verification remain pending. The callable daily rotation
 implementation has focused local checks, but installation under a selected host
-scheduler, unattended daily operation, off-host recovery, target-host acceptance,
-and complete benchmark/bonus restoration remain unverified.
+scheduler, unattended daily operation, off-host recovery and target-host acceptance
+remain unverified.
 
 ## Current combined v2 provider
 
@@ -27,6 +31,18 @@ source API stopped after sealing and throughout clone verification. This prevent
 source maintenance or browser polling from changing the source while it is being
 compared with the checkpoint. Ordinary checkpoint callers default this option to
 `true` and resume their API through the supervised callback.
+
+Restored clones also retain `official-evidence/<original-relative-path>` after
+temporary unseal cleanup. The provider verifies the complete file set, sizes and
+SHA-256 values against the authenticated official-evidence manifest and its
+checkpoint/build/run bindings. It copies the manifest to
+`operator/official-evidence-manifest.json` and records the verified inventory in
+`operator/official-evidence-restore.json`. These files have private filesystem
+permissions; they are operator artifacts, not a new public evidence endpoint.
+The raw reader checks both clone inventories, while the separate live replay
+reads actual clone files, manifest bytes and receipt bytes under an explicitly
+supplied restore root. Focused tests pass; the full combined runtime must still
+prove this materialization in both real restored clones.
 
 The runner-side call shape is:
 
