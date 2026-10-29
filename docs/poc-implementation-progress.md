@@ -6,6 +6,31 @@ verification separately; agent reports are not accepted as runtime proof.
 
 ## 29 October: recovery and combined-restore continuation
 
+R33 (`39cb93bd-8d5b-4ecd-9297-19080e876b69`, frozen `122ce5c`)
+completed the committed-action recovery, real 180-second observer outage with
+restart/exactly-one refund, and S4/M3 collector cases. Root independently
+replayed the complete recovery stage while its source was frozen; its SHA-256
+is `7dbf7c01f147d3611f62670be9b4f64bf4c60188e43d828517d4a3f796fa7b80`.
+The real queue/pause/drain path then produced a sealed common checkpoint and
+two fresh restored databases. The normal clone passed owner/admin report and
+screenshot reads and original-operation retries with execution disabled.
+
+The second, synthetic 31-day-expired clone restored and purged report data,
+but its browser check stopped at the expected alert locator. The original
+capture did not retain the list response status or DOM diagnostic; the cause
+is not established. R33 remains a blocked combined capture, not a successful
+end-to-end restore. A short isolated UI probe is being prepared before another
+full run. The source database and both failed-run clones remain retained.
+
+Review also found that raw official evidence was authenticated inside the
+sealed archive but not retained in each served clone after staging cleanup.
+The restore provider now materializes the verified evidence tree, a copied
+manifest and an operator receipt in both clones. The combined producer and
+independent raw reader bind these to checkpoint, build, database, roles and
+hashes. Focused checks pass: 13 provider/filesystem, 17 combined/report helpers,
+and 50 recovery/combined raw-reader tests. Physical clone-file verification
+and the final complete same-source runtime remain pending.
+
 The focused queue rerun R31 (`8da8a907-14d7-4595-b3e2-48e5c6e76ca4`,
 frozen `d64719b`) passed with source stability and exit 0. Its capture SHA-256
 is `ba7a4bd34b2edf1be66690074195a480a2c4cba556080f1b6c5fda15f5de6169`.

@@ -7,7 +7,7 @@ import pytest
 
 from .beta_poc_combined_restore_verifier import (
     REQUIRED_TABLES, _business_unchanged, _file, _hash, _snapshot, _original_source_operation_unchanged,
-    _restore_boundary, _retry_receipts,
+    _official_evidence_projection, _restore_boundary, _retry_receipts,
     verify_local_combined_restore_capture,
 )
 
@@ -160,3 +160,76 @@ def test_required_artifact_bytes_and_containment_are_verified_before_replay(tmp_
         _file(tmp_path, reference)
     with pytest.raises(ValueError, match="unsafe_artifact_reference"):
         _file(tmp_path, {"path": "../receipt.json", "sha256": reference["sha256"]})
+
+
+def _official_restore_fixture(tmp_path, database=DATABASE):
+    checkpoint_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    relative_path = "artifacts/runs/beta-platform-recovery/example.json"
+    source_file = {"path": relative_path, "role": "runtime_evidence", "bytes": 17, "sha256": "a" * 64}
+    clone_file = {"path": "official-evidence/" + relative_path, "relativePath": relative_path,
+                  "role": "runtime_evidence", "bytes": 17, "sha256": "a" * 64}
+    checkpoint = {"checkpointId": checkpoint_id, "officialEvidenceManifestSha256": "b" * 64,
+                  "sourceSnapshots": {"afterRestore": {"sourceBuildSha256": "c" * 64}}}
+    restore = {"checkpointId": checkpoint_id, "restoreDatabaseName": database,
+               "officialEvidenceRoot": "/local-report-captures/beta-restores/" + database + "/official-evidence",
+               "officialEvidenceManifestPath": "operator/official-evidence-manifest.json",
+               "verifiedOfficialEvidenceFiles": [clone_file],
+               "officialEvidenceRestoreReceipt": {"path": "operator/official-evidence-restore.json",
+                                                  "sha256": "d" * 64, "bytes": 128},
+               "checkpoint": {"officialEvidenceManifestSha256": "b" * 64, "sourceBuildSha256": "c" * 64}}
+    return restore, [source_file], checkpoint, database
+
+
+def test_both_restore_clones_must_bind_exact_checkpoint_official_evidence_inventory(tmp_path):
+    restore, source_files, checkpoint, database = _official_restore_fixture(tmp_path)
+    _official_evidence_projection(restore, source_files, checkpoint, database, "normal")
+    expired_database = "oid_restore_" + "e" * 32
+    expired, _, _, _ = _official_restore_fixture(tmp_path, expired_database)
+    _official_evidence_projection(expired, source_files, checkpoint, expired_database, "expired")
+
+
+@pytest.mark.parametrize("mutation,code", [
+    ("missing_inventory", "inventory_differs_from_checkpoint"),
+    ("corrupt_file_hash", "inventory_differs_from_checkpoint"),
+    ("extra_file", "inventory_differs_from_checkpoint"),
+    ("foreign_root", "official_root_foreign"),
+    ("missing_receipt", "operator_receipt_reference_invalid"),
+    ("receipt_path_escape", "operator_receipt_reference_invalid"),
+    ("receipt_hash_invalid", "operator_receipt_reference_invalid"),
+    ("manifest_path", "operator_receipt_reference_invalid"),
+    ("manifest_hash", "manifest_hash_mismatch"),
+    ("source_build", "source_build_mismatch"),
+    ("checkpoint_id", "checkpoint_or_database_mismatch"),
+    ("database_name", "checkpoint_or_database_mismatch"),
+])
+def test_official_evidence_restore_rejects_missing_corrupt_foreign_or_unbound_claims(tmp_path, mutation, code):
+    restore, source_files, checkpoint, database = _official_restore_fixture(tmp_path)
+    if mutation == "missing_inventory":
+        restore["verifiedOfficialEvidenceFiles"] = []
+    elif mutation == "corrupt_file_hash":
+        restore["verifiedOfficialEvidenceFiles"][0]["sha256"] = "f" * 64
+    elif mutation == "extra_file":
+        extra = deepcopy(restore["verifiedOfficialEvidenceFiles"][0])
+        extra["relativePath"] = "artifacts/runs/foreign.json"
+        extra["path"] = "official-evidence/" + extra["relativePath"]
+        restore["verifiedOfficialEvidenceFiles"].append(extra)
+    elif mutation == "foreign_root":
+        restore["officialEvidenceRoot"] = "/local-report-captures/beta-restores/" + ("oid_restore_" + "f" * 32) + "/official-evidence"
+    elif mutation == "missing_receipt":
+        restore["officialEvidenceRestoreReceipt"] = None
+    elif mutation == "receipt_path_escape":
+        restore["officialEvidenceRestoreReceipt"]["path"] = "../foreign/receipt.json"
+    elif mutation == "receipt_hash_invalid":
+        restore["officialEvidenceRestoreReceipt"]["sha256"] = "invalid"
+    elif mutation == "manifest_path":
+        restore["officialEvidenceManifestPath"] = "../manifest.json"
+    elif mutation == "manifest_hash":
+        checkpoint["officialEvidenceManifestSha256"] = "f" * 64
+    elif mutation == "source_build":
+        restore["checkpoint"]["sourceBuildSha256"] = "f" * 64
+    elif mutation == "checkpoint_id":
+        restore["checkpointId"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    elif mutation == "database_name":
+        restore["restoreDatabaseName"] = "oid_restore_" + "f" * 32
+    with pytest.raises(ValueError, match=code):
+        _official_evidence_projection(restore, source_files, checkpoint, database, "negative")

@@ -146,6 +146,67 @@ def _retry_receipts(replay: dict, *, expired: bool = False) -> None:
             _need(row["status"] == 200 and row["replayed"] is True, f"{name}_not_replayed")
 
 
+def _official_evidence_projection(restore: dict, source_files: list[dict], checkpoint: dict,
+                                  expected_database: str, label: str) -> None:
+    """Bind a clone's declared evidence inventory/receipt to the sealed checkpoint.
+
+    Physical file and receipt bytes are independently read by the operator-root-bound JS replay.
+    This raw capture reader requires the clone projections to preserve the exact same file facts.
+    """
+    _need(restore.get("restoreDatabaseName") == expected_database and
+          restore.get("checkpointId") == checkpoint.get("checkpointId"),
+          f"{label}_checkpoint_or_database_mismatch")
+    root_value = restore.get("officialEvidenceRoot")
+    _need(isinstance(root_value, str) and root_value.startswith("/") and
+          not root_value.startswith("//") and "\\" not in root_value and ":" not in root_value,
+          f"{label}_official_root_missing")
+    official_root = PurePosixPath(root_value)
+    _need(not any(part in (".", "..") for part in official_root.parts[1:]),
+          f"{label}_official_root_invalid")
+    _need(official_root.name == "official-evidence" and official_root.parent.name == expected_database,
+          f"{label}_official_root_foreign")
+
+    _need(isinstance(source_files, list) and source_files, f"{label}_checkpoint_inventory_missing")
+    expected = []
+    seen = set()
+    for row in source_files:
+        _need(isinstance(row, dict), f"{label}_checkpoint_file_invalid")
+        relative_path = row.get("path")
+        _need(isinstance(relative_path, str) and relative_path and "\\" not in relative_path and
+              ":" not in relative_path and not relative_path.startswith("/") and
+              all(part not in ("", ".", "..") for part in relative_path.split("/")) and
+              isinstance(row.get("role"), str) and re.fullmatch(r"[a-z][a-z0-9_-]{1,63}", row["role"]) and
+              type(row.get("bytes")) is int and row["bytes"] > 0 and
+              HASH.fullmatch(str(row.get("sha256", ""))), f"{label}_checkpoint_file_invalid")
+        key = relative_path.casefold()
+        _need(key not in seen, f"{label}_checkpoint_duplicate_file")
+        seen.add(key)
+        expected.append({"path": "official-evidence/" + relative_path, "relativePath": relative_path,
+                         "role": row["role"], "bytes": row["bytes"], "sha256": row["sha256"]})
+    expected.sort(key=lambda row: row["relativePath"])
+    actual = restore.get("verifiedOfficialEvidenceFiles")
+    _need(isinstance(actual, list) and actual and all(isinstance(row, dict) for row in actual),
+          f"{label}_inventory_differs_from_checkpoint")
+    actual = sorted(actual, key=lambda row: row.get("relativePath", ""))
+    _need(actual == expected, f"{label}_inventory_differs_from_checkpoint")
+
+    receipt = restore.get("officialEvidenceRestoreReceipt")
+    _need(isinstance(receipt, dict) and receipt.get("path") == "operator/official-evidence-restore.json" and
+          restore.get("officialEvidenceManifestPath") == "operator/official-evidence-manifest.json" and
+          type(receipt.get("bytes")) is int and receipt["bytes"] > 0 and
+          HASH.fullmatch(str(receipt.get("sha256", ""))), f"{label}_operator_receipt_reference_invalid")
+    manifest_hash = checkpoint.get("officialEvidenceManifestSha256")
+    clone_manifest_hash = restore.get("officialEvidenceManifestSha256",
+                                      restore.get("checkpoint", {}).get("officialEvidenceManifestSha256"))
+    _need(HASH.fullmatch(str(manifest_hash or "")) and clone_manifest_hash == manifest_hash,
+          f"{label}_manifest_hash_mismatch")
+    source_build = checkpoint.get("sourceSnapshots", {}).get("afterRestore", {}).get("sourceBuildSha256")
+    clone_build = restore.get("officialEvidenceSourceBuildSha256",
+                              restore.get("checkpoint", {}).get("sourceBuildSha256"))
+    _need(HASH.fullmatch(str(source_build or "")) and clone_build == source_build,
+          f"{label}_source_build_mismatch")
+
+
 def verify_local_combined_restore_capture(capture: dict, repository_root: Path | str) -> dict:
     root = Path(repository_root)
     errors: list[str] = []
@@ -214,6 +275,12 @@ def verify_local_combined_restore_capture(capture: dict, repository_root: Path |
         _need(references, "official_evidence_missing")
         for reference in references:
             _file(root, reference)
+        _official_evidence_projection(restore, references, checkpoint, restore_db,
+                                      "normal_restore_official_evidence")
+        expired_restore = result["retentionExpiry"]["cloneRestore"]
+        expired_db = expired_restore["restoreDatabaseName"]
+        _official_evidence_projection(expired_restore, references, checkpoint, expired_db,
+                                      "expired_restore_official_evidence")
         source = json.loads(_file(root, checkpoint["sourceObserverEvidence"]["observationFile"]))
         _need(source.get("runs") and source.get("verifiedEvidenceFiles"), "raw_source_domain_observation_missing")
         _need(source["observer"]["role"] == "oid_observer" and source["observer"]["databaseName"] == source_db and

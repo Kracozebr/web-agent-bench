@@ -500,6 +500,7 @@ export async function createCombinedCheckpoint({ source, checkpoint, adapters, k
       checkpointSource: { sourceDatabase: source.databaseName, boundary: 'admission_frozen_database_quiescent',
         snapshotBoundaryId: lease.boundaryId, sourceSnapshotAt: before.snapshotAt, sourceAfterSnapshotAt: after.snapshotAt,
         officialEvidenceSource: { profile: officialRoot.manifest.sourceProfile, runIdCount: officialRoot.manifest.runIds.length,
+          manifestPath: 'evidence/official-evidence-manifest.json', manifestSha256: officialRoot.manifestDigest.sha256,
           runIdsSha256: sha256(Buffer.from(canonical(officialRoot.manifest.runIds))) },
         operationBindings: stable.operationBindings, externalKeyRecovery: 'required_outside_bundle' },
     };
@@ -510,6 +511,7 @@ export async function createCombinedCheckpoint({ source, checkpoint, adapters, k
     return { status: 'checkpoint_verified', checkpointId, bundleRoot, inventoryPath: resolve(bundleRoot, 'inventory.json'),
       inventory, inventorySha256: inventoryDigest.sha256, operationBindings: stable.operationBindings,
       originalIds, source: { before, after }, payloadSummary: inventory.payloadSummary,
+      officialEvidenceManifestSha256: officialRoot.manifestDigest.sha256,
       writesMayBeEnabled: false };
   } catch (error) {
     if (sealed) await rm(keyPath, { force: true }).catch(() => undefined);

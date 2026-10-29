@@ -8,6 +8,12 @@ const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HOST_JOB_ID = /^[a-f0-9]{32}$/;
 const REPORT_RETENTION_SECONDS = 2_592_000;
+const OFFICIAL_MANIFEST_PATH = 'evidence/official-evidence-manifest.json';
+const OFFICIAL_FILE_PREFIX = 'evidence/official/';
+const RESTORED_OFFICIAL_SCHEMA = 'beta-restored-official-evidence/v1';
+const MAX_OFFICIAL_FILE_COUNT = 4096;
+const MAX_OFFICIAL_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_OFFICIAL_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 const BINDING_HASHES = ['bonusGrantOperationsSha256', 'runOperationReceiptsSha256', 'runGenerationReceiptsSha256', 'reportOperationReceiptsSha256'];
 const BINDING_COUNTS = ['bonusGrantOperationCount', 'runOperationReceiptCount', 'runGenerationReceiptCount', 'reportOperationReceiptCount'];
 
@@ -112,6 +118,127 @@ async function writeClosureCopy(path, closure) {
   const handle = await import('node:fs/promises').then(({ open }) => open(path, 'wx', 0o600)).catch(() => fail('restore_closure_copy_failed'));
   try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
   return hash(bytes);
+}
+export async function restoreOfficialEvidenceFiles({ payloadRoot, payloadManifest, restoreRoot, restoreDatabaseName,
+  checkpointId, sourceBuildSha256, expectedManifestSha256, expectedSource }) {
+  if (!isAbsolute(payloadRoot ?? '') || !isAbsolute(restoreRoot ?? '') ||
+      !/^oid_restore_[a-f0-9]{32}$/.test(restoreDatabaseName ?? '') || !UUID.test(checkpointId ?? '') ||
+      !HASH.test(sourceBuildSha256 ?? '') || !HASH.test(expectedManifestSha256 ?? '') ||
+      !payloadManifest || !Array.isArray(payloadManifest.files) || !expectedSource ||
+      typeof expectedSource.profile !== 'string' || !expectedSource.profile ||
+      !Number.isSafeInteger(expectedSource.runIdCount) || expectedSource.runIdCount < 1 ||
+      !HASH.test(expectedSource.runIdsSha256 ?? '')) fail('official_evidence_restore_input_invalid');
+  const payloadInfo = await inspectPathChain(payloadRoot, 'directory');
+  const cloneInfo = await inspectPathChain(restoreRoot, 'directory');
+  const canonicalPayloadRoot = payloadInfo.canonicalPath;
+  const canonicalRestoreRoot = cloneInfo.canonicalPath;
+  const manifestPath = resolve(canonicalPayloadRoot, ...OFFICIAL_MANIFEST_PATH.split('/'));
+  const manifestFileInfo = await inspectPathChain(manifestPath, 'file');
+  if (!within(canonicalPayloadRoot, manifestFileInfo.canonicalPath) ||
+      manifestFileInfo.canonicalPath !== manifestPath) fail('official_evidence_manifest_path_invalid');
+  const manifestBytes = await readFile(manifestPath);
+  const manifestSha256 = hash(manifestBytes);
+  if (manifestSha256 !== expectedManifestSha256 || manifestBytes.length > 16 * 1024 * 1024) {
+    fail('official_evidence_manifest_hash_invalid');
+  }
+  let official;
+  try { official = JSON.parse(manifestBytes.toString('utf8')); }
+  catch { fail('official_evidence_manifest_invalid'); }
+  if (!official || official.schemaVersion !== 'beta-official-evidence-source/v1' ||
+      official.sourceProfile !== expectedSource.profile || official.sourceBuildSha256 !== sourceBuildSha256 ||
+      !Array.isArray(official.runIds) || official.runIds.length !== expectedSource.runIdCount ||
+      hash(Buffer.from(canonical(official.runIds))) !== expectedSource.runIdsSha256 ||
+      !Array.isArray(official.files) || official.files.length < 1 ||
+      official.files.length > MAX_OFFICIAL_FILE_COUNT) fail('official_evidence_manifest_binding_invalid');
+  const payloadRows = new Map(payloadManifest.files.map((row) => [row?.path, row]));
+  const manifestRow = payloadRows.get(OFFICIAL_MANIFEST_PATH);
+  if (!manifestRow || manifestRow.kind !== 'evidence' || manifestRow.bytes !== manifestBytes.length ||
+      manifestRow.sha256 !== manifestSha256) fail('official_evidence_payload_manifest_binding_invalid');
+  const expectedPayloadPaths = [];
+  const seen = new Set();
+  const files = [];
+  let totalBytes = 0;
+  for (const row of official.files) {
+    if (!row || typeof row.path !== 'string' || !row.path.startsWith(OFFICIAL_FILE_PREFIX) ||
+        !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > MAX_OFFICIAL_FILE_BYTES ||
+        !HASH.test(row.sha256 ?? '') || typeof row.role !== 'string' ||
+        !/^[a-z][a-z0-9_-]{1,63}$/.test(row.role)) fail('official_evidence_file_metadata_invalid');
+    const relativePath = safeRelative(row.path.slice(OFFICIAL_FILE_PREFIX.length));
+    const collision = relativePath.toLocaleLowerCase('en-US');
+    if (seen.has(collision)) fail('official_evidence_duplicate_path');
+    seen.add(collision);
+    totalBytes += row.bytes;
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_OFFICIAL_TOTAL_BYTES) fail('official_evidence_total_bytes_invalid');
+    const payloadRow = payloadRows.get(row.path);
+    if (!payloadRow || payloadRow.kind !== 'evidence' || payloadRow.bytes !== row.bytes || payloadRow.sha256 !== row.sha256) {
+      fail('official_evidence_payload_file_binding_invalid');
+    }
+    expectedPayloadPaths.push(row.path);
+    files.push({ path: 'official-evidence/' + relativePath, relativePath, role: row.role, bytes: row.bytes, sha256: row.sha256 });
+  }
+  const payloadOfficialPaths = payloadManifest.files.filter((row) =>
+    row?.kind === 'evidence' && typeof row.path === 'string' && row.path.startsWith(OFFICIAL_FILE_PREFIX))
+    .map((row) => row.path).sort();
+  if (canonical(payloadOfficialPaths) !== canonical([...expectedPayloadPaths].sort())) {
+    fail('official_evidence_payload_file_set_invalid');
+  }
+  const officialEvidenceRoot = resolve(canonicalRestoreRoot, 'official-evidence');
+  if (!within(canonicalRestoreRoot, officialEvidenceRoot) || officialEvidenceRoot === canonicalRestoreRoot) {
+    fail('official_evidence_clone_root_invalid');
+  }
+  await mkdir(officialEvidenceRoot, { recursive: false, mode: 0o700 });
+  const officialRootInfo = await inspectPathChain(officialEvidenceRoot, 'directory');
+  if (officialRootInfo.canonicalPath !== officialEvidenceRoot) fail('official_evidence_clone_root_invalid');
+  for (const row of official.files) {
+    const relativePath = row.path.slice(OFFICIAL_FILE_PREFIX.length);
+    const safeRelativePath = safeRelative(relativePath);
+    const sourcePath = resolve(canonicalPayloadRoot, ...row.path.split('/'));
+    if (!within(canonicalPayloadRoot, sourcePath)) fail('official_evidence_source_path_invalid');
+    const sourceInfo = await inspectPathChain(sourcePath, 'file');
+    if (sourceInfo.canonicalPath !== sourcePath) fail('official_evidence_source_path_invalid');
+    const bytes = await readFile(sourcePath);
+    if (bytes.length !== row.bytes || hash(bytes) !== row.sha256) fail('official_evidence_source_hash_mismatch');
+    const targetPath = resolve(officialEvidenceRoot, ...safeRelativePath.split('/'));
+    if (!within(officialEvidenceRoot, targetPath) || targetPath === officialEvidenceRoot) fail('official_evidence_target_path_invalid');
+    const targetParent = resolve(targetPath, '..');
+    await mkdir(targetParent, { recursive: true, mode: 0o700 });
+    const targetParentInfo = await inspectPathChain(targetParent, 'directory');
+    if (!within(officialEvidenceRoot, targetParentInfo.canonicalPath)) fail('official_evidence_target_path_invalid');
+    const handle = await open(targetPath, 'wx', 0o600).catch(() => fail('official_evidence_target_create_failed'));
+    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    const observed = await inspectBackupFile(officialEvidenceRoot, safeRelativePath, 'evidence');
+    if (observed.bytes !== row.bytes || observed.sha256 !== row.sha256) fail('official_evidence_clone_hash_mismatch');
+  }
+  const actualPaths = await listFiles(officialEvidenceRoot);
+  const expectedClonePaths = files.map((row) => row.relativePath).sort();
+  if (canonical(actualPaths) !== canonical(expectedClonePaths)) fail('official_evidence_clone_file_set_invalid');
+  const receiptRelativePath = 'operator/official-evidence-restore.json';
+  const receiptPath = resolve(canonicalRestoreRoot, ...receiptRelativePath.split('/'));
+  const operatorRoot = resolve(canonicalRestoreRoot, 'operator');
+  const operatorInfo = await inspectPathChain(operatorRoot, 'directory');
+  if (!within(canonicalRestoreRoot, operatorInfo.canonicalPath) || operatorInfo.canonicalPath !== operatorRoot) {
+    fail('official_evidence_receipt_path_invalid');
+  }
+  const durableManifestRelativePath = 'operator/official-evidence-manifest.json';
+  const durableManifestPath = resolve(canonicalRestoreRoot, ...durableManifestRelativePath.split('/'));
+  const manifestHandle = await open(durableManifestPath, 'wx', 0o600).catch(() => fail('official_evidence_manifest_copy_create_failed'));
+  try { await manifestHandle.writeFile(manifestBytes); await manifestHandle.sync(); } finally { await manifestHandle.close(); }
+  const durableManifestProof = await inspectBackupFile(canonicalRestoreRoot, durableManifestRelativePath, 'evidence');
+  if (durableManifestProof.bytes !== manifestBytes.length || durableManifestProof.sha256 !== manifestSha256) {
+    fail('official_evidence_manifest_copy_hash_mismatch');
+  }
+  const receipt = { schemaVersion: RESTORED_OFFICIAL_SCHEMA, status: 'restored_verified',
+    checkpointId, sourceBuildSha256, restoreDatabaseName, sourceManifestPath: OFFICIAL_MANIFEST_PATH,
+    manifestPath: durableManifestRelativePath,
+    manifestSha256, fileCount: files.length, totalBytes, files };
+  const receiptBytes = Buffer.from(JSON.stringify(receipt) + '\n', 'utf8');
+  const receiptHandle = await open(receiptPath, 'wx', 0o600).catch(() => fail('official_evidence_receipt_create_failed'));
+  try { await receiptHandle.writeFile(receiptBytes); await receiptHandle.sync(); } finally { await receiptHandle.close(); }
+  return { officialEvidenceRoot,
+    officialEvidenceManifestPath: durableManifestRelativePath,
+    verifiedOfficialEvidenceFiles: files,
+    officialEvidenceRestoreReceipt: { path: receiptRelativePath, sha256: hash(receiptBytes), bytes: receiptBytes.length },
+    officialEvidenceManifestSha256: manifestSha256 };
 }
 function safeRestoreFailureCode(error) {
   const match = /^beta_backup_restore_([a-z0-9_]+)$/.exec(String(error?.message ?? ''));
@@ -341,6 +468,7 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
   let payload;
   let originalIds;
   let fileRestore;
+  let officialEvidenceRestore;
   let beforeRetention;
   let afterRetention;
   let cloneCleanup;
@@ -368,6 +496,9 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
       expectedEncryptedSha256: sealed.sha256, expectedEncryptedBytes: sealed.bytes, bundleRoot,
       destinationRoot: unsealedRoot, checkpointId: inventory.checkpointId,
       externalKeyRecoveryPath: externalEnvelope.canonicalPath, recoverKey: async () => restoredMaterial.bundleKey });
+    if (payload.status !== 'authenticated' || payload.payloadManifestSha256 !== inventory.payloadManifestSha256) {
+      fail('sealed_payload_manifest_mismatch');
+    }
     const sourceBefore = await readJson(resolve(unsealedRoot, 'evidence/source-before.json'));
     const sourceAfter = await readJson(resolve(unsealedRoot, 'evidence/source-after.json'));
     const reconciliation = await readJson(resolve(unsealedRoot, 'evidence/reconciliation.json'));
@@ -395,6 +526,16 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
     const restoreReceipts = validateRestoreReceiptPair({ restoreDatabaseName, checkpointId: inventory.checkpointId,
       databaseDumpSha256: dumpRow.sha256, creationReceipt, restoreReceipt: dbRestore });
     fileRestore = await adapters.restorePrivateFiles({ payloadRoot: unsealedRoot, privateDataDir, restoreRoot });
+    const officialEvidenceSource = inventory.checkpointSource.officialEvidenceSource;
+    const expectedManifestSha256 = reconciliation.officialEvidenceManifestSha256;
+    if (!officialEvidenceSource || !HASH.test(expectedManifestSha256 ?? '') ||
+        (officialEvidenceSource.manifestPath !== undefined && officialEvidenceSource.manifestPath !== OFFICIAL_MANIFEST_PATH) ||
+        (officialEvidenceSource.manifestSha256 !== undefined && officialEvidenceSource.manifestSha256 !== expectedManifestSha256)) {
+      fail('official_evidence_checkpoint_manifest_binding_invalid');
+    }
+    officialEvidenceRestore = await restoreOfficialEvidenceFiles({ payloadRoot: unsealedRoot, payloadManifest: payload.manifest,
+      restoreRoot, restoreDatabaseName, checkpointId: inventory.checkpointId,
+      sourceBuildSha256: inventory.sourceBuildSha256, expectedManifestSha256, expectedSource: officialEvidenceSource });
     const imageRows = payload.manifest.files.filter((row) => row.kind === 'screenshot').map(({ path, bytes, sha256 }) => ({
       path, bytes, sha256 })).sort((a, b) => a.path.localeCompare(b.path));
     if (!fileRestore || fileRestore.status !== 'restored' || fileRestore.fileCount !== imageRows.length) fail('private_files_restore_not_verified');
@@ -447,7 +588,13 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
       checkpoint: { inventorySha256: artifactProof.inventorySha256, databaseTotalsSha256: inventory.databaseTotalsSha256,
         sourceBuildSha256: inventory.sourceBuildSha256, capturedAt: inventory.capturedAt,
         operationBindings: inventory.operationBindings, payloadManifestSha256: payload.payloadManifestSha256,
-        payloadFileCount: payload.extractedFileCount, databaseDumpSha256: dumpRow.sha256 },
+        payloadFileCount: payload.extractedFileCount, databaseDumpSha256: dumpRow.sha256,
+        officialEvidenceManifestSha256: officialEvidenceRestore.officialEvidenceManifestSha256 },
+      officialEvidenceRoot: officialEvidenceRestore.officialEvidenceRoot,
+      officialEvidenceManifestPath: officialEvidenceRestore.officialEvidenceManifestPath,
+      verifiedOfficialEvidenceFiles: officialEvidenceRestore.verifiedOfficialEvidenceFiles,
+      officialEvidenceRestoreReceipt: officialEvidenceRestore.officialEvidenceRestoreReceipt,
+      officialEvidenceManifestSha256: officialEvidenceRestore.officialEvidenceManifestSha256,
       creationReceipt: restoreReceipts.creationReceipt, restoreReceipt: restoreReceipts.restoreReceipt,
       authoritativeClosure: { betaEndedAt: authoritativeClosure.betaEndedAt,
         sourceEvidenceSha256: authoritativeClosure.sourceEvidenceSha256 },

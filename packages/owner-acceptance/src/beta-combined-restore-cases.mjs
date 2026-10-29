@@ -743,9 +743,24 @@ async function verifyExpiredReportAccess({ commonCapture, reportReceipt }) {
   await ownerPage.goto(new URL('/reports', commonCapture.publicOrigin).toString(), { waitUntil: 'domcontentloaded' });
   const listResponse = await listPromise;
   const listBody = await listResponse.json().catch(() => ({}));
-  await ownerPage.getByRole('alert').waitFor({ state: 'visible', timeout: 15_000 });
   demand(listResponse.status() === 410 && listBody?.error?.code === 'REPORT_RETENTION_EXPIRED',
     'combined_expired_report_list_not_denied');
+  try {
+    await ownerPage.getByRole('alert').waitFor({ state: 'visible', timeout: 15_000 });
+  } catch {
+    const error = Object.assign(new Error('combined_expired_report_notice_missing'), {
+      code: 'combined_expired_report_notice_missing',
+      safeDiagnostic: {
+        schemaVersion: 'beta-expired-report-ui-diagnostic/v1',
+        listStatus: listResponse.status(), listErrorCode: listBody.error.code,
+        pagePath: new URL(ownerPage.url()).pathname,
+        alertCount: await ownerPage.getByRole('alert').count(),
+        reportHeadingCount: await ownerPage.getByRole('heading', { name: 'Reports', exact: true }).count(),
+        formCount: await ownerPage.getByLabel('Submit a support report', { exact: true }).count(),
+      },
+    });
+    throw error;
+  }
   const detailResponse = await ownerPage.request.get(new URL(`/api/owner/reports/${reportReceipt.reportId}`,
     commonCapture.publicOrigin).toString());
   const detailBody = await detailResponse.json().catch(() => ({}));
@@ -850,6 +865,11 @@ function projectRestore(restore) {
   return { schemaVersion: restore.schemaVersion, status: restore.status, boundary: restore.boundary,
     checkpointId: restore.checkpointId, sourceDatabase: restore.sourceDatabase,
     restoreDatabaseName: restore.restoreDatabaseName, checkpoint: restore.checkpoint,
+    officialEvidenceRoot: restore.officialEvidenceRoot,
+    officialEvidenceManifestPath: restore.officialEvidenceManifestPath,
+    officialEvidenceManifestSha256: restore.officialEvidenceManifestSha256,
+    verifiedOfficialEvidenceFiles: restore.verifiedOfficialEvidenceFiles,
+    officialEvidenceRestoreReceipt: restore.officialEvidenceRestoreReceipt,
     creationReceipt: restore.creationReceipt, restoreReceipt: restore.restoreReceipt,
     authoritativeClosure: restore.authoritativeClosure, originalIds: restore.originalIds,
     operationBindings: restore.operationBindings, retention: restore.retention,
@@ -1128,9 +1148,10 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
       if (!previous) uniqueOfficialFilesByPath.set(key, file);
     }
     const uniqueOfficialFiles = [...uniqueOfficialFilesByPath.values()];
-    const verifiedEvidenceFiles = await verifyEvidenceFiles(commonCapture, uniqueOfficialFiles.map((row) => ({
+    const verifiedEvidenceFiles = (await verifyEvidenceFiles(commonCapture, uniqueOfficialFiles.map((row) => ({
       path: row.sourcePath, sha256: row.sha256 ?? null,
-    })).filter((row) => row.sha256));
+    })).filter((row) => row.sha256))).map((row) => ({ ...row,
+      role: uniqueOfficialFilesByPath.get(row.path.toLowerCase())?.role }));
     const officialEvidenceRefs = { sourceProfile: 'local_isolated_beta_combined_restore', runIds: [...new Set(sourceRunIds)],
       sourceBuildSha256: commonCapture.sourceBuildSha256,
       files: uniqueOfficialFiles.map(({ relativePath, sourcePath, role }) => ({ relativePath, sourcePath, role })) };
@@ -1304,6 +1325,7 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
         pauseRevision: paused.after.control.revision, pauseOperationId: paused.after.control.operation_id,
         completedWorkerRun: workerRun, pausedQueueObserver: pausedQueue },
       checkpoint: { status: checkpoint.status, checkpointId: checkpoint.checkpointId,
+        officialEvidenceManifestSha256: checkpoint.officialEvidenceManifestSha256,
         inventorySha256: checkpoint.inventorySha256, databaseTotalsSha256: checkpoint.inventory.databaseTotalsSha256,
         operationBindings: checkpoint.operationBindings, originalIds: sourceIds,
         sourceStable: checkpoint.source?.after?.databaseTotalsSha256 === checkpoint.source?.before?.databaseTotalsSha256,
@@ -1320,12 +1342,7 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
       retentionExpiry: { status: 'verified_local_synthetic_historical_clone', boundary: 'synthetic_31_day_closure_in_second_restored_clone_only',
         syntheticHistoricalClosureUsed: true, sourceClosureUnchanged: true,
         sourceEvidenceSha256: sourceClosure.sourceEvidenceSha256, cloneBetaEndedAt: syntheticBetaEndedAt,
-        cloneRestore: { status: expiredRestoreResult.status, checkpointId: expiredRestoreResult.checkpointId,
-          restoreDatabaseName: expiredRestoreResult.restoreDatabaseName,
-          checkpoint: { databaseDumpSha256: expiredRestoreResult.checkpoint.databaseDumpSha256 },
-          creationReceipt: expiredRestoreResult.creationReceipt, restoreReceipt: expiredRestoreResult.restoreReceipt,
-          writesMayBeEnabled: expiredRestoreResult.writesMayBeEnabled,
-          targetHostAcceptance: expiredRestoreResult.targetHostAcceptance },
+        cloneRestore: projectRestore(expiredRestoreResult),
         cleanup: expiredRestoreResult.retention.cloneCleanup, cloneObservation: {
           databaseName: expiredRestoreResult.restoreDatabaseName, reportCount: expiredBaseline.reportCount,
           uploadCount: expiredBaseline.uploadCount, imageFileCount: expiredBaseline.imageFiles.length,

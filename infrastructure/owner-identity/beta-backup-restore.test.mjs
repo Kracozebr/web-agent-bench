@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { cleanupUnservedRestoreArtifacts, removeOwnedUnsealedRestoreRoot, validateRestoreReceiptPair,
-  verifyCombinedRestoreRetryProof } from './beta-backup-restore.mjs';
+  restoreOfficialEvidenceFiles, verifyCombinedRestoreRetryProof } from './beta-backup-restore.mjs';
 
 const hash = (character) => character.repeat(64);
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const operationBindings = { bonusGrantOperationsSha256: hash('a'), bonusGrantOperationCount: 0,
   runOperationReceiptsSha256: hash('b'), runOperationReceiptCount: 0,
   runGenerationReceiptsSha256: hash('c'), runGenerationReceiptCount: 0,
@@ -21,6 +22,44 @@ function snapshot(overrides = {}) {
 const originalIds = { completedRunIds: [], queuedInterruptedUnknownRunIds: [], operationIds: [], bonusGrantOperationIds: [], reportOperationIds: [] };
 const proof = { status: 'verified', receiptBindings: operationBindings, completedRunIds: [], queuedInterruptedUnknownRunIds: [],
   noNewGrantOrLedgerEffects: true, noNewRunTaskOrActionEffects: true, reportOperationDisposition: 'same_receipts_replayed' };
+
+async function officialFixture(parent, { files, sourceFiles } = {}) {
+  const payloadRoot = join(parent, 'payload');
+  const restoreDatabaseName = 'oid_restore_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const restoreRoot = join(parent, restoreDatabaseName);
+  const defaultEvidenceBytes = Buffer.from('bytes-not-copied-into-receipt');
+  const rows = files ?? [{ path: 'evidence/official/artifacts/run/action.json', role: 'action_receipt_evidence',
+    bytes: defaultEvidenceBytes.length, sha256: sha256(defaultEvidenceBytes) }];
+  const sources = sourceFiles ?? [{ path: rows[0].path, bytes: defaultEvidenceBytes }];
+  await mkdir(join(payloadRoot, 'evidence'), { recursive: true, mode: 0o700 });
+  await mkdir(restoreRoot, { recursive: false, mode: 0o700 });
+  await mkdir(join(restoreRoot, 'operator'), { recursive: false, mode: 0o700 });
+  for (const source of sources) {
+    const path = join(payloadRoot, ...source.path.split('/'));
+    await mkdir(join(path, '..'), { recursive: true, mode: 0o700 });
+    if (source.symlinkTarget) await symlink(source.symlinkTarget, path, 'file');
+    else await writeFile(path, source.bytes, { mode: 0o600 });
+  }
+  const runIds = ['synthetic-run-id'];
+  const sourceBuildSha256 = hash('9');
+  const official = { schemaVersion: 'beta-official-evidence-source/v1', sourceProfile: 'local-test',
+    runIds, sourceBuildSha256, files: rows };
+  const manifestBytes = Buffer.from(JSON.stringify(official) + '\n', 'utf8');
+  const manifestPath = join(payloadRoot, 'evidence', 'official-evidence-manifest.json');
+  await writeFile(manifestPath, manifestBytes, { mode: 0o600 });
+  const payloadManifest = { files: [
+    { path: 'evidence/official-evidence-manifest.json', kind: 'evidence', bytes: manifestBytes.length, sha256: sha256(manifestBytes) },
+    ...rows.map((row) => ({ path: row.path, kind: 'evidence', bytes: row.bytes, sha256: row.sha256 })),
+  ] };
+  return { payloadRoot, restoreRoot, restoreDatabaseName, sourceBuildSha256, manifestSha256: sha256(manifestBytes),
+    expectedSource: { profile: official.sourceProfile, runIdCount: runIds.length, runIdsSha256: sha256(Buffer.from(JSON.stringify(runIds))) },
+    payloadManifest,
+    input: { payloadRoot, payloadManifest, restoreRoot, restoreDatabaseName,
+      checkpointId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', sourceBuildSha256,
+      expectedManifestSha256: sha256(manifestBytes),
+      expectedSource: { profile: official.sourceProfile, runIdCount: runIds.length,
+        runIdsSha256: sha256(Buffer.from(JSON.stringify(runIds))) } } };
+}
 
 test('restore receipt pair binds the host creation and pg_restore jobs to the exact fresh database and dump', () => {
   const restoreDatabaseName = 'oid_restore_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -150,4 +189,96 @@ test('unseal cleanup refuses symlinked staging and leaves its target untouched',
     assert.equal(await readFile(join(outside, 'marker.txt'), 'utf8'), 'preserve-outside-root');
     assert.equal((await lstat(unsealedRoot)).isSymbolicLink(), true);
   } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test('official evidence restore copies every manifest file and writes a bound operator receipt', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'bpc-official-restore-'));
+  try {
+    const fixture = await officialFixture(parent);
+    const result = await restoreOfficialEvidenceFiles(fixture.input);
+    await rm(fixture.payloadRoot, { recursive: true, force: false });
+    assert.equal(result.officialEvidenceRoot, join(fixture.restoreRoot, 'official-evidence'));
+    assert.equal(result.officialEvidenceManifestPath, 'operator/official-evidence-manifest.json');
+    assert.equal(result.officialEvidenceManifestSha256, fixture.manifestSha256);
+    assert.equal(result.verifiedOfficialEvidenceFiles.length, 1);
+    const file = result.verifiedOfficialEvidenceFiles[0];
+    assert.deepEqual(file, { path: 'official-evidence/artifacts/run/action.json',
+      relativePath: 'artifacts/run/action.json', role: 'action_receipt_evidence',
+      bytes: Buffer.byteLength('bytes-not-copied-into-receipt'), sha256: sha256(Buffer.from('bytes-not-copied-into-receipt')) });
+    assert.equal(await readFile(join(fixture.restoreRoot, ...file.path.split('/')), 'utf8'), 'bytes-not-copied-into-receipt');
+    const manifestClonePath = join(fixture.restoreRoot, ...result.officialEvidenceManifestPath.split('/'));
+    assert.equal(sha256(await readFile(manifestClonePath)), fixture.manifestSha256);
+    const receiptPath = join(fixture.restoreRoot, ...result.officialEvidenceRestoreReceipt.path.split('/'));
+    const receiptBytes = await readFile(receiptPath);
+    assert.equal(sha256(receiptBytes), result.officialEvidenceRestoreReceipt.sha256);
+    if (process.platform !== 'win32') assert.equal((await lstat(receiptPath)).mode & 0o077, 0);
+    const receipt = JSON.parse(receiptBytes.toString('utf8'));
+    assert.equal(receipt.schemaVersion, 'beta-restored-official-evidence/v1');
+    assert.equal(receipt.status, 'restored_verified');
+    assert.equal(receipt.checkpointId, fixture.input.checkpointId);
+    assert.equal(receipt.sourceBuildSha256, fixture.sourceBuildSha256);
+    assert.equal(receipt.restoreDatabaseName, fixture.restoreDatabaseName);
+    assert.equal(receipt.manifestPath, 'operator/official-evidence-manifest.json');
+    assert.equal(receipt.sourceManifestPath, 'evidence/official-evidence-manifest.json');
+    assert.equal(receipt.manifestSha256, fixture.manifestSha256);
+    assert.equal(receipt.fileCount, 1);
+    assert.deepEqual(receipt.files, result.verifiedOfficialEvidenceFiles);
+    assert.equal(JSON.stringify(receipt).includes('bytes-not-copied-into-receipt'), false);
+  } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test('official evidence restore rejects a file above the bounded per-file limit before materialization', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'bpc-official-restore-size-limit-'));
+  try {
+    const fixture = await officialFixture(parent, { files: [{ path: 'evidence/official/artifacts/run/action.json',
+      role: 'action_receipt_evidence', bytes: 64 * 1024 * 1024 + 1, sha256: hash('a') }], sourceFiles: [] });
+    await assert.rejects(restoreOfficialEvidenceFiles(fixture.input),
+      /beta_backup_restore_official_evidence_file_metadata_invalid/);
+    await assert.rejects(lstat(join(fixture.restoreRoot, 'official-evidence')), { code: 'ENOENT' });
+  } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test('official evidence restore rejects traversal and case-colliding manifest paths before copying', async () => {
+  for (const files of [
+    [{ path: 'evidence/official/../private/secret.json', role: 'action_receipt_evidence', bytes: 1, sha256: hash('a') }],
+    [
+      { path: 'evidence/official/artifacts/run/action.json', role: 'action_receipt_evidence', bytes: 1, sha256: hash('a') },
+      { path: 'evidence/official/ARTIFACTS/run/action.json', role: 'action_receipt_evidence', bytes: 1, sha256: hash('b') },
+    ],
+  ]) {
+    const parent = await mkdtemp(join(tmpdir(), 'bpc-official-restore-invalid-path-'));
+    try {
+      const fixture = await officialFixture(parent, { files, sourceFiles: [] });
+      await assert.rejects(restoreOfficialEvidenceFiles(fixture.input),
+        /beta_backup_restore_(unsafe_bundle_path|official_evidence_duplicate_path)/);
+      await assert.rejects(lstat(join(fixture.restoreRoot, 'official-evidence')), { code: 'ENOENT' });
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  }
+});
+
+test('official evidence restore rejects symlinked sources and bytes that do not match the sealed manifest', async () => {
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'bpc-official-restore-outside-'));
+  try {
+    const outsideFile = join(outsideRoot, 'outside.json');
+    await writeFile(outsideFile, 'outside-private-target', { mode: 0o600 });
+    const symlinkParent = await mkdtemp(join(tmpdir(), 'bpc-official-restore-symlink-'));
+    try {
+      const fixture = await officialFixture(symlinkParent, {
+        sourceFiles: [{ path: 'evidence/official/artifacts/run/action.json', symlinkTarget: outsideFile }],
+      });
+      await assert.rejects(restoreOfficialEvidenceFiles(fixture.input), /beta_backup_restore_path_symlink/);
+      assert.equal(await readFile(outsideFile, 'utf8'), 'outside-private-target');
+    } finally { await rm(symlinkParent, { recursive: true, force: true }); }
+    const mismatchParent = await mkdtemp(join(tmpdir(), 'bpc-official-restore-mismatch-'));
+    try {
+      const expected = Buffer.from('expected');
+      const fixture = await officialFixture(mismatchParent, {
+        files: [{ path: 'evidence/official/artifacts/run/action.json', role: 'action_receipt_evidence',
+          bytes: expected.length, sha256: sha256(expected) }],
+        sourceFiles: [{ path: 'evidence/official/artifacts/run/action.json', bytes: Buffer.from('actual') }],
+      });
+      await assert.rejects(restoreOfficialEvidenceFiles(fixture.input),
+        /beta_backup_restore_official_evidence_source_hash_mismatch/);
+    } finally { await rm(mismatchParent, { recursive: true, force: true }); }
+  } finally { await rm(outsideRoot, { recursive: true, force: true }); }
 });
