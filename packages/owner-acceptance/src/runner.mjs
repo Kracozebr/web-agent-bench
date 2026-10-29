@@ -922,6 +922,7 @@ async function main() {
           sourceBuildSha256: commonCapture.sourceBuildSha256, officialEvidenceRefs,
           getRuntimeRecoverySecrets: commonCapture.getRuntimeRecoverySecrets,
           stopApi: commonCapture.stopApi, restartApi: commonCapture.restartApi,
+          resumeSourceAfterCheckpoint: false,
           hostBridgeRoot: resolve(repoRoot, ".local/beta-backup-jobs"),
           hostOperatorRoot: resolve(repoRoot, ".local/beta-backup-operator"),
           backupRoot: "/local-report-captures/beta-backups", restoreRoot: "/local-report-captures/beta-restores",

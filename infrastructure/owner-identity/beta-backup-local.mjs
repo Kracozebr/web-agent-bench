@@ -268,11 +268,13 @@ function makeKeyRecovery({ repoRoot, hostBridgeRoot, recoveryPublicKeyPath }) {
 export async function createLocalCombinedBackup({ repoRoot, databaseUrl, observerDatabaseUrl, privateDataDir,
   closureStatePath, officialEvidenceRoot = repoRoot, sourceBuildSha256, officialEvidenceRefs,
   getRuntimeRecoverySecrets, stopApi, restartApi, hostBridgeRoot, hostOperatorRoot, backupRoot, restoreRoot,
-  recoveryPublicKeyPath, recoveryPrivateKeyPath, checkpointId = randomUUID(), kind = 'pre_migration', checkpointBundleRoot }) {
+  recoveryPublicKeyPath, recoveryPrivateKeyPath, checkpointId = randomUUID(), kind = 'pre_migration', checkpointBundleRoot,
+  resumeSourceAfterCheckpoint = true }) {
   if (!isAbsolute(repoRoot ?? '') || typeof databaseUrl !== 'string' || typeof observerDatabaseUrl !== 'string' ||
       !isAbsolute(privateDataDir ?? '') || !isAbsolute(closureStatePath ?? '') || !isAbsolute(officialEvidenceRoot) ||
       !HASH.test(sourceBuildSha256 ?? '') || typeof getRuntimeRecoverySecrets !== 'function' ||
       typeof stopApi !== 'function' || typeof restartApi !== 'function' || typeof checkpointId !== 'string' ||
+      typeof resumeSourceAfterCheckpoint !== 'boolean' ||
       !UUID_HEX.test(checkpointId.replaceAll('-', '')) || !isAbsolute(backupRoot ?? '') || !isAbsolute(restoreRoot ?? '') ||
       (hostBridgeRoot !== undefined && !isAbsolute(hostBridgeRoot)) ||
       (hostOperatorRoot !== undefined && !isAbsolute(hostOperatorRoot)) ||
@@ -325,7 +327,11 @@ export async function createLocalCombinedBackup({ repoRoot, databaseUrl, observe
       await stopApi();
       return { status: 'frozen', admissionFrozen: true, leaseId: randomUUID(), boundaryId: randomUUID() };
     },
-    async releaseAdmissionFreeze() { await restartApi(); },
+    async releaseAdmissionFreeze() {
+      // AICODE-NOTE: A restore rehearsal must keep the original source unserved
+      // while isolated clones are checked; normal checkpoint callers resume it.
+      if (resumeSourceAfterCheckpoint) await restartApi();
+    },
     async assertQuiescent({ databaseName: targetDatabase }) {
       const pool = new Pool({ connectionString: withDatabase(databaseUrl, targetDatabase), max: 1, connectionTimeoutMillis: 5_000 });
       let client;

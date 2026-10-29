@@ -659,16 +659,6 @@ export async function createLaunchIntent(deps: RunServiceDependencies, input: Cr
     throw new HttpError(400, "INVALID_RELEASE_EXPECTATION", "Expected active release identity and manifest hash are required");
   }
   const expectedQuoteUnits = parseAmount(input.expectedQuotePrice, "expectedQuotePrice");
-  const ttlSeconds = configuredSeconds(deps.intentTtlSeconds, deps.maxIntentTtlSeconds, "intent TTL");
-  const maxOwnerPending = configuredSeconds(deps.maxPendingIntentsPerOwner, deps.maxPendingIntentsPerOwner, "per-owner pending intent cap");
-  const maxGlobalPending = configuredSeconds(deps.maxPendingIntentsGlobal, deps.maxPendingIntentsGlobal, "global pending intent cap");
-  configuredSeconds(deps.queueWaitSeconds, deps.maxQueueWaitSeconds, "queue wait");
-  if (!Number.isSafeInteger(deps.executionCapacity) || deps.executionCapacity! < 1) {
-    throw new HttpError(503, "RUN_POLICY_UNCONFIGURED", "execution capacity is not pinned to an approved bounded runtime value");
-  }
-  const provider = deps.admissionReleaseProvider;
-  if (!provider) throw new HttpError(503, "RELEASE_UNAVAILABLE", "There is no active validated task release");
-
   const hash = hashPayload({ action: "intent_create", agentId, mode, taskIds: input.taskIds, cashCeiling: formatUnits(cashCeilingUnits),
     expectedReleaseIdentity, expectedManifestHash, expectedQuotePrice: formatUnits(expectedQuoteUnits) });
   const created = await deps.db.transaction(async (tx) => {
@@ -686,6 +676,19 @@ export async function createLaunchIntent(deps: RunServiceDependencies, input: Cr
     if (agent.access_revoked_at) throw new HttpError(403, "AGENT_ACCESS_REVOKED", "The agent must be reauthorized before creating a run intent");
     const permission = mode === "training" ? agent.training : agent.ranked;
     if (!permission) throw new HttpError(403, "MODE_NOT_AUTHORIZED", `The owner has not enabled ${mode} for this agent`);
+
+    // AICODE-NOTE: A restored API may serve authenticated reads and idempotent retries without
+    // enabling new admissions. Resolve an existing operation before requiring live admission
+    // policy or release-provider wiring; fresh requests still fail closed below.
+    const ttlSeconds = configuredSeconds(deps.intentTtlSeconds, deps.maxIntentTtlSeconds, "intent TTL");
+    const maxOwnerPending = configuredSeconds(deps.maxPendingIntentsPerOwner, deps.maxPendingIntentsPerOwner, "per-owner pending intent cap");
+    const maxGlobalPending = configuredSeconds(deps.maxPendingIntentsGlobal, deps.maxPendingIntentsGlobal, "global pending intent cap");
+    configuredSeconds(deps.queueWaitSeconds, deps.maxQueueWaitSeconds, "queue wait");
+    if (!Number.isSafeInteger(deps.executionCapacity) || deps.executionCapacity! < 1) {
+      throw new HttpError(503, "RUN_POLICY_UNCONFIGURED", "execution capacity is not pinned to an approved bounded runtime value");
+    }
+    const provider = deps.admissionReleaseProvider;
+    if (!provider) throw new HttpError(503, "RELEASE_UNAVAILABLE", "There is no active validated task release");
     const release = parseRelease(await provider.getActiveAdmissionRelease(mode, tx), mode);
     const taskIds = normalizeSelection(release, input.taskIds);
     const successorPolicy = configuredSuccessorPreparationPolicy(deps, taskIds.length > 1);
@@ -856,9 +859,6 @@ export async function acceptLaunchIntent(deps: RunServiceDependencies, input: Ac
   const agentId = parseUuid(input.agentId, "agentId");
   const operationId = parseOperationId(input.operationId);
   if (!Number.isSafeInteger(input.accessGeneration) || input.accessGeneration < 1) throw new HttpError(401, "UNAUTHORIZED", "The verified agent access generation is invalid");
-  const queueWaitSeconds = configuredSeconds(deps.queueWaitSeconds, deps.maxQueueWaitSeconds, "queue wait");
-  const provider = deps.admissionReleaseProvider;
-  if (!provider) throw new HttpError(503, "RELEASE_UNAVAILABLE", "There is no active validated task release");
 
   const accepted = await deps.db.transaction(async (tx) => {
     await lockOperation(tx, ownerId, operationId);
@@ -902,6 +902,12 @@ export async function acceptLaunchIntent(deps: RunServiceDependencies, input: Ac
     if (agent.policy_revision !== intent.agent_policy_revision) throw new HttpError(409, "STALE_AGENT_POLICY", "Agent permissions changed after this launch intent was created");
     const financial = await readFinancialPolicy(tx, ownerId, agentId);
     if (financial.revision !== intent.owner_policy_revision) throw new HttpError(409, "STALE_OWNER_POLICY", "Owner financial limits changed after this launch intent was created");
+
+    // AICODE-NOTE: Existing operation and already-accepted intent reads above are safe after
+    // restore. Require current admission policy/provider only for a pending intent that creates a run.
+    const queueWaitSeconds = configuredSeconds(deps.queueWaitSeconds, deps.maxQueueWaitSeconds, "queue wait");
+    const provider = deps.admissionReleaseProvider;
+    if (!provider) throw new HttpError(503, "RELEASE_UNAVAILABLE", "There is no active validated task release");
     await tx.execute(sql`SELECT pg_advisory_xact_lock(824731202, 21)`);
     if (deps.betaOperationsEnabled) await lockBetaRunStartControl(tx);
     if (deps.maxAcceptedRunsPerOwner !== undefined || deps.maxAcceptedRunsGlobal !== undefined) {

@@ -6,6 +6,32 @@ verification separately; agent reports are not accepted as runtime proof.
 
 ## 29 October: recovery and combined-restore continuation
 
+The focused queue rerun R31 (`8da8a907-14d7-4595-b3e2-48e5c6e76ca4`,
+frozen `d64719b`) passed with source stability and exit 0. Its capture SHA-256
+is `ba7a4bd34b2edf1be66690074195a480a2c4cba556080f1b6c5fda15f5de6169`.
+Root live PostgreSQL readback confirms the first run completed/fenced and the
+second remained queued. The financial boundary proves identical first-run
+funding hashes, owner-ledger count 3 to 4 from the queued reservation, unchanged
+zero refunds, and unchanged active claim/slot during orchestration.
+
+R32 (`cc71b4c2-8010-4ced-b9ba-2fcb59fb7c17`) was stopped deliberately
+after the completed/refunded core recovery stage, with both environment leases
+independently confirmed fenced. Its core stage SHA-256 is
+`e8423c90e46c40618690209c0c144cf550d34f39e5d7fba1a7c151a46453fae0`;
+it is not a completed combined capture. Source review found a product defect:
+the restored API disables execution and has no admission policy, but intent and
+accept services required that policy before reading existing-operation receipts.
+The services now resolve authenticated, payload-bound retries before live
+admission configuration; agent revocation checks remain before acceptance replay.
+Fresh admissions still fail closed. Root typecheck and a fresh PostgreSQL test
+pass with a real 1-USDC grant and 0.066667-USDC reservation, unchanged retry
+effects, conflicting-payload/revoked-agent denials, and rejected new admissions.
+
+Restore rehearsals now set `resumeSourceAfterCheckpoint: false` to keep the
+original API unserved across both clones. Ordinary checkpoint callers retain
+the default restart behavior. Factory lifecycle, restore and scheduler checks
+pass 16/16. The final same-source combined runtime remains to be captured.
+
 The R30 focused queue capture (`8ca3f437-fbe0-4322-9071-9d01bc907ea5`,
 frozen `9e6ae8f`) reached a completed first run and a second run still queued
 under the actual admin pause. Root's live read-only check confirmed the first

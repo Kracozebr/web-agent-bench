@@ -22,6 +22,12 @@ database URLs, private-data and closure paths, official evidence references,
 source-build hash, runtime-secret callback, and supervised API stop/restart
 callbacks. No OS timer or service registration is installed by this module.
 
+For a restore rehearsal, `resumeSourceAfterCheckpoint: false` keeps the original
+source API stopped after sealing and throughout clone verification. This prevents
+source maintenance or browser polling from changing the source while it is being
+compared with the checkpoint. Ordinary checkpoint callers default this option to
+`true` and resume their API through the supervised callback.
+
 The runner-side call shape is:
 
 ```js
