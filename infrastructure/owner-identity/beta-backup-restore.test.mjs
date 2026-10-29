@@ -103,6 +103,22 @@ test('restored UI operational counters may change while business fingerprints re
   assert.equal(result.reportRateLimitState.changedDuringRetryWindow, true);
 });
 
+test('expired restore binds financial/run receipts to source and purged report receipts to the immutable cleanup baseline', () => {
+  const sourceBindings = { ...operationBindings, reportOperationReceiptsSha256: hash('8'), reportOperationReceiptCount: 7 };
+  const expired = snapshot({ reportDeletionReceipts: [{ reportId: 'expired-report', status: 'complete' }] });
+  const expiredProof = { ...proof, receiptBindings: sourceBindings, reportOperationDisposition: 'expired_content_not_replayed' };
+  const input = { restoredBaseline: expired, before: expired, after: expired,
+    retryProof: expiredProof, operationBindings: sourceBindings, originalIds, retentionExpired: true };
+  assert.equal(verifyCombinedRestoreRetryProof(input).status, 'verified');
+  assert.throws(() => verifyCombinedRestoreRetryProof({ ...input, after: snapshot({ ...expired,
+    operationBindings: { ...operationBindings, runOperationReceiptsSha256: hash('9') } }) }), /retry_operation_bindings_changed/);
+  assert.throws(() => verifyCombinedRestoreRetryProof({ ...input, after: snapshot({ ...expired,
+    operationBindings: { ...operationBindings, reportOperationReceiptsSha256: hash('9') } }) }), /retry_operation_bindings_changed/);
+  assert.throws(() => verifyCombinedRestoreRetryProof({ ...input, restoredBaseline: snapshot(), before: snapshot(), after: snapshot() }),
+    /expired_support_purge_receipts_missing/);
+  assert.throws(() => verifyCombinedRestoreRetryProof({ ...input, retentionExpired: false }), /retry_operation_bindings_changed/);
+});
+
 test('restored retry rejects changed report business state even when total database hashes are otherwise arbitrary', () => {
   const restoredBaseline = snapshot();
   const before = snapshot({ databaseTotalsSha256: hash('5') });

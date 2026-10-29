@@ -17,7 +17,10 @@ const MAX_OFFICIAL_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 const BINDING_HASHES = ['bonusGrantOperationsSha256', 'runOperationReceiptsSha256', 'runGenerationReceiptsSha256', 'reportOperationReceiptsSha256'];
 const BINDING_COUNTS = ['bonusGrantOperationCount', 'runOperationReceiptCount', 'runGenerationReceiptCount', 'reportOperationReceiptCount'];
 
-function fail(code) { throw new Error(`beta_backup_restore_${code}`); }
+function fail(code) {
+  const safeCode = `beta_backup_restore_${code}`;
+  throw Object.assign(new Error(safeCode), { code: safeCode });
+}
 function hash(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -367,9 +370,23 @@ export function verifyCombinedRestoreRetryProof({ restoredBaseline, before, afte
   validateObserverSnapshot(before, before.observerIdentity.databaseName);
   validateObserverSnapshot(after, before.observerIdentity.databaseName);
   validateBindings(operationBindings);
-  if (bindingSnapshotHash(restoredBaseline) !== canonical(operationBindings) ||
-      bindingSnapshotHash(before) !== canonical(operationBindings) || bindingSnapshotHash(after) !== canonical(operationBindings)) {
+  const originalBindingKeys = retentionExpired
+    ? [...BINDING_HASHES, ...BINDING_COUNTS].filter((key) => !key.startsWith('reportOperation'))
+    : [...BINDING_HASHES, ...BINDING_COUNTS];
+  // AICODE-NOTE: Expiry removes report/audit receipts by design. Compare their
+  // post-purge state across retries; financial/run receipts still bind to source.
+  if ([restoredBaseline, before, after].some((snapshot) => originalBindingKeys.some((key) =>
+      snapshot.operationBindings[key] !== operationBindings[key])) ||
+      bindingSnapshotHash(before) !== bindingSnapshotHash(restoredBaseline) ||
+      bindingSnapshotHash(after) !== bindingSnapshotHash(restoredBaseline)) {
     fail('retry_operation_bindings_changed');
+  }
+  if (retentionExpired && [restoredBaseline, before, after].some((snapshot) =>
+      snapshot.operationBindings.reportOperationReceiptCount !== 0 || snapshot.reportCount !== 0 ||
+      snapshot.uploadCount !== 0 || snapshot.imageFiles.length !== 0 ||
+      (operationBindings.reportOperationReceiptCount > 0 && snapshot.reportDeletionReceipts.length === 0) ||
+      snapshot.reportDeletionReceipts.some((receipt) => receipt.status !== 'complete'))) {
+    fail('expired_support_purge_receipts_missing');
   }
   const businessStateKeys = ['financialStateSha256', 'benchmarkStateSha256', 'reportStateSha256'];
   for (const key of businessStateKeys) {

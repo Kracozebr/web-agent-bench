@@ -6,6 +6,31 @@ verification separately; agent reports are not accepted as runtime proof.
 
 ## 29 October: recovery and combined-restore continuation
 
+R34 (`4aba56f1-1c00-4313-84ff-1560e442740b`, frozen `7f889a7`)
+repeated the complete recovery block successfully; independent raw replay
+confirms the five core recovery observations with stable source. Its complete
+stage SHA-256 is `9f2bdd57973d508b824ba196cf5e8d811ea68d5627a19065202291e7e44573c4`.
+It also created the sealed checkpoint and both clones. The expired-clone
+diagnostic now establishes HTTP 410 `REPORT_RETENTION_EXPIRED`, `/reports`,
+one report heading/form, and **two** role-alert matches. The generic locator
+was therefore ambiguous in the full run, despite the earlier short probe
+showing one alert. The assertion now selects the application's visible
+`p.status-error[role="alert"]`; it still requires the actual expiry response
+and visible error. R34 remains blocked, with its diagnostics preserved.
+R35 (`76878c41-0a6a-43ba-acc9-133f249debd0`, frozen `b02e9a4`)
+passed the expired UI check and original-operation retries. It then failed the
+final retry reconciliation: the helper unconditionally compared report/audit
+operation bindings with the pre-purge checkpoint. Those records must be deleted
+at expiry. The corrected helper binds financial/run receipts to the original
+checkpoint, requires all post-purge bindings and report state to remain stable
+across retry, and requires zero reports/uploads/images plus complete non-content
+deletion receipts when the source contained reports. Normal-clone comparison
+remains strict against every original binding. Focused Node checks pass 34/34,
+including rejecting changed financial/run or post-purge report bindings and
+missing deletion receipts. R35 remains a blocked combined capture. No full
+same-source success is claimed before the next terminal result and independent
+raw/live replay.
+
 R33 (`39cb93bd-8d5b-4ecd-9297-19080e876b69`, frozen `122ce5c`)
 completed the committed-action recovery, real 180-second observer outage with
 restart/exactly-one refund, and S4/M3 collector cases. Root independently
