@@ -6,6 +6,20 @@ verification separately; agent reports are not accepted as runtime proof.
 
 ## 29 October: recovery and combined-restore continuation
 
+The R30 focused queue capture (`8ca3f437-fbe0-4322-9071-9d01bc907ea5`,
+frozen `9e6ae8f`) reached a completed first run and a second run still queued
+under the actual admin pause. Root's live read-only check confirmed the first
+generation fenced and no second start. Its producer nevertheless failed because
+the whole-owner financial baseline preceded the deliberate second reservation.
+The corrected harness verifies unchanged first-run funding/refunds/claim/slot
+across that explicit callback, records the boundary hashes, and retains the
+strict whole-owner baseline throughout subsequent worker action. Focused
+funding, sequence, combined-helper and report checks pass 37/37. The long
+worker failure code now also retains independently sanitized stage/reason
+fields instead of hiding them behind the outer 96-character code bound.
+The focused queue capture and the full combined restore must still pass on
+the corrected frozen source; R30 remains a failed capture.
+
 R29 (`1d76707d-0ac7-4145-8dd4-2b6bdd0e45fd`, frozen `b333558`)
 independently replays all five core recovery observations and lost-response,
 exhaustion and restart evidence. Both S4 and M3 collector cases pass. The full

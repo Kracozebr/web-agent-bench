@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { OPEN_TASK_IDS, automaticWorkerChargeUnchanged, normalizeTrainingSequenceTaskIds,
+import { OPEN_TASK_IDS, automaticWorkerCallbackFinancialBoundaryUnchanged, automaticWorkerChargeUnchanged,
+  normalizeTrainingSequenceTaskIds,
   quoteTrainingSelectionUnits, trainingSequenceGrantAmountUnits,
   trainingCleanupLeasePrefixIsFenced, trainingSequenceTransitionBasis, trainingSequenceTransitions,
   trainingSuccessorActivationChainMatches, trainingSuccessorActivationResult,
@@ -24,6 +25,54 @@ test('automatic worker charge invariance keeps prior owner refunds and lots as b
     'a refunded run cannot be used as a normal worker completion baseline');
   assert.equal(automaticWorkerChargeUnchanged(initial, { ...current, run: { id: '45bb8d13-e595-4802-9500-2c1382f043a3' } }), false,
     'money equality cannot bind a snapshot to a different run');
+});
+
+test('first-task orchestration rebases global money only after proving this run stayed unchanged', () => {
+  const runId = '96e13ff8-bbfc-4cb0-bbab-d091bc9ab632';
+  const ownerId = 'f7c4290f-5ce1-4cc3-9b84-5951ad7ba841';
+  const agentId = '2ea94899-645a-4656-98a4-83e1c45d3950';
+  const claimId = '772f4ffc-545d-46b5-99a8-f7a821462dc1';
+  const before = {
+    run: { id: runId, owner_id: ownerId, agent_id: agentId, status: 'running' },
+    runMoneySha256: 'a'.repeat(64), moneySha256: 'b'.repeat(64),
+    ownerLedgerSha256: 'c'.repeat(64), ownerLedgerCount: 4,
+    ownerRefundCount: 0, runRefundCount: 0,
+    claims: [{ claim_id: claimId, status: 'claimed', released_at: null }],
+    slots: [{ run_id: runId, agent_id: agentId, claim_id: claimId, state: 'running', released_at: null }],
+  };
+  const after = { ...before, moneySha256: 'd'.repeat(64), ownerLedgerSha256: 'e'.repeat(64),
+    ownerLedgerCount: 5 };
+
+  assert.equal(automaticWorkerCallbackFinancialBoundaryUnchanged(before, after,
+    { runId, callbackName: 'onGenuineFirstTaskActive' }), true,
+  'the explicit orchestration callback may change owner-wide money while this active run stays financially identical');
+  assert.equal(automaticWorkerChargeUnchanged({ runId, moneySha256: before.moneySha256,
+    ownerRefundCount: before.ownerRefundCount, runRefundCount: before.runRefundCount }, after), false,
+  'the original whole-owner snapshot is not reused after the callback');
+  assert.equal(automaticWorkerChargeUnchanged({ runId, moneySha256: after.moneySha256,
+    ownerRefundCount: after.ownerRefundCount, runRefundCount: after.runRefundCount }, after), true,
+  'the post-callback whole-owner snapshot remains the strict baseline for worker execution');
+
+  assert.equal(automaticWorkerCallbackFinancialBoundaryUnchanged(before,
+    { ...after, runMoneySha256: 'f'.repeat(64) }, { runId, callbackName: 'onGenuineFirstTaskActive' }), false,
+  'a new reservation, hold, run ledger entry, or run refund cannot be rebased');
+  assert.equal(automaticWorkerCallbackFinancialBoundaryUnchanged(before,
+    { ...after, ownerRefundCount: 1 }, { runId, callbackName: 'onGenuineFirstTaskActive' }), false,
+  'a callback-created owner refund cannot be rebased');
+  assert.equal(automaticWorkerCallbackFinancialBoundaryUnchanged(before,
+    { ...after, runRefundCount: 1 }, { runId, callbackName: 'onGenuineFirstTaskActive' }), false,
+  'a callback-created run refund cannot be rebased');
+  assert.equal(automaticWorkerCallbackFinancialBoundaryUnchanged(before,
+    { ...after, claims: [{ ...after.claims[0], claim_id: '4f7dedc8-d33b-464c-ae9b-714cfba03b4a' }] },
+    { runId, callbackName: 'onGenuineFirstTaskActive' }), false,
+  'a changed dispatch claim cannot be rebased');
+  assert.equal(automaticWorkerCallbackFinancialBoundaryUnchanged(before,
+    { ...after, slots: [{ ...after.slots[0], state: 'fenced' }] },
+    { runId, callbackName: 'onGenuineFirstTaskActive' }), false,
+  'a changed or inactive slot cannot be rebased');
+  assert.equal(automaticWorkerCallbackFinancialBoundaryUnchanged(before, after,
+    { runId, callbackName: 'beforeAction' }), false,
+  'no other callback scope may move the baseline');
 });
 
 test('all-open training selection is canonical and contains seven adjacent transitions', () => {

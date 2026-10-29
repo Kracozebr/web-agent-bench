@@ -64,10 +64,24 @@ test('callback failure diagnostics retain safe class, code, stage and workspace 
     topStackFrames: ['/workspace/packages/owner-acceptance/src/beta-combined-restore-cases.mjs:173:28'] });
   assert.equal(blockerError.code, combinedBlockerFailureCode({ status: 'blocked', blocker: {
     stage: 'genuine_s1_setup', reasonCode: 'ETIMEDOUT' } }));
-  assert.deepEqual(blockerError.safeDiagnostic, wrapped.safeDiagnostic);
+  assert.deepEqual(blockerError.safeDiagnostic, { schemaVersion: 'beta-combined-blocker-diagnostic/v1',
+    blockerStage: 'genuine_s1_setup', blockerReasonCode: 'ETIMEDOUT', callbackDiagnostic: wrapped.safeDiagnostic });
   assert.equal(JSON.stringify(blockerError.safeDiagnostic).includes(credential), false);
   assert.equal(JSON.stringify(blockerError.safeDiagnostic).includes('private-token'), false);
   assert.equal(JSON.stringify(blockerError.safeDiagnostic).includes('Bearer'), false);
+});
+
+test('blocker error code stays bounded while safe long stage and reason remain in diagnostics', () => {
+  const stage = 'S'.repeat(96);
+  const reasonCode = 'R'.repeat(96);
+  const output = { status: 'blocked', blocker: { stage, reasonCode } };
+  const error = combinedBlockerError(output);
+
+  assert.equal(combinedBlockerFailureCode(output), 'combined_active_blocker_failed');
+  assert.equal(error.code, 'combined_active_blocker_failed');
+  assert.ok(error.code.length <= 96);
+  assert.deepEqual(error.safeDiagnostic, { schemaVersion: 'beta-combined-blocker-diagnostic/v1',
+    blockerStage: stage, blockerReasonCode: reasonCode });
 });
 
 test('combined pause audit requires the distinct authenticated admin actor identity', () => {

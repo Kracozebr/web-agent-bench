@@ -1287,8 +1287,10 @@ async function readOwnerRunCompletionState(observerPool, { runId, ownerId, inclu
       runRefundLedger, runRefundCount: runRefundLedger.length,
       ownerLedgerSha256: digest(Buffer.from(JSON.stringify(ownerLedger))), ownerLedgerCount: ownerLedger.length,
       ownerRefundCount: ownerLedger.filter((row) => row.entry_type === 'refund').length };
-    const money = { reservations, budgetHolds, ledger, runRefundLedger, ownerLedger };
-    return { ...projection, moneySha256: digest(Buffer.from(JSON.stringify(money))),
+    const runMoney = { reservations, budgetHolds, ledger, runRefundLedger };
+    const money = { ...runMoney, ownerLedger };
+    return { ...projection, runMoneySha256: digest(Buffer.from(JSON.stringify(runMoney))),
+      moneySha256: digest(Buffer.from(JSON.stringify(money))),
       stateSha256: digest(Buffer.from(JSON.stringify(projection))) };
   });
 }
@@ -1478,6 +1480,40 @@ export function automaticWorkerChargeUnchanged(initial, current) {
     Number.isSafeInteger(initial.ownerRefundCount) && initial.ownerRefundCount >= 0 &&
     current.ownerRefundCount === initial.ownerRefundCount &&
     initial.runRefundCount === 0 && current.runRefundCount === 0);
+}
+
+export function automaticWorkerCallbackFinancialBoundaryUnchanged(before, after, { runId, callbackName } = {}) {
+  if (callbackName !== 'onGenuineFirstTaskActive' || !UUID.test(runId ?? '') || !before || !after) return false;
+  const validHash = (value) => HEX_HASH.test(value ?? '');
+  const activeBinding = (state) => {
+    const run = state?.run;
+    const claims = state?.claims;
+    const slots = state?.slots;
+    if (run?.id !== runId || run.status !== 'running' || !UUID.test(run.owner_id ?? '') ||
+        !UUID.test(run.agent_id ?? '') || !Array.isArray(claims) || claims.length !== 1 ||
+        !Array.isArray(slots) || slots.length !== 1) return null;
+    const claim = claims[0];
+    const slot = slots[0];
+    if (!UUID.test(claim?.claim_id ?? '') || claim.status !== 'claimed' || claim.released_at != null ||
+        slot?.run_id !== runId || slot.agent_id !== run.agent_id || slot.claim_id !== claim.claim_id ||
+        slot.state !== 'running' || slot.released_at != null) return null;
+    return { ownerId: run.owner_id, agentId: run.agent_id, claimId: claim.claim_id,
+      claimStatus: claim.status, slotRunId: slot.run_id, slotAgentId: slot.agent_id,
+      slotClaimId: slot.claim_id, slotState: slot.state };
+  };
+  const beforeBinding = activeBinding(before);
+  const afterBinding = activeBinding(after);
+  return Boolean(beforeBinding && afterBinding &&
+    before.runMoneySha256 && validHash(before.runMoneySha256) &&
+    after.runMoneySha256 === before.runMoneySha256 &&
+    validHash(before.moneySha256) && validHash(after.moneySha256) &&
+    validHash(before.ownerLedgerSha256) && validHash(after.ownerLedgerSha256) &&
+    Number.isSafeInteger(before.ownerLedgerCount) && before.ownerLedgerCount >= 0 &&
+    Number.isSafeInteger(after.ownerLedgerCount) && after.ownerLedgerCount >= 0 &&
+    Number.isSafeInteger(before.ownerRefundCount) && before.ownerRefundCount >= 0 &&
+    after.ownerRefundCount === before.ownerRefundCount &&
+    before.runRefundCount === 0 && after.runRefundCount === 0 &&
+    JSON.stringify(beforeBinding) === JSON.stringify(afterBinding));
 }
 
 async function readOwnerTrainingFeedback(ownerPage, runId, expectedResult) {
@@ -2260,10 +2296,12 @@ async function captureAndEvaluateTrainingTask(context) {
   demand(activeSnapshot.run.length === 1 && activeSnapshot.run[0].status === 'running' && activeSnapshot.run[0].overall_deadline,
     'training_run_start_clock_unavailable');
   if (taskIndex === 0) output.runInitial.overallDeadline = activeSnapshot.run[0].overall_deadline;
+  let automaticPreCallbackState = null;
   if (input.automaticWorkerEvaluation && taskIndex === 0) {
     const initial = await readOwnerRunCompletionState(observerPool, { runId, ownerId: activeSnapshot.run[0].owner_id });
     demand(initial.claims.length === 1 && initial.claims[0].status === 'claimed' && initial.slots.length === 1 &&
       initial.slots[0].claim_id === initial.claims[0].claim_id && initial.run.status === 'running', 'automatic_worker_initial_dispatch_missing');
+    automaticPreCallbackState = initial;
     output.dispatchIdentity = { runId, claimId: initial.claims[0].claim_id, slotRunId: initial.slots[0].run_id,
       slotAgentId: initial.slots[0].agent_id, slotClaimId: initial.slots[0].claim_id };
     demand(initial.runRefundCount === 0, 'automatic_worker_initial_run_refund_present');
@@ -2284,6 +2322,40 @@ async function captureAndEvaluateTrainingTask(context) {
       // acceptance callback so a restored clone can retry the original operation.
       intentCreatePayload: intentCreatePayload ? structuredClone(intentCreatePayload) : null });
     output.genuineFirstTaskActiveCallbackInvoked = true;
+    if (automaticPreCallbackState) {
+      const afterCallback = await readOwnerRunCompletionState(observerPool, {
+        runId, ownerId: automaticPreCallbackState.run.owner_id,
+      });
+      demand(automaticWorkerCallbackFinancialBoundaryUnchanged(automaticPreCallbackState, afterCallback, {
+        runId, callbackName: 'onGenuineFirstTaskActive',
+      }), 'automatic_worker_callback_financial_boundary_invalid');
+      output.automaticWorkerCallbackFinancialBoundary = {
+        status: 'verified',
+        scope: 'after_onGenuineFirstTaskActive_before_first_participant_action',
+        callbackName: 'onGenuineFirstTaskActive',
+        runId,
+        runScopedMoneySha256Before: automaticPreCallbackState.runMoneySha256,
+        runScopedMoneySha256After: afterCallback.runMoneySha256,
+        runScopedMoneyUnchanged: true,
+        ownerMoneySha256Before: automaticPreCallbackState.moneySha256,
+        ownerMoneySha256After: afterCallback.moneySha256,
+        ownerLedgerSha256Before: automaticPreCallbackState.ownerLedgerSha256,
+        ownerLedgerSha256After: afterCallback.ownerLedgerSha256,
+        ownerLedgerCountBefore: automaticPreCallbackState.ownerLedgerCount,
+        ownerLedgerCountAfter: afterCallback.ownerLedgerCount,
+        ownerRefundCountBefore: automaticPreCallbackState.ownerRefundCount,
+        ownerRefundCountAfter: afterCallback.ownerRefundCount,
+        runRefundCountBefore: automaticPreCallbackState.runRefundCount,
+        runRefundCountAfter: afterCallback.runRefundCount,
+        activeClaimId: afterCallback.claims[0].claim_id,
+        activeSlot: { runId: afterCallback.slots[0].run_id, agentId: afterCallback.slots[0].agent_id,
+          claimId: afterCallback.slots[0].claim_id, state: afterCallback.slots[0].state },
+        workerBaselineMoneySha256: afterCallback.moneySha256,
+      };
+      output.automaticInitialMoneySha256 = afterCallback.moneySha256;
+      output.automaticInitialOwnerRefundCount = afterCallback.ownerRefundCount;
+      output.automaticInitialRunRefundCount = afterCallback.runRefundCount;
+    }
   }
   if (beforeAction) await beforeAction(task);
   const { answer } = await performGenuineActorActions({ ...context, mode }, task);

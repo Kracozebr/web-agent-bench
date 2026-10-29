@@ -26,7 +26,7 @@ function demand(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { code });
 }
 
-const SAFE_BLOCKER_CODE = /^[a-z0-9_]{1,80}$/;
+const SAFE_BLOCKER_PART = /^[A-Za-z0-9_]{1,96}$/;
 const EXPECTED_BLOCKER_STATUS = 'captured_s1_training_run_completed_by_server_worker';
 const SAFE_CALLBACK_STAGE = /^[a-z][a-z0-9_]{0,63}$/;
 const SAFE_CALLBACK_METADATA = /^[A-Za-z0-9_]{1,96}$/;
@@ -88,17 +88,23 @@ export function combinedBlockerError(output) {
   const error = new Error(code);
   error.code = code;
   const diagnostic = validatedCallbackDiagnostic(output?.safeDiagnostic);
-  if (diagnostic) error.safeDiagnostic = diagnostic;
+  const blockerStage = typeof output?.blocker?.stage === 'string' && SAFE_BLOCKER_PART.test(output.blocker.stage)
+    ? output.blocker.stage : 'unknown_stage';
+  const blockerReasonCode = typeof output?.blocker?.reasonCode === 'string' && SAFE_BLOCKER_PART.test(output.blocker.reasonCode)
+    ? output.blocker.reasonCode : 'unknown_reason';
+  error.safeDiagnostic = { schemaVersion: 'beta-combined-blocker-diagnostic/v1', blockerStage, blockerReasonCode,
+    ...(diagnostic ? { callbackDiagnostic: diagnostic } : {}) };
   return error;
 }
 
 export function combinedBlockerFailureCode(output) {
   if (output?.status === EXPECTED_BLOCKER_STATUS) return null;
-  const stage = typeof output?.blocker?.stage === 'string' && SAFE_BLOCKER_CODE.test(output.blocker.stage)
+  const stage = typeof output?.blocker?.stage === 'string' && SAFE_BLOCKER_PART.test(output.blocker.stage)
     ? output.blocker.stage : 'unknown_stage';
-  const reason = typeof output?.blocker?.reasonCode === 'string' && SAFE_BLOCKER_CODE.test(output.blocker.reasonCode)
+  const reason = typeof output?.blocker?.reasonCode === 'string' && SAFE_BLOCKER_PART.test(output.blocker.reasonCode)
     ? output.blocker.reasonCode : 'unknown_reason';
-  return `combined_active_blocker_${stage}_${reason}`;
+  const code = `combined_active_blocker_${stage}_${reason}`;
+  return code.length <= 96 ? code : 'combined_active_blocker_failed';
 }
 
 export function agentAcceptanceResponseSummary({ response, intentId, operationId, replayed }) {
@@ -402,6 +408,13 @@ async function runActiveBlockerWithQueuedPausedRun({ commonCapture, observerPool
     retryMaterial.blocker.createIntentOperationId === blockerOutput.launchIntent?.operationId &&
     retryMaterial.blocker.acceptOperationId === blockerOutput.run?.acceptOperationId,
   'combined_active_blocker_worker_completion_invalid');
+  const financialBoundary = blockerOutput.automaticWorkerCallbackFinancialBoundary;
+  demand(financialBoundary?.status === 'verified' && financialBoundary.runId === blockerOutput.run.runId &&
+    financialBoundary.scope === 'after_onGenuineFirstTaskActive_before_first_participant_action' &&
+    HASH.test(financialBoundary.runScopedMoneySha256Before ?? '') &&
+    financialBoundary.runScopedMoneySha256Before === financialBoundary.runScopedMoneySha256After &&
+    financialBoundary.workerBaselineMoneySha256 === financialBoundary.ownerMoneySha256After,
+  'combined_worker_callback_financial_boundary_missing');
   const workerRun = await runBetaRecoveryCasesCompletedRunState(observerPool, commonCapture, blockerOutput.run.runId);
   demand(workerRun.status === 'completed' && workerRun.evaluations.length === 1 &&
     exactKnownPassingEvaluation(workerRun.evaluations[0]),
@@ -421,6 +434,7 @@ async function runActiveBlockerWithQueuedPausedRun({ commonCapture, observerPool
       createIntentOperationIdSha256: sha256(Buffer.from(blockerOutput.launchIntent.operationId)),
       acceptOperationIdSha256: sha256(Buffer.from(blockerOutput.run.acceptOperationId)),
       quoteUnits: blockerOutput.launchIntent.quotePriceUnits, releaseIdentity: blockerOutput.release.releaseIdentity,
+      workerFinancialBoundary: structuredClone(financialBoundary),
       manifestHash: blockerOutput.release.manifestHash, taskEvaluation: workerRun.evaluations,
       bonusFunding: { codeId: bonus.issue.codeId, redemptionId: bonus.redemption.redemptionId,
         grantId: bonus.redemption.grantId, redemptionOperationIdSha256: sha256(Buffer.from(bonus.redemption.operationId)),
