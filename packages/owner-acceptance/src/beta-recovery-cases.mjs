@@ -10,6 +10,7 @@ const { Pool } = pg;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 const RECOVERY_WINDOW_MS = 180_000;
+const RECOVERY_FIRST_ACTION_KIND = Object.freeze({ S1: 'transfer', S4: 'approve', M3: 'approve' });
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
 function demand(condition, code) { if (!condition) throw Object.assign(new Error(code), { code }); }
@@ -114,7 +115,7 @@ async function readOwnerRecoverySnapshot(pool, target) {
     const tasks = pgRows((await client.query(`SELECT task_index,task_id,status,closure_status,closure_reason,started_at::text,
         finished_at::text,deadline_at::text
       FROM oid_run_task WHERE run_id=$1 ORDER BY task_index`, [target.runId])).rows);
-    const execution = pgRows((await client.query(`SELECT b.task_index,b.env_id,b.generation_id::text,b.participant_id,b.payer_address,
+    const execution = pgRows((await client.query(`SELECT b.run_id::text,b.task_index,b.env_id,b.generation_id::text,b.participant_id,b.payer_address,
         i.preparation_id::text,i.lease_id::text,l.state AS lease_state,l.fence_evidence AS lease_fence_evidence
       FROM oid_task_execution_binding b
       LEFT JOIN oid_task_preparation_intent i ON i.run_id=b.run_id AND i.task_index=b.task_index
@@ -126,7 +127,9 @@ async function readOwnerRecoverySnapshot(pool, target) {
       try { result = typeof row.result_json === 'string' ? JSON.parse(row.result_json) : row.result_json; } catch { /* hash facts remain */ }
       return { taskIndex: row.task_index, taskId: row.task_id, resultHash: row.result_hash,
         evaluatorSourceHash: row.evaluator_source_hash, outcomeStatus: result?.status ?? null,
-        outcome: result?.outcome ?? null, credit: result?.credit ?? null };
+        outcome: result?.outcome ?? null, credit: result?.credit ?? null,
+        mandatoryViolationPresent: result && Object.hasOwn(result, 'mandatoryViolation')
+          ? result.mandatoryViolation !== null : null };
     });
     const recovery = pgRows((await client.query(`SELECT action_id::text,run_id::text,owner_id::text,agent_id::text,task_index,
         environment_id,operation_id,payload_hash,incident_evidence_hash,started_at::text,deadline_at::text,
@@ -142,7 +145,7 @@ async function readOwnerRecoverySnapshot(pool, target) {
         metadata->>'bonusRefundedUnits' AS bonus_refunded_units,metadata->>'originalActionId' AS original_action_id,
         metadata->>'originalOperationId' AS original_operation_id
       FROM oid_ledger_audit WHERE operation_id=$1 AND event_type='run_platform_failure_refunded'`, [refundOperationId])).rows);
-    const claims = pgRows((await client.query(`SELECT claim_id::text,status,claimed_at::text,released_at::text
+    const claims = pgRows((await client.query(`SELECT run_id::text,claim_id::text,status,claimed_at::text,released_at::text
       FROM oid_run_dispatch_claim WHERE run_id=$1 ORDER BY claimed_at`, [target.runId])).rows);
     const slots = pgRows((await client.query(`SELECT run_id::text,agent_id::text,claim_id::text,state,acquired_at::text,released_at::text
       FROM oid_run_execution_slot WHERE run_id=$1 ORDER BY acquired_at`, [target.runId])).rows);
@@ -162,7 +165,7 @@ async function readOwnerRecoverySnapshot(pool, target) {
       return { sequence: row.sequence, source: row.source, eventType: row.event_type,
         payloadHash: row.payload_hash, createdAt: row.created_at };
     }));
-    const terminalEvents = pgRows((await client.query(`SELECT id::text,sequence::text,event_type,payload_hash,
+    const terminalEvents = pgRows((await client.query(`SELECT run_id::text,id::text,sequence::text,event_type,payload_hash,
         payload_json->>'reason' AS reason,payload_json->>'fenceEvidenceHash' AS fence_evidence_hash,
         payload_json->>'actionId' AS action_id,payload_json->>'operationId' AS operation_id,
         payload_json->>'evidenceHash' AS evidence_hash,payload_json->>'bonusRefundedUnits' AS bonus_refunded_units,
@@ -225,7 +228,9 @@ async function readBefAction(pool, expected) {
     const receiptGasUsed = decimalQuantity(receipt.gasUsed);
     const receiptEffectiveGasPriceWei = decimalQuantity(receipt.effectiveGasPrice);
     const selectedOutcome = selected.outcome;
-    demand(row.status === 'settled' && row.receipt_status === 'success' && row.operation_kind === 'transfer' &&
+    const expectedActionKind = RECOVERY_FIRST_ACTION_KIND[expected.taskId];
+    demand(expectedActionKind && expected.actionKind === expectedActionKind &&
+      row.status === 'settled' && row.receipt_status === 'success' && row.operation_kind === expectedActionKind &&
       selected.action_kind === row.operation_kind && selectedOutcome === 'success' &&
       /^0x[0-9a-f]{64}$/.test(transactionHash ?? '') && selectedTransactionHash === transactionHash &&
       receiptTransactionHash === transactionHash && receipt.status === 'success' &&
@@ -271,17 +276,143 @@ async function readBefAction(pool, expected) {
     selectedExecutions: captured.result.selectedExecutions };
 }
 
-function activeBinding(snapshot) {
-  const action = snapshot.result.actions[0];
-  const execution = snapshot.result.execution[0];
-  demand(action && execution && UUID.test(action.id) && UUID.test(execution.generation_id) &&
-    UUID.test(execution.preparation_id) && execution.env_id === action.environment_id &&
-    snapshot.result.actions.length === 1 && snapshot.result.execution.length === 1,
+export function recoveryDeadlineObservationState(row, databaseNow) {
+  demand(row && typeof row === 'object' &&
+    ['recovering', 'unknown', 'exhausted', 'refunded'].includes(row.status),
+  'recovery_exhaustion_status_invalid');
+  const startedMs = Date.parse(row.started_at);
+  const deadlineMs = Date.parse(row.deadline_at);
+  const databaseNowMs = Date.parse(databaseNow);
+  demand(Number.isFinite(startedMs) && Number.isFinite(deadlineMs) && Number.isFinite(databaseNowMs) &&
+    deadlineMs === startedMs + RECOVERY_WINDOW_MS,
+  'recovery_deadline_identity_invalid');
+  if (['exhausted', 'refunded'].includes(row.status)) {
+    demand(databaseNowMs >= deadlineMs, 'recovery_exhaustion_terminal_state_pre_deadline');
+  }
+  return { startedMs, deadlineMs, databaseNowMs, deadlineReached: databaseNowMs >= deadlineMs + 1_000 };
+}
+
+export function recoveryExhaustionTerminalConditions(snapshot) {
+  const result = snapshot?.result ?? {};
+  const slots = Array.isArray(result.slots) ? result.slots : [];
+  const claims = Array.isArray(result.claims) ? result.claims : [];
+  const executions = Array.isArray(result.execution) ? result.execution : [];
+  const cancellationEvents = Array.isArray(result.terminalEvents)
+    ? result.terminalEvents.filter((row) => row.event_type === 'run.cancelled.after_start') : [];
+  const runId = result.run?.id;
+  const releasedClaimIds = new Set(claims.filter((row) => row.run_id === runId && row.status === 'released' &&
+    row.released_at !== null && UUID.test(row.claim_id ?? '')).map((row) => row.claim_id));
+  const exactReleasedClaimSet = claims.length > 0 && releasedClaimIds.size === claims.length;
+  const slotDispositionSafe = Array.isArray(result.slots) && (slots.length === 0 ||
+    (slots.length === 1 && slots[0].run_id === runId && slots[0].agent_id === result.run?.agent_id &&
+      slots[0].state === 'released' && slots[0].released_at !== null && releasedClaimIds.has(slots[0].claim_id)));
+  const execution = executions.length === 1 ? executions[0] : null;
+  const fence = execution?.lease_fence_evidence;
+  const exactLeaseFence = execution?.run_id === runId && execution?.lease_state === 'fenced' &&
+    fence?.confirmed === true && fence.preparationId === execution.preparation_id &&
+    fence.leaseId === execution.lease_id && fence.environmentId === execution.env_id &&
+    fence.generationId === execution.generation_id &&
+    fence.evidence?.boundary === 'actual_tool_http_x402_local_evm_application_store' &&
+    SHA256.test(fence.evidence?.sha256 ?? '');
+  const exactCancellationFenceEvent = cancellationEvents.length === 1 &&
+    cancellationEvents[0].run_id === runId && cancellationEvents[0].reason === 'coordinator_platform_failure' &&
+    cancellationEvents[0].fence_evidence_hash === result.run?.cancellation_evidence_hash &&
+    SHA256.test(result.run?.cancellation_evidence_hash ?? '') &&
+    result.run?.cancellation_reason === 'coordinator_platform_failure';
+  const conditions = {
+    runFailed: result.run?.status === 'failed',
+    exhaustionTerminalReason: result.run?.terminal_reason === 'platform_failure_recovery_exhausted',
+    recoveryRefunded: result.recovery?.status === 'refunded',
+    exactlyOneRefund: Array.isArray(result.refunds) && result.refunds.length === 1,
+    noActiveExecutionSlot: slotDispositionSafe,
+    firstDispatchClaimReleasedAndRunBound: exactReleasedClaimSet,
+    generationLeaseFenced: exactLeaseFence,
+    cancellationFenceEventBound: exactCancellationFenceEvent,
+  };
+  const failedConditions = Object.entries(conditions).filter(([, satisfied]) => !satisfied).map(([name]) => name);
+  return { conditions, failedConditions, verified: failedConditions.length === 0 };
+}
+
+export async function waitForRecoveryExhaustionFinalization(readSnapshot, { runId, actionId,
+  maxWaitMs = 30_000, pollIntervalMs = 750, now = Date.now,
+  sleep = (durationMs) => new Promise((done) => setTimeout(done, durationMs)) } = {}) {
+  demand(typeof readSnapshot === 'function' && UUID.test(runId ?? '') && UUID.test(actionId ?? '') &&
+    Number.isSafeInteger(maxWaitMs) && maxWaitMs >= 1 && maxWaitMs <= 60_000 &&
+    Number.isSafeInteger(pollIntervalMs) && pollIntervalMs >= 1 && pollIntervalMs <= 5_000 &&
+    typeof now === 'function' && typeof sleep === 'function', 'recovery_finalization_wait_invalid');
+  const startedAt = now();
+  let latestSnapshot = null;
+  let latestState = null;
+  for (;;) {
+    const state = await readSnapshot();
+    latestSnapshot = state?.snapshot ?? state;
+    latestState = recoveryExhaustionTerminalConditions(latestSnapshot);
+    const elapsedMs = Math.max(0, now() - startedAt);
+    if (latestState.verified) return { snapshot: latestSnapshot, elapsedMs, ...latestState };
+    if (elapsedMs >= maxWaitMs) {
+      const result = latestSnapshot?.result ?? {};
+      throw Object.assign(new Error('platform_recovery_exhaustion_terminal_wait_timeout'), {
+        code: 'PLATFORM_RECOVERY_EXHAUSTION_FINALIZATION_TIMEOUT',
+        safeDiagnostic: { schemaVersion: 'bpc-recovery-finalization-timeout/v1', runId, actionId,
+          elapsedMs, maxWaitMs, conditions: latestState.conditions, failedConditions: latestState.failedConditions,
+          current: { runStatus: result.run?.status ?? null, terminalReason: result.run?.terminal_reason ?? null,
+            recoveryStatus: result.recovery?.status ?? null, refundCount: Array.isArray(result.refunds) ? result.refunds.length : null,
+            executionSlotCount: Array.isArray(result.slots) ? result.slots.length : null,
+            unreleasedExecutionSlotCount: Array.isArray(result.slots)
+              ? result.slots.filter((row) => row.released_at === null).length : null,
+            dispatchClaimCount: Array.isArray(result.claims) ? result.claims.length : null,
+            unreleasedDispatchClaimCount: Array.isArray(result.claims)
+              ? result.claims.filter((row) => row.released_at === null).length : null,
+            unfencedGenerationLeaseCount: Array.isArray(result.execution)
+              ? result.execution.filter((row) => row.lease_state !== 'fenced').length : null } },
+      });
+    }
+    await sleep(Math.min(pollIntervalMs, maxWaitMs - elapsedMs));
+  }
+}
+
+function activeBinding(snapshot, { taskId = 'S1', actionId = null, actionOrdinal = 0 } = {}) {
+  const tasks = snapshot?.result?.tasks;
+  const actions = snapshot?.result?.actions;
+  const executions = snapshot?.result?.execution;
+  demand(Array.isArray(tasks) && tasks.length === 1 && tasks[0].task_index === 0 && tasks[0].task_id === taskId &&
+    Array.isArray(actions) && actions.length > 0 && Array.isArray(executions) && executions.length === 1 &&
+    Number.isSafeInteger(actionOrdinal) && actionOrdinal >= 0,
+  'recovery_action_generation_binding_missing');
+  const execution = executions[0];
+  const taskActions = actions.filter((row) => row?.task_index === 0);
+  demand(taskActions.length === actions.length && execution.task_index === 0 &&
+    UUID.test(execution.generation_id ?? '') && UUID.test(execution.preparation_id ?? '') &&
+    typeof execution.env_id === 'string' && execution.env_id.length > 0,
+  'recovery_action_generation_binding_missing');
+  const sequenceValues = taskActions.map((row) => {
+    demand(typeof row.action_sequence === 'string' && /^(?:0|[1-9][0-9]*)$/.test(row.action_sequence),
+      'recovery_action_sequence_invalid');
+    return BigInt(row.action_sequence);
+  });
+  demand(new Set(sequenceValues.map(String)).size === sequenceValues.length, 'recovery_action_sequence_duplicate');
+  const orderedActions = taskActions.slice().sort((left, right) => {
+    const a = BigInt(left.action_sequence);
+    const b = BigInt(right.action_sequence);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  const action = actionId === null ? orderedActions[actionOrdinal] :
+    orderedActions.find((row) => row.id === actionId);
+  demand(action && (actionId === null || action.id === actionId) &&
+    (!actionId || action.id === orderedActions[actionOrdinal]?.id) && UUID.test(action.id ?? '') &&
+    typeof action.operation_id === 'string' && action.operation_id.length > 0 &&
+    SHA256.test(action.payload_hash ?? '') && action.environment_id === execution.env_id &&
+    action.action_kind === RECOVERY_FIRST_ACTION_KIND[taskId],
   'recovery_action_generation_binding_missing');
   return { actionId: action.id, operationId: action.operation_id, payloadHash: action.payload_hash,
+    actionKind: action.action_kind, taskId, taskIndex: 0,
     environmentId: execution.env_id, generationId: execution.generation_id,
     preparationId: execution.preparation_id, participantId: execution.participant_id,
     leaseId: execution.lease_id };
+}
+
+export function selectRecoveryActionBinding(snapshot, options = {}) {
+  return activeBinding(snapshot, options);
 }
 
 async function verifyEvidenceReference(repoRoot, reference, code) {
@@ -338,7 +469,8 @@ async function persistGenuineAttempt(commonCapture, name, output) {
   return { path: relative(commonCapture.repoRoot, path).split(sep).join('/'), sha256: hash(bytes), bytes: bytes.length };
 }
 
-async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn, onGenuineRunCompleted) {
+async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
+  { taskId = 'S1', onGenuineRunCompleted, requirePassingEvaluation = false } = {}) {
   const captureId = randomUUID();
   const ownerPool = new Pool({ connectionString: commonCapture.observerDatabaseUrl, max: 1,
     application_name: 'bpc-recovery-owner-snapshot' });
@@ -353,34 +485,54 @@ async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, pr
   };
   try {
     const output = await runGenuineS1OwnerCase({ ...commonCapture.genuineCaptureInput, captureId,
-      mode: 'training', taskId: 'S1', automaticWorkerEvaluation: true, bonusCodeFunding: true,
+      mode: 'training', taskId, automaticWorkerEvaluation: true, bonusCodeFunding: true,
       bddProbes: false, primaryClientOnly: false, platformRecoveryFault: recoveryFault,
       ...(typeof onGenuineRunCompleted === 'function' ? { onGenuineRunCompleted } : {}) });
-    const genuineAttempt = await persistGenuineAttempt(commonCapture, 'recovered', output);
-    if (!(output.status === 'captured_s1_training_run_completed_by_server_worker' &&
+    const genuineAttempt = await persistGenuineAttempt(commonCapture,
+      taskId === 'S1' ? 'recovered' : 'collector-' + taskId.toLowerCase(), output);
+    if (!(output.status === 'captured_' + taskId.toLowerCase() + '_training_run_completed_by_server_worker' &&
         output.trainingRunCompletion?.status === 'verified' && output.taskGradePublished === false &&
-        UUID.test(output.run?.runId ?? ''))) {
+        UUID.test(output.run?.runId ?? '') && Array.isArray(output.taskIds) && output.taskIds.length === 1 &&
+        output.taskIds[0] === taskId)) {
       throw Object.assign(new Error('recovery_success_run_not_completed_by_real_worker'), {
         code: 'RECOVERY_GENUINE_RUN_INCOMPLETE', safeDiagnostic: { genuineAttempt,
           status: output.status, blocker: output.blocker ?? null, stages: output.stages?.slice(-8) ?? [] } });
     }
     const runId = output.run.runId;
+    const initialUnknownActionId = output.platformRecovery?.initialUnknown?.actionId;
+    demand(UUID.test(initialUnknownActionId ?? ''), 'recovery_success_initial_unknown_action_missing');
     const initialWithoutRecovery = await readOwnerRecoverySnapshot(ownerPool, {
       databaseName: commonCapture.databaseIsolation.databaseName, runId });
-    const firstBinding = activeBinding(initialWithoutRecovery);
+    const firstBinding = activeBinding(initialWithoutRecovery, { taskId, actionId: initialUnknownActionId, actionOrdinal: 0 });
     const initial = await readOwnerRecoverySnapshot(ownerPool, { databaseName: commonCapture.databaseIsolation.databaseName,
       runId, actionId: firstBinding.actionId });
-    const binding = activeBinding(initial);
+    const binding = activeBinding(initial, { taskId, actionId: initialUnknownActionId, actionOrdinal: 0 });
     demand(output.platformRecovery?.initialUnknown?.actionId === binding.actionId &&
       output.platformRecovery.reconciledOriginalAction?.finalReceiptStatus === 'observed' &&
       output.platformRecovery.reconciledOriginalAction?.resubmissionCount === 0,
     'recovery_success_original_action_not_reconciled');
-    const action = initial.result.actions[0];
-    demand(action.receipt_status === 'observed' && action.outbox_status === 'delivered' &&
+    const action = initial.result.actions.find((row) => row.id === binding.actionId);
+    const taskEvaluation = output.taskEvaluations?.length === 1 ? output.taskEvaluations[0] : null;
+    const persistedEvaluation = initial.result.evaluations.length === 1 ? initial.result.evaluations[0] : null;
+    if (requirePassingEvaluation) {
+      demand(taskEvaluation?.taskIndex === 0 && taskEvaluation.taskId === taskId &&
+        taskEvaluation.result?.status === 'known' && taskEvaluation.result?.outcome === 'passed' &&
+        taskEvaluation.result?.mandatoryViolation === null && taskEvaluation.result?.credit?.numerator === '1' &&
+        taskEvaluation.result?.credit?.denominator === '1' &&
+        persistedEvaluation?.taskIndex === 0 && persistedEvaluation.taskId === taskId &&
+        persistedEvaluation.outcomeStatus === 'known' && persistedEvaluation.outcome === 'passed' &&
+        persistedEvaluation.credit?.numerator === '1' && persistedEvaluation.credit?.denominator === '1' &&
+        persistedEvaluation.mandatoryViolationPresent === false,
+      'recovery_collector_task_evaluation_not_passing');
+    }
+    demand(action && action.receipt_status === 'observed' && action.outbox_status === 'delivered' &&
       initial.result.recovery?.status === 'recovered' && initial.result.refunds.length === 0 &&
-      initial.result.run.status === 'completed' && initial.result.evaluations.length === 1,
+      initial.result.run.status === 'completed' && initial.result.tasks.length === 1 &&
+      initial.result.tasks[0].task_index === 0 && initial.result.tasks[0].task_id === taskId &&
+      initial.result.evaluations.length === 1,
     'recovery_success_durable_effects_mismatch');
-    const source = await readBefAction(befPool, { ...binding, participantId: binding.participantId });
+    const source = await readBefAction(befPool, { ...binding, participantId: binding.participantId,
+      taskId, actionKind: action.action_kind });
     demand(source.result.length === 1 && source.result[0].environmentId === binding.environmentId &&
       source.result[0].generationId === binding.generationId && source.result[0].status === 'settled' &&
       source.result[0].operationKind === action.action_kind &&
@@ -395,7 +547,7 @@ async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, pr
       proxy.fault.upstreamStatus < 300 && proxy.fault.upstreamResponseComplete === true &&
       proxy.fault.downstreamResponseDelivered === false && proxy.submissions.filter((row) => row.actionId === binding.actionId)
         .length === 1 && actionSubmissions[0]?.count === 1, 'recovery_success_fault_boundary_or_no_replay_missing');
-    const execution = initial.result.execution[0];
+    const execution = initial.result.execution.find((row) => row.task_index === 0);
     const evidenceCapture = action.evidence_path && action.evidence_hash
       ? await readEvidenceDocument(commonCapture.repoRoot,
         { path: action.evidence_path, sha256: action.evidence_hash }, 'recovery_action_evidence') : null;
@@ -420,7 +572,7 @@ async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, pr
         outboxStatus: action.outbox_status,
         upstreamSubmissionCount: actionSubmissions.find((row) => row.actionId === binding.actionId)?.count ?? null, evidence },
       binding: { runId, ownerId: initial.result.run.owner_id, agentId: initial.result.run.agent_id,
-        mode: initial.result.run.mode, taskId: initial.result.tasks[0]?.task_id,
+        mode: initial.result.run.mode, taskId,
         environmentId: binding.environmentId, preparationId: binding.preparationId, generationId: binding.generationId,
         participantIdSha256: hash(binding.participantId), leaseId: binding.leaseId },
       recovery: { ...initial.result.recovery, observations: initial.result.recoveryObservations,
@@ -446,18 +598,14 @@ async function waitForRecoveryDeadline(pool, target, maxWaitMs, progressFn) {
   for (;;) {
     const snapshot = await readOwnerRecoverySnapshot(pool, target);
     const row = snapshot.result.recovery;
-    demand(row && row.status === 'recovering', 'recovery_exhaustion_row_not_recovering');
-    const deadlineMs = Date.parse(row.deadline_at);
-    const databaseNowMs = Date.parse(snapshot.identity.databaseNow);
-    demand(Number.isFinite(deadlineMs) && Number.isFinite(databaseNowMs) &&
-      deadlineMs >= Date.parse(row.started_at) + RECOVERY_WINDOW_MS && databaseNowMs - startedAt < maxWaitMs + 10_000,
-    'recovery_deadline_identity_invalid');
-    if (databaseNowMs >= deadlineMs + 1_000) return { row, observedAtDatabase: snapshot.identity.databaseNow,
+    demand(row, 'recovery_exhaustion_row_missing');
+    const timing = recoveryDeadlineObservationState(row, snapshot.identity.databaseNow);
+    if (timing.deadlineReached) return { row, observedAtDatabase: snapshot.identity.databaseNow,
       wallWaitMs: Date.now() - startedAt };
     if (Date.now() >= nextProgress) {
       await progress(progressFn, { phase: 'platform_recovery_window_open', runId: target.runId,
-        deadlineAt: new Date(deadlineMs).toISOString(), elapsedMs: Date.now() - startedAt,
-        observerProxyBlocked: true });
+        recoveryStatus: row.status, deadlineAt: new Date(timing.deadlineMs).toISOString(),
+        elapsedMs: Date.now() - startedAt, observerProxyBlocked: true });
       nextProgress = Date.now() + 15_000;
     }
     if (Date.now() - startedAt > maxWaitMs) throw new Error('recovery_window_wait_exceeded_bound');
@@ -476,6 +624,11 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
   let unblocked = false;
   let target;
   let deadlineObservation;
+  const readExhaustionTerminalState = async ({ runId, actionId }) => {
+    const snapshot = await readOwnerRecoverySnapshot(ownerPool, {
+      databaseName: commonCapture.databaseIsolation.databaseName, runId, actionId });
+    return { snapshot, conditions: recoveryExhaustionTerminalConditions(snapshot) };
+  };
   const recoveryFault = {
     terminalAfterRecovery: true,
     waitTimeoutMs: 235_000,
@@ -500,16 +653,16 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
         elapsedMs: deadlineObservation.wallWaitMs, deadlineAt: deadlineObservation.row.deadline_at });
     },
     finishWhenUnknown: async ({ runId, actionId }) => {
-      const current = await readOwnerRecoverySnapshot(ownerPool, { databaseName: commonCapture.databaseIsolation.databaseName,
-        runId, actionId });
-      return current.result.run?.status === 'failed' &&
-        current.result.run.terminal_reason === 'platform_failure_recovery_exhausted' &&
-        current.result.recovery?.status === 'refunded' && current.result.refunds.length === 1 &&
-        current.result.slots.every((slot) => slot.released_at !== null);
+      return (await readExhaustionTerminalState({ runId, actionId })).conditions.verified;
     },
     afterOriginalActionReconciled: async ({ runId, actionId, action, originalReceiptRemainsUnknown }) => {
-      const current = await readOwnerRecoverySnapshot(ownerPool, { databaseName: commonCapture.databaseIsolation.databaseName,
-        runId, actionId });
+      await progress(progressFn, { phase: 'platform_recovery_terminal_finalization_wait_started', runId, actionId,
+        maxWaitMs: 30_000, originalReceiptStatus: action?.receiptStatus ?? 'unknown' });
+      const terminalFinalization = await waitForRecoveryExhaustionFinalization(
+        () => readExhaustionTerminalState({ runId, actionId }), { runId, actionId, maxWaitMs: 30_000 });
+      const current = terminalFinalization.snapshot;
+      await progress(progressFn, { phase: 'platform_recovery_terminal_finalization_verified', runId, actionId,
+        elapsedMs: terminalFinalization.elapsedMs, conditions: terminalFinalization.conditions });
       const sourceAction = current.result.actions.filter((row) => row.id === actionId);
       const source = await readBefAction(befPool, { ...activeBinding(current), actionId });
       const operation = source.result.length === 1 ? source.result[0] : null;
@@ -539,6 +692,7 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
         ? await verifyEvidenceReference(commonCapture.repoRoot,
           { path: sourceAction[0].evidence_path, sha256: sourceAction[0].evidence_hash }, 'recovery_exhaustion_action_evidence')
         : null;
+      const finalizationConditions = recoveryExhaustionTerminalConditions(current);
       const noGrade = current.result.evaluations.length === 0 && eligibleRun?.status === 'failed';
       const binding = activeBinding(current);
       const verified = current.identity.role === 'oid_observer' && current.identity.transactionReadOnly === 'on' &&
@@ -571,8 +725,7 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
         operation.operationKind === sourceAction[0].action_kind &&
         /^0x[0-9a-f]{64}$/i.test(operation.transactionHash ?? '') && operation.responseSha256 === null &&
         recoverySourceBound(source) &&
-        exactFence && current.result.slots.length === 1 && current.result.slots.every((slot) => slot.released_at !== null) &&
-        current.result.claims.length > 0 && current.result.claims.every((claim) => claim.released_at !== null) && noGrade &&
+        exactFence && finalizationConditions.verified && noGrade &&
         current.result.actions.length === 1 && current.result.actions[0].outbox_status === 'delivered' &&
         current.result.reservations.length === 1 && current.result.reservations.every((row) => row.source_kind === 'tester_bonus' && row.state === 'debited') &&
         current.result.ledger.filter((row) => row.entry_type === 'reserve' && row.source_kind === 'tester_bonus').length === 1 &&
@@ -595,7 +748,9 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
         claimsReleased: current.result.claims.every((claim) => claim.released_at !== null),
         gradeRecorded: current.result.evaluations.length > 0,
         recoveryDeadlineAt: recoveryRow?.deadline_at ?? null, recoveryStartedAt: recoveryRow?.started_at ?? null,
-        recoveryStatus: recoveryRow?.status ?? null, sourceActionStatus: action.receiptStatus };
+        recoveryStatus: recoveryRow?.status ?? null, sourceActionStatus: action.receiptStatus,
+        terminalFinalization: { elapsedMs: terminalFinalization.elapsedMs, conditions: terminalFinalization.conditions,
+          failedConditions: terminalFinalization.failedConditions } };
     },
   };
   try {
@@ -603,17 +758,21 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
       mode: 'training', taskId: 'S1', automaticWorkerEvaluation: true, bonusCodeFunding: true,
       bddProbes: false, primaryClientOnly: false, platformRecoveryFault: recoveryFault });
     const genuineAttempt = await persistGenuineAttempt(commonCapture, 'exhausted', output);
-    demand(output.status === 'captured_platform_recovery_exhausted_without_grade' &&
-      output.platformRecovery?.terminalCapturedWithoutGrade === true && UUID.test(output.runId),
-    'recovery_exhaustion_terminal_not_captured');
+    if (!(output.status === 'captured_platform_recovery_exhausted_without_grade' &&
+      output.platformRecovery?.terminalCapturedWithoutGrade === true && UUID.test(output.runId))) {
+      throw Object.assign(new Error('recovery_exhaustion_terminal_not_captured'), {
+        code: 'RECOVERY_EXHAUSTION_RUN_INCOMPLETE', safeDiagnostic: { genuineAttempt,
+          status: output.status, blocker: output.blocker ?? null, stages: output.stages?.slice(-8) ?? [] } });
+    }
     target ??= { databaseName: commonCapture.databaseIsolation.databaseName,
       runId: output.runId, actionId: output.platformRecovery?.reconciledOriginalAction?.actionId };
     const owner = await readOwnerRecoverySnapshot(ownerPool, target);
+    const postTerminalConditions = recoveryExhaustionTerminalConditions(owner);
     const binding = activeBinding(owner);
     const source = await readBefAction(befPool, { ...binding, participantId: binding.participantId });
     demand(owner.result.run?.status === 'failed' && owner.result.run.terminal_reason === 'platform_failure_recovery_exhausted' &&
       owner.result.recovery?.status === 'refunded' && owner.result.refunds.length === 1 &&
-      owner.result.slots.length > 0 && owner.result.slots.every((slot) => slot.released_at !== null) &&
+      postTerminalConditions.verified &&
       owner.result.evaluations.length === 0 && source.result.length === 1 && source.result[0].status === 'settled' &&
       source.result[0].generationStatus === 'fenced' && /^0x[0-9a-f]{64}$/i.test(source.result[0].transactionHash ?? '') &&
       source.result[0].responseSha256 === null && recoverySourceBound(source),
@@ -702,11 +861,12 @@ export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, 
     typeof recoveryObserverProxy.block === 'function' && typeof recoveryObserverProxy.unblock === 'function',
   'recovery_proxies_missing');
   await progress(progressFn, { phase: 'recovery_capture_started', databaseName: commonCapture.databaseIsolation.databaseName });
-  const recovered = await runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn, onGenuineRunCompleted);
+  const recovered = await runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
+    { taskId: 'S1', onGenuineRunCompleted });
   await progress(progressFn, { phase: 'recovery_committed_action_verified', runId: recovered.binding.runId,
     actionId: recovered.action.actionId });
   const exhausted = await runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, recoveryObserverProxy, progressFn);
-  const result = { schemaVersion: 'bpc-platform-recovery-runtime-observation/v1', scenarioId: 'BPC-SC-017', status: 'verified',
+  const coreResult = { schemaVersion: 'bpc-platform-recovery-runtime-observation/v1', scenarioId: 'BPC-SC-017', status: 'verified',
     boundary: 'isolated_local_owner_browser_api_postgres_bef_observer_and_real_loopback_fault_proxies',
     localStatus: 'observed_partial', database: { name: commonCapture.databaseIsolation.databaseName,
       uniquePerCapture: true, retainedForInspection: true },
@@ -725,7 +885,7 @@ export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, 
   const directory = resolve(commonCapture.repoRoot, 'artifacts/runs/beta-platform-recovery-stage', commonCapture.runId);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const stageCapture = { schemaVersion: 'beta-platform-recovery-capture/v1', captureId: commonCapture.runId,
-    boundary: 'isolated_local_browser_backend_postgres_bef_files', result,
+    boundary: 'isolated_local_browser_backend_postgres_bef_files', result: coreResult,
     provenance: { databaseIsolation: commonCapture.databaseIsolation, inputHashesBefore: commonCapture.sourceInputsBefore,
       inputHashesAfter, sourceStableDuringRun: true }, targetHostAcceptance: 'blocked_target_not_selected' };
   assertSecretFree(stageCapture, 'recovery-stage-capture');
@@ -733,5 +893,15 @@ export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, 
   await writeFile(resolve(directory, 'capture.json'), stageBytes, { flag: 'wx', mode: 0o600 });
   await progress(progressFn, { phase: 'recovery_stage_capture_saved', captureId: commonCapture.runId,
     path: relative(commonCapture.repoRoot, resolve(directory, 'capture.json')).split(sep).join('/'), sha256: hash(stageBytes) });
-  return result;
+  await progress(progressFn, { phase: 'recovery_collector_case_started', taskId: 'S4' });
+  const collectorS4 = await runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
+    { taskId: 'S4', requirePassingEvaluation: true });
+  await progress(progressFn, { phase: 'recovery_collector_case_verified', taskId: 'S4',
+    runId: collectorS4.binding.runId, actionId: collectorS4.action.actionId });
+  await progress(progressFn, { phase: 'recovery_collector_case_started', taskId: 'M3' });
+  const collectorM3 = await runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
+    { taskId: 'M3', requirePassingEvaluation: true });
+  await progress(progressFn, { phase: 'recovery_collector_case_verified', taskId: 'M3',
+    runId: collectorM3.binding.runId, actionId: collectorM3.action.actionId });
+  return { ...coreResult, collectorCases: { S4: collectorS4, M3: collectorM3 } };
 }

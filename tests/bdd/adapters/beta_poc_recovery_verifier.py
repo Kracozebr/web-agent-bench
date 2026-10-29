@@ -224,11 +224,11 @@ def _source_operation(source: Any, action: dict[str, Any], binding: dict[str, An
     receipt = _obj(selected.get("receipt"), f"{name}.selectedExecution.receipt")
     selected_exact = (
         selected.get("operationId") == operation.get("operationId")
-        and selected.get("selectedActionKind") == operation.get("operationKind") == "transfer"
+        and selected.get("selectedActionKind") == operation.get("operationKind") == action.get("kind")
         and _hash(selected.get("selectedActionSha256"))
         and selected.get("selectedActionEventCount") == 1
         and selected.get("selectedActionEventKind") == "selected_action_bound"
-        and selected.get("selectedActionEventActionKind") == "transfer"
+        and selected.get("selectedActionEventActionKind") == action.get("kind")
         and selected.get("selectedActionEventRequestSha256") == operation.get("requestSha256")
         and selected.get("selectedActionEventSelectedActionSha256") == selected.get("selectedActionSha256")
         and _hash(selected.get("selectedActionEventSha256"))
@@ -290,7 +290,7 @@ def _proxy_submission_count(proxy: Any, action_id: str) -> int | None:
     return count if type(count) is int and count > 0 else None
 
 
-def _validate_case_common(case: Any, name: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _validate_case_common(case: Any, name: str, *, task_id: str = "S1") -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     case = _obj(case, name)
     if case.get("schemaVersion") != CASE_SCHEMA or not _uuid(case.get("captureId")):
         raise AssertionError(f"{name} schema or capture identity is invalid")
@@ -302,7 +302,7 @@ def _validate_case_common(case: Any, name: str) -> tuple[dict[str, Any], dict[st
     if not isinstance(binding.get("environmentId"), str) \
             or re.fullmatch(r"[A-Za-z0-9._-]{1,64}", binding["environmentId"]) is None:
         raise AssertionError(f"{name} binding has an invalid environment id")
-    if binding.get("mode") != "training" or binding.get("taskId") != "S1" \
+    if binding.get("mode") != "training" or binding.get("taskId") != task_id \
             or not _hash(binding.get("participantIdSha256")):
         raise AssertionError(f"{name} is not bound to the expected training S1 execution")
     if not _uuid(action.get("actionId")) or action.get("taskIndex") != 0 \
@@ -315,15 +315,17 @@ def _validate_case_common(case: Any, name: str) -> tuple[dict[str, Any], dict[st
     return case, binding, action
 
 
-def _verify_recovered_case(case: Any, database_name: str, repository_root: Path) -> dict[str, bool]:
-    case, binding, action = _validate_case_common(case, "committedActionRecovery")
+def _verify_recovered_case(case: Any, database_name: str, repository_root: Path, *, task_id: str = "S1") -> dict[str, bool]:
+    case, binding, action = _validate_case_common(case, "committedActionRecovery", task_id=task_id)
+    if action.get("kind") != {"S1": "transfer", "S4": "approve", "M3": "approve"}.get(task_id):
+        raise AssertionError("Recovery action kind does not match the selected collector case")
     if case.get("status") != "verified_local_recovery" or case.get("boundary") != \
             "real_owner_ui_bonus_code_real_bef_action_response_dropped_then_server_monitor_reconciled":
         raise AssertionError("Committed-action recovery case boundary is invalid")
     genuine = _obj(case.get("genuineRun"), "committedActionRecovery.genuineRun")
     if genuine.get("runId") != binding["runId"] or genuine.get("mode") != "training" \
-            or genuine.get("taskIds") != ["S1"] \
-            or genuine.get("status") != "captured_s1_training_run_completed_by_server_worker":
+            or genuine.get("taskIds") != [task_id] \
+            or genuine.get("status") != f"captured_{task_id.lower()}_training_run_completed_by_server_worker":
         raise AssertionError("Recovery case does not bind the completed genuine S1 run")
     completion = _obj(genuine.get("runCompletion"), "committedActionRecovery.genuineRun.runCompletion")
     if completion.get("runStatus") != "completed" or completion.get("status") != "verified":
@@ -363,9 +365,14 @@ def _verify_recovered_case(case: Any, database_name: str, repository_root: Path)
     if not _observer(observer.get("identity"), database_name):
         raise AssertionError("Owner recovery snapshot is not independently read-only")
     evaluations = _rows(observer.get("evaluations"), "committedActionRecovery.observer.evaluations")
-    if len(evaluations) != 1 or evaluations[0].get("taskId") != "S1" \
+    if len(evaluations) != 1 or evaluations[0].get("taskId") != task_id \
             or not _hash(evaluations[0].get("resultHash")) or not _hash(evaluations[0].get("evaluatorSourceHash")):
         raise AssertionError("Recovered genuine run does not have one independently observed S1 evaluation")
+    if task_id != "S1" and (evaluations[0].get("outcomeStatus") != "known"
+                            or evaluations[0].get("outcome") != "passed"
+                            or evaluations[0].get("credit") != {"numerator": "1", "denominator": "1"}
+                            or evaluations[0].get("mandatoryViolationPresent") is not False):
+        raise AssertionError("Recovered collector case did not receive a passing durable evaluation")
     slots = _rows(observer.get("slots"), "committedActionRecovery.observer.slots")
     claims = _rows(observer.get("claims"), "committedActionRecovery.observer.claims")
     fence = _obj(observer.get("fenceEvidence"), "committedActionRecovery.observer.fenceEvidence")
@@ -486,14 +493,19 @@ def _verify_exhausted_case(case: Any, database_name: str, repository_root: Path)
     if len(failure_events) != 1 or failure_events[0].get("action_id") != action["actionId"] \
             or failure_events[0].get("operation_id") != action["ownerOperationId"] \
             or failure_events[0].get("evidence_hash") != row["latest_evidence_hash"] \
-            or failure_events[0].get("cash_refunded_units") != "0" \
-            or failure_events[0].get("fence_evidence_hash") != run.get("cancellation_evidence_hash"):
+            or failure_events[0].get("cash_refunded_units") != "0":
         raise AssertionError("Exactly one source-linked platform recovery terminal event is required")
 
     slots = _rows(terminal.get("slots"), "exhausted slots")
     claims = _rows(terminal.get("claims"), "exhausted claims")
-    if len(slots) != 1 or slots[0].get("run_id") != binding["runId"] \
-            or slots[0].get("agent_id") != binding["agentId"] or slots[0].get("released_at") is None \
+    cancellation_events = [event for event in terminal_events if event.get("event_type") == "run.cancelled.after_start"]
+    if len(cancellation_events) != 1 or cancellation_events[0].get("reason") != "coordinator_platform_failure" \
+            or cancellation_events[0].get("fence_evidence_hash") != run.get("cancellation_evidence_hash"):
+        raise AssertionError("Exhaustion has no durable cancellation and original slot-release fence proof")
+    # Cancellation deletes its slot in the same transaction that releases the
+    # claim and appends the exact after-start fence event; completion retains it.
+    if len(slots) not in {0, 1} or any(slot.get("run_id") != binding["runId"] or
+            slot.get("agent_id") != binding["agentId"] or slot.get("released_at") is None for slot in slots) \
             or not claims or any(claim.get("released_at") is None for claim in claims):
         raise AssertionError("Exhausted run did not fence and release only its own claim/slot")
     execution_fences = _rows(terminal.get("execution"), "exhausted execution fences") if "execution" in terminal else []
@@ -525,12 +537,14 @@ def _verify_exhausted_case(case: Any, database_name: str, repository_root: Path)
     restart = _obj(recovery.get("restartReceipt"), "recoveryDeadlineExhaustion.recovery.restartReceipt")
     restart_started = _epoch_ms(restart.get("startedAt"), "API restart startedAt")
     restart_finished = _epoch_ms(restart.get("finishedAt"), "API restart finishedAt")
+    fault_observed = _epoch_ms(case["proxy"]["fault"].get("observedAt"), "committed response loss observedAt")
     restart_ok = restart.get("schemaVersion") == "beta-local-api-restart-receipt/v1" \
         and restart.get("boundary") == "runner_owned_process_stop_start_and_real_health_http" \
         and type(restart.get("previousPid")) is int and type(restart.get("currentPid")) is int \
         and restart["previousPid"] != restart["currentPid"] \
         and restart.get("healthHttpStatus") == 200 \
-        and start_ms <= restart_started <= restart_finished <= deadline_ms
+        and fault_observed <= restart_started <= restart_finished <= deadline_ms \
+        and start_ms <= restart_finished
     # Do not require a late original source receipt to remain unknown: observing it later must not reopen the run.
     unknown_retained = run["status"] == "failed" and run["terminal_reason"] == "platform_failure_recovery_exhausted" and not evaluations
     return {
@@ -571,6 +585,15 @@ def derive_observations(scenario_id: str, evidence: dict[str, Any], *, repositor
     cases = _obj(evidence.get("cases"), "recovery.cases")
     recovered_facts = _verify_recovered_case(cases.get("committedActionRecovery"), database_name, repo)
     exhausted_facts = _verify_exhausted_case(cases.get("recoveryDeadlineExhaustion"), database_name, repo)
+    collector_cases = evidence.get("collectorCases")
+    if collector_cases is not None:
+        collector_cases = _obj(collector_cases, "recovery.collectorCases")
+        if set(collector_cases) != {"S4", "M3"}:
+            raise AssertionError("Collector recovery cases must cover both S4 and chain")
+        for task_id, collector_case in collector_cases.items():
+            collector_facts = _verify_recovered_case(collector_case, database_name, repo, task_id=task_id)
+            if not all(collector_facts.values()):
+                raise AssertionError(f"Collector recovery not proven for {task_id}")
     facts = {name: False for name in (*OBSERVATION_NAMES, *NEGATIVE_NAMES)}
     facts.update(recovered_facts)
     facts.update(exhausted_facts)
@@ -654,4 +677,3 @@ def _local_result(capture_id: str, database_name: str, provenance: dict[str, Any
         "fullScenarioAcceptance": "not_run",
         **({"blockedReason": blocked_reason} if blocked else {}),
     }
-

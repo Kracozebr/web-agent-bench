@@ -369,10 +369,17 @@ function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
   for (const item of census.selectedExecutions) {
     const row = requireRecord(item, ['operationId', 'environmentId', 'generationId', 'actionKind', 'selectedAction', 'prestate',
       'transactionIntent', 'measurement', 'transactionHash', 'outcome', 'reasonCode', 'completedAt']);
+    const measurement = requireRecord(row.measurement, ['measurementSha256', 'receipt']);
+    const receipt = requireRecord(measurement.receipt, ['transactionHash', 'status', 'gasUsed', 'effectiveGasPriceWei', 'gasCostWei']);
     const id = String(row.operationId);
     if (!operations.has(id) || selected.has(id) || row.environmentId !== generation.env_id || row.generationId !== generation.generation_id ||
         !['approve', 'transfer', 'wrap', 'unwrap', 'swap'].includes(String(row.actionKind)) || !isRecord(row.selectedAction) ||
-        !isRecord(row.prestate) || !isRecord(row.transactionIntent) || !isRecord(row.measurement) || !normTx(row.transactionHash) ||
+        !isRecord(row.prestate) || !isRecord(row.transactionIntent) || !normTx(row.transactionHash) ||
+        !HASH.test(String(measurement.measurementSha256)) || !normTx(receipt.transactionHash) ||
+        !['success', 'reverted'].includes(String(receipt.status)) || !uint(receipt.gasUsed) ||
+        !uint(receipt.effectiveGasPriceWei) || !uint(receipt.gasCostWei) ||
+        BigInt(String(receipt.gasUsed)) * BigInt(String(receipt.effectiveGasPriceWei)) !== BigInt(String(receipt.gasCostWei)) ||
+        receipt.transactionHash !== row.transactionHash || receipt.status !== row.outcome ||
         !['success', 'reverted'].includes(String(row.outcome)) || (row.reasonCode !== null && typeof row.reasonCode !== 'string') ||
         typeof row.completedAt !== 'string') fail('packet_invalid');
     selected.set(id, row);
@@ -417,11 +424,17 @@ function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
     const events = (eventKinds.get(id) ?? []).sort((left, right) => BigInt(String(left.eventSequence)) < BigInt(String(right.eventSequence)) ? -1 :
       BigInt(String(left.eventSequence)) > BigInt(String(right.eventSequence)) ? 1 : 0);
     const cost = costs.get(id);
+    const measurementReceipt = execution && isRecord(execution.measurement) && isRecord(execution.measurement.receipt)
+      ? execution.measurement.receipt : null;
     if (!execution || !cost || events.length !== 4 ||
         events.map((event) => event.eventKind).join(',') !== 'selected_action_bound,prestate_observed,original_tx_hash_bound,receipt_finalized' ||
         execution.actionKind !== op.actionKind || execution.transactionHash !== op.transactionHash ||
         execution.outcome !== (op.receiptStatus === 'success' ? 'success' : 'reverted') ||
-        cost.transactionHash !== op.transactionHash || cost.receiptStatus !== op.receiptStatus) fail('packet_invalid');
+        cost.transactionHash !== op.transactionHash || cost.receiptStatus !== op.receiptStatus ||
+        !measurementReceipt || measurementReceipt.transactionHash !== op.transactionHash ||
+        measurementReceipt.status !== op.receiptStatus || measurementReceipt.gasUsed !== cost.gasUsed ||
+        measurementReceipt.effectiveGasPriceWei !== cost.effectiveGasPriceWei ||
+        measurementReceipt.gasCostWei !== cost.gasCostWei) fail('packet_invalid');
     const payload = events.map((event) => event.eventPayload as ChainJson);
     const measurement = execution.measurement as ChainJson;
     if (!exactKeys(payload[0]!, ['actionKind', 'requestSha256', 'selectedAction']) || payload[0]!.actionKind !== op.actionKind ||

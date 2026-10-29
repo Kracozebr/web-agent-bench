@@ -131,7 +131,7 @@ export function makeChainCaptureFixture(taskId:'M3'|'M4'|'H2'):Scenario{
  const intervalBlocks:ChainCapturePacket['rpc']['intervalBlocks']=[];let parent=baselineBlockHash;
  for(let index=0;index<commands.length;index++){
   const command=commands[index]!,actionId=id(10+index),ownerOp=`owner-operation-${taskId}-${index}`,befOp=id(30+index),blockNumber=101+index,blockHash=hash(`block-${blockNumber}`),
-   transactionHash=hash(`transaction-${taskId}-${index}`),actionSelected=selected(command),requestSha=sha(`request-${taskId}-${index}`),measurementRaw={measurement:`${taskId}-${index}`},measurementSha=sha(canonicalTaskJson(measurementRaw));
+   transactionHash=hash(`transaction-${taskId}-${index}`),actionSelected=selected(command),requestSha=sha(`request-${taskId}-${index}`);
   const actionRouteValue=command.kind==='swap'&&feeRoute?{tokenIn:feeRoute.tokenIn,tokenOut:feeRoute.tokenOut,router,pool,feeTier:feeRoute.feeTier}:undefined;
   const logs=actionLogs(command,transactionHash,blockNumber,blockHash,actionRouteValue,command.kind==='unwrap'?String(command.amountWei):command.kind==='swap'?(taskId==='M3'?'1250000':'2000'):'0');
   const to=command.kind==='approve'?command.tokenAssetId==='USDC'?CHAIN_ADDRESSES.usdc:CHAIN_ADDRESSES.weth:
@@ -139,6 +139,9 @@ export function makeChainCaptureFixture(taskId:'M3'|'M4'|'H2'):Scenario{
   const valueWei=command.kind==='wrap'?String(command.amountWei):'0';const input=txInput(command,actionRouteValue);
   const tx={hash:transactionHash,from:participant,to,nonce:String(index),input,inputSha256:sha(input),receiptLogsSha256:sha(canonicalTaskJson(logs)),valueWei,gasLimit:String(command.gasLimit),blockNumber:String(blockNumber),blockHash,
    transactionIndex:'0',chainId:'31337',status:'success' as const,gasUsed:'100',effectiveGasPriceWei:'2',gasCostWei:'200',logs};
+  const measurementRaw={measurement:taskId+'-'+index,receipt:{transactionHash,status:tx.status,gasUsed:tx.gasUsed,
+   effectiveGasPrice:tx.effectiveGasPriceWei}};
+  const measurementSha=sha(canonicalTaskJson(measurementRaw));
   transactions.push(tx);intervalBlocks.push({number:String(blockNumber),hash:blockHash,parentHash:parent,transactionCount:1,participantTransactions:[transactionHash],externalTransactions:[]});parent=blockHash;
   actions.push({actionId,actionSequence:index+1,ownerOperationId:ownerOp,actionKind:command.kind,commandSha256:sha(`command-${taskId}-${index}`),
    command:command as ChainJson,selectedAction:actionSelected,approvalSpender:command.kind==='approve'?router:null,
@@ -149,7 +152,8 @@ export function makeChainCaptureFixture(taskId:'M3'|'M4'|'H2'):Scenario{
   const intent={hash:transactionHash,type:'eip1559',chainId:31337,blockHash:null,blockNumber:null,transactionIndex:null,from:participant,to,nonce:String(index),input,valueWei,
    gasLimit:String(command.gasLimit),maxFeePerGasWei:'3',maxPriorityFeePerGasWei:'1'};
   selectedExecutions.push({operationId:befOp,environmentId,generationId,actionKind:command.kind,selectedAction:actionSelected,prestate:{blockNumber:String(blockNumber-1)},
-   transactionIntent:intent,measurement:{measurementSha256:measurementSha},transactionHash,outcome:'success',reasonCode:null,completedAt:`2026-10-28T00:00:0${index+1}.000Z`});
+   transactionIntent:intent,measurement:{measurementSha256:measurementSha,receipt:{transactionHash,status:tx.status,gasUsed:tx.gasUsed,
+     effectiveGasPriceWei:tx.effectiveGasPriceWei,gasCostWei:tx.gasCostWei}},transactionHash,outcome:'success',reasonCode:null,completedAt:`2026-10-28T00:00:0${index+1}.000Z`});
   const payloads:[string,string|null,ChainJson][]=[['selected_action_bound',null,{actionKind:command.kind,requestSha256:requestSha,selectedAction:actionSelected}],
    ['prestate_observed',null,{prestate:{blockNumber:String(blockNumber-1)}}],['original_tx_hash_bound',transactionHash,{requestSha256:requestSha,transactionHash,transactionIntent:intent}],
    ['receipt_finalized',transactionHash,{outcome:'success',measurementSha256:measurementSha}]];

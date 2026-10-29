@@ -25,6 +25,7 @@ NEGATIVES = (
 )
 HASH = re.compile(r"^[0-9a-f]{64}$")
 RESTORE_DB = re.compile(r"^oid_restore_[0-9a-f]{32}$")
+HOST_JOB = re.compile(r"^[0-9a-f]{32}$")
 REQUIRED_TABLES = {
     "oid_benchmark_run", "oid_bonus_code", "oid_bonus_grant", "oid_ledger_entry",
     "oid_run_operation", "oid_run_task_action_receipt", "oid_run_task_evaluation",
@@ -97,6 +98,54 @@ def _business_unchanged(baseline: dict, before: dict, after: dict, database: str
         _need(baseline[key] == before[key] == after[key], f"retry_changed_{key}")
 
 
+def _original_source_operation_unchanged(original: dict, restored: dict) -> None:
+    for key in ("operationId", "environmentId", "generationId", "participantIdSha256",
+                "idempotencyKeySha256", "requestSha256", "operationKind", "status",
+                "transactionHash", "receiptStatus", "responseSha256", "generationStatus"):
+        _need(key in original and key in restored and original[key] == restored[key],
+              f"source_operation_changed_{key}")
+    _need(restored["status"] == "settled" and restored["generationStatus"] == "fenced",
+          "source_operation_not_settled_and_fenced")
+
+
+def _restore_boundary(restore: dict, checkpoint_id: str) -> None:
+    _need(restore["status"] == "verified_unserved" and restore["writesMayBeEnabled"] is False and
+          restore["targetHostAcceptance"] == "not_run" and restore["checkpointId"] == checkpoint_id,
+          "restore_not_verified_unserved")
+    creation, receipt = restore["creationReceipt"], restore["restoreReceipt"]
+    for value, kind, status in ((creation, "create_restore_database", "complete"), (receipt, "pg_restore", "restored")):
+        _need(value["status"] == status and
+              value["kind"] == kind and HOST_JOB.fullmatch(value["jobId"]) and
+              value["databaseName"] == restore["restoreDatabaseName"] and value["checkpointId"] == checkpoint_id and
+              value["creationJobId"] == creation["jobId"], "restore_host_receipt_unbound")
+    _need(creation["createdFresh"] is True and receipt["restored"] is True and
+          creation["jobId"] != receipt["jobId"] and HASH.fullmatch(receipt["dumpSha256"]) and
+          receipt["dumpSha256"] == restore["checkpoint"]["databaseDumpSha256"], "restore_dump_or_creation_unbound")
+
+
+def _retry_receipts(replay: dict, *, expired: bool = False) -> None:
+    bindings = replay["originalReceiptBindings"]
+    for name in ("recoveryRun", "blockerRun", "queuedRun"):
+        original = bindings[name]
+        for kind, id_key, operation_key in (("intent", "intentId", "intentOperationIdSha256"),
+                                            ("accept", "runId", "acceptOperationIdSha256")):
+            row = replay[name][kind]
+            _need(row["status"] == 200 and row["replayed"] is True and
+                  row[id_key] == original[id_key] and HASH.fullmatch(row["operationIdSha256"]) and
+                  row["operationIdSha256"] == original[operation_key], "original_run_retry_not_bound")
+        _need(replay[name]["accept"]["runStatus"] == ("queued" if name == "queuedRun" else "completed"),
+              "original_run_retry_status_changed")
+    for name, keys in (("bonusRedemption", ("redemptionId", "grantId", "codeId", "operationIdSha256")),
+                       ("report", ("reportId", "operationIdSha256"))):
+        row, original = replay[name], bindings[name]
+        _need(all(row[key] == original[key] for key in keys), f"{name}_retry_not_bound")
+        if expired and name == "report":
+            _need(row["status"] == "not_submitted_after_expiry" and row["replayed"] is False,
+                  "expired_report_was_replayed")
+        else:
+            _need(row["status"] == 200 and row["replayed"] is True, f"{name}_not_replayed")
+
+
 def verify_local_combined_restore_capture(capture: dict, repository_root: Path | str) -> dict:
     root = Path(repository_root)
     errors: list[str] = []
@@ -126,7 +175,9 @@ def verify_local_combined_restore_capture(capture: dict, repository_root: Path |
         checkpoint = result["checkpoint"]
         before = _snapshot(checkpoint["sourceSnapshots"]["before"], source_db)
         after = _snapshot(checkpoint["sourceSnapshots"]["after"], source_db)
+        after_restore = _snapshot(checkpoint["sourceSnapshots"]["afterRestore"], source_db)
         restore = result["restore"]
+        _restore_boundary(restore, checkpoint["checkpointId"])
         restore_db = restore["restoreDatabaseName"]
         _need(RESTORE_DB.fullmatch(restore_db) and restore_db != source_db, "restore_database_not_isolated")
         restored = _snapshot(restore["observations"]["beforeRetention"], restore_db)
@@ -139,6 +190,10 @@ def verify_local_combined_restore_capture(capture: dict, repository_root: Path |
               before["databaseTotalsSha256"] == checkpoint["databaseTotalsSha256"], "checkpoint_changed")
         _need(before["snapshotBoundaryId"] == after["snapshotBoundaryId"] and
               before["snapshotBoundary"] == "admission_frozen_database_quiescent", "checkpoint_freeze_missing")
+        for key in ("sourceBuildSha256", "tableFingerprints", "sequenceSha256", "databaseTotalsSha256",
+                    "financialStateSha256", "benchmarkStateSha256", "reportStateSha256", "operationBindings",
+                    "originalIds", "imageFiles", "reportDeletionReceipts", "reportCount", "uploadCount"):
+            _need(after[key] == after_restore[key], f"source_changed_after_restored_requests_{key}")
     check("consistent_checkpoint_verified", consistency)
 
     def totals():
@@ -167,13 +222,20 @@ def verify_local_combined_restore_capture(capture: dict, repository_root: Path |
 
     def retry():
         replay = result["retries"]
+        _retry_receipts(replay)
+        originals = replay["originalReceiptBindings"]
+        _need(originals["recoveryRun"]["runId"] == result["recovery"]["cases"]["committedActionRecovery"]["binding"]["runId"] and
+              originals["blockerRun"]["runId"] == result["queueAndPause"]["blockerRun"]["runId"] and
+              originals["queuedRun"]["runId"] == result["queueAndPause"]["queuedRunId"], "retry_original_run_ids_unbound")
+        funding = result["queueAndPause"]["blockerRun"]["bonusFunding"]
+        _need(all(originals["bonusRedemption"][key] == funding[key] for key in ("codeId", "grantId", "redemptionId")) and
+              originals["bonusRedemption"]["operationIdSha256"] == funding["redemptionOperationIdSha256"],
+              "retry_original_bonus_unbound")
+        _need(originals["report"]["reportId"] == result["reportCases"]["originalReportId"] and
+              originals["report"]["operationIdSha256"] == result["reportCases"]["originalReportOperationIdSha256"],
+              "retry_original_report_unbound")
         _business_unchanged(restore["observations"]["afterRetention"], replay["snapshots"]["before"],
                             replay["snapshots"]["after"], restore_db)
-        for name in ("recoveryRun", "blockerRun", "queuedRun"):
-            for kind in ("intent", "accept"):
-                row = replay[name][kind]
-                _need(row["status"] == 200 and row["replayed"] is True and
-                      HASH.fullmatch(row["operationIdSha256"]), "original_run_retry_not_observed")
         _need(replay["queuedRun"]["accept"]["runId"] == result["queueAndPause"]["queuedRunId"] and
               replay["queuedRun"]["accept"]["runStatus"] == "queued", "queued_run_reexecuted")
         for name in ("bonusRedemption", "report"):
@@ -186,12 +248,14 @@ def verify_local_combined_restore_capture(capture: dict, repository_root: Path |
         _need(observed["identity"]["role"] == "bef_observer" and observed["identity"]["databaseName"] == "bef" and
               observed["identity"]["transactionReadOnly"] == "on", "post_restore_bef_observer_missing")
         rows = {row["caseName"]: row for row in observed["result"]}
+        _need(set(result["recovery"]["cases"]) == {"committedActionRecovery", "recoveryDeadlineExhaustion"} and
+              set(rows) == set(result["recovery"]["cases"]) and len(observed["result"]) == 2,
+              "source_operation_case_inventory_incomplete")
         for name, case in result["recovery"]["cases"].items():
             old = case.get("sourceOperation", case.get("beFSource", {}))["result"]
             new = rows[name]["operations"]
             _need(len(old) == len(new) == 1 and rows[name]["actionId"] == case["action"]["actionId"], "source_operation_repeated")
-            for key in ("operationId", "environmentId", "generationId", "idempotencyKeySha256", "transactionHash", "receiptStatus"):
-                _need(old[0][key] == new[0][key], f"source_operation_changed_{key}")
+            _original_source_operation_unchanged(old[0], new[0])
     check("no_external_resubmission", no_resubmit)
 
     def timing():
@@ -207,6 +271,16 @@ def verify_local_combined_restore_capture(capture: dict, repository_root: Path |
         ui = result["restoredUi"]
         _need(ui["ui"]["reportDetailStatus"] == 200 and ui["ui"]["imageStatus"] == 200 and
               ui["ui"]["completedRunStatus"] == "completed" and ui["ui"]["queuedRunStatus"] == "queued", "restored_ui_read_missing")
+        admin = ui["admin"]
+        _need(admin["listStatus"] == admin["detailStatus"] == admin["imageStatus"] == 200 and
+              admin["reportId"] == result["reportCases"]["originalReportId"] and admin["source"] == "owner" and
+              admin["status"] == result["reportCases"]["sourceStatus"] and
+              admin["revision"] == result["reportCases"]["sourceRevision"] and
+              admin["imageSha256"] == ui["ui"]["imageSha256"] and
+              admin["runId"] == result["recovery"]["cases"]["committedActionRecovery"]["binding"]["runId"] and
+              admin["taskId"] == "S1" and
+              admin["actionId"] == result["recovery"]["cases"]["committedActionRecovery"]["action"]["actionId"],
+              "restored_admin_report_or_image_unbound")
         uploads = ui["observer"]["uploads"]
         originals = {(row["bytes"], row["sha256"]) for row in before["imageFiles"]}
         _need(uploads and all((row["bytes"], row["sha256"]) in originals for row in uploads) and
@@ -217,8 +291,12 @@ def verify_local_combined_restore_capture(capture: dict, repository_root: Path |
 
     def expiry():
         expired = result["retentionExpiry"]
+        _restore_boundary(expired["cloneRestore"], checkpoint["checkpointId"])
         observation = expired["cloneObservation"]
         replay = expired["safeRetry"]
+        _retry_receipts(replay, expired=True)
+        _need(replay["originalReceiptBindings"] == result["retries"]["originalReceiptBindings"],
+              "expired_clone_original_receipts_changed")
         receipts = replay["snapshots"]["before"]["reportDeletionReceipts"]
         _need(RESTORE_DB.fullmatch(observation["databaseName"]) and observation["databaseName"] != restore_db,
               "expired_clone_not_isolated")

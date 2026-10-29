@@ -1663,11 +1663,36 @@ export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newCont
   return result;
 }
 
+export function computeBonusAvailableBalanceDelta(beforeSnapshot, afterSnapshot, ownerId, expectedAmountUnits) {
+  assert(typeof ownerId === "string" && ownerId.length > 0, "Bonus balance owner identity is invalid");
+  assert(typeof expectedAmountUnits === "string" && /^\d+$/.test(expectedAmountUnits),
+    "Expected bonus amount is invalid");
+  const balance = (snapshot) => {
+    assert(Array.isArray(snapshot?.ownerBalances), "Bonus balance snapshot is invalid");
+    const matches = snapshot.ownerBalances.filter((row) => row.owner_id === ownerId);
+    assert(matches.length <= 1, "Bonus balance snapshot has duplicate owner rows");
+    if (matches.length === 0) return 0n;
+    const value = matches[0].bonus_available_units;
+    assert(typeof value === "string" && /^-?\d+$/.test(value), "Bonus available balance is invalid");
+    return BigInt(value);
+  };
+  const beforeUnits = balance(beforeSnapshot);
+  const afterUnits = balance(afterSnapshot);
+  const deltaUnits = afterUnits - beforeUnits;
+  return {
+    beforeUnits: beforeUnits.toString(),
+    afterUnits: afterUnits.toString(),
+    deltaUnits: deltaUnits.toString(),
+    verified: deltaUnits === BigInt(expectedAmountUnits),
+  };
+}
+
 /** Issue and redeem one worker-funding code through the real admin and owner pages. */
 export async function issueAndRedeemBonusCodeForWorker({ adminPage, ownerPage, adminCapture, ownerCapture,
   ownerId, observerDatabaseUrl, label, amount, amountUnits }) {
   assert(typeof amount === "string" && typeof amountUnits === "string" && /^\d+$/.test(amountUnits),
     "Worker bonus-code funding amount is invalid");
+  const beforeFundingSnapshot = await observerSnapshot(observerDatabaseUrl, { ownerIds: [ownerId] });
   await adminPage.goto("/admin/bonus-codes", { waitUntil: "domcontentloaded" });
   const issued = await issueThroughUi(adminPage, adminCapture, {
     label, kind: "single_use", amount, maximumUses: 1,
@@ -1690,8 +1715,7 @@ export async function issueAndRedeemBonusCodeForWorker({ adminPage, ownerPage, a
   const ownerBalance = snapshot.ownerBalances.find((row) => row.owner_id === ownerId);
   const balanceField = Object.keys(ownerBalance ?? {}).find((key) => /bonus.*available|available.*bonus/i.test(key));
   const cashBalanceField = Object.keys(ownerBalance ?? {}).find((key) => /cash.*available|available.*cash/i.test(key));
-  const exactStartingBalance = Boolean(ownerBalance && balanceField
-    && BigInt(ownerBalance[balanceField]) === BigInt(amountUnits));
+  const fundingBalanceDelta = computeBonusAvailableBalanceDelta(beforeFundingSnapshot, snapshot, ownerId, amountUnits);
   const exactLocalLot = snapshot.observer.role === "oid_observer"
     && snapshot.observer.transaction_read_only === "on"
     && code?.kind === "single_use" && code.maximum_uses === 1 && code.used_count === 1
@@ -1701,7 +1725,7 @@ export async function issueAndRedeemBonusCodeForWorker({ adminPage, ownerPage, a
     && grant?.owner_id === ownerId && grant.issued_by_owner_id === code.issuer_owner_id
     && grant.amount_units === amountUnits && grant.reason === "Bonus code redemption" && grant.expires_at === null
     && grantEntry?.source_kind === "tester_bonus" && grantEntry.available_delta_units === amountUnits
-    && exactStartingBalance && grantLedgerConserved(snapshot);
+    && ownerBalance && balanceField && fundingBalanceDelta.verified && grantLedgerConserved(snapshot);
   assert(issued.outcome.status === 201 && issued.outcome.oneTimeValueReturned && issued.outcome.oneTimeValueMatchesFormat
     && claimed.outcome.status === 200 && claimed.outcome.grantId && exactLocalLot,
   "Worker funding code was not issued/redeemed through the browser and independently conserved in PostgreSQL");
@@ -1720,7 +1744,7 @@ export async function issueAndRedeemBonusCodeForWorker({ adminPage, ownerPage, a
       grant,
       grantEntry,
       ownerBalance,
-      exactStartingBalance,
+      fundingBalanceDelta,
       cashAvailableUnits: cashBalanceField ? ownerBalance[cashBalanceField] : null,
       ledgerConserved: true,
       cashEffectCount: snapshot.cashEffectCount,

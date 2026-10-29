@@ -397,7 +397,8 @@ export async function createLocalCombinedBackup({ repoRoot, databaseUrl, observe
             if (result.databaseName !== targetDatabase || result.checkpointId !== checkpointId || result.creationJobId !== creationJobId ||
                 result.dumpSha256 !== dumpSha256 || result.restored !== true) fail('host_pg_restore_receipt_invalid');
             restored = true;
-            return { status: 'restored', databaseName: targetDatabase, dumpSha256 };
+            return { status: 'restored', kind: 'pg_restore', jobId, databaseName: targetDatabase,
+              checkpointId, creationJobId, dumpSha256, restored: true };
           } catch (error) { if (String(error?.code ?? '') !== 'ENOENT') throw error; }
           await delay(250);
         }

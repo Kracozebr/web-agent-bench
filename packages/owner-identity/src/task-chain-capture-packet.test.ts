@@ -169,6 +169,26 @@ test('packet rejects a detached pool receipt, altered WETH conversion, and chang
  assert.throws(()=>projection(payout),ChainCapturePacketError);
 });
 
+test('packet rejects source-measurement receipt gas that differs from cost and RPC receipts',()=>{
+ const fixture=makeChainCaptureFixture('M3');
+ const before=fixture.packet.bef.before as Record<string,unknown>;
+ const selected=before.selectedExecutions as Record<string,unknown>[];
+ const measurement=selected[0]!.measurement as Record<string,unknown>;
+ const receipt=measurement.receipt as Record<string,unknown>;
+ receipt.gasUsed='101';
+ receipt.gasCostWei='202';
+ assert.throws(()=>projection(fixture),ChainCapturePacketError);
+
+ const wrongPrice=makeChainCaptureFixture('M3');
+ const wrongBefore=wrongPrice.packet.bef.before as Record<string,unknown>;
+ const wrongSelected=wrongBefore.selectedExecutions as Record<string,unknown>[];
+ const wrongMeasurement=wrongSelected[0]!.measurement as Record<string,unknown>;
+ const wrongReceipt=wrongMeasurement.receipt as Record<string,unknown>;
+ wrongReceipt.effectiveGasPriceWei='3';
+ wrongReceipt.gasCostWei='300';
+ assert.throws(()=>projection(wrongPrice),ChainCapturePacketError);
+});
+
 test('invalid collector targets return before opening the owner database transaction',async()=>{
  let transactions=0;
  const deps={db:{transaction:async()=>{transactions++;throw new Error('must-not-run')}}} as never;

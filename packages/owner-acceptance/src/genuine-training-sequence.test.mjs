@@ -1,9 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { OPEN_TASK_IDS, normalizeTrainingSequenceTaskIds, quoteTrainingSelectionUnits, trainingSequenceGrantAmountUnits,
+import { OPEN_TASK_IDS, automaticWorkerChargeUnchanged, normalizeTrainingSequenceTaskIds,
+  quoteTrainingSelectionUnits, trainingSequenceGrantAmountUnits,
   trainingCleanupLeasePrefixIsFenced, trainingSequenceTransitionBasis, trainingSequenceTransitions,
   trainingSuccessorActivationChainMatches, trainingSuccessorActivationResult,
   validateGenuineRecoveryProxySettings } from './genuine-s1-cases.mjs';
+
+test('automatic worker charge invariance keeps prior owner refunds and lots as baseline', () => {
+  const initial = { runId: '96e13ff8-bbfc-4cb0-bbab-d091bc9ab632', moneySha256: 'a'.repeat(64),
+    ownerRefundCount: 1, runRefundCount: 0 };
+  const current = { run: { id: initial.runId }, moneySha256: initial.moneySha256,
+    ownerRefundCount: 1, runRefundCount: 0 };
+
+  assert.equal(automaticWorkerChargeUnchanged(initial, current), true,
+    'historical refunds and bonus lots already present at run start do not look like a new run charge');
+  assert.equal(automaticWorkerChargeUnchanged(initial, { ...current, moneySha256: 'b'.repeat(64) }), false,
+    'any owner-money change after this run starts remains a failure');
+  assert.equal(automaticWorkerChargeUnchanged(initial, { ...current, ownerRefundCount: 2 }), false,
+    'a newly added owner refund remains a failure');
+  assert.equal(automaticWorkerChargeUnchanged(initial, { ...current, runRefundCount: 1 }), false,
+    'a refund linked to this run remains a failure');
+  assert.equal(automaticWorkerChargeUnchanged({ ...initial, runRefundCount: 1 }, current), false,
+    'a refunded run cannot be used as a normal worker completion baseline');
+  assert.equal(automaticWorkerChargeUnchanged(initial, { ...current, run: { id: '45bb8d13-e595-4802-9500-2c1382f043a3' } }), false,
+    'money equality cannot bind a snapshot to a different run');
+});
 
 test('all-open training selection is canonical and contains seven adjacent transitions', () => {
   assert.deepEqual(OPEN_TASK_IDS, ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2']);

@@ -1,6 +1,46 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { quoteUnits } from './beta-combined-restore-cases.mjs';
+import { combinedSourceRunIds, quoteUnits, verifyPostRestoreSourceStability } from './beta-combined-restore-cases.mjs';
+
+const HASH = (character) => character.repeat(64);
+const sourceDatabase = 'oid_acceptance_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const requiredTables = ['oid_benchmark_run', 'oid_run_operation', 'oid_ledger_operation',
+  'oid_bonus_code_claim_operation', 'oid_task_preparation_generation', 'oid_support_report',
+  'oid_support_report_audit', 'oid_support_image_upload', 'oid_support_report_deletion_receipt',
+  'oid_support_upload_gc_receipt', 'oid_support_report_rate'];
+function sourceSnapshot(overrides = {}) {
+  return {
+    schemaVersion: 'beta-combined-source-observation/v1',
+    sourceDatabase,
+    observerIdentity: { databaseRole: 'oid_observer', databaseName: sourceDatabase, transactionReadOnly: 'on' },
+    snapshotBoundary: 'admission_frozen_database_quiescent',
+    snapshotBoundaryId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    snapshotAt: '2026-10-29T00:00:00.000Z',
+    sourceBuildSha256: HASH('a'),
+    tableFingerprints: Object.fromEntries(requiredTables.map((name, index) => [name,
+      { rowCount: index + 1, sha256: (index + 1).toString(16).padStart(64, '0') }])),
+    sequenceSha256: HASH('b'),
+    databaseTotalsSha256: HASH('c'),
+    financialStateSha256: HASH('d'),
+    benchmarkStateSha256: HASH('e'),
+    reportStateSha256: HASH('f'),
+    reportRateLimitStateSha256: HASH('1'),
+    controlOperationalStateSha256: HASH('2'),
+    operationBindings: { bonusGrantOperationsSha256: HASH('3'), bonusGrantOperationCount: 1,
+      runOperationReceiptsSha256: HASH('4'), runOperationReceiptCount: 2,
+      runGenerationReceiptsSha256: HASH('5'), runGenerationReceiptCount: 2,
+      reportOperationReceiptsSha256: HASH('6'), reportOperationReceiptCount: 1 },
+    originalIds: { completedRunIds: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+      queuedInterruptedUnknownRunIds: ['cccccccc-cccc-4ccc-8ccc-cccccccccccc'],
+      operationIds: ['run-operation-1'], bonusGrantOperationIds: ['bonus-operation-1'], reportOperationIds: ['report-operation-1'] },
+    imageFiles: [{ bytes: 24786, sha256: HASH('7') }],
+    reportDeletionReceipts: [],
+    reportCount: 1,
+    uploadCount: 1,
+    pendingUploadGcReceipts: 0,
+    ...overrides,
+  };
+}
 
 test('queued restore fixture reads the actual run-launch quote sentence without changing six-decimal units', () => {
   assert.equal(quoteUnits('Server quote for this selection: 0.2 USDC. The intent pins this value and rejects a stale release or changed quote.'), 200000n);
@@ -8,4 +48,60 @@ test('queued restore fixture reads the actual run-launch quote sentence without 
   for (const value of ['unavailable USDC', '0.0000001 USDC', '-1 USDC', '1 ETH', '1 USDCx']) {
     assert.throws(() => quoteUnits(value), /combined_quote_display_invalid/);
   }
+});
+
+test('post-restore source proof compares durable source tables, sequences, business hashes and bindings', () => {
+  const before = sourceSnapshot();
+  const afterRestore = sourceSnapshot({ snapshotBoundaryId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    snapshotAt: '2026-10-29T00:03:00.000Z' });
+  const result = verifyPostRestoreSourceStability({ checkpointSourceAfter: before, afterRestore, sourceDatabase });
+
+  assert.equal(result.status, 'verified');
+  assert.equal(Object.values(result.comparisons).every(Boolean), true);
+});
+
+test('post-restore source proof rejects any changed table fingerprint even if aggregate hashes are copied', () => {
+  const before = sourceSnapshot();
+  const afterRestore = sourceSnapshot({ tableFingerprints: { ...sourceSnapshot().tableFingerprints,
+    oid_benchmark_run: { rowCount: 1, sha256: HASH('8') } } });
+
+  assert.throws(() => verifyPostRestoreSourceStability({ checkpointSourceAfter: before, afterRestore, sourceDatabase }),
+    /combined_source_database_changed_after_restores/);
+});
+
+test('post-restore source proof rejects sequence and operation-binding drift', () => {
+  const before = sourceSnapshot();
+  assert.throws(() => verifyPostRestoreSourceStability({ checkpointSourceAfter: before,
+    afterRestore: sourceSnapshot({ sourceBuildSha256: HASH('9') }), sourceDatabase }),
+  /combined_source_database_changed_after_restores/);
+  assert.throws(() => verifyPostRestoreSourceStability({ checkpointSourceAfter: before,
+    afterRestore: sourceSnapshot({ sequenceSha256: HASH('9') }), sourceDatabase }),
+  /combined_source_database_changed_after_restores/);
+  assert.throws(() => verifyPostRestoreSourceStability({ checkpointSourceAfter: before,
+    afterRestore: sourceSnapshot({ operationBindings: { ...before.operationBindings, runOperationReceiptCount: 3 } }), sourceDatabase }),
+  /combined_source_database_changed_after_restores/);
+});
+
+test('post-restore source proof fails closed for missing raw table or binding observations', () => {
+  const before = sourceSnapshot();
+  const missingTable = sourceSnapshot({ tableFingerprints: { oid_benchmark_run: before.tableFingerprints.oid_benchmark_run } });
+  const missingBindings = sourceSnapshot({ operationBindings: null });
+
+  assert.throws(() => verifyPostRestoreSourceStability({ checkpointSourceAfter: before,
+    afterRestore: missingTable, sourceDatabase }), /combined_source_after_restore_snapshot_incomplete/);
+  assert.throws(() => verifyPostRestoreSourceStability({ checkpointSourceAfter: before,
+    afterRestore: missingBindings, sourceDatabase }), /combined_source_after_restore_bindings_missing/);
+});
+
+test('official source observation includes both S4 and M3 collector runs in addition to the combined recovery runs', () => {
+  const ids = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'ffffffff-ffff-4fff-8fff-ffffffffffff'];
+  const result = combinedSourceRunIds({ completedRunId: ids[0], committedRecoveryRunId: ids[0],
+    exhaustedRunId: ids[1], blockerRunId: ids[2], queuedRunId: ids[3],
+    collectorCases: { S4: { binding: { runId: ids[4] } }, M3: { binding: { runId: ids[5] } } } });
+  assert.deepEqual(result, ids);
+  assert.throws(() => combinedSourceRunIds({ completedRunId: ids[0], committedRecoveryRunId: ids[0],
+    exhaustedRunId: ids[1], blockerRunId: ids[2], queuedRunId: ids[3],
+    collectorCases: { S4: { binding: { runId: ids[4] } } } }), /combined_source_run_coverage_incomplete/);
 });

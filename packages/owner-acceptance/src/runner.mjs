@@ -1513,6 +1513,12 @@ main().catch(async (error) => {
         boundary: "isolated_local_browser_backend_postgres_bef_files", result: { status: "blocked", phase, reasonCode },
         provenance: { databaseIsolation, sourceInputsBeforeCheckpoint, sourceStability: "not_verified" },
         targetHostAcceptance: "blocked_target_not_selected" };
+      if (error?.safeDiagnostic && typeof error.safeDiagnostic === "object") {
+        // AICODE-NOTE: Preserve only explicitly projected diagnostics; raw error
+        // messages can contain browser request bodies or one-time credentials.
+        assertSecretFree(error.safeDiagnostic, `${artifactRoot}-safe-diagnostic`);
+        capture.result.safeDiagnostic = error.safeDiagnostic;
+      }
       assertSecretFree(capture, artifactRoot);
       await writeFile(resolve(directory, "capture.json"), `${JSON.stringify(capture, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     } catch { /* Preserve the original sanitized runtime diagnostic. */ }

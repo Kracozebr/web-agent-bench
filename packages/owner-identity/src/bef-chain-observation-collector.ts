@@ -6,6 +6,10 @@ import { sql } from 'drizzle-orm';
 import { keccak256 } from 'viem';
 import { TaskActionCommandSchema, type TaskActionCommand } from './task-action-service.js';
 import type { OwnerDatabase } from './db.js';
+import { recoveredActionEvidenceIsOwnerBound, recoveredOwnerLineageJoinSql, recoveredOwnerLineageSelectSql,
+ recoverySourceEvidenceMatchesFacts, type RecoveredOwnerLineageRow,
+ type RecoverySourceFacts } from './bef-recovery-observation.js';
+import type { RecoveryActionEvidence } from './beta-platform-recovery-source-evidence.js';
 import type { PersistedTaskObservations, TaskEvidenceBinding } from './task-evaluator.js';
 import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase, type TaskReleaseQuerySource } from './task-release.js';
 import type { TaskObservationBundleCandidate } from './task-observation-store.js';
@@ -36,9 +40,9 @@ type PreparationRow={preparation_id:string;claim_id:string;lease_id:string;envir
 type ActionRow={id:string;run_id:string;task_index:number;owner_id:string;agent_id:string;task_id:string;environment_id:string;action_sequence:string|number;
  operation_id:string;payload_hash:string;action_kind:string;command_json:unknown;receipt_revision:number;receipt_status:string;evidence_hash:string|null;
  evidence_path:string|null;transaction_hash:string|null;history_revision:number|null;history_status:string|null;history_evidence_hash:string|null;
- history_evidence_path:string|null;history_transaction_hash:string|null};
+ history_evidence_path:string|null;history_transaction_hash:string|null}&RecoveredOwnerLineageRow;
 type Loaded={row:ActionRow;sequence:number;command:Extract<TaskActionCommand,{kind:'approve'|'transfer'|'wrap'|'unwrap'|'swap'}>;
- evidence:EvidenceReference;befOperationId:string;transactionHash:string;outcome:'success'|'reverted';selectedAction:J;approvalSpender:string|null};
+ evidence:EvidenceReference;recoveryEvidence:RecoveryActionEvidence;befOperationId:string;transactionHash:string;outcome:'success'|'reverted';selectedAction:J;approvalSpender:string|null};
 type LoadedActions={chain:Loaded[];external:ChainCaptureExternalAction[]};
 type PrepProof={fixture:EvidenceReference;baseline:EvidenceReference;blockNumber:bigint;blockHash:string};
 type Checkpoint=ChainCapturePacket['rpc']['baseline'];
@@ -239,17 +243,28 @@ async function captureCensus(port:BefChainReadOnlyPostgresPort,envId:string,gene
    const prestate=parseJson(r.prestate_json),intent=parseJson(r.transaction_intent_json),rawMeasurement=parseJson(r.measurement_json);
    if(!op||!selected||!isRecord(prestate)||!isRecord(intent)||!isRecord(rawMeasurement))fail('observer_census_unavailable');
    const outcome=r.outcome;if(outcome!=='success'&&outcome!=='reverted')fail('observer_census_unavailable');
+   const sourceReceipt=isRecord(rawMeasurement.receipt)?rawMeasurement.receipt:null;
+   const sourceReceiptTxHash=sourceReceipt?txHash(sourceReceipt.transactionHash):null;
+   const sourceGasUsed=sourceReceipt&&typeof sourceReceipt.gasUsed==='string'&&UINT.test(sourceReceipt.gasUsed)?sourceReceipt.gasUsed:null;
+   const sourceEffectiveGasPrice=sourceReceipt&&typeof sourceReceipt.effectiveGasPrice==='string'&&UINT.test(sourceReceipt.effectiveGasPrice)
+    ?sourceReceipt.effectiveGasPrice:null;
+   if(!sourceReceipt||sourceReceiptTxHash!==txHash(r.transaction_hash)||sourceReceipt.status!==outcome||sourceGasUsed===null||
+      sourceEffectiveGasPrice===null)fail('observer_census_unavailable');
+   const sourceGasCostWei=(BigInt(sourceGasUsed)*BigInt(sourceEffectiveGasPrice)).toString();
    return {operationId:opId,environmentId:r.env_id,generationId:String(r.generation_id).toLowerCase(),actionKind:r.action_kind,selectedAction:selected,
-    prestate,transactionIntent:intent,measurement:{measurementSha256:sha256CanonicalTaskJson(rawMeasurement).toLowerCase()},
+    prestate,transactionIntent:intent,measurement:{measurementSha256:sha256CanonicalTaskJson(rawMeasurement).toLowerCase(),
+     receipt:{transactionHash:sourceReceiptTxHash,status:sourceReceipt.status,gasUsed:sourceGasUsed,
+      effectiveGasPriceWei:sourceEffectiveGasPrice,gasCostWei:sourceGasCostWei}},
     transactionHash:txHash(r.transaction_hash),outcome,reasonCode:r.reason_code,completedAt:r.completed_at};
   });
   const selectedByOp=new Map(selectedExecutions.map((r)=>[String(r.operationId),r]));
   const eventKinds=eventRows.map((r)=>{
    const operation=opById.get(String(r.operation_id).toLowerCase()),execution=selectedByOp.get(String(r.operation_id).toLowerCase());
    if(!operation||!execution||!UUID.test(String(r.event_id))||!UINT.test(String(r.event_sequence)))fail('observer_census_unavailable');
-   const payload=eventPayload(r,execution,operation);if(!payload)return fail('observer_census_unavailable');
+   const rawEvent=parseJson(r.event_json),payload=eventPayload(r,execution,operation);if(!payload||!isRecord(rawEvent))return fail('observer_census_unavailable');
    return {eventId:String(r.event_id).toLowerCase(),eventSequence:String(r.event_sequence),operationId:String(r.operation_id).toLowerCase(),
-    eventKind:r.event_kind,transactionHash:r.transaction_hash===null?null:txHash(r.transaction_hash),eventPayload:payload};
+    eventKind:r.event_kind,eventJsonSha256:sha(canonicalTaskJson(rawEvent)).toLowerCase(),
+    transactionHash:r.transaction_hash===null?null:txHash(r.transaction_hash),eventPayload:payload};
   });
   const costs=costRows.map((r)=>({operationId:String(r.operation_id).toLowerCase(),environmentId:r.env_id,generationId:String(r.generation_id).toLowerCase(),
    transactionHash:txHash(r.transaction_hash),payerAddress:addr(r.payer_address),payerRole:r.payer_role,receiptStatus:r.receipt_status,
@@ -323,7 +338,7 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
  assets:Array<{assetId:string;address:string|null}>,contracts:Array<{contractId:string;address:string;codeHash:string}>):Promise<LoadedActions>{
  if(cutoff>MAX_ACTIONS||rowsIn.length!==cutoff)fail('owner_cutoff_mismatch');const chain:Loaded[]=[],external:ChainCaptureExternalAction[]=[],ownerOps=new Set<string>();
  const allowed=['schema','actionId','runId','taskIndex','actionSequence','ownerOperationId','actionKind','commandSha256','environmentId','generationId','manifestSha256',
-  'applicationSourceSha256','idempotencyKey','status','reasonCode','requestStartedAt','requestFinishedAt','httpStatus','befOperationId','transactionHash','outcome',
+  'applicationSourceSha256','idempotencyKey','status','reasonCode','requestStartedAt','requestFinishedAt','httpStatus','recoverySource','befOperationId','transactionHash','outcome',
   'receiptStatus','rawResponseSha256','participantToolResponse','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','environmentHealth'];
  for(let i=0;i<rowsIn.length;i++){
   const row=rowsIn[i]!,actionSequence=seq(row.action_sequence),ref=row.evidence_path&&row.evidence_hash?evidenceRef({path:row.evidence_path,sha256:row.evidence_hash,boundary:BOUNDARY},ACTION_ROOT):null;
@@ -340,12 +355,17 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
   if((chainAction&&row.receipt_status!=='observed')||(!chainAction&&(!externalAction||!['H3','U1'].includes(taskCase.taskId))))fail('action_evidence_unavailable');
   const bytes=await readEvidence(root,ref,ACTION_ROOT,'action_evidence_unavailable');let doc:unknown;
   try{doc=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown}catch{fail('action_evidence_unavailable')}
+  const evidence=isRecord(doc)?doc:null,recoverySourceBacked=evidence?.recoverySource!==undefined;
+  if(externalAction&&recoverySourceBacked)fail('action_evidence_unavailable');
   if(!isRecord(doc)||Object.keys(doc).some((key)=>!allowed.includes(key))||doc.schema!=='bef-task-action-observation-v1'||doc.actionId!==row.id||
    doc.runId!==runId||doc.taskIndex!==index||doc.actionSequence!==String(actionSequence)||doc.ownerOperationId!==row.operation_id||doc.actionKind!==row.action_kind||
    doc.commandSha256!==row.payload_hash.toLowerCase()||doc.environmentId!==prep.environment_id||doc.generationId!==prep.generation_id||
    doc.manifestSha256!==prep.environment_manifest_sha256.toLowerCase()||doc.applicationSourceSha256!==prep.application_source_hash.toLowerCase()||
    doc.idempotencyKey!==`task-action-${row.id}`||doc.status!==row.receipt_status||
-   (row.receipt_status==='observed'&&(!isRecord(doc.participantToolResponse)||!HASH.test(String(doc.rawResponseSha256))))||
+   (row.receipt_status==='observed'&&(!isRecord(doc.participantToolResponse)||
+    (recoverySourceBacked ? (!recoveredActionEvidenceIsOwnerBound(doc,row,{actionId:row.id,runId,ownerId:run.owner_id,
+        agentId:run.agent_id,taskIndex:index,environmentId:prep.environment_id,operationId:row.operation_id,payloadHash:row.payload_hash,
+        evidenceHash:row.evidence_hash??''})) : (doc.httpStatus!==200||!HASH.test(String(doc.rawResponseSha256))))))||
    (row.receipt_status==='rejected_before_execution'&&((doc.participantToolResponse!==undefined&&doc.participantToolResponse!==null)||
     (doc.transactionHash!==undefined&&doc.transactionHash!==null)||row.transaction_hash!==null)))
    fail('action_evidence_unavailable');
@@ -374,7 +394,7 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
   }
   if(!isRecord(doc.participantToolResponse)||!isRecord(doc.participantToolResponse.selectedAction)||!isRecord(doc.participantToolResponse.transaction)||
    !isRecord(doc.participantToolResponse.receipt)||!UUID.test(String(doc.befOperationId))||!TX.test(String(doc.transactionHash))||
-   (doc.outcome!=='success'&&doc.outcome!=='reverted')||doc.receiptStatus!==doc.outcome||doc.httpStatus!==200)fail('action_evidence_unavailable');
+   (doc.outcome!=='success'&&doc.outcome!=='reverted')||doc.receiptStatus!==doc.outcome||(!recoverySourceBacked&&doc.httpStatus!==200))fail('action_evidence_unavailable');
   const command=parsed.data as Loaded['command'],selected=selectionFromCommand(command);
   if(!sameActionEnvelope(doc.participantToolResponse.selectedAction as J,selected,command,taskCase,assets,contracts))fail('action_evidence_unavailable');
   const response=doc.participantToolResponse as J,transaction=response.transaction as J,receipt=response.receipt as J;
@@ -384,7 +404,7 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
   const ownerHash=txHash(row.transaction_hash),evidenceHash=txHash(doc.transactionHash);if(!ownerHash||ownerHash!==evidenceHash)fail('action_evidence_unavailable');
   const approvalSpender=command.kind==='approve'?addr(doc.participantToolResponse.selectedAction.spender):null;
   if(command.kind==='approve'&&!approvalSpender)fail('action_evidence_unavailable');
-  chain.push({row,sequence:actionSequence,command,evidence:ref,befOperationId:String(doc.befOperationId).toLowerCase(),transactionHash:ownerHash,
+  chain.push({row,sequence:actionSequence,command,evidence:ref,recoveryEvidence:doc as unknown as RecoveryActionEvidence,befOperationId:String(doc.befOperationId).toLowerCase(),transactionHash:ownerHash,
    outcome:doc.outcome as 'success'|'reverted',selectedAction:selected,approvalSpender});
  }
  return {chain,external};
@@ -615,7 +635,8 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
  const actionRows=await ownerRows<ActionRow>(tx,sql`SELECT a.id::text,a.run_id::text,a.task_index,a.owner_id::text,a.agent_id::text,a.task_id,a.environment_id,a.action_sequence::text,
   a.operation_id,a.payload_hash,a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
   h.revision AS history_revision,h.receipt_status AS history_status,h.evidence_hash AS history_evidence_hash,h.evidence_path AS history_evidence_path,
-  h.transaction_hash AS history_transaction_hash FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+  h.transaction_hash AS history_transaction_hash ${recoveredOwnerLineageSelectSql} FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+  ${recoveredOwnerLineageJoinSql}
   LEFT JOIN LATERAL(SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
   WHERE a.run_id=${target.runId} AND a.task_index=${target.taskIndex} ORDER BY a.action_sequence FOR UPDATE OF a,r`);
  let loaded:LoadedActions;try{loaded=await loadActions(deps.repositoryRoot,target.runId,target.taskIndex,run,prep,cutoff,actionRows,taskCase,assets,contracts)}
@@ -682,6 +703,42 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
   const op=operationsById.get(action.befOperationId),selected=selectedById.get(action.befOperationId),cost=costsById.get(action.befOperationId);
   if(!op||!selected||!cost||selected.actionKind!==action.command.kind||!same(selected.selectedAction,action.selectedAction)||
    selected.transactionHash!==action.transactionHash||selected.outcome!==action.outcome||op.transactionHash!==action.transactionHash)return unavailable('rpc_mapping_incomplete');
+  if(action.recoveryEvidence.recoverySource){
+   const generation=before.census.generation,measurement=isRecord(selected.measurement)?selected.measurement:null;
+   const measuredReceipt=measurement&&isRecord(measurement.receipt)?measurement.receipt:null;
+   const selectedEvents=before.census.selectedEvents.filter((event)=>String(event.operationId)===action.befOperationId&&event.eventKind==='selected_action_bound');
+   const boundEvents=selectedEvents.flatMap((event)=>{
+    const payload=isRecord(event.eventPayload)?event.eventPayload:null;
+    if(!payload||typeof payload.actionKind!=='string'||typeof payload.requestSha256!=='string'||typeof event.eventJsonSha256!=='string')return [];
+    return [{eventKind:String(event.eventKind),actionKind:payload.actionKind,requestSha256:payload.requestSha256,
+     selectedAction:payload.selectedAction,eventJsonSha256:event.eventJsonSha256}];
+   });
+   const facts:RecoverySourceFacts|null=measurement&&typeof measurement.measurementSha256==='string'&&isRecord(selected.selectedAction)&&
+    boundEvents.length===selectedEvents.length?{operation:{operationId:String(op.operationId),environmentId:String(op.environmentId),
+     generationId:String(op.generationId),participantId:String(op.participantId),idempotencyKeySha256:String(op.idempotencyKeySha256),
+     requestSha256:String(op.requestSha256),operationKind:String(op.actionKind),status:String(op.status),
+     transactionHash:op.transactionHash===null?null:txHash(op.transactionHash),receiptStatus:String(op.receiptStatus),
+     responseSha256:op.responseSha256===null?null:String(op.responseSha256)},
+     generationManifestSha256:String(generation.manifest_sha256),environmentManifestSha256:String(generation.environment_manifest_sha256),
+     selectedExecution:{actionKind:String(selected.actionKind),selectedAction:selected.selectedAction,
+      outcome:typeof selected.outcome==='string'?selected.outcome:null,
+      transactionHash:selected.transactionHash===null?null:txHash(selected.transactionHash),
+      measurementSha256:measurement.measurementSha256},selectedActionBoundEvents:boundEvents}:null;
+   const response=action.recoveryEvidence.participantToolResponse;
+   if(!facts||!measuredReceipt||!recoverySourceEvidenceMatchesFacts(action.recoveryEvidence.recoverySource,facts)||!isRecord(response)||
+      response.operationId!==action.befOperationId||response.outcome!==action.outcome||!isRecord(response.selectedAction)||
+      !sameActionEnvelope(response.selectedAction as J,action.selectedAction,action.command,taskCase,assets,contracts)||
+      !isRecord(response.transaction)||txHash(response.transaction.hash)!==action.transactionHash||!isRecord(response.receipt)||
+      txHash(response.receipt.transactionHash)!==action.transactionHash||response.receipt.status!==action.outcome||
+      txHash(measuredReceipt.transactionHash)!==action.transactionHash||measuredReceipt.status!==action.outcome||
+      String(response.receipt.gasUsed)!==String(measuredReceipt.gasUsed)||
+      String(response.receipt.effectiveGasPrice)!==String(measuredReceipt.effectiveGasPriceWei)||
+      action.recoveryEvidence.receiptGasUsed!==String(measuredReceipt.gasUsed)||
+      action.recoveryEvidence.receiptEffectiveGasPriceWei!==String(measuredReceipt.effectiveGasPriceWei)||
+      String(response.receipt.gasUsed)!==action.recoveryEvidence.receiptGasUsed||
+      String(response.receipt.effectiveGasPrice)!==action.recoveryEvidence.receiptEffectiveGasPriceWei)
+    return unavailable('rpc_mapping_incomplete');
+  }
   const principal=action.command.kind==='wrap'?{asset:'ETH',units:action.command.amountWei}:action.command.kind==='unwrap'?{asset:'WETH',units:action.command.amountWei}:
    action.command.kind==='swap'?{asset:action.command.inputAssetId,units:action.command.amountInUnits}:
    action.command.kind==='transfer'?{asset:'USDC',units:action.command.amountUnits}:{asset:null,units:'0'};
@@ -705,6 +762,13 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
    cost.transactionFrom!==participant||cost.receiptFrom!==participant||cost.receiptBlockNumber!==blockTx.blockNumber||cost.receiptBlockHash!==blockTx.blockHash||
    cost.receiptBlockParentHash!==block.parentHash||cost.gasUsed!==receipt.gasUsed||cost.effectiveGasPriceWei!==receipt.effectiveGasPriceWei||cost.gasCostWei!==receipt.gasCostWei)
    return unavailable('rpc_mapping_incomplete');
+   if(action.recoveryEvidence.recoverySource){
+    const measurement=isRecord(selected.measurement)?selected.measurement:null;
+    const measuredReceipt=measurement&&isRecord(measurement.receipt)?measurement.receipt:null;
+    if(!measuredReceipt||txHash(measuredReceipt.transactionHash)!==action.transactionHash||measuredReceipt.status!==receipt.status||
+       String(measuredReceipt.gasUsed)!==receipt.gasUsed||String(measuredReceipt.effectiveGasPriceWei)!==receipt.effectiveGasPriceWei||
+       String(measuredReceipt.gasCostWei)!==receipt.gasCostWei)return unavailable('rpc_mapping_incomplete');
+   }
   const captured:CapturedTx={hash:String(blockTx.hash),from:String(blockTx.from),to:blockTx.to===null?null:String(blockTx.to),nonce:String(blockTx.nonce),input:String(blockTx.input),
    inputSha256:createHash('sha256').update(String(blockTx.input),'utf8').digest('hex'),receiptLogsSha256:receipt.receiptLogsSha256,
    valueWei:String(blockTx.valueWei),gasLimit:String(blockTx.gasLimit),blockNumber:String(blockTx.blockNumber),blockHash:String(blockTx.blockHash),

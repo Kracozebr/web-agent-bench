@@ -17,6 +17,7 @@ const MAX_PACKET_BYTES = 8 * 1024 * 1024;
 const MAX_RPC_BYTES = 4 * 1024 * 1024;
 const MAX_RPC_REQUEST_BYTES = 256 * 1024;
 const RPC_TIMEOUT_MS = 20_000;
+const OBSERVER_RECONNECT_BACKOFF_SECONDS = 0.5;
 const RPC_METHODS = new Set([
   'eth_blockNumber', 'eth_call', 'eth_chainId', 'eth_getBalance', 'eth_getBlockByNumber', 'eth_getCode',
   'eth_getLogs', 'eth_getTransactionByHash', 'eth_getTransactionCount', 'eth_getTransactionReceipt',
@@ -161,7 +162,18 @@ function createPostgresPool(connection: Readonly<BefObserverDatabaseConfig & { u
     url.password = connection.password;
   } catch { throw safeError('bef_observer_pool_unavailable'); }
   let client: ReturnType<typeof postgres>;
-  try { client = postgres(url.toString(), { max: 2, connect_timeout: 5, idle_timeout: 30, onnotice: () => undefined }); }
+  try {
+    client = postgres(url.toString(), {
+      max: 2,
+      connect_timeout: 5,
+      idle_timeout: 30,
+      // AICODE-NOTE: postgres.js expresses this delay in seconds. Keep observer recovery bounded
+      // during an upstream outage so a transient disconnect cannot leave the coordinator waiting
+      // on a long exponential reconnect timer.
+      backoff: () => OBSERVER_RECONNECT_BACKOFF_SECONDS,
+      onnotice: () => undefined,
+    });
+  }
   catch { throw safeError('bef_observer_pool_unavailable'); }
   return {
     async reserve() {

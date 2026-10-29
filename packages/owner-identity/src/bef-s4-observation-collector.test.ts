@@ -17,6 +17,7 @@ import {
 } from './bef-s4-observation-collector.js';
 import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase } from './task-release.js';
 import { verifyS4CapturePacketChildren } from './task-s4-capture-packet.js';
+import { recoverySourceEvidenceForFacts } from './bef-recovery-observation.js';
 
 const PARTICIPANT='0x00000000000000000000000000000000000000a1';
 const ROUTER='0x00000000000000000000000000000000000000b2';
@@ -25,6 +26,7 @@ const WETH='0x00000000000000000000000000000000000000d4';
 const HASH_A=`0x${'1'.repeat(64)}`;
 const HASH_B=`0x${'2'.repeat(64)}`;
 const HASH_C=`0x${'3'.repeat(64)}`;
+const isRecord=(value:unknown):value is Record<string,unknown>=>Boolean(value&&typeof value==='object'&&!Array.isArray(value));
 
 function fixtureCase():Extract<TaskCase,{taskId:'S4'}>{
   return {
@@ -264,7 +266,8 @@ test('S4 transaction intents accept producer decimal block fields and reject hex
   assert.throws(()=>projectProducerAction(compact,full,'approve',USDC,{}, {transactionIndex:'0x0'}));
 });
 
-async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=false) {
+async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=false, recoveredAction=false) {
+  if (recoveredAction && !withAction) throw new Error('recovered action fixture requires an owner action');
   const ownerId='30000000-0000-4000-8000-000000000001';
   const agentId='30000000-0000-4000-8000-000000000002';
   const runId='30000000-0000-4000-8000-000000000003';
@@ -456,10 +459,27 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
   const executionRow={env_id:environmentId,generation_id:generationId,manifest_hash:environmentManifestHash,application_source_hash:applicationSourceHash,
     participant_id:participantId,payer_address:PARTICIPANT};
   const actionResponse={...actionMeasurement,operationId:actionOperationId,outcome:'success'};
+  const actionSourceProjection=recoveredAction?projectS4SelectedExecutionRows([actionSelected],actionEvents,{USDC,WETH},ROUTER):null;
+  if(recoveredAction&&!actionSourceProjection)throw new Error('synthetic S4 recovery source projection failed');
+  const recoverySelected=actionSourceProjection?.selectedExecutions[0];
+  const selectedActionBoundEvent=actionSourceProjection?.selectedEvents.find((event)=>event.eventKind==='selected_action_bound');
+  const selectedEventPayload=selectedActionBoundEvent&&isRecord(selectedActionBoundEvent.eventPayload)?selectedActionBoundEvent.eventPayload:null;
+  const recoverySource=recoveredAction&&recoverySelected&&isRecord(recoverySelected.measurement)&&selectedEventPayload&&selectedActionBoundEvent?recoverySourceEvidenceForFacts({
+    operation:{operationId:actionOperationId,environmentId,generationId,participantId,idempotencyKeySha256:actionOperation.idempotency_key_sha256,
+      requestSha256:actionRequestSha256,operationKind:'approve',status:'settled',transactionHash:actionTxHash,receiptStatus:'success',responseSha256:null},
+    generationManifestSha256:environmentManifestHash,environmentManifestSha256:environmentManifestHash,
+    selectedExecution:{actionKind:'approve',selectedAction:recoverySelected.selected_action,outcome:'success',transactionHash:actionTxHash,
+      measurementSha256:recoverySelected.measurement.measurementSha256 as string},
+    selectedActionBoundEvents:[{eventKind:'selected_action_bound',actionKind:String(selectedEventPayload.actionKind),
+      requestSha256:String(selectedEventPayload.requestSha256),selectedAction:selectedEventPayload.selectedAction,
+      eventJsonSha256:String(selectedActionBoundEvent.eventJsonSha256)}],
+  }):null;
+  if(recoveredAction&&!recoverySource)throw new Error('synthetic S4 recovered source proof could not be constructed');
   const actionEvidence={schema:'bef-task-action-observation-v1',actionId,runId,taskIndex:0,actionSequence:'1',ownerOperationId,
     actionKind:'approve',commandSha256,environmentId,generationId,manifestSha256:environmentManifestHash,
-    applicationSourceSha256:applicationSourceHash,idempotencyKey:`task-action-${actionId}`,status:'observed',httpStatus:200,
-    befOperationId:actionOperationId,transactionHash:actionTxHash,outcome:'success',receiptStatus:'success',rawResponseSha256:'7'.repeat(64),
+    applicationSourceSha256:applicationSourceHash,idempotencyKey:`task-action-${actionId}`,status:'observed',
+    ...(recoveredAction?{reasonCode:'platform_recovery_original_operation_terminal',recoverySource}:{httpStatus:200,rawResponseSha256:'7'.repeat(64)}),
+    befOperationId:actionOperationId,transactionHash:actionTxHash,outcome:'success',receiptStatus:'success',
     participantToolResponse:actionResponse,receiptGasUsed:'10',receiptEffectiveGasPriceWei:'10'};
   const actionBytes=Buffer.from(JSON.stringify(actionEvidence));
   const actionPath='artifacts/runs/owner-identity-bef-task-coordinator/action/full-s4-action.json';
@@ -468,7 +488,14 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
     action_sequence:'1',operation_id:ownerOperationId,payload_hash:commandSha256,action_kind:'approve',command_json:command,
     receipt_revision:1,receipt_status:'observed',evidence_hash:actionEvidenceHash,evidence_path:actionPath,transaction_hash:actionTxHash,
     history_revision:1,history_status:'observed',history_evidence_hash:actionEvidenceHash,history_evidence_path:actionPath,
-    history_transaction_hash:actionTxHash};
+    history_transaction_hash:actionTxHash,
+    ...(recoveredAction?{recovery_action_id:actionId,recovery_run_id:runId,recovery_owner_id:ownerId,recovery_agent_id:agentId,
+      recovery_task_index:0,recovery_environment_id:environmentId,recovery_operation_id:ownerOperationId,recovery_payload_hash:commandSha256,
+      recovery_incident_evidence_hash:'9'.repeat(64),recovery_started_at:createdAt,recovery_deadline_at:new Date(createdAt.getTime()+180_000),
+      recovery_clock_excluded_ms:1_000,recovery_status:'recovered',recovery_latest_evidence_hash:actionEvidenceHash,
+      recovery_observation_count:1,recovery_observation_clock_excluded_ms:'1000',
+      recovery_matching_observation_at:new Date(createdAt.getTime()+1_000),recovery_observed_evidence_matches:true,
+      recovery_started_event_matches:true,recovery_observed_event_matches:true}:{})};
   if(withAction){
     runRow.action_cutoff_sequence='1';runRow.reconciled_action_sequence='1';closureRow.action_cutoff_sequence='1';
     await mkdir(join(repositoryRoot,'artifacts','runs','owner-identity-bef-task-coordinator','action'),{recursive:true});
@@ -589,3 +616,5 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
 test('full synthetic S4 collector validates the producer fixture envelope and replays the same candidate',()=>exerciseFullS4Collector(false));
 test('full synthetic S4 collector binds a pending approval intent to its mined participant effect',()=>exerciseFullS4Collector(true));
 test('full synthetic S4 collector rejects a mined transaction that contradicts its original nonce',()=>exerciseFullS4Collector(true,true));
+test('full synthetic S4 collector verifies a recovered action from the immutable BEF operation and exact owner recovery lineage',()=>
+  exerciseFullS4Collector(true,false,true));

@@ -136,7 +136,7 @@ async function readMonitorState(observer: ReturnType<typeof postgres>, fixture: 
   return found[0]!;
 }
 
-test('the in-process monitor resumes after restart and keeps a late ambiguous source unknown in isolated PostgreSQL', { skip: !enabled }, async () => {
+test('the monitor resumes after restart and sends expired recovery to fencing before observer I/O', { skip: !enabled }, async () => {
   const sourceUrlValue = process.env.OID_DATABASE_URL;
   assert.ok(sourceUrlValue, 'The pinned Docker runtime must provide its private owner database URL');
   const sourceUrl = new URL(sourceUrlValue);
@@ -238,23 +238,29 @@ test('the in-process monitor resumes after restart and keeps a late ambiguous so
     const lateWrites: Array<{ path: string; sha256: string; packet: unknown }> = [];
     const latePorts = recoveryPorts({ environmentId: lateAction.environmentId,
       initialSource: sourceRow(lateAction, 'unknown'), writes: lateWrites });
+    let lateObserverReads = 0;
+    latePorts.ports.postgresByEnvironment[lateAction.environmentId]!.withRepeatableRead = async () => {
+      lateObserverReads += 1;
+      throw new Error('expired recovery must not wait on an unavailable observer before fencing');
+    };
     const lateProcess = createBetaPlatformRecoveryMonitor({ db: ownerDb, observationPorts: latePorts.ports,
       actionEvidenceSink: latePorts.ports.evidenceSink as TaskActionEvidenceSink });
     const late = await lateProcess.tick();
     assert.ok(late.exhaustedRunIds.includes(lateAction.runId));
-    assert.ok(late.unknownActionIds.includes(lateAction.actionId));
+    assert.equal(late.unknownActionIds.length, 0);
     assert.ok(!late.recoveringRunIds.includes(lateAction.runId));
+    assert.equal(lateObserverReads, 0, 'a source outage cannot delay the persisted deadline-to-fence transition');
     const afterLateUnknown = await readMonitorState(observer, lateAction);
     assert.equal(afterLateUnknown.run_status, 'running');
-    assert.equal(afterLateUnknown.recovery_status, 'exhausted');
-    assert.equal(afterLateUnknown.receipt_status, 'unknown');
+    assert.equal(afterLateUnknown.recovery_status, 'recovering');
+    assert.equal(afterLateUnknown.receipt_status, 'pending');
     assert.equal(Number(afterLateUnknown.recovery_window_ms), 180_000);
-    assert.equal(Number(afterLateUnknown.clock_excluded_ms), 180_000);
+    assert.equal(Number(afterLateUnknown.clock_excluded_ms), 0);
     assert.equal(Number(afterLateUnknown.refund_count), 0,
-      'a late ambiguous source stays unknown and cannot refund before exact cancellation fencing');
+      'the cutoff alone cannot invent a source outcome or refund before exact cancellation fencing');
     assert.equal(Number(afterLateUnknown.action_count), 1);
-    assert.equal(Number(afterLateUnknown.reconciliation_count), 1);
-    assert.equal(lateWrites.length, 1);
+    assert.equal(Number(afterLateUnknown.reconciliation_count), 0);
+    assert.equal(lateWrites.length, 0);
   } finally {
     await observer?.end();
     await client.end();

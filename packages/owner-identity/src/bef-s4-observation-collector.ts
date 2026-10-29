@@ -13,8 +13,11 @@ import { sql } from 'drizzle-orm';
 import { keccak256 } from 'viem';
 import { TaskActionCommandSchema } from './task-action-service.js';
 import type { TaskActionCommand } from './task-action-service.js';
-import type { SafeTaskActionEvidence } from './bef-task-executor.js';
 import type { OwnerDatabase } from './db.js';
+import { recoveredActionEvidenceIsOwnerBound, recoveredOwnerLineageJoinSql, recoveredOwnerLineageSelectSql,
+  recoverySourceEvidenceMatchesFacts, type RecoveredOwnerLineageRow,
+  type RecoverySourceFacts } from './bef-recovery-observation.js';
+import type { RecoveryActionEvidence } from './beta-platform-recovery-source-evidence.js';
 import type { PersistedTaskObservations, TaskEvidenceBinding } from './task-evaluator.js';
 import {
   canonicalTaskJson,
@@ -178,9 +181,9 @@ type ActionRow = {
   evidence_hash: string | null; evidence_path: string | null; transaction_hash: string | null;
   history_revision: number | null; history_status: string | null; history_evidence_hash: string | null;
   history_evidence_path: string | null; history_transaction_hash: string | null;
-};
+} & RecoveredOwnerLineageRow;
 type LoadedAction = { row: ActionRow; sequence: number; command: Extract<TaskActionCommand, { kind: 'approve' | 'transfer' }>;
-  evidence: SafeTaskActionEvidence; evidenceReference: EvidenceRef };
+  evidence: RecoveryActionEvidence; evidenceReference: EvidenceRef };
 type FixtureProof = { operationId: string; transactionHash: string; blockNumber: bigint; blockHash: string; parentHash: string;
   amountUnits: bigint; spender: string; tokenAddress: string; idempotencyKeySha256: string; proofSha256: string; reference: EvidenceRef;
   baselineReference: EvidenceRef; baselineNumber: bigint; baselineHash: string;
@@ -964,7 +967,7 @@ async function loadPreparationEvidence(root: string, prep: PreparationRow, runId
 
 function exactActionKeys(value: JsonRecord): boolean {
   const allowed=['schema','actionId','runId','taskIndex','actionSequence','ownerOperationId','actionKind','commandSha256','environmentId','generationId',
-    'manifestSha256','applicationSourceSha256','idempotencyKey','status','reasonCode','requestStartedAt','requestFinishedAt','httpStatus','befOperationId',
+    'manifestSha256','applicationSourceSha256','idempotencyKey','status','reasonCode','requestStartedAt','requestFinishedAt','httpStatus','recoverySource','befOperationId',
     'transactionHash','outcome','receiptStatus','rawResponseSha256','participantToolResponse','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','environmentHealth'];
   return Object.keys(value).every((key)=>allowed.includes(key));
 }
@@ -987,12 +990,15 @@ async function loadActions(root:string,run:RunTaskRow,prep:PreparationRow,runId:
     }
     const bytes=await readEvidence(root,evidenceRef,ACTION_ROOT,'action_evidence_unavailable');
     const doc=readJson(bytes,'action_evidence_unavailable',[['participantToolResponse','selectedAction','token'],['participantToolResponse','selectedAction','spender']]);
+    const recoverySourceBacked=doc.recoverySource!==undefined;
     if (!exactActionKeys(doc)||doc.schema!=='bef-task-action-observation-v1'||doc.actionId!==row.id||doc.runId!==runId||doc.taskIndex!==taskIndex||
         doc.actionSequence!==String(seq)||doc.ownerOperationId!==row.operation_id||doc.actionKind!==row.action_kind||doc.commandSha256!==row.payload_hash.toLowerCase()||
         doc.environmentId!==prep.environment_id||doc.generationId!==prep.generation_id||doc.manifestSha256!==prep.environment_manifest_sha256.toLowerCase()||
         doc.applicationSourceSha256!==prep.application_source_hash.toLowerCase()||doc.idempotencyKey!==`task-action-${row.id}`||doc.status!=='observed'||
-        typeof doc.rawResponseSha256!=='string'||!HASH.test(doc.rawResponseSha256)||typeof doc.befOperationId!=='string'||!UUID.test(doc.befOperationId)||
-        typeof doc.transactionHash!=='string'||!TX_HASH.test(doc.transactionHash)||doc.httpStatus!==200||
+        (recoverySourceBacked ? (!recoveredActionEvidenceIsOwnerBound(doc,row,{actionId:row.id,runId,ownerId:run.owner_id,
+            agentId:run.agent_id,taskIndex,environmentId:prep.environment_id,operationId:row.operation_id,payloadHash:row.payload_hash,
+            evidenceHash:row.evidence_hash!})) : (typeof doc.rawResponseSha256!=='string'||!HASH.test(doc.rawResponseSha256)||doc.httpStatus!==200))||
+        typeof doc.befOperationId!=='string'||!UUID.test(doc.befOperationId)||typeof doc.transactionHash!=='string'||!TX_HASH.test(doc.transactionHash)||
         !isRecord(doc.participantToolResponse)||!isRecord(doc.participantToolResponse.selectedAction)) throw new CollectionUnavailable('action_evidence_unavailable');
     if (command.data.kind==='approve') {
       const selected=doc.participantToolResponse.selectedAction;
@@ -1014,7 +1020,7 @@ async function loadActions(root:string,run:RunTaskRow,prep:PreparationRow,runId:
         String(response.receipt.gasUsed)!==String(doc.receiptGasUsed)||String(response.receipt.effectiveGasPrice)!==String(doc.receiptEffectiveGasPriceWei)) {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
-    loaded.push({row,sequence:seq,command:command.data as LoadedAction['command'],evidence:doc as unknown as SafeTaskActionEvidence,evidenceReference:evidenceRef});
+    loaded.push({row,sequence:seq,command:command.data as LoadedAction['command'],evidence:doc as unknown as RecoveryActionEvidence,evidenceReference:evidenceRef});
   }
   return loaded;
 }
@@ -1053,6 +1059,55 @@ function verifyFixtureOperation(census:Census,fixture:FixtureProof,prep:Preparat
       normalizeAddress(measuredTransaction.from)!==payer||normalizeAddress(measuredTransaction.to)!==tokens.USDC||
       !sameCanonical(measurement.selectedAction,expected)) throw new CollectionUnavailable('preparation_unavailable');
   return {operation,selected,events};
+}
+
+function recoveredSourceFacts(operation:JsonRecord,selected:JsonRecord,generation:JsonRecord,events:JsonRecord[]):RecoverySourceFacts|null{
+  const measurement=isRecord(selected.measurement)?selected.measurement:null;
+  if(!measurement||typeof measurement.measurementSha256!=='string'||!isRecord(selected.selected_action))return null;
+  const bound=events.filter((event)=>event.eventKind==='selected_action_bound');
+  const selectedActionEventBound=bound.flatMap((event)=>{
+    const payload=isRecord(event.eventPayload)?event.eventPayload:null;
+    if(!payload||typeof payload.actionKind!=='string'||typeof payload.requestSha256!=='string'||typeof event.eventJsonSha256!=='string')return [];
+    return [{eventKind:String(event.eventKind),actionKind:payload.actionKind,requestSha256:payload.requestSha256,
+      selectedAction:payload.selectedAction,eventJsonSha256:event.eventJsonSha256}];
+  });
+  if(bound.length!==selectedActionEventBound.length)return null;
+  return {operation:{operationId:String(operation.operation_id??''),environmentId:String(operation.env_id??''),
+    generationId:String(operation.generation_id??''),participantId:String(operation.participant_id??''),
+    idempotencyKeySha256:String(operation.idempotency_key_sha256??''),requestSha256:String(operation.request_sha256??''),
+    operationKind:String(operation.operation_kind??''),status:String(operation.status??''),
+    transactionHash:operation.transaction_hash===null?null:normalizeHash(operation.transaction_hash),
+    receiptStatus:String(operation.receipt_status??''),responseSha256:operation.response_sha256===null?null:
+      typeof operation.response_sha256==='string'?operation.response_sha256.toLowerCase():''},
+    generationManifestSha256:String(generation.manifest_sha256??''),environmentManifestSha256:String(generation.environment_manifest_sha256??''),
+    selectedExecution:{actionKind:String(selected.action_kind??''),selectedAction:selected.selected_action,
+      outcome:typeof selected.outcome==='string'?selected.outcome:null,
+      transactionHash:selected.transaction_hash===null?null:normalizeHash(selected.transaction_hash),
+      measurementSha256:measurement.measurementSha256},selectedActionBoundEvents:selectedActionEventBound};
+}
+
+function recoveredToolResponseMatchesSelection(action:LoadedAction,selected:JsonRecord,txHash:string,outcome:string):boolean{
+  const response=action.evidence.participantToolResponse,measurement=isRecord(selected.measurement)?selected.measurement:null;
+  if(!action.evidence.recoverySource)return true;
+  const responseSelected=isRecord(response)&&isRecord(response.selectedAction)?response.selectedAction:null;
+  const selectedFromMeasurement=measurement&&isRecord(measurement.selectedAction)?measurement.selectedAction:null;
+  if(!isRecord(response)||!measurement||!responseSelected||!selectedFromMeasurement||
+      response.operationId!==action.evidence.befOperationId||response.outcome!==outcome||
+      responseSelected.kind!==selectedFromMeasurement.kind||responseSelected.amountUnits!==selectedFromMeasurement.amountUnits||
+      responseSelected.gasLimit!==selectedFromMeasurement.gasLimit||
+      normalizeAddress(responseSelected.token)!==normalizeAddress(selectedFromMeasurement.tokenAddress)||
+      (responseSelected.kind==='approve'&&(responseSelected.tokenAssetId!==selectedFromMeasurement.tokenAssetId||
+        normalizeAddress(responseSelected.spender)!==normalizeAddress(selectedFromMeasurement.spender)))||
+      (responseSelected.kind==='transfer'&&normalizeAddress(responseSelected.recipient)!==normalizeAddress(selectedFromMeasurement.recipient)))return false;
+  const responseTransaction=isRecord(response.transaction)?response.transaction:null,responseReceipt=isRecord(response.receipt)?response.receipt:null;
+  const selectedTransaction=isRecord(measurement.transaction)?measurement.transaction:null,selectedReceipt=isRecord(measurement.receipt)?measurement.receipt:null;
+  return Boolean(responseTransaction&&responseReceipt&&selectedTransaction&&selectedReceipt&&
+    normalizeHash(responseTransaction.hash)===txHash&&normalizeHash(selectedTransaction.hash)===txHash&&
+    normalizeHash(responseReceipt.transactionHash)===txHash&&normalizeHash(selectedReceipt.transactionHash)===txHash&&
+    responseReceipt.status===selectedReceipt.status&&responseReceipt.gasUsed===selectedReceipt.gasUsed&&
+    responseReceipt.effectiveGasPrice===selectedReceipt.effectiveGasPrice&&
+    action.evidence.receiptGasUsed===String(selectedReceipt.gasUsed)&&
+    action.evidence.receiptEffectiveGasPriceWei===String(selectedReceipt.effectiveGasPrice));
 }
 
 function verifyS4CostRows(census:Census,expected:Array<{operationId:string;receipt:S4Receipt;parentHash:string}>,
@@ -1160,7 +1215,9 @@ async function collectLocked(deps:BefS4ObservationCollectorDependencies,target:{
   const actionRows=await ownerRows<ActionRow>(tx,sql`SELECT a.id::text,a.run_id::text,a.task_index,a.owner_id::text,a.agent_id::text,a.task_id,a.environment_id,
       a.action_sequence::text,a.operation_id,a.payload_hash,a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
       h.revision AS history_revision,h.receipt_status AS history_status,h.evidence_hash AS history_evidence_hash,h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash
+      ${recoveredOwnerLineageSelectSql}
     FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+    ${recoveredOwnerLineageJoinSql}
     LEFT JOIN LATERAL(SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash FROM oid_run_task_action_reconciliation
       WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true WHERE a.run_id=${target.runId} AND a.task_index=${target.taskIndex}
     ORDER BY a.action_sequence FOR UPDATE OF a,r`);
@@ -1296,6 +1353,11 @@ async function collectLocked(deps:BefS4ObservationCollectorDependencies,target:{
           selectedBound.requestSha256!==op.request_sha256||!sameCanonical(prestateBound.prestate,selected.prestate)||
           intentBound.requestSha256!==op.request_sha256||intentBound.transactionHash!==txHash||!sameCanonical(intentBound.transactionIntent,intent)||
           receiptBound.outcome!==receipt.status||receiptBound.measurementSha256!==measurement.measurementSha256)throw new CollectionUnavailable('rpc_mapping_incomplete');
+      if(action?.evidence.recoverySource){
+        const facts=recoveredSourceFacts(op,selected,before.census.generation,events);
+        if(!facts||!recoverySourceEvidenceMatchesFacts(action.evidence.recoverySource,facts)||
+            !recoveredToolResponseMatchesSelection(action,selected,txHash,receipt.status))throw new CollectionUnavailable('rpc_mapping_incomplete');
+      }
       if(!action&&op.operation_id===fixture.operationId)throw new CollectionUnavailable('rpc_mapping_incomplete');
       sourceByTx.set(txHash,{op,selected,action:action??null,tx:txValue,receipt,selectedAction:selectedPublic,actionSequence:action?.sequence??0});
     }

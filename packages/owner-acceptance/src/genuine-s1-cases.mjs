@@ -1222,8 +1222,38 @@ async function readOwnerRunCompletionState(observerPool, { runId, ownerId, inclu
     const operationIds = ['runacc_' + runId.replaceAll('-', ''), 'rundeb_' + runId.replaceAll('-', ''),
       'runrel_' + runId.replaceAll('-', '')];
     const ledger = pgRows(await query(`SELECT id::text,entry_type,source_kind,operation_id,amount_units::text,
-        available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,reason
+        available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,bonus_grant_id::text,cash_provenance,reason
       FROM oid_ledger_entry WHERE owner_id=$1 AND operation_id=ANY($2::text[]) ORDER BY operation_id,id`, [ownerId, operationIds]));
+    const bonusSourceGrants = pgRows(await query(`SELECT g.id::text AS grant_id,g.owner_id::text AS grant_owner_id,
+        g.amount_units::text AS grant_amount_units,g.issued_by_owner_id::text AS grant_issuer_owner_id,
+        g.operation_id AS grant_operation_id,redemption.id::text AS redemption_id,
+        redemption.owner_id::text AS redemption_owner_id,redemption.code_id::text AS redemption_code_id,
+        redemption.financial_operation_id AS redemption_financial_operation_id,
+        code.id::text AS code_id,code.issuer_owner_id::text AS code_issuer_owner_id,code.kind AS code_kind,
+        code.amount_units::text AS code_amount_units,code.maximum_uses AS code_maximum_uses,
+        code.used_count AS code_used_count,code.issue_operation_id AS code_issue_operation_id,
+        claims.operation_ids AS claim_operation_ids,claims.payload_hashes AS claim_payload_hashes,
+        claims.operation_count AS claim_operation_count
+      FROM oid_run_reservation reservation
+      JOIN oid_bonus_grant g ON g.id=reservation.bonus_grant_id AND g.owner_id=reservation.owner_id
+      LEFT JOIN oid_bonus_code_redemption redemption ON redemption.bonus_grant_id=g.id AND redemption.owner_id=g.owner_id
+      LEFT JOIN oid_bonus_code code ON code.id=redemption.code_id
+      LEFT JOIN LATERAL (
+        SELECT array_agg(claim.operation_id ORDER BY claim.created_at,claim.operation_id) AS operation_ids,
+          array_agg(claim.payload_hash ORDER BY claim.created_at,claim.operation_id) AS payload_hashes,
+          count(*)::int AS operation_count
+        FROM oid_bonus_code_claim_operation claim
+        WHERE claim.redemption_id=redemption.id AND claim.owner_id=redemption.owner_id AND claim.code_id=redemption.code_id
+      ) claims ON TRUE
+      WHERE reservation.run_id=$1 AND reservation.owner_id=$2 AND reservation.source_kind='tester_bonus'
+      ORDER BY g.id`, [runId, ownerId]));
+    const runRefundOperationId = 'runref_' + runId.replaceAll('-', '');
+    const runRefundPrefix = runRefundOperationId + '_';
+    const runRefundLedger = pgRows(await query(`SELECT id::text,entry_type,source_kind,operation_id,amount_units::text,
+        available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,reason
+      FROM oid_ledger_entry WHERE owner_id=$1 AND entry_type='refund' AND
+        (operation_id=$2 OR left(operation_id,length($3))=$3) ORDER BY operation_id,id`,
+    [ownerId, runRefundOperationId, runRefundPrefix]));
     const ownerLedger = pgRows(await query(`SELECT id::text,entry_type,source_kind,operation_id,amount_units::text,
         available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,bonus_grant_id::text,reason
       FROM oid_ledger_entry WHERE owner_id=$1 ORDER BY created_at,id`, [ownerId]));
@@ -1253,12 +1283,201 @@ async function readOwnerRunCompletionState(observerPool, { runId, ownerId, inclu
     }
     const projection = { run: run[0] ?? null, tasks, evaluations, terminalizationEvents, completionEvents, rankedEligibilityEvents,
       rankedVersionSnapshots, rankedHandoffs, rankedResults, rankedBestResults, rankedFirstActionMarkers, claims, slots, reservations, budgetHolds, ledger,
+      bonusSourceGrants,
+      runRefundLedger, runRefundCount: runRefundLedger.length,
       ownerLedgerSha256: digest(Buffer.from(JSON.stringify(ownerLedger))), ownerLedgerCount: ownerLedger.length,
       ownerRefundCount: ownerLedger.filter((row) => row.entry_type === 'refund').length };
-    const money = { reservations, budgetHolds, ledger, ownerLedger };
+    const money = { reservations, budgetHolds, ledger, runRefundLedger, ownerLedger };
     return { ...projection, moneySha256: digest(Buffer.from(JSON.stringify(money))),
       stateSha256: digest(Buffer.from(JSON.stringify(projection))) };
   });
+}
+
+const POSITIVE_UNITS = /^[1-9]\d*$/;
+const NONNEGATIVE_UNITS = /^(?:0|[1-9]\d*)$/;
+const OPERATION_ID = /^[A-Za-z0-9_-]{12,128}$/;
+
+function sourceKey(sourceKind, grantId, cashProvenance) {
+  return JSON.stringify([sourceKind, grantId ?? null, cashProvenance ?? null]);
+}
+
+function verifyFundingLedgerRow(row, reservation, expectedOperationId, entryType) {
+  const amount = BigInt(reservation.amount_units);
+  const expectedAvailable = entryType === 'reserve' ? (-amount).toString() : '0';
+  const expectedReserved = entryType === 'reserve' ? amount.toString() : (-amount).toString();
+  return row.entry_type === entryType && row.operation_id === expectedOperationId &&
+    row.source_kind === reservation.source_kind &&
+    (row.bonus_grant_id ?? null) === (reservation.bonus_grant_id ?? null) &&
+    (row.cash_provenance ?? null) === (reservation.cash_provenance ?? null) &&
+    row.amount_units === reservation.amount_units && row.available_delta_units === expectedAvailable &&
+    row.reserved_delta_units === expectedReserved && row.expired_delta_units === '0';
+}
+
+/** Verify all per-run reservation lots and their reserve/debit ledger rows against the exact quote. */
+export function verifyRunFundingConservation({ runId, quoteUnits, reservations, ledger }) {
+  demand(UUID.test(runId ?? '') && POSITIVE_UNITS.test(String(quoteUnits ?? '')) &&
+    Array.isArray(reservations) && reservations.length > 0 && Array.isArray(ledger),
+  'worker_run_funding_observation_invalid');
+  const reserveOperationId = 'runacc_' + runId.replaceAll('-', '');
+  const debitOperationId = 'rundeb_' + runId.replaceAll('-', '');
+  const seenSources = new Set();
+  let reservedUnits = 0n;
+  for (const reservation of reservations) {
+    const amountText = String(reservation?.amount_units ?? '');
+    demand(reservation?.state === 'debited' && POSITIVE_UNITS.test(amountText) &&
+      ((reservation.source_kind === 'tester_bonus' && UUID.test(reservation.bonus_grant_id ?? '') &&
+        (reservation.cash_provenance ?? null) === null) ||
+       (reservation.source_kind === 'cash_usdc' && reservation.bonus_grant_id == null &&
+        typeof reservation.cash_provenance === 'string' && reservation.cash_provenance.length > 0)),
+    'worker_run_reservation_source_invalid');
+    const key = sourceKey(reservation.source_kind, reservation.bonus_grant_id, reservation.cash_provenance);
+    demand(!seenSources.has(key), 'worker_run_reservation_source_duplicate');
+    seenSources.add(key);
+    reservedUnits += BigInt(amountText);
+    const reserveRows = ledger.filter((row) => sourceKey(row.source_kind, row.bonus_grant_id, row.cash_provenance) === key &&
+      row.entry_type === 'reserve');
+    const debitRows = ledger.filter((row) => sourceKey(row.source_kind, row.bonus_grant_id, row.cash_provenance) === key &&
+      row.entry_type === 'debit');
+    demand(reserveRows.length === 1 && debitRows.length === 1 &&
+      verifyFundingLedgerRow(reserveRows[0], reservation, reserveOperationId, 'reserve') &&
+      verifyFundingLedgerRow(debitRows[0], reservation, debitOperationId, 'debit'),
+    'worker_run_reservation_ledger_binding_invalid');
+  }
+  demand(reservedUnits === BigInt(quoteUnits) && ledger.length === reservations.length * 2 &&
+    ledger.every((row) => row.entry_type === 'reserve' || row.entry_type === 'debit'),
+  'worker_run_funding_quote_or_ledger_total_mismatch');
+  return {
+    status: 'verified', runId, quoteUnits: String(quoteUnits), reservationUnits: reservedUnits.toString(),
+    reservationCount: reservations.length, reserveEntryCount: reservations.length, debitEntryCount: reservations.length,
+    bonusReservationCount: reservations.filter((row) => row.source_kind === 'tester_bonus').length,
+    cashReservationCount: reservations.filter((row) => row.source_kind === 'cash_usdc').length,
+    allSourcesAreBonus: reservations.every((row) => row.source_kind === 'tester_bonus'),
+  };
+}
+
+/** Verify each FIFO-consumed bonus lot against its immutable issued-code and redemption records. */
+export function verifyCodeDerivedBonusFunding({ ownerId, reservations, sourceGrants, issuedGrant }) {
+  demand(UUID.test(ownerId ?? '') && Array.isArray(reservations) && reservations.length > 0 &&
+    reservations.every((row) => row.source_kind === 'tester_bonus') && Array.isArray(sourceGrants) && issuedGrant,
+  'worker_run_bonus_code_funding_input_invalid');
+  const issuedCode = issuedGrant.database?.code;
+  const issuedRedemption = issuedGrant.database?.redemption;
+  const issuedGrantRow = issuedGrant.database?.grant;
+  const balanceDelta = issuedGrant.database?.fundingBalanceDelta;
+  const issuedGrantId = issuedGrant.grantId;
+  const issuedCodeId = issuedGrant.issue?.codeId;
+  const issuedRedemptionId = issuedGrant.redemption?.redemptionId;
+  const issuedGrantOperationId = issuedGrant.grantOperationId;
+  const issuedCodeOperationId = issuedGrant.issue?.operationId;
+  const issuedRedemptionOperationId = issuedGrant.redemption?.operationId;
+  const issuedAmountUnits = String(issuedGrant.amountUnits ?? '');
+  const previousBalanceUnits = String(balanceDelta?.beforeUnits ?? '');
+  demand(UUID.test(issuedGrantId ?? '') && UUID.test(issuedCodeId ?? '') && UUID.test(issuedRedemptionId ?? '') &&
+    OPERATION_ID.test(issuedGrantOperationId ?? '') && OPERATION_ID.test(issuedCodeOperationId ?? '') &&
+    OPERATION_ID.test(issuedRedemptionOperationId ?? '') && POSITIVE_UNITS.test(issuedAmountUnits) &&
+    issuedGrant.database?.ledgerConserved === true && balanceDelta?.verified === true &&
+    NONNEGATIVE_UNITS.test(previousBalanceUnits),
+  'worker_run_new_code_grant_balance_baseline_invalid');
+  demand(POSITIVE_UNITS.test(String(balanceDelta.afterUnits ?? '')) &&
+    BigInt(balanceDelta.afterUnits) - BigInt(balanceDelta.beforeUnits) === BigInt(issuedAmountUnits) &&
+    balanceDelta.deltaUnits === issuedAmountUnits && issuedGrant.database?.cashEffectCount === 0 &&
+    issuedCode?.id === issuedCodeId && issuedCode.kind === 'single_use' && issuedCode.maximum_uses === 1 &&
+    issuedCode.issue_operation_id === issuedCodeOperationId && issuedCode.amount_units === issuedAmountUnits &&
+    issuedCode.used_count === 1 && issuedGrant.issue?.status === 201 &&
+    issuedRedemption?.id === issuedRedemptionId && issuedGrant.redemption?.redemptionId === issuedRedemptionId &&
+    issuedGrant.redemption?.grantId === issuedGrantId &&
+    issuedGrant.redemption?.operationId === issuedRedemptionOperationId &&
+    UUID.test(issuedCode.issuer_owner_id ?? '') && UUID.test(issuedGrantRow?.issued_by_owner_id ?? '') &&
+    issuedRedemption.owner_id === ownerId && issuedRedemption.code_id === issuedCodeId &&
+    issuedRedemption.bonus_grant_id === issuedGrantId && issuedRedemption.financial_operation_id === issuedGrantOperationId &&
+    issuedGrantRow?.id === issuedGrantId && issuedGrantRow.owner_id === ownerId &&
+    issuedGrantRow.issued_by_owner_id === issuedCode.issuer_owner_id &&
+    issuedGrantRow.operation_id === issuedGrantOperationId && issuedGrantRow.amount_units === issuedAmountUnits &&
+    issuedGrant.database?.grantEntry?.bonus_grant_id === issuedGrantId &&
+    issuedGrant.database?.grantEntry?.source_kind === 'tester_bonus' &&
+    issuedGrant.database?.grantEntry?.available_delta_units === issuedAmountUnits,
+  'worker_run_new_code_grant_delta_or_lineage_invalid');
+
+  const reservationsByGrant = new Map();
+  for (const reservation of reservations) {
+    const grantId = reservation.bonus_grant_id;
+    demand(UUID.test(grantId ?? '') && POSITIVE_UNITS.test(String(reservation.amount_units ?? '')),
+      'worker_run_bonus_reservation_invalid');
+    reservationsByGrant.set(grantId, (reservationsByGrant.get(grantId) ?? 0n) + BigInt(reservation.amount_units));
+  }
+  const grantRowsById = new Map();
+  for (const row of sourceGrants) {
+    demand(row && UUID.test(row.grant_id ?? '') && !grantRowsById.has(row.grant_id),
+      'worker_run_bonus_grant_observation_duplicate');
+    grantRowsById.set(row.grant_id, row);
+  }
+  demand(grantRowsById.size === reservationsByGrant.size && [...reservationsByGrant.keys()].every((id) => grantRowsById.has(id)),
+    'worker_run_bonus_grant_observation_incomplete');
+
+  const codeDerivedSourceGrants = [];
+  for (const [grantId, reservationUnits] of reservationsByGrant) {
+    const row = grantRowsById.get(grantId);
+    const claimOperationIds = Array.isArray(row.claim_operation_ids) ? row.claim_operation_ids : [];
+    const claimPayloadHashes = Array.isArray(row.claim_payload_hashes) ? row.claim_payload_hashes : [];
+    const grantAmount = String(row.grant_amount_units ?? '');
+    const codeAmount = String(row.code_amount_units ?? '');
+    demand(row.grant_owner_id === ownerId && row.redemption_owner_id === ownerId &&
+      UUID.test(row.grant_issuer_owner_id ?? '') && UUID.test(row.code_issuer_owner_id ?? '') &&
+      row.grant_issuer_owner_id === row.code_issuer_owner_id && UUID.test(row.redemption_id ?? '') &&
+      UUID.test(row.code_id ?? '') &&
+      row.redemption_code_id === row.code_id && row.redemption_financial_operation_id === row.grant_operation_id &&
+      (row.code_kind === 'single_use' || row.code_kind === 'group'),
+    'worker_run_bonus_grant_code_binding_invalid');
+    demand(POSITIVE_UNITS.test(grantAmount) && grantAmount === codeAmount &&
+      POSITIVE_UNITS.test(String(reservationUnits)) && reservationUnits <= BigInt(grantAmount) &&
+      Number.isSafeInteger(row.code_maximum_uses) && row.code_maximum_uses > 0 &&
+      Number.isSafeInteger(row.code_used_count) && row.code_used_count > 0 && row.code_used_count <= row.code_maximum_uses &&
+      OPERATION_ID.test(row.grant_operation_id ?? '') && OPERATION_ID.test(row.code_issue_operation_id ?? '') &&
+      claimOperationIds.length > 0 && claimOperationIds.length === claimPayloadHashes.length &&
+      claimOperationIds.every((id) => OPERATION_ID.test(id)) && new Set(claimOperationIds).size === claimOperationIds.length &&
+      claimPayloadHashes.every((hash) => HEX_HASH.test(hash ?? '')),
+    'worker_run_bonus_grant_redemption_lineage_invalid');
+    codeDerivedSourceGrants.push({ grantId, ownerId, grantAmountUnits: grantAmount,
+      reservationUnits: reservationUnits.toString(), codeId: row.code_id, codeKind: row.code_kind,
+      codeAmountUnits: codeAmount, codeIssueOperationIdSha256: digest(Buffer.from(row.code_issue_operation_id)),
+      redemptionId: row.redemption_id,
+      redemptionFinancialOperationIdSha256: digest(Buffer.from(row.redemption_financial_operation_id)),
+      claimOperationCount: claimOperationIds.length,
+      claimOperationIdSha256s: claimOperationIds.map((id) => digest(Buffer.from(id))),
+      claimPayloadHashes: claimPayloadHashes });
+  }
+  const latestIssuedRow = grantRowsById.get(issuedGrantId);
+  const consumedLatestIssuedGrant = reservationsByGrant.has(issuedGrantId);
+  if (consumedLatestIssuedGrant) {
+    const claimOperationIds = latestIssuedRow.claim_operation_ids ?? [];
+    demand(latestIssuedRow.code_id === issuedCodeId && latestIssuedRow.redemption_id === issuedRedemptionId &&
+      latestIssuedRow.grant_operation_id === issuedGrantOperationId &&
+      latestIssuedRow.code_issue_operation_id === issuedCodeOperationId &&
+      claimOperationIds.includes(issuedRedemptionOperationId) &&
+      reservationsByGrant.get(issuedGrantId) <= BigInt(issuedAmountUnits),
+    'worker_run_latest_code_grant_receipt_mismatch');
+  }
+  return {
+    status: 'verified', codeDerivedSourceGrants, consumedLatestIssuedGrant,
+    newlyIssuedGrantConsumedUnits: (reservationsByGrant.get(issuedGrantId) ?? 0n).toString(),
+    newlyIssuedGrantAvailableDeltaUnits: balanceDelta.deltaUnits,
+    newlyIssuedGrant: { grantId: issuedGrantId, codeId: issuedCodeId, redemptionId: issuedRedemptionId,
+      amountUnits: issuedAmountUnits, grantOperationIdSha256: digest(Buffer.from(issuedGrantOperationId)),
+      codeIssueOperationIdSha256: digest(Buffer.from(issuedCodeOperationId)),
+      redemptionOperationIdSha256: digest(Buffer.from(issuedRedemptionOperationId)),
+      availableDeltaUnits: balanceDelta.deltaUnits,
+      consumedUnits: (reservationsByGrant.get(issuedGrantId) ?? 0n).toString(), consumedLatestIssuedGrant },
+    bonusGrantIdMatchesCodeReceipt: consumedLatestIssuedGrant,
+  };
+}
+
+export function automaticWorkerChargeUnchanged(initial, current) {
+  const currentRunId = current?.run?.id ?? current?.runId;
+  return Boolean(initial && current && UUID.test(initial.runId ?? '') && initial.runId === currentRunId &&
+    HEX_HASH.test(initial.moneySha256 ?? '') && current.moneySha256 === initial.moneySha256 &&
+    Number.isSafeInteger(initial.ownerRefundCount) && initial.ownerRefundCount >= 0 &&
+    current.ownerRefundCount === initial.ownerRefundCount &&
+    initial.runRefundCount === 0 && current.runRefundCount === 0);
 }
 
 async function readOwnerTrainingFeedback(ownerPage, runId, expectedResult) {
@@ -1748,7 +1967,8 @@ async function observeWorkerTask(context, issuedTask) {
     taskIndex, taskId, resultHash: raw.result_hash, sealedBundleHash: raw.bundle_hash, resultStatus: result.status,
     harnessEvaluationWrites: false, harnessFenceWrites: false });
   const state = await readOwnerRunCompletionState(observerPool, { runId, ownerId: snapshot.run[0].owner_id, includeRanked: mode === 'ranked' });
-  demand(state.moneySha256 === output.automaticInitialMoneySha256 && state.ownerRefundCount === 0,
+  demand(automaticWorkerChargeUnchanged({ runId, moneySha256: output.automaticInitialMoneySha256,
+    ownerRefundCount: output.automaticInitialOwnerRefundCount, runRefundCount: output.automaticInitialRunRefundCount }, state),
     'automatic_worker_changed_single_run_charge');
   if (taskIndex < snapshot.run[0].task_ids.length - 1) {
     const events = snapshot.runEvents.filter((event) => event.eventType === 'task.terminalized' && event.payload?.taskIndex === taskIndex);
@@ -1781,45 +2001,48 @@ async function observeWorkerTask(context, issuedTask) {
 async function verifyWorkerRunCompletionUi({ input, output, record, state, snapshot, mode = 'training' }) {
   const run = snapshot.run[0];
   const expected = output.taskEvaluations;
-  const reservation = state.reservations[0];
   const debitOperation = 'rundeb_' + run.id.replaceAll('-', '');
   const reserveOperation = 'runacc_' + run.id.replaceAll('-', '');
   const debitRows = state.ledger.filter((entry) => entry.entry_type === 'debit' && entry.operation_id === debitOperation);
   const reserveRows = state.ledger.filter((entry) => entry.entry_type === 'reserve' && entry.operation_id === reserveOperation);
+  const runFunding = verifyRunFundingConservation({ runId: run.id, quoteUnits: run.quote_price_units,
+    reservations: state.reservations, ledger: state.ledger });
   demand(run.status === 'completed' && state.tasks.length === expected.length && state.evaluations.length === expected.length &&
     state.tasks.every((task, index) => task.task_index === index && task.task_id === expected[index].taskId &&
       task.status === (expected[index].result.outcome === 'failed' ? 'failed' : 'completed')) &&
     state.completionEvents.length === 1 && state.terminalizationEvents.length === expected.length - 1 &&
     state.claims.length === 1 && state.claims[0].status === 'released' && state.claims[0].claim_id === output.dispatchIdentity.claimId &&
-    state.slots.length === 0 && state.reservations.length === 1 && state.reservations[0].state === 'debited' &&
-    state.reservations[0].amount_units === run.quote_price_units && state.budgetHolds.length === 1 &&
+    state.slots.length === 0 && runFunding.reservationUnits === run.quote_price_units && state.budgetHolds.length === 1 &&
     state.budgetHolds[0].state === 'charged' && state.budgetHolds[0].amount_units === run.quote_price_units &&
-    debitRows.length === 1 && debitRows[0].amount_units === run.quote_price_units && debitRows[0].source_kind === reservation.source_kind &&
-    reserveRows.length === 1 && reserveRows[0].amount_units === run.quote_price_units && reserveRows[0].source_kind === reservation.source_kind &&
-    state.ownerRefundCount === 0 &&
-    state.moneySha256 === output.automaticInitialMoneySha256, 'automatic_worker_completion_state_mismatch');
+    debitRows.length === state.reservations.length && reserveRows.length === state.reservations.length &&
+    runFunding.reservationCount > 0 &&
+    automaticWorkerChargeUnchanged({ runId: run.id, moneySha256: output.automaticInitialMoneySha256,
+      ownerRefundCount: output.automaticInitialOwnerRefundCount, runRefundCount: output.automaticInitialRunRefundCount }, state),
+  'automatic_worker_completion_state_mismatch');
   if (input.bonusCodeFunding === true) {
-    const codeGrantId = output.bonusFunding?.grantId;
-    const onlyCodeLot = state.reservations.length === 1 && state.reservations[0].source_kind === 'tester_bonus' &&
-      state.reservations[0].bonus_grant_id === codeGrantId && state.reservations[0].cash_provenance === null &&
-      state.reservations[0].amount_units === run.quote_price_units;
+    const codeFunding = verifyCodeDerivedBonusFunding({ ownerId: run.owner_id,
+      reservations: state.reservations, sourceGrants: state.bonusSourceGrants, issuedGrant: output.bonusFunding });
+    demand(runFunding.allSourcesAreBonus && runFunding.cashReservationCount === 0 &&
+      state.ledger.every((entry) => entry.source_kind === 'tester_bonus') && state.runRefundCount === 0,
+    'bonus_code_worker_run_used_cash_or_refund');
     const reserveAndDebit = state.ledger.filter((entry) => entry.entry_type === 'reserve' || entry.entry_type === 'debit');
-    demand(UUID.test(codeGrantId ?? '') && onlyCodeLot && reserveAndDebit.length === 2 &&
-      reserveAndDebit.every((entry) => entry.source_kind === 'tester_bonus' && entry.amount_units === run.quote_price_units) &&
-      reserveAndDebit.some((entry) => entry.entry_type === 'reserve') && reserveAndDebit.some((entry) => entry.entry_type === 'debit'),
-    'bonus_code_grant_not_bound_to_worker_reserve_and_start_debit');
     output.bonusFunding.workerRunFunding = {
       status: 'verified',
       runId: run.id,
       mode: run.mode,
       taskIds: run.task_ids,
       quoteUnits: run.quote_price_units,
-      reservation: state.reservations[0],
+      reservation: state.reservations.length === 1 ? state.reservations[0] : null,
+      reservations: state.reservations,
       reserveEntries: reserveAndDebit.filter((entry) => entry.entry_type === 'reserve'),
       startDebitEntries: reserveAndDebit.filter((entry) => entry.entry_type === 'debit'),
       cashReservationCount: state.reservations.filter((row) => row.source_kind === 'cash_usdc').length,
       cashLedgerEntryCount: state.ledger.filter((row) => row.source_kind === 'cash_usdc').length,
-      bonusGrantIdMatchesCodeReceipt: true,
+      runRefundCount: state.runRefundCount,
+      ownerRefundCountAtRunStart: output.automaticInitialOwnerRefundCount,
+      ownerRefundCountUnchangedDuringRun: state.ownerRefundCount === output.automaticInitialOwnerRefundCount,
+      ...runFunding,
+      ...codeFunding,
     };
   }
   const completed = state.completionEvents[0];
@@ -1863,8 +2086,13 @@ async function verifyWorkerRunCompletionUi({ input, output, record, state, snaps
     resultsApi, classification: 'owner_button_to_results_api_and_worker_persisted_evaluation' };
   output.trainingRunCompletion = { status: 'verified', mode, runStatus: 'completed', finishedAt: payload.finishedAt,
     completionEventId: completed.id, completionEventPayloadHash: completed.payload_hash, dispatchClaimStatus: 'released',
-    remainingExecutionSlots: 0, chargeQuoteUnits: run.quote_price_units, ownerRefundCount: state.ownerRefundCount,
-    debitEntryId: debitRows[0].id, debitOperationId: debitOperation, debitEntryCount: debitRows.length,
+    remainingExecutionSlots: 0, chargeQuoteUnits: run.quote_price_units, reservationCount: state.reservations.length,
+    reservationUnits: runFunding.reservationUnits, reserveEntryCount: reserveRows.length, reserveEntryIds: reserveRows.map((entry) => entry.id),
+    ownerRefundCount: state.ownerRefundCount,
+    runRefundCount: state.runRefundCount, ownerRefundCountAtRunStart: output.automaticInitialOwnerRefundCount,
+    ownerRefundCountUnchangedDuringRun: state.ownerRefundCount === output.automaticInitialOwnerRefundCount,
+    debitEntryId: debitRows.length === 1 ? debitRows[0].id : null, debitEntryIds: debitRows.map((entry) => entry.id),
+    debitOperationId: debitOperation, debitEntryCount: debitRows.length,
     moneyStateUnchangedByCompletion: true, completionReplayVerified: false, completionReplayScope: 'not_run_readonly_worker_capture' };
   output.runCompletion = output.trainingRunCompletion;
   if (mode === 'ranked') verifyRankedHandoffState({ output, state, run, expected, completed, payload });
@@ -2038,7 +2266,10 @@ async function captureAndEvaluateTrainingTask(context) {
       initial.slots[0].claim_id === initial.claims[0].claim_id && initial.run.status === 'running', 'automatic_worker_initial_dispatch_missing');
     output.dispatchIdentity = { runId, claimId: initial.claims[0].claim_id, slotRunId: initial.slots[0].run_id,
       slotAgentId: initial.slots[0].agent_id, slotClaimId: initial.slots[0].claim_id };
+    demand(initial.runRefundCount === 0, 'automatic_worker_initial_run_refund_present');
     output.automaticInitialMoneySha256 = initial.moneySha256;
+    output.automaticInitialOwnerRefundCount = initial.ownerRefundCount;
+    output.automaticInitialRunRefundCount = initial.runRefundCount;
   }
   if (taskIndex === 0 && typeof input.onGenuineFirstTaskActive === 'function' &&
       output.genuineFirstTaskActiveCallbackInvoked !== true) {

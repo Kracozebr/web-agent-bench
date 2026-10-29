@@ -26,6 +26,7 @@ import { closeExpiredTaskActions } from "./task-action-service.js";
 import { cleanupFailedLocalBefTaskCoordinatorStartup, createLocalBefTaskCoordinator,
   createBetaBefTaskCoordinator, BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY,
   type BetaBefTaskCoordinator, type LocalBefTaskCoordinator } from "./bef-task-coordinator.js";
+import { acquireCoordinatorForStartup } from "./coordinator-startup.js";
 import { pinBetaRunReleaseProvider } from "./beta-bef-runtime-profile.js";
 import { createAuth, siweRequestFingerprint, withSiweRequest } from "./auth.js";
 import { loadConfig, getGoogleMode } from "./config.js";
@@ -458,20 +459,18 @@ async function start() {
   const taskReleaseSource = createPostgresTaskReleaseQuerySource(db);
   let localBefTaskCoordinator: LocalBefTaskCoordinator | undefined;
   let betaBefTaskCoordinator: LocalBefTaskCoordinator | undefined;
+  let taskCoordinator: LocalBefTaskCoordinator | undefined;
   if (config.betaManifest) {
-    betaBefTaskCoordinator = await createBetaBefTaskCoordinator({ db, databaseUrl: config.databaseUrl,
-      config, releaseSource: taskReleaseSource });
+    betaBefTaskCoordinator = await acquireCoordinatorForStartup(() => createBetaBefTaskCoordinator({ db,
+      databaseUrl: config.databaseUrl, config, releaseSource: taskReleaseSource }));
+    taskCoordinator = betaBefTaskCoordinator;
     startupCoordinatorForCleanup = betaBefTaskCoordinator;
-    await betaBefTaskCoordinator.acquire();
   } else if (config.localBefTaskCoordinatorEnabled) {
-    localBefTaskCoordinator = await createLocalBefTaskCoordinator({
-      db,
-      databaseUrl: config.databaseUrl,
-      config,
-      releaseSource: taskReleaseSource,
-    });
+    localBefTaskCoordinator = await acquireCoordinatorForStartup(() => createLocalBefTaskCoordinator({
+      db, databaseUrl: config.databaseUrl, config, releaseSource: taskReleaseSource,
+    }));
+    taskCoordinator = localBefTaskCoordinator;
     startupCoordinatorForCleanup = localBefTaskCoordinator;
-    await localBefTaskCoordinator.acquire();
   }
   // Durable pause and operations controls are available to an explicitly manifested Beta runtime
   // or a strict isolated loopback fixture; Beta release/readiness still requires its manifest.
@@ -1324,7 +1323,6 @@ async function start() {
     }
   });
 
-  const taskCoordinator = betaBefTaskCoordinator ?? localBefTaskCoordinator;
   const runMaintenanceIntervalMs = (config.localBefTaskCoordinatorEnabled || config.betaManifest)
     ? config.localBefTaskCoordinatorTickMs : 1000;
   const runMaintenanceBatchSize = 50;
@@ -1373,6 +1371,9 @@ async function start() {
   });
   app.setErrorHandler((error, _request, reply) => responseError(reply, error));
   if (reportServiceDependencies) await runReportRetentionCleanup(reportServiceDependencies);
+  if (taskCoordinator && !taskCoordinator.ownsLease()) {
+    throw new Error("bef_task_coordinator_lease_lost_before_api_listen");
+  }
   await app.listen({ host: config.apiHost, port: config.apiPort });
   startupCoordinatorForCleanup = undefined;
   void runMaintenanceTick();

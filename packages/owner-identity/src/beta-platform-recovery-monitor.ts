@@ -291,13 +291,16 @@ export function createBetaPlatformRecoveryMonitor(options: BetaPlatformRecoveryM
           const expired = platformRecoveryWindowExpired(now, deadline);
           if (expired) {
             exhaustedRunIds.add(recovery.run_id);
+            // AICODE-NOTE: The persisted cutoff authorizes fencing, not an inferred
+            // operation outcome. Do not put another observer connection attempt
+            // ahead of cancellation; reconcile the source after the exact fence.
+            continue;
           } else {
             recoveringRunIds.add(recovery.run_id);
           }
           const result = await inspectAction(action, recovery, now);
           if (result.status === 'reconciled') reconciledActionIds.add(action.actionId);
           if (result.status === 'unknown') unknownActionIds.add(action.actionId);
-          if (expired) exhaustedRunIds.add(action.runId);
         } catch {
           // Keep this run isolated; a malformed/temporarily unavailable source must not starve peers.
           recoveringRunIds.add(recovery.run_id);

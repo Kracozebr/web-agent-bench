@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { inspectBackupFile, validateBackupInventory, verifyBackupIntegrity } from './beta-backup-inventory.mjs';
 import { openSealedCheckpointPayload } from './beta-backup-sealed-bundle.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const HOST_JOB_ID = /^[a-f0-9]{32}$/;
 const REPORT_RETENTION_SECONDS = 2_592_000;
 const BINDING_HASHES = ['bonusGrantOperationsSha256', 'runOperationReceiptsSha256', 'runGenerationReceiptsSha256', 'reportOperationReceiptsSha256'];
 const BINDING_COUNTS = ['bonusGrantOperationCount', 'runOperationReceiptCount', 'runGenerationReceiptCount', 'reportOperationReceiptCount'];
@@ -112,7 +113,124 @@ async function writeClosureCopy(path, closure) {
   try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
   return hash(bytes);
 }
+function safeRestoreFailureCode(error) {
+  const match = /^beta_backup_restore_([a-z0-9_]+)$/.exec(String(error?.message ?? ''));
+  return match?.[1] ?? 'restore_failed';
+}
+async function removeOwnedUnservedRestoreRoot({ restoreParent, restoreRoot, restoreDatabaseName }) {
+  if (!/^oid_restore_[a-f0-9]{32}$/.test(restoreDatabaseName ?? '') || !isAbsolute(restoreParent ?? '') ||
+      !isAbsolute(restoreRoot ?? '')) fail('failure_cleanup_identity_invalid');
+  const parent = (await inspectPathChain(restoreParent, 'directory')).canonicalPath;
+  const expected = resolve(parent, restoreDatabaseName);
+  if (resolve(restoreRoot) !== expected || !within(parent, expected)) fail('failure_cleanup_identity_invalid');
+  const root = await inspectPathChain(expected, 'directory');
+  if (root.canonicalPath !== expected) fail('failure_cleanup_identity_invalid');
+  await rm(expected, { recursive: true, force: false });
+  const remaining = await lstat(expected).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (remaining) fail('failure_cleanup_root_remains');
+  return 'removed';
+}
+export async function removeOwnedUnsealedRestoreRoot({ restoreParent, restoreRoot, unsealedRoot, restoreDatabaseName }) {
+  if (!/^oid_restore_[a-f0-9]{32}$/.test(restoreDatabaseName ?? '') || !isAbsolute(restoreParent ?? '') ||
+      !isAbsolute(restoreRoot ?? '') || !isAbsolute(unsealedRoot ?? '')) fail('unsealed_cleanup_identity_invalid');
+  const parent = (await inspectPathChain(restoreParent, 'directory')).canonicalPath;
+  const expectedRoot = resolve(parent, restoreDatabaseName);
+  if (resolve(restoreRoot) !== expectedRoot || !within(parent, expectedRoot)) fail('unsealed_cleanup_identity_invalid');
+  const root = await inspectPathChain(expectedRoot, 'directory');
+  if (root.canonicalPath !== expectedRoot || resolve(unsealedRoot) !== resolve(expectedRoot, 'unsealed')) {
+    fail('unsealed_cleanup_identity_invalid');
+  }
+  let info = await lstat(unsealedRoot).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!info) return 'already_absent';
+  if (info.isSymbolicLink() || !info.isDirectory()) fail('unsealed_cleanup_path_invalid');
+  const unsealed = await inspectPathChain(unsealedRoot, 'directory');
+  if (unsealed.canonicalPath !== resolve(expectedRoot, 'unsealed')) fail('unsealed_cleanup_path_invalid');
+  await rm(unsealed.canonicalPath, { recursive: true, force: false });
+  info = await lstat(unsealedRoot).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (info) fail('unsealed_cleanup_path_remains');
+  return 'removed';
+}
+async function writeSafeRestoreFailureReceipt({ restoreParent, checkpointId, restoreDatabaseName,
+  reasonCode, restoreRootDisposition, databaseDisposition }) {
+  if (!isAbsolute(restoreParent ?? '') || !UUID.test(checkpointId ?? '') ||
+      !/^oid_restore_[a-f0-9]{32}$/.test(restoreDatabaseName ?? '')) fail('failure_receipt_identity_invalid');
+  const parent = (await inspectPathChain(restoreParent, 'directory')).canonicalPath;
+  const failureRoot = resolve(parent, 'failed-restores');
+  if (!within(parent, failureRoot)) fail('failure_receipt_path_invalid');
+  let rootInfo = await lstat(failureRoot).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!rootInfo) await mkdir(failureRoot, { recursive: false, mode: 0o700 });
+  const verifiedRoot = await inspectPathChain(failureRoot, 'directory');
+  if (verifiedRoot.canonicalPath !== failureRoot || !within(parent, verifiedRoot.canonicalPath)) fail('failure_receipt_path_invalid');
+  rootInfo = verifiedRoot.info;
+  if (rootInfo.isSymbolicLink()) fail('failure_receipt_path_invalid');
+  const receipt = { schemaVersion: 'beta-combined-restore-failure/v1', status: 'failed_unserved', checkpointId,
+    restoreDatabaseName, reasonCode, restoreRootDisposition, databaseDisposition, failedAt: new Date().toISOString() };
+  const path = resolve(failureRoot, `${restoreDatabaseName}.json`);
+  const bytes = Buffer.from(`${JSON.stringify(receipt)}\n`, 'utf8');
+  const handle = await open(path, 'wx', 0o600);
+  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  return { path, sha256: hash(bytes), bytes: bytes.length };
+}
+/** Remove only the uniquely-created, still-unserved private restore root and retain a secret-free failure identity. */
+export async function cleanupUnservedRestoreArtifacts({ restoreParent, restoreRoot, restoreRootCreated, checkpointId,
+  restoreDatabaseName, reasonCode, databaseDisposition = 'not_created_or_unknown' }) {
+  if (!UUID.test(checkpointId ?? '') || !/^oid_restore_[a-f0-9]{32}$/.test(restoreDatabaseName ?? '') ||
+      !/^[a-z0-9_]{1,80}$/.test(reasonCode ?? '') ||
+      !['not_created_or_unknown', 'preserved_unserved_for_inspection'].includes(databaseDisposition)) {
+    fail('failure_receipt_identity_invalid');
+  }
+  let restoreRootDisposition = restoreRootCreated ? 'retained_cleanup_failed' : 'not_created';
+  if (restoreRootCreated) {
+    try { restoreRootDisposition = await removeOwnedUnservedRestoreRoot({ restoreParent, restoreRoot, restoreDatabaseName }); }
+    catch { restoreRootDisposition = 'retained_cleanup_failed'; }
+  }
+  let failureReceipt = null;
+  try {
+    failureReceipt = await writeSafeRestoreFailureReceipt({ restoreParent, checkpointId, restoreDatabaseName,
+      reasonCode, restoreRootDisposition, databaseDisposition });
+  } catch { /* Keep the safe failure identity available to the caller if disk journaling is unavailable. */ }
+  return { schemaVersion: 'beta-combined-restore-failure/v1', checkpointId, restoreDatabaseName, reasonCode,
+    restoreRootDisposition, databaseDisposition,
+    failureReceipt: failureReceipt ? { path: failureReceipt.path, sha256: failureReceipt.sha256 } : null };
+}
 function bindingSnapshotHash(snapshot) { return canonical(snapshot.operationBindings); }
+
+/** Validate and project the host broker receipts that created and populated a fresh restore DB. */
+export function validateRestoreReceiptPair({ restoreDatabaseName, checkpointId, databaseDumpSha256,
+  creationReceipt, restoreReceipt }) {
+  if (!/^oid_restore_[a-f0-9]{32}$/.test(restoreDatabaseName ?? '') || !UUID.test(checkpointId ?? '') ||
+      !HASH.test(databaseDumpSha256 ?? '') || !creationReceipt || !restoreReceipt ||
+      creationReceipt.status !== 'complete' || creationReceipt.kind !== 'create_restore_database' ||
+      !HOST_JOB_ID.test(creationReceipt.jobId ?? '') || creationReceipt.creationJobId !== creationReceipt.jobId ||
+      creationReceipt.databaseName !== restoreDatabaseName || creationReceipt.checkpointId !== checkpointId ||
+      creationReceipt.createdFresh !== true || restoreReceipt.status !== 'restored' ||
+      restoreReceipt.kind !== 'pg_restore' || !HOST_JOB_ID.test(restoreReceipt.jobId ?? '') ||
+      restoreReceipt.jobId === creationReceipt.jobId || restoreReceipt.databaseName !== restoreDatabaseName ||
+      restoreReceipt.checkpointId !== checkpointId || restoreReceipt.creationJobId !== creationReceipt.jobId ||
+      restoreReceipt.dumpSha256 !== databaseDumpSha256 || restoreReceipt.restored !== true) {
+    fail('restore_receipt_pair_invalid');
+  }
+  return {
+    creationReceipt: { status: creationReceipt.status, kind: creationReceipt.kind, jobId: creationReceipt.jobId,
+      databaseName: creationReceipt.databaseName, checkpointId: creationReceipt.checkpointId,
+      creationJobId: creationReceipt.creationJobId, createdFresh: creationReceipt.createdFresh },
+    restoreReceipt: { status: restoreReceipt.status, kind: restoreReceipt.kind, jobId: restoreReceipt.jobId,
+      databaseName: restoreReceipt.databaseName, checkpointId: restoreReceipt.checkpointId,
+      creationJobId: restoreReceipt.creationJobId, dumpSha256: restoreReceipt.dumpSha256, restored: restoreReceipt.restored },
+  };
+}
 
 /** Check the runner's real same-ID retries against the before/after independent DB observations. */
 export function verifyCombinedRestoreRetryProof({ restoredBaseline, before, after, retryProof, operationBindings, originalIds, retentionExpired }) {
@@ -211,27 +329,41 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
     .filter((value) => value !== null).map(parseIso);
   const effectiveBetaEndedAt = closureTimes.length ? new Date(Math.min(...closureTimes)).toISOString() : null;
   const retentionExpired = effectiveBetaEndedAt !== null && nowMs >= parseIso(effectiveBetaEndedAt) + REPORT_RETENTION_SECONDS * 1000;
-  const restoredMaterial = await keyRecovery.recoverMaterial({ checkpointId: inventory.checkpointId,
-    envelopePath: externalEnvelope.canonicalPath, envelopeSha256: inventory.recoveryEnvelopeSha256 });
-  if (!restoredMaterial || !Buffer.isBuffer(restoredMaterial.bundleKey) || restoredMaterial.bundleKey.length !== 32 ||
-      !restoredMaterial.runtimeSecrets || typeof restoredMaterial.runtimeSecrets !== 'object') fail('external_recovery_material_invalid');
-
   const restoreDatabaseName = `oid_restore_${randomUUID().replaceAll('-', '')}`;
   if (!/^oid_restore_[a-f0-9]{32}$/.test(restoreDatabaseName)) fail('restore_database_name_invalid');
-  const restoreParent = await inspectPathChain(restore.restoreRoot, 'directory').then((row) => row.canonicalPath);
-  const restoreRoot = resolve(restoreParent, restoreDatabaseName);
-  if (!within(restoreParent, restoreRoot)) fail('restore_root_escape');
-  await mkdir(restoreRoot, { recursive: false, mode: 0o700 });
-  const privateDataDir = resolve(restoreRoot, 'private-data');
-  const operatorDir = resolve(restoreRoot, 'operator');
-  const unsealedRoot = resolve(restoreRoot, 'unsealed');
-  await mkdir(privateDataDir, { recursive: false, mode: 0o700 });
-  await mkdir(operatorDir, { recursive: false, mode: 0o700 });
-  const closureStatePath = resolve(operatorDir, 'authoritative-closure.json');
-  const closureCopySha256 = await writeClosureCopy(closureStatePath, cloneClosure);
-  const sealed = inventory.files[0];
+  let restoredMaterial;
+  let restoreParent;
+  let restoreRoot;
+  let privateDataDir;
+  let unsealedRoot;
+  let closureStatePath;
+  let closureCopySha256;
   let payload;
+  let originalIds;
+  let fileRestore;
+  let beforeRetention;
+  let afterRetention;
+  let cloneCleanup;
+  let restoreRootCreated = false;
+  let creationReceipt = null;
+  const sealed = inventory.files[0];
   try {
+    restoredMaterial = await keyRecovery.recoverMaterial({ checkpointId: inventory.checkpointId,
+      envelopePath: externalEnvelope.canonicalPath, envelopeSha256: inventory.recoveryEnvelopeSha256 });
+    if (!restoredMaterial || !Buffer.isBuffer(restoredMaterial.bundleKey) || restoredMaterial.bundleKey.length !== 32 ||
+        !restoredMaterial.runtimeSecrets || typeof restoredMaterial.runtimeSecrets !== 'object') fail('external_recovery_material_invalid');
+    restoreParent = (await inspectPathChain(restore.restoreRoot, 'directory')).canonicalPath;
+    restoreRoot = resolve(restoreParent, restoreDatabaseName);
+    if (!within(restoreParent, restoreRoot)) fail('restore_root_escape');
+    await mkdir(restoreRoot, { recursive: false, mode: 0o700 });
+    restoreRootCreated = true;
+    privateDataDir = resolve(restoreRoot, 'private-data');
+    const operatorDir = resolve(restoreRoot, 'operator');
+    unsealedRoot = resolve(restoreRoot, 'unsealed');
+    await mkdir(privateDataDir, { recursive: false, mode: 0o700 });
+    await mkdir(operatorDir, { recursive: false, mode: 0o700 });
+    closureStatePath = resolve(operatorDir, 'authoritative-closure.json');
+    closureCopySha256 = await writeClosureCopy(closureStatePath, cloneClosure);
     payload = await openSealedCheckpointPayload({ encryptedPath: resolve(bundleRoot, sealed.path),
       expectedEncryptedSha256: sealed.sha256, expectedEncryptedBytes: sealed.bytes, bundleRoot,
       destinationRoot: unsealedRoot, checkpointId: inventory.checkpointId,
@@ -239,7 +371,7 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
     const sourceBefore = await readJson(resolve(unsealedRoot, 'evidence/source-before.json'));
     const sourceAfter = await readJson(resolve(unsealedRoot, 'evidence/source-after.json'));
     const reconciliation = await readJson(resolve(unsealedRoot, 'evidence/reconciliation.json'));
-    const originalIds = validateOriginalIds(sourceBefore);
+    originalIds = validateOriginalIds(sourceBefore);
     validateOriginalIds(sourceAfter);
     if (sourceBefore.snapshotBoundaryId !== inventory.checkpointSource.snapshotBoundaryId ||
         sourceAfter.snapshotBoundaryId !== inventory.checkpointSource.snapshotBoundaryId ||
@@ -253,27 +385,27 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
     if (!dumpRow) fail('sealed_database_dump_missing');
     const existing = await adapters.databaseExists({ databaseName: restoreDatabaseName });
     if (existing !== false) fail('restore_database_already_exists');
-    const creationReceipt = await adapters.createRestoreDatabase({ databaseName: restoreDatabaseName, checkpointId: inventory.checkpointId });
-    if (!creationReceipt || creationReceipt.status !== 'complete' || creationReceipt.databaseName !== restoreDatabaseName ||
-        creationReceipt.checkpointId !== inventory.checkpointId || !UUID.test(creationReceipt.creationJobId ?? '') ||
+    creationReceipt = await adapters.createRestoreDatabase({ databaseName: restoreDatabaseName, checkpointId: inventory.checkpointId });
+    if (!creationReceipt || creationReceipt.status !== 'complete' || creationReceipt.kind !== 'create_restore_database' ||
+        !HOST_JOB_ID.test(creationReceipt.jobId ?? '') || creationReceipt.creationJobId !== creationReceipt.jobId ||
+        creationReceipt.databaseName !== restoreDatabaseName || creationReceipt.checkpointId !== inventory.checkpointId ||
         creationReceipt.createdFresh !== true) fail('restore_database_creation_receipt_invalid');
     const dbRestore = await adapters.restoreDatabaseDump({ databaseName: restoreDatabaseName, dumpPath,
       dumpSha256: dumpRow.sha256, checkpointId: inventory.checkpointId, creationJobId: creationReceipt.creationJobId });
-    if (!dbRestore || dbRestore.status !== 'restored' || dbRestore.databaseName !== restoreDatabaseName || dbRestore.dumpSha256 !== dumpRow.sha256) {
-      fail('database_restore_not_verified');
-    }
-    const fileRestore = await adapters.restorePrivateFiles({ payloadRoot: unsealedRoot, privateDataDir, restoreRoot });
+    const restoreReceipts = validateRestoreReceiptPair({ restoreDatabaseName, checkpointId: inventory.checkpointId,
+      databaseDumpSha256: dumpRow.sha256, creationReceipt, restoreReceipt: dbRestore });
+    fileRestore = await adapters.restorePrivateFiles({ payloadRoot: unsealedRoot, privateDataDir, restoreRoot });
     const imageRows = payload.manifest.files.filter((row) => row.kind === 'screenshot').map(({ path, bytes, sha256 }) => ({
       path, bytes, sha256 })).sort((a, b) => a.path.localeCompare(b.path));
     if (!fileRestore || fileRestore.status !== 'restored' || fileRestore.fileCount !== imageRows.length) fail('private_files_restore_not_verified');
-    const beforeRetention = validateObserverSnapshot(await adapters.observeReadOnly({ databaseName: restoreDatabaseName,
+    beforeRetention = validateObserverSnapshot(await adapters.observeReadOnly({ databaseName: restoreDatabaseName,
       privateDataDir, closureStatePath }), restoreDatabaseName);
     if (beforeRetention.databaseTotalsSha256 !== inventory.databaseTotalsSha256 ||
         canonical(beforeRetention.operationBindings) !== canonical(inventory.operationBindings) ||
         canonical(beforeRetention.imageFiles) !== canonical(imageRows)) fail('restored_database_or_images_mismatch');
 
-    let afterRetention = beforeRetention;
-    let cloneCleanup = { status: 'not_required', retentionExpired: false, sourceCheckpointId: inventory.checkpointId,
+    afterRetention = beforeRetention;
+    cloneCleanup = { status: 'not_required', retentionExpired: false, sourceCheckpointId: inventory.checkpointId,
       restoreDatabaseName, financialStateBeforeSha256: beforeRetention.financialStateSha256,
       financialStateAfterSha256: beforeRetention.financialStateSha256, benchmarkStateBeforeSha256: beforeRetention.benchmarkStateSha256,
       benchmarkStateAfterSha256: beforeRetention.benchmarkStateSha256 };
@@ -301,6 +433,7 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
         financialStateBeforeSha256: cleanup.financialStateBeforeSha256, financialStateAfterSha256: cleanup.financialStateAfterSha256,
         benchmarkStateBeforeSha256: cleanup.benchmarkStateBeforeSha256, benchmarkStateAfterSha256: cleanup.benchmarkStateAfterSha256 };
     }
+    await removeOwnedUnsealedRestoreRoot({ restoreParent, restoreRoot, unsealedRoot, restoreDatabaseName });
     const finishedMs = Date.now();
     const runtimeSecrets = restoredMaterial.runtimeSecrets;
     restoredMaterial.runtimeSecrets = null;
@@ -314,7 +447,8 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
       checkpoint: { inventorySha256: artifactProof.inventorySha256, databaseTotalsSha256: inventory.databaseTotalsSha256,
         sourceBuildSha256: inventory.sourceBuildSha256, capturedAt: inventory.capturedAt,
         operationBindings: inventory.operationBindings, payloadManifestSha256: payload.payloadManifestSha256,
-        payloadFileCount: payload.extractedFileCount },
+        payloadFileCount: payload.extractedFileCount, databaseDumpSha256: dumpRow.sha256 },
+      creationReceipt: restoreReceipts.creationReceipt, restoreReceipt: restoreReceipts.restoreReceipt,
       authoritativeClosure: { betaEndedAt: authoritativeClosure.betaEndedAt,
         sourceEvidenceSha256: authoritativeClosure.sourceEvidenceSha256 },
       cloneClosure: { betaEndedAt: cloneClosure.betaEndedAt, sourceEvidenceSha256: cloneClosure.sourceEvidenceSha256,
@@ -341,10 +475,24 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
     };
     return result;
   } catch (error) {
-    restoredMaterial.bundleKey.fill(0);
-    for (const key of Object.keys(restoredMaterial.runtimeSecrets ?? {})) restoredMaterial.runtimeSecrets[key] = '';
+    const reasonCode = safeRestoreFailureCode(error);
+    const databaseDisposition = creationReceipt?.createdFresh === true ? 'preserved_unserved_for_inspection' : 'not_created_or_unknown';
+    let failureIdentity = { schemaVersion: 'beta-combined-restore-failure/v1', checkpointId: inventory.checkpointId,
+      restoreDatabaseName, reasonCode, restoreRootDisposition: restoreRootCreated ? 'retained_cleanup_failed' : 'not_created',
+      databaseDisposition, failureReceipt: null };
+    if (restoreParent) {
+      try {
+        failureIdentity = await cleanupUnservedRestoreArtifacts({ restoreParent, restoreRoot, restoreRootCreated,
+          checkpointId: inventory.checkpointId, restoreDatabaseName, reasonCode, databaseDisposition });
+      } catch { /* Preserve the original failure and its safe in-memory identity. */ }
+    }
+    if (restoredMaterial && Buffer.isBuffer(restoredMaterial.bundleKey)) restoredMaterial.bundleKey.fill(0);
+    for (const key of Object.keys(restoredMaterial?.runtimeSecrets ?? {})) restoredMaterial.runtimeSecrets[key] = '';
+    if (error && typeof error === 'object') {
+      try {
+        error.restoreFailure = failureIdentity;
+      } catch { /* The safe receipt is best effort if an adapter returns a frozen error. */ }
+    }
     throw error;
-  } finally {
-    await rm(unsealedRoot, { recursive: true, force: true }).catch(() => undefined);
   }
 }

@@ -10,8 +10,17 @@ import { runGenuineS1OwnerCase } from './genuine-s1-cases.mjs';
 const { Pool } = pg;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH = /^[0-9a-f]{64}$/;
+const REQUIRED_SOURCE_TABLES = ['oid_benchmark_run', 'oid_run_operation', 'oid_ledger_operation',
+  'oid_bonus_code_claim_operation', 'oid_task_preparation_generation', 'oid_support_report',
+  'oid_support_report_audit', 'oid_support_image_upload', 'oid_support_report_deletion_receipt',
+  'oid_support_upload_gc_receipt', 'oid_support_report_rate'];
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
 
 function demand(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { code });
@@ -304,7 +313,8 @@ async function runActiveBlockerWithQueuedPausedRun({ commonCapture, observerPool
       quoteUnits: blockerOutput.launchIntent.quotePriceUnits, releaseIdentity: blockerOutput.release.releaseIdentity,
       manifestHash: blockerOutput.release.manifestHash, taskEvaluation: workerRun.evaluations,
       bonusFunding: { codeId: bonus.issue.codeId, redemptionId: bonus.redemption.redemptionId,
-        grantId: bonus.redemption.grantId, amountUnits: bonus.amountUnits, sourceKind: 'tester_bonus',
+        grantId: bonus.redemption.grantId, redemptionOperationIdSha256: sha256(Buffer.from(bonus.redemption.operationId)),
+        amountUnits: bonus.amountUnits, sourceKind: 'tester_bonus',
         workerRunFunding: bonus.workerRunFunding } }, activeBeforeQueue: activeBeforeDrain,
       queue, pause: paused, activeRunDrain: workerRun, queuedAfterDrain: pausedQueue }, retryMaterial };
 }
@@ -323,10 +333,27 @@ function recoveryEvidenceFiles(recovery) {
     recovery?.cases?.committedActionRecovery?.observer?.fenceEvidence?.evidence,
     recovery?.cases?.recoveryDeadlineExhaustion?.action?.evidence,
     ...(recovery?.cases?.recoveryDeadlineExhaustion?.recovery?.fenceEvidenceFiles ?? [])];
+  for (const collector of Object.values(recovery?.collectorCases ?? {})) {
+    candidates.push(collector?.action?.evidence, collector?.observer?.fenceEvidence,
+      collector?.observer?.fenceEvidence?.evidence,
+      ...(collector?.observer?.fenceEvidenceFiles ?? []));
+  }
   for (const candidate of candidates) {
     if (candidate && typeof candidate.path === 'string' && HASH.test(candidate.sha256 ?? '')) output.push(candidate);
   }
   return [...new Map(output.map((row) => [`${row.path}\0${row.sha256}`, row])).values()];
+}
+
+export function combinedSourceRunIds({ completedRunId, committedRecoveryRunId, exhaustedRunId, blockerRunId, queuedRunId, collectorCases }) {
+  const collectorKeys = collectorCases && typeof collectorCases === 'object' && !Array.isArray(collectorCases)
+    ? Object.keys(collectorCases).sort() : [];
+  demand(collectorKeys.join(',') === 'M3,S4' && UUID.test(completedRunId ?? '') &&
+    committedRecoveryRunId === completedRunId && UUID.test(exhaustedRunId ?? '') &&
+    UUID.test(blockerRunId ?? '') && UUID.test(queuedRunId ?? '') &&
+    collectorKeys.every((key) => UUID.test(collectorCases[key]?.binding?.runId ?? '')),
+  'combined_source_run_coverage_incomplete');
+  return [...new Set([completedRunId, exhaustedRunId, blockerRunId, queuedRunId,
+    collectorCases.S4.binding.runId, collectorCases.M3.binding.runId])];
 }
 
 async function verifyEvidenceFiles(commonCapture, references) {
@@ -506,7 +533,7 @@ async function readRestoredReport(pool, databaseName, ownerId, reportReceipt, pr
 }
 
 async function restoredUiReads({ commonCapture, completedRun, queuedRun, reportReceipt, restoreResult, observerPool }) {
-  const { ownerPage, publicOrigin, ownerId } = commonCapture;
+  const { ownerPage, adminPage, publicOrigin, ownerId } = commonCapture;
   await ownerPage.goto(`/runs?agentId=${encodeURIComponent(completedRun.agentId)}`, { waitUntil: 'domcontentloaded' });
   await ownerPage.getByTestId(`owner-run-${completedRun.runId}`).waitFor({ state: 'visible', timeout: 20_000 });
   await ownerPage.getByTestId(`owner-run-${queuedRun.runId}`).waitFor({ state: 'visible', timeout: 20_000 });
@@ -537,8 +564,51 @@ async function restoredUiReads({ commonCapture, completedRun, queuedRun, reportR
   const restoredObserver = await readRestoredReport(observerPool, restoreResult.restoreDatabaseName, ownerId,
     reportReceipt, restoreResult.privateDataDir);
   demand(restoredObserver.uploads.some((row) => row.sha256 === imageHash), 'combined_restored_ui_image_not_bound_to_private_file');
+  demand(adminPage && typeof adminPage.goto === 'function', 'combined_restored_admin_page_missing');
+  const adminListPromise = adminPage.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/admin/reports' && response.request().method() === 'GET', { timeout: 20_000 });
+  await adminPage.goto(new URL('/admin/reports', publicOrigin).toString(), { waitUntil: 'domcontentloaded' });
+  const adminListResponse = await adminListPromise;
+  const adminRow = adminPage.locator('tbody tr[data-report-id="' + reportReceipt.reportId + '"]');
+  await adminRow.waitFor({ state: 'visible', timeout: 20_000 });
+  const adminRowReportId = await adminRow.getAttribute('data-report-id');
+  const adminRowStatus = (await adminRow.locator('td').nth(3).innerText()).trim();
+  const adminDetailPromise = adminPage.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/admin/reports/' + reportReceipt.reportId && response.request().method() === 'GET',
+  { timeout: 15_000 });
+  const adminImageId = reportReceipt.payload.imageUploadIds[0];
+  const adminImagePromise = adminPage.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/admin/reports/' + reportReceipt.reportId + '/images/' + adminImageId,
+  { timeout: 15_000 });
+  await adminRow.getByRole('button', { name: 'Open', exact: true }).click();
+  commonCapture.adminCapture?.action?.('click', 'combined-restore-admin-report-details');
+  const adminDetailResponse = await adminDetailPromise;
+  const adminDetailPayload = await adminDetailResponse.json().catch(() => ({}));
+  const adminImage = adminPage.locator('[aria-label="Selected private report"] img').first();
+  await adminImage.waitFor({ state: 'visible', timeout: 15_000 });
+  const adminImageResponse = await adminImagePromise;
+  const adminImageHash = sha256(await adminImageResponse.body());
+  const adminReport = adminDetailPayload?.report;
+  const adminDetails = adminPage.locator('[aria-label="Selected private report"]');
+  await adminDetails.getByText(
+    'owner report · revision ' + reportReceipt.sourceRevision, { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
+  const adminRenderedTitle = await adminDetails.locator('h2').innerText();
+  const expectedAdminStatus = reportReceipt.sourceStatus.replace('_', ' ');
+  demand(adminListResponse.status() === 200 && adminRowReportId === reportReceipt.reportId &&
+    adminRowStatus === expectedAdminStatus && adminRenderedTitle === reportReceipt.payload.title &&
+    adminDetailResponse.status() === 200 && adminReport?.id === reportReceipt.reportId &&
+    adminReport.source === 'owner' && adminReport.status === reportReceipt.sourceStatus &&
+    adminReport.revision === reportReceipt.sourceRevision &&
+    adminReport.links?.runId === reportReceipt.payload.runId && adminReport.links?.taskId === reportReceipt.payload.taskId &&
+    adminReport.links?.actionId === reportReceipt.payload.actionId &&
+    adminImageResponse.status() === 200 && adminImageHash === imageHash,
+  'combined_restored_admin_report_ui_mismatch');
   return { ui: { completedRunStatus: completedText, queuedRunStatus: queuedText,
     reportDetailStatus: detailResponse.status(), imageStatus: imageResponse.status(), imageSha256: imageHash },
+    admin: { listStatus: adminListResponse.status(), detailStatus: adminDetailResponse.status(),
+      imageStatus: adminImageResponse.status(), reportId: adminReport.id, source: adminReport.source,
+      status: adminReport.status, revision: adminReport.revision, runId: adminReport.links.runId,
+      taskId: adminReport.links.taskId, actionId: adminReport.links.actionId, imageSha256: adminImageHash },
     observer: restoredObserver };
 }
 
@@ -575,6 +645,17 @@ async function retryOriginalOperations({ commonCapture, completedRun, reportRece
   demand(reportReceipt?.payload && completedRun?.queue?.intentCreatePayload && completedRun?.blocker?.intentCreatePayload &&
     completedRun?.recovery?.intentCreatePayload && typeof completedRun.redemptionPayload?.code === 'string',
   'combined_original_operation_retry_material_missing');
+  const runBinding = (value) => ({ intentId: value.intentId, runId: value.runId,
+    intentOperationIdSha256: sha256(Buffer.from(value.createIntentOperationId)),
+    acceptOperationIdSha256: sha256(Buffer.from(value.acceptOperationId)) });
+  const originalReceiptBindings = {
+    recoveryRun: runBinding(completedRun.recovery),
+    blockerRun: runBinding(completedRun.blocker),
+    queuedRun: runBinding(completedRun.queue),
+    bonusRedemption: { redemptionId: completedRun.redemption.redemptionId, grantId: completedRun.redemption.grantId,
+      codeId: completedRun.redemption.codeId, operationIdSha256: sha256(Buffer.from(completedRun.redemption.operationId)) },
+    report: { reportId: reportReceipt.reportId, operationIdSha256: sha256(Buffer.from(reportReceipt.operationId)) },
+  };
   const replayRunOperations = async (label, value, expectedStatus) => {
     demand(value && UUID.test(value.intentId ?? '') && UUID.test(value.runId ?? '') &&
       value.intentCreatePayload?.operationId && value.intentCreatePayload.operationId === value.createIntentOperationId &&
@@ -618,7 +699,8 @@ async function retryOriginalOperations({ commonCapture, completedRun, reportRece
   'combined_original_bonus_redemption_retry_failed');
   let report = { status: null, replayed: false, reportId: reportReceipt.reportId };
   if (retentionExpired) {
-    report = { status: 'not_submitted_after_expiry', replayed: false, reportId: reportReceipt.reportId };
+    report = { status: 'not_submitted_after_expiry', replayed: false, reportId: reportReceipt.reportId,
+      operationIdSha256: originalReceiptBindings.report.operationIdSha256 };
   } else {
     const reportResponse = await ownerPage.request.post(new URL('/api/owner/reports', commonCapture.publicOrigin).toString(), {
       headers: { origin: commonCapture.publicOrigin, 'content-type': 'application/json' }, data: reportReceipt.payload,
@@ -636,6 +718,7 @@ async function retryOriginalOperations({ commonCapture, completedRun, reportRece
       redemptionId: redemptionBody.redemption.id, grantId: redemptionBody.redemption.grantId,
       codeId: redemptionBody.redemption.codeId },
     report,
+    originalReceiptBindings,
     reportOperationDisposition: retentionExpired ? 'expired_content_not_replayed' : 'same_receipts_replayed' };
 }
 
@@ -643,6 +726,7 @@ function projectRestore(restore) {
   return { schemaVersion: restore.schemaVersion, status: restore.status, boundary: restore.boundary,
     checkpointId: restore.checkpointId, sourceDatabase: restore.sourceDatabase,
     restoreDatabaseName: restore.restoreDatabaseName, checkpoint: restore.checkpoint,
+    creationReceipt: restore.creationReceipt, restoreReceipt: restore.restoreReceipt,
     authoritativeClosure: restore.authoritativeClosure, originalIds: restore.originalIds,
     operationBindings: restore.operationBindings, retention: restore.retention,
     observations: Object.fromEntries(Object.entries(restore.observations ?? {}).map(([key, value]) =>
@@ -704,6 +788,69 @@ function projectObserverSnapshot(snapshot) {
   };
   assertSecretFree(projection, 'combined_observer_projection');
   return projection;
+}
+
+/** Verify the original DB remained unchanged while the restored clones served reads and retries. */
+export function verifyPostRestoreSourceStability({ checkpointSourceAfter, afterRestore, sourceDatabase }) {
+  demand(typeof sourceDatabase === 'string' && /^oid_acceptance_[a-f0-9]{32}$/.test(sourceDatabase),
+    'combined_source_after_restore_database_invalid');
+  const validateSourceSnapshotShape = (snapshot) => {
+    const bindings = snapshot?.operationBindings;
+    const ids = snapshot?.originalIds;
+    const tableFingerprints = snapshot?.tableFingerprints;
+    demand(snapshot?.schemaVersion === 'beta-combined-source-observation/v1' &&
+      snapshot.snapshotBoundary === 'admission_frozen_database_quiescent' &&
+      typeof snapshot.snapshotBoundaryId === 'string' && snapshot.snapshotBoundaryId.length >= 16 &&
+      typeof snapshot.snapshotAt === 'string' && Number.isFinite(Date.parse(snapshot.snapshotAt)) &&
+      HASH.test(snapshot.sourceBuildSha256 ?? '') && tableFingerprints && typeof tableFingerprints === 'object' &&
+      !Array.isArray(tableFingerprints) && REQUIRED_SOURCE_TABLES.every((name) => Object.hasOwn(tableFingerprints, name)) &&
+      HASH.test(snapshot.sequenceSha256 ?? '') && HASH.test(snapshot.databaseTotalsSha256 ?? ''),
+    'combined_source_after_restore_snapshot_incomplete');
+    demand(bindings && typeof bindings === 'object' && !Array.isArray(bindings) &&
+      ['bonusGrantOperationsSha256', 'runOperationReceiptsSha256', 'runGenerationReceiptsSha256',
+        'reportOperationReceiptsSha256'].every((key) => HASH.test(bindings[key] ?? '')) &&
+      ['bonusGrantOperationCount', 'runOperationReceiptCount', 'runGenerationReceiptCount',
+        'reportOperationReceiptCount'].every((key) => Number.isSafeInteger(bindings[key]) && bindings[key] >= 0),
+    'combined_source_after_restore_bindings_missing');
+    demand(ids && typeof ids === 'object' && !Array.isArray(ids) &&
+      ['completedRunIds', 'queuedInterruptedUnknownRunIds', 'operationIds', 'bonusGrantOperationIds',
+        'reportOperationIds'].every((key) => Array.isArray(ids[key]) && ids[key].every((id) => typeof id === 'string')),
+    'combined_source_after_restore_ids_missing');
+  };
+  validateSourceSnapshotShape(checkpointSourceAfter);
+  validateSourceSnapshotShape(afterRestore);
+  const before = projectObserverSnapshot(checkpointSourceAfter);
+  const after = projectObserverSnapshot(afterRestore);
+  demand(before.sourceDatabase === sourceDatabase && after.sourceDatabase === sourceDatabase &&
+    before.observerIdentity.databaseName === sourceDatabase && after.observerIdentity.databaseName === sourceDatabase &&
+    before.observerIdentity.databaseRole === 'oid_observer' && after.observerIdentity.databaseRole === 'oid_observer' &&
+    before.observerIdentity.transactionReadOnly === 'on' && after.observerIdentity.transactionReadOnly === 'on',
+  'combined_source_after_restore_observer_identity_invalid');
+  const comparisons = {
+    sourceBuild: before.sourceBuildSha256 === after.sourceBuildSha256,
+    tables: canonical(before.tableFingerprints) === canonical(after.tableFingerprints),
+    sequences: before.sequenceSha256 === after.sequenceSha256,
+    databaseTotals: before.databaseTotalsSha256 === after.databaseTotalsSha256,
+    financial: before.financialStateSha256 === after.financialStateSha256,
+    benchmark: before.benchmarkStateSha256 === after.benchmarkStateSha256,
+    reports: before.reportStateSha256 === after.reportStateSha256,
+    reportRateLimits: before.reportRateLimitStateSha256 === after.reportRateLimitStateSha256,
+    controlState: before.controlOperationalStateSha256 === after.controlOperationalStateSha256,
+    operationBindings: canonical(before.operationBindings) === canonical(after.operationBindings),
+    originalIds: canonical(before.originalIds) === canonical(after.originalIds),
+    images: canonical(before.imageFiles) === canonical(after.imageFiles),
+    deletionReceipts: canonical(before.reportDeletionReceipts) === canonical(after.reportDeletionReceipts),
+    supportCounts: before.reportCount === after.reportCount && before.uploadCount === after.uploadCount &&
+      before.pendingUploadGcReceipts === after.pendingUploadGcReceipts,
+  };
+  demand(Object.values(comparisons).every(Boolean), 'combined_source_database_changed_after_restores');
+  return {
+    status: 'verified',
+    sourceDatabase,
+    checkpointSourceSnapshotAt: before.snapshotAt,
+    afterRestoreSnapshotAt: after.snapshotAt,
+    comparisons,
+  };
 }
 
 export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress: progressFn }) {
@@ -809,8 +956,11 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
     const sourceInputBytes = await readFile(resolve(commonCapture.repoRoot, ...sourceInputPath.split('/')));
     demand(sha256(sourceInputBytes) === commonCapture.sourceInputsBeforeCheckpoint.sha256,
       'combined_source_inventory_hash_mismatch');
-    const sourceRunIds = [completedCredential.runId, recovery.cases.recoveryDeadlineExhaustion.binding.runId,
-      blockerResult.capture.blockerRun.runId, queue.runId];
+    const sourceRunIds = combinedSourceRunIds({ completedRunId: completedCredential.runId,
+      committedRecoveryRunId: recovery.cases.committedActionRecovery?.binding?.runId,
+      exhaustedRunId: recovery.cases.recoveryDeadlineExhaustion?.binding?.runId,
+      blockerRunId: blockerResult.capture.blockerRun.runId, queuedRunId: queue.runId,
+      collectorCases: recovery.collectorCases });
     const sourceObservation = await readOfficialSourceEvidence(ownerPool, commonCapture, sourceRunIds);
     const sourceObservationFile = await add('source-observations', { schemaVersion: 'bpc-combined-source-observation/v1',
       boundary: 'independent_readonly_oid_observer_before_host_checkpoint', ...sourceObservation });
@@ -970,6 +1120,12 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
     demand(expiredAccess && expiredRetryProof && expiredIdempotency, 'combined_expired_clone_access_or_retry_proof_missing');
     const sourceClosureBytesAtEnd = await readFile(sourceClosurePath);
     demand(sourceClosureBytesBefore.equals(sourceClosureBytesAtEnd), 'combined_source_closure_changed_during_expired_clone');
+    await provider.checkpointAdapters.assertQuiescent({ databaseName: expectedDatabase });
+    const sourceAfterRestore = await provider.checkpointAdapters.observeReadOnly({
+      databaseName: expectedDatabase, boundaryId: `combined-after-restores-${commonCapture.runId}`,
+    });
+    const sourceAfterRestoreProof = verifyPostRestoreSourceStability({ checkpointSourceAfter: checkpoint.source.after,
+      afterRestore: sourceAfterRestore, sourceDatabase: expectedDatabase });
     const sourceOperationsAfterRestore = await observeBefRecoveryOperations({
       committedActionRecovery: recovery.cases.committedActionRecovery,
       recoveryDeadlineExhaustion: recovery.cases.recoveryDeadlineExhaustion,
@@ -990,9 +1146,11 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
       status: 'verified', localStatus: 'observed_partial',
       boundary: 'isolated_local_owner_admin_ui_postgres_private_images_host_sealed_checkpoint_and_two_fresh_restore_clones',
       sourceDatabase: expectedDatabase, recovery, reportCases: { localBoundary: reportCases.localBoundary,
-        selectedScenarios: ['BPC-SC-018', 'BPC-SC-026'], reportId: reportReceipt.reportId,
+        selectedScenarios: ['BPC-SC-018', 'BPC-SC-026'], originalReportId: reportReceipt.reportId,
+        originalReportOperationIdSha256: sha256(Buffer.from(reportReceipt.operationId)), reportId: reportReceipt.reportId,
         reportOperationIdSha256: sha256(Buffer.from(reportReceipt.operationId)), linkedRunId: completedCredential.runId,
-        linkedActionId: completedActionId, imageFilesVerified: restoredReads.observer.uploads },
+        linkedActionId: completedActionId, sourceStatus: reportReceipt.sourceStatus, sourceRevision: reportReceipt.sourceRevision,
+        imageFilesVerified: restoredReads.observer.uploads },
       queueAndPause: { blockerRun: blockerResult.capture.blockerRun, queuedRunId: queue.runId,
         pauseRevision: paused.after.control.revision, pauseOperationId: paused.after.control.operation_id,
         completedWorkerRun: workerRun, pausedQueueObserver: pausedQueue },
@@ -1000,7 +1158,9 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
         inventorySha256: checkpoint.inventorySha256, databaseTotalsSha256: checkpoint.inventory.databaseTotalsSha256,
         operationBindings: checkpoint.operationBindings, originalIds: sourceIds,
         sourceStable: checkpoint.source?.after?.databaseTotalsSha256 === checkpoint.source?.before?.databaseTotalsSha256,
-        sourceSnapshots: checkpointSourceSnapshots,
+        sourceStableAfterRestore: sourceAfterRestoreProof.status === 'verified',
+        sourceSnapshots: { ...checkpointSourceSnapshots, afterRestore: projectObserverSnapshot(sourceAfterRestore) },
+        sourceAfterRestoreProof,
         sourceObserverEvidence: { observer: sourceObservation.observer, runCount: sourceObservation.runs.length,
           verifiedEvidenceFileCount: sourceObservation.verifiedEvidenceFiles.length,
           observationFile: { path: sourceObservationFile.relativePath, sha256: sourceObservationFile.sha256 } },
@@ -1011,6 +1171,12 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
       retentionExpiry: { status: 'verified_local_synthetic_historical_clone', boundary: 'synthetic_31_day_closure_in_second_restored_clone_only',
         syntheticHistoricalClosureUsed: true, sourceClosureUnchanged: true,
         sourceEvidenceSha256: sourceClosure.sourceEvidenceSha256, cloneBetaEndedAt: syntheticBetaEndedAt,
+        cloneRestore: { status: expiredRestoreResult.status, checkpointId: expiredRestoreResult.checkpointId,
+          restoreDatabaseName: expiredRestoreResult.restoreDatabaseName,
+          checkpoint: { databaseDumpSha256: expiredRestoreResult.checkpoint.databaseDumpSha256 },
+          creationReceipt: expiredRestoreResult.creationReceipt, restoreReceipt: expiredRestoreResult.restoreReceipt,
+          writesMayBeEnabled: expiredRestoreResult.writesMayBeEnabled,
+          targetHostAcceptance: expiredRestoreResult.targetHostAcceptance },
         cleanup: expiredRestoreResult.retention.cloneCleanup, cloneObservation: {
           databaseName: expiredRestoreResult.restoreDatabaseName, reportCount: expiredBaseline.reportCount,
           uploadCount: expiredBaseline.uploadCount, imageFileCount: expiredBaseline.imageFiles.length,

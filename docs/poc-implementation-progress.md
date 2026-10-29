@@ -609,3 +609,85 @@ The requested local flood/admin/bonus checks are closed. Actual target Google,
 four native model/client families, trusted recovery integration, combined restore,
 load/queue/public-page acceptance and pilot/release remain open in the checklist.
 Official BPC manifests stay `blocked`; no sync/archive or beta release is claimed.
+
+## 29 October: recovery and combined-backup implementation checkpoint
+
+Commit `2ccac73` records the trusted bounded recovery monitor/authority,
+source-backed S1 evidence, fixed 180-second recovery/refund boundary, and the
+sealed combined checkpoint/restore provider, Windows operator broker, separate
+key recovery and bounded daily/pre-migration rotation. It is an implementation
+checkpoint, not successful combined runtime acceptance.
+
+Capture `1f375cdc-b843-4512-92bb-f709dd0a98f1` independently observed the S1
+run `54e79893-cd1e-4a50-a1c9-1e9d559d4638` complete after the proxy consumed
+the real upstream response and dropped it. The receipt became `observed`, the
+recovery row became `recovered`, and the original environment lease was fenced.
+No response wire hash was invented from the durable BEF measurement. The earlier
+attempt `01abb409-11ac-445e-9a04-fd4ed74feb14` recovered its receipt but blocked
+grading; it remains failed evidence rather than being relabelled successful.
+
+The combined capture then stopped before the exhaustion run: the worker-funding
+fixture required the owner's total bonus balance to equal the newly issued lot.
+The first run left 66,666 units; a second 100,000-unit redemption correctly made
+the total 166,666. This exposed an incorrect fixture assertion, not a missing
+grant or an exercised recovery timeout. Its recorded wrapper reason is
+`recovery_exhaustion_terminal_not_captured`. No combined backup was produced by
+that attempt. The corrected fixture verifies the exact before/after delta and
+the new grant's own ledger lineage.
+
+Separately, the concrete dump/restore provider copied 88 tables / 124 rows from
+the stopped earlier source to fresh database
+`oid_restore_bfc5ce74491f40529dc880dc05ebbb72`. Independent source-before,
+restored and source-after fingerprints and sequences matched, with totals hash
+`9d6d0a8bde61ae459d4d303cc46889dfa2f4444481e75601c61bae78f0a3317f`.
+That source contained no reports/screenshots, so this remains database-provider
+evidence only. The full combined screenshot/application/retry rehearsal and
+the remaining chain-collector recovery paths are being checked separately.
+
+### Subsequent recovery attempts (29 October)
+
+Capture `02a9e632-6993-43a7-a902-c022c9d686d5` retained a complete core recovery
+stage under `artifacts/runs/beta-platform-recovery-stage/`. Independent raw replay
+verifies the original settled S1 action, fixed recovery window, ungraded exhausted
+run, one original-source bonus refund, exact fence/claim/slot release, and actual
+API restart. The S4 collector then reconstructed its lost response from the
+selected BEF operation/measurement and matching RPC receipt/cost. Automatic
+grading and fencing completed, but the capture stopped at an invalid harness
+assumption that the owner had no historical refunds. The corrected assertion
+preserves the entire owner-money fingerprint, compares the refund count with
+the admission baseline, and additionally rejects any refund linked to this run.
+The S4 source evidence has no invented raw HTTP response hash or status.
+
+The raw reader also now checks the cancellation event's actual fence hash instead
+of requiring that field on a separate failure event. A restart may begin after
+the committed-response loss and overlap incident persistence; its health check
+must complete within the original recovery window. Negative tests reject a
+restart before the fault, wholly before recovery, or after the fixed deadline.
+
+Fresh capture `dee69b82-f980-45d2-a7ad-091f9d7393ba` independently completed its
+first S1 recovery, but the exhausted case did not finalize after API restart.
+It remains failed: receipt/recovery stayed unknown, no refund/fence was claimed,
+and bounded harness cleanup requested owner cancellation. Its database and
+original environment bindings are retained. Code inspection found a separate
+startup defect: the server ignored a false coordinator advisory-lock acquisition,
+although that lease object could never become active afterward. That defect is
+being repaired with bounded fresh-instance retries and fail-closed startup;
+the historical capture alone does not prove lock contention caused its failure.
+Neither attempt reached a combined checkpoint or passed the full target gate.
+
+The R23 database records six recovery-observation events after restart; therefore
+startup lock contention is not established as its cause. The observer driver used
+the default exponential reconnect delay, capped at 20 seconds per attempt.
+Its reconnect backoff is now 500 ms;
+an actual TCP-proxy regression resets twelve PostgreSQL connections twice, then
+verifies a real `bef_observer` read-only repeatable-read transaction in each
+cycle. Separately, the monitor now returns expired run IDs for fencing before
+performing another source read; the isolated PostgreSQL regression verifies zero
+observer calls, no inferred receipt, no grade and no refund at that transition.
+
+A guarded production-coordinator resume of the exact R23 database, run and
+preparation completed the pre-existing owner cancellation in one tick. The
+original preparation is fenced, claim released and active slot count zero.
+The original action remains unknown, with no new action, intent, run, charge,
+grade or platform refund; owner-voluntary cancellation is preserved. Capture
+and attempt file hashes remain unchanged. This cleanup does not promote R23.

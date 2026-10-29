@@ -290,9 +290,12 @@ def _make_result(root: Path) -> dict:
             "terminalEvents": [{"event_type": "run.failed.platform_recovery_exhausted",
                                 "action_id": exhausted_action["actionId"], "operation_id": exhausted_action["ownerOperationId"],
                                 "evidence_hash": LATEST_EVIDENCE, "bonus_refunded_units": refund_units,
-                                "cash_refunded_units": "0", "fence_evidence_hash": "8" * 64}],
+                                "cash_refunded_units": "0"},
+                               {"event_type": "run.cancelled.after_start", "reason": "coordinator_platform_failure",
+                                "fence_evidence_hash": "8" * 64}],
         },
     }
+    exhaustion["proxy"]["fault"]["observedAt"] = "2026-10-29T09:59:59.000Z"
     return {
         "schemaVersion": "bpc-platform-recovery-runtime-observation/v1",
         "scenarioId": "BPC-SC-017",
@@ -354,6 +357,27 @@ def test_producer_claim_booleans_cannot_promote_missing_race_negative(tmp_path: 
     facts = derive_observations("BPC-SC-017", result, repository_root=tmp_path)
     assert facts["cancel_before_start"] is False
     assert facts["forged_failure_report"] is False
+
+
+def test_collector_coverage_cannot_relabel_s1_or_omit_chain(tmp_path: Path) -> None:
+    result = _make_result(tmp_path)
+    success = result["cases"]["committedActionRecovery"]
+    result["collectorCases"] = {"S4": copy.deepcopy(success)}
+    with pytest.raises(AssertionError, match="cover both"):
+        derive_observations("BPC-SC-017", result, repository_root=tmp_path)
+    result["collectorCases"]["M3"] = copy.deepcopy(success)
+    with pytest.raises(AssertionError, match="expected training"):
+        derive_observations("BPC-SC-017", result, repository_root=tmp_path)
+
+
+def test_deleted_cancelled_slot_requires_the_original_durable_fence_and_released_claim(tmp_path: Path) -> None:
+    result = _make_result(tmp_path)
+    terminal = result["cases"]["recoveryDeadlineExhaustion"]["finalState"]
+    terminal["slots"] = []
+    assert derive_observations("BPC-SC-017", result, repository_root=tmp_path)["own_slots_fenced"]
+    terminal["terminalEvents"] = [row for row in terminal["terminalEvents"] if row["event_type"] != "run.cancelled.after_start"]
+    with pytest.raises(AssertionError, match="slot-release fence proof"):
+        derive_observations("BPC-SC-017", result, repository_root=tmp_path)
 
 
 def test_replay_rejects_duplicate_source_operation_and_mismatched_refund_lineage(tmp_path: Path) -> None:
@@ -457,6 +481,20 @@ def test_restart_variant_requires_new_process_and_health_receipt(tmp_path: Path)
     assert facts["restart"] is False
 
 
+@pytest.mark.parametrize("started,finished,expected", [
+    ("2026-10-29T09:59:59.500Z", "2026-10-29T10:00:01.000Z", True),
+    ("2026-10-29T09:59:58.000Z", "2026-10-29T10:00:01.000Z", False),
+    ("2026-10-29T09:59:59.100Z", "2026-10-29T09:59:59.500Z", False),
+    ("2026-10-29T10:02:59.000Z", "2026-10-29T10:03:01.000Z", False),
+])
+def test_restart_must_follow_response_loss_and_overlap_recovery_window(
+        tmp_path: Path, started: str, finished: str, expected: bool) -> None:
+    result = _make_result(tmp_path)
+    receipt = result["cases"]["recoveryDeadlineExhaustion"]["recovery"]["restartReceipt"]
+    receipt.update(startedAt=started, finishedAt=finished)
+    assert derive_observations("BPC-SC-017", result, repository_root=tmp_path)["restart"] is expected
+
+
 def test_standalone_wrapper_verifies_provenance_and_never_promotes_target_gate(tmp_path: Path) -> None:
     capture = _wrapper(tmp_path, _make_result(tmp_path))
     replay = verify_local_recovery_capture(capture, repository_root=tmp_path)
@@ -470,4 +508,3 @@ def test_standalone_wrapper_verifies_provenance_and_never_promotes_target_gate(t
     capture["provenance"]["inputHashesAfter"]["src/runtime.mjs"] = "0" * 64
     with pytest.raises(AssertionError, match="identical source inventory"):
         verify_local_recovery_capture(capture, repository_root=tmp_path)
-

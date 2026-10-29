@@ -6,11 +6,85 @@ import json
 import pytest
 
 from .beta_poc_combined_restore_verifier import (
-    REQUIRED_TABLES, _business_unchanged, _file, _hash, _snapshot,
+    REQUIRED_TABLES, _business_unchanged, _file, _hash, _snapshot, _original_source_operation_unchanged,
+    _restore_boundary, _retry_receipts,
     verify_local_combined_restore_capture,
 )
 
 DATABASE = "oid_restore_" + "a" * 32
+
+
+def test_restore_requires_the_actual_hex_host_job_and_original_dump_receipts():
+    checkpoint_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    common = {"schemaVersion": "beta-backup-host-result/v1", "status": "complete",
+              "databaseName": DATABASE, "checkpointId": checkpoint_id, "creationJobId": "b" * 32}
+    restore = {"status": "verified_unserved", "writesMayBeEnabled": False, "targetHostAcceptance": "not_run",
+               "checkpointId": checkpoint_id, "restoreDatabaseName": DATABASE,
+               "checkpoint": {"databaseDumpSha256": "d" * 64},
+               "creationReceipt": {**common, "jobId": "b" * 32, "kind": "create_restore_database", "createdFresh": True},
+               "restoreReceipt": {**common, "status": "restored", "jobId": "c" * 32, "kind": "pg_restore", "restored": True,
+                                  "dumpSha256": "d" * 64}}
+    _restore_boundary(restore, checkpoint_id)
+    for section, key, value in (("creationReceipt", "createdFresh", False),
+                                ("restoreReceipt", "creationJobId", "e" * 32),
+                                ("restoreReceipt", "dumpSha256", "e" * 64),
+                                ("restoreReceipt", "databaseName", "oid_restore_" + "e" * 32)):
+        changed = deepcopy(restore)
+        changed[section][key] = value
+        with pytest.raises(ValueError, match="restore_"):
+            _restore_boundary(changed, checkpoint_id)
+    restore["writesMayBeEnabled"] = True
+    with pytest.raises(ValueError, match="restore_not_verified_unserved"):
+        _restore_boundary(restore, checkpoint_id)
+
+
+def test_successful_replayed_http_responses_cannot_substitute_original_receipt_ids():
+    bindings, replay = {}, {}
+    for name in ("recoveryRun", "blockerRun", "queuedRun"):
+        bindings[name] = {"intentId": name + "-intent", "runId": name + "-run",
+                          "intentOperationIdSha256": "a" * 64, "acceptOperationIdSha256": "b" * 64}
+        replay[name] = {"intent": {"status": 200, "replayed": True, "intentId": bindings[name]["intentId"],
+                                    "operationIdSha256": "a" * 64},
+                        "accept": {"status": 200, "replayed": True, "runId": bindings[name]["runId"],
+                                   "operationIdSha256": "b" * 64,
+                                   "runStatus": "queued" if name == "queuedRun" else "completed"}}
+    bindings["bonusRedemption"] = {"redemptionId": "redemption", "grantId": "grant", "codeId": "code",
+                                    "operationIdSha256": "c" * 64}
+    bindings["report"] = {"reportId": "report", "operationIdSha256": "d" * 64}
+    for name in ("bonusRedemption", "report"):
+        replay[name] = {**bindings[name], "status": 200, "replayed": True}
+    replay["originalReceiptBindings"] = bindings
+    _retry_receipts(replay)
+    for name, kind, key in (("recoveryRun", "accept", "runId"), ("blockerRun", "intent", "intentId"),
+                             ("queuedRun", "accept", "operationIdSha256")):
+        changed = deepcopy(replay)
+        changed[name][kind][key] = "e" * 64
+        with pytest.raises(ValueError, match="original_run_retry_not_bound"):
+            _retry_receipts(changed)
+    for name, key in (("bonusRedemption", "grantId"), ("report", "reportId")):
+        changed = deepcopy(replay)
+        changed[name][key] = "substituted"
+        with pytest.raises(ValueError, match="retry_not_bound"):
+            _retry_receipts(changed)
+    replay["report"].update(status="not_submitted_after_expiry", replayed=False)
+    _retry_receipts(replay, expired=True)
+
+
+def test_restore_cannot_substitute_original_source_request_or_unfence_generation():
+    original = {"operationId": "original", "environmentId": "env-a", "generationId": "generation",
+                "participantIdSha256": "a" * 64, "idempotencyKeySha256": "b" * 64,
+                "requestSha256": "c" * 64, "operationKind": "transfer", "status": "settled",
+                "transactionHash": "0x" + "d" * 64, "receiptStatus": "success",
+                "responseSha256": None, "generationStatus": "fenced"}
+    _original_source_operation_unchanged(original, deepcopy(original))
+    for key in original:
+        changed = {**original, key: "substituted"}
+        with pytest.raises(ValueError, match="source_operation_changed"):
+            _original_source_operation_unchanged(original, changed)
+        missing = deepcopy(original)
+        del missing[key]
+        with pytest.raises(ValueError, match="source_operation_changed"):
+            _original_source_operation_unchanged(original, missing)
 
 
 def snapshot():

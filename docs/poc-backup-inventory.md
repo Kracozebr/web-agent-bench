@@ -1,10 +1,92 @@
 # Beta backup inventory verification
 
-Implementation note for BPC-SC-022/026. This file describes the implemented file
-verifier and local report-aware rehearsals. The results below are bounded local
-evidence, not a passed backup or restore gate. Daily scheduling,
-off-host recovery, target-host acceptance, and complete benchmark/bonus restoration
-remain unverified.
+Implementation note for BPC-SC-022/026. This file describes the v1 file verifier,
+the v2 combined checkpoint provider and local report-aware rehearsals. The results
+below are bounded local evidence, not a passed backup or restore gate. The latest
+combined acceptance attempt did not reach the backup phase, so full browser-to-
+PostgreSQL restore and retry evidence is still pending. The callable daily rotation
+implementation has focused local checks, but installation under a selected host
+scheduler, unattended daily operation, off-host recovery, target-host acceptance,
+and complete benchmark/bonus restoration remain unverified.
+
+## Current combined v2 provider
+
+`infrastructure/owner-identity/beta-backup-local.mjs` exposes
+`createLocalCombinedBackup(...)` and `runLocalCombinedBackupSchedule(...)`. The
+schedule entry accepts `requestedKind: 'daily'` or `'pre_migration'`, calls the
+same consistent-checkpoint provider, verifies the published source evidence, and
+applies the journaled local rotation policy (seven daily/retention-sanitized
+checkpoints plus the latest pre-migration checkpoint). It is a callable API, not
+a standalone scheduler command: the caller must provide the source and observer
+database URLs, private-data and closure paths, official evidence references,
+source-build hash, runtime-secret callback, and supervised API stop/restart
+callbacks. No OS timer or service registration is installed by this module.
+
+The runner-side call shape is:
+
+```js
+await runLocalCombinedBackupSchedule(providerOptions, { requestedKind: 'daily' });
+```
+
+`providerOptions` must be created by a supervised caller that already owns the
+source API lifecycle and secret provider; this snippet is not a ready-to-run CLI.
+Initialize the operator key once, then run exactly one broker process for the
+shared job root:
+
+```powershell
+$repoRoot = (Resolve-Path '.').Path
+$operatorRoot = Join-Path $repoRoot '.local/beta-backup-operator'
+$recoveryPrivate = Join-Path $operatorRoot 'operator/operator-recovery-private.dpapi'
+$recoveryPublic = Join-Path $operatorRoot 'operator/operator-recovery-public.pem'
+$hostBroker = Join-Path $repoRoot 'infrastructure/owner-identity/beta-backup-host.ps1'
+$composeFile = Join-Path $repoRoot 'infrastructure/owner-identity/compose.yaml'
+
+pwsh -NoLogo -NoProfile -File $hostBroker `
+  -InitializeRecoveryKey -BackupRoot $operatorRoot `
+  -RecoveryPrivateKeyPath $recoveryPrivate -RecoveryPublicKeyPath $recoveryPublic
+
+$jobRoot = Join-Path $repoRoot '.local/beta-backup-jobs'
+pwsh -NoLogo -NoProfile -File $hostBroker `
+  -RunJobBroker -JobRoot $jobRoot -BackupRoot $operatorRoot `
+  -RecoveryPrivateKeyPath $recoveryPrivate -ComposeFile $composeFile
+```
+
+The v2 bundle contains one authenticated encrypted `checkpoint.bundle.enc`; its
+payload includes the custom-format PostgreSQL dump, committed private screenshots,
+official evidence files, read-only source snapshots, reconciliation record, and a
+copy of the authoritative closure sidecar. The external `inventory.json` binds
+the sealed payload, source snapshot, report/bonus/run operation counts and hashes,
+and checkpoint kind. The separate recovery envelope contains the random bundle
+key and the runtime recovery settings needed by the restored API, encrypted to the
+operator RSA public key. It is stored outside the bundle. The operator private
+RSA key is protected with Windows DPAPI `CurrentUser` in
+`.local/beta-backup-operator/operator/operator-recovery-private.dpapi`; the public
+key is at the sibling `operator-recovery-public.pem` path. This design was
+interop-checked under the same Windows user profile. It does not establish
+cross-user or off-host key recovery.
+
+The runtime submits fixed job records beneath the workspace-shared
+`.local/beta-backup-jobs/<checkpoint-id>/` bridge root. A single supervised host
+process runs `infrastructure/owner-identity/beta-backup-host.ps1 -RunJobBroker`
+with absolute `-JobRoot`, `-BackupRoot` (the operator root),
+`-RecoveryPrivateKeyPath`, and `-ComposeFile` paths. The broker accepts only the
+fixed `pg_dump`, fresh restore-database creation, `pg_restore`, database-existence,
+and recovery-material operations; it does not run caller-provided shell commands.
+Its restore path creates only a new guarded `oid_restore_<32 hex>` database and
+grants the independent observer read access there. The bundle, screenshot data,
+and runtime staging live on the named Docker volume mounted at
+`/local-report-captures`; the Windows host bridge carries bounded job inputs and
+outputs and a temporary private plaintext database dump while it is streamed
+into the sealed bundle. The provider removes that dump after sealing; it does
+not export a plaintext screenshot directory. Do not start a second
+broker for the same job root.
+
+The combined browser/restore flow is still pending. No result currently proves
+that a bonus-funded worker run, linked report and screenshot, grade/ledger state,
+restored owner/admin UI, same-ID operation retries, or expiry-only clone cleanup
+all survive one combined checkpoint and two restored instances. Earlier report
+and expiry rehearsals below remain separate evidence and are not combined-gate
+acceptance.
 
 The operator can verify an existing private bundle without sending mutations:
 
@@ -19,7 +101,7 @@ paths or expired unsanitized report content. It never enables restored writes.
 The closure state must come from the current operator state outside the restored
 database; using a pre-closure backup's state would defeat the retention check.
 
-The inventory uses `beta-backup-inventory/v1` and contains a checkpoint UUID,
+Legacy unsealed bundles use `beta-backup-inventory/v1` and contain a checkpoint UUID,
 UTC `capturedAt`, kind (`daily`, `pre_migration`, `retention_sanitized`),
 `failureDomain: same_host`, source build SHA-256, reconciliation-evidence and
 database-total SHA-256 references, `betaEndedAt` (UTC or null), deletion receipts,
@@ -36,12 +118,13 @@ sanitized inventory, no screenshots, completed deletion receipts and a
 `sanitizationEvidenceSha256`. A matching hash reference is not proof that SQL
 content was sanitized: the isolated database restore must still verify that.
 
-`planBackupRotation` returns identifiers to retain/retire without deleting files.
-It bounds daily/sanitized checkpoints to seven plus the latest pre-migration
-checkpoint, and excludes unsanitized copies past an authoritative report deadline.
-The operator must finish and verify the new consistent/sanitized checkpoint and
-carry out retirement separately. Same-host copies do not protect against loss
-of the host or disk.
+The pure `planBackupRotation` helper returns identifiers to retain/retire without
+deleting files. The `runLocalCombinedBackupSchedule` entry journals checkpoint creation,
+verification, retirement, and restart reconciliation; it bounds daily/sanitized
+checkpoints to seven plus the latest pre-migration checkpoint and excludes
+unsanitized copies past an authoritative report deadline. Its behavior has
+focused unit coverage, but no host timer is installed or unattended daily run
+measured. Same-host copies do not protect against loss of the host or disk.
 
 Reproducible file-integrity tests:
 
@@ -49,7 +132,7 @@ Reproducible file-integrity tests:
 ./infrastructure/owner-identity/tool.ps1 node --test infrastructure/owner-identity/beta-backup-inventory.test.mjs
 ```
 
-Four tests passed in the pinned Docker runtime. Their synthetic dump/image bytes
+Six tests passed in the pinned Docker runtime. Their synthetic dump/image bytes
 test file integrity, containment, retention and rotation only. They establish no
 database consistency, recovered ledger totals, operation idempotency, measured
 restore duration or RPO.
