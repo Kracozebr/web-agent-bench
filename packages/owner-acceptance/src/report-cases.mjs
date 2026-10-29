@@ -54,6 +54,8 @@ async function ownerReportFormState(page) {
     const title = form.querySelector("#report-title");
     const body = form.querySelector("#report-body");
     const runId = form.querySelector("#report-run");
+    const taskId = form.querySelector("#report-task");
+    const actionId = form.querySelector("#report-action");
     const fileInput = form.querySelector("#report-image");
     const submit = form.querySelector('button[type="submit"]');
     const file = fileInput?.files?.[0] ?? null;
@@ -64,6 +66,8 @@ async function ownerReportFormState(page) {
       bodyFilled: Boolean(body?.value.trim()),
       bodyLength: body?.value.length ?? 0,
       runContextFilled: Boolean(runId?.value.trim()),
+      taskContextFilled: Boolean(taskId?.value.trim()),
+      actionContextFilled: Boolean(actionId?.value.trim()),
       screenshotSelected: Boolean(file),
       screenshotTypeAllowed: file ? ["image/png", "image/jpeg", "image/webp"].includes(file.type) : null,
       screenshotWithinLimit: file ? file.size > 0 && file.size <= 5 * 1024 * 1024 : null,
@@ -1257,8 +1261,11 @@ async function waitResponse(page, predicate) {
   return page.waitForResponse(predicate, { timeout: 15000 });
 }
 
-async function captureOwnerReport({ page, capture, title, body, linkedRunId, imageBuffer, trace, captureRoot, browserErrors,
+export async function captureOwnerReport({ page, capture, title, body, linkedRunId, linkedTaskId, linkedActionId,
+  imageBuffer, trace, captureRoot, browserErrors,
   onAcceptedReport }) {
+  assert(!linkedTaskId || linkedRunId, "A linked report task requires a linked run");
+  assert(!linkedActionId || linkedRunId, "A linked report action requires a linked run");
   await page.goto("/reports", { waitUntil: "domcontentloaded" });
   const requestOffset = capture.capture.requests.length;
   await page.getByLabel("Title", { exact: true }).fill(title);
@@ -1266,6 +1273,8 @@ async function captureOwnerReport({ page, capture, title, body, linkedRunId, ima
   if (linkedRunId) {
     await page.getByText("Optional run context").click();
     await page.getByLabel("Run ID").fill(linkedRunId);
+    if (linkedTaskId) await page.getByLabel("Task ID").fill(linkedTaskId);
+    if (linkedActionId) await page.getByLabel("Action ID").fill(linkedActionId);
   }
   if (imageBuffer) await page.locator("#report-image").setInputFiles({ name: "private-fixture.png", mimeType: "image/png", buffer: imageBuffer });
   const responsePromise = waitResponse(page, (response) => new URL(response.url()).pathname === REPORTS && response.request().method() === "POST");
@@ -1287,7 +1296,9 @@ async function captureOwnerReport({ page, capture, title, body, linkedRunId, ima
   let requestPayload;
   try { requestPayload = response.request().postDataJSON(); } catch { requestPayload = null; }
   assert(requestPayload && requestPayload.operationId === operation && requestPayload.title === title
-    && requestPayload.body === body && Array.isArray(requestPayload.imageUploadIds),
+    && requestPayload.body === body && requestPayload.runId === (linkedRunId ?? undefined)
+    && requestPayload.taskId === (linkedTaskId ?? undefined) && requestPayload.actionId === (linkedActionId ?? undefined)
+    && Array.isArray(requestPayload.imageUploadIds),
   "The accepted report request body could not be correlated to the browser operation");
   const successNotice = page.getByRole("status").filter({ hasText: payload.replayed ? "Your report receipt was recovered." : "Your report was submitted." });
   await successNotice.waitFor({ state: "visible", timeout: 15000 });
@@ -1392,7 +1403,9 @@ export async function runReportCases({
     assert(image.length > 0 && image.length <= 5 * 1024 * 1024, "The actual browser screenshot is outside the upload bound");
     const linkedTitle = "Report with owned run context";
     const linked = await captureOwnerReport({ page: ownerPage, capture: ownerCapture, title: linkedTitle,
-      body: "The test reports a non-secret local fixture observation.", linkedRunId: runFixture.runId, imageBuffer: image,
+      body: "The test reports a non-secret local fixture observation.", linkedRunId: runFixture.runId,
+      linkedTaskId: genuineRunContext ? runFixture.taskId : undefined,
+      linkedActionId: genuineRunContext ? runFixture.actionId : undefined, imageBuffer: image,
       trace: ownerTrace, captureRoot, browserErrors: ownerPageErrors,
       onAcceptedReport: genuineRunContext ? onAcceptedReport : undefined });
     const unlinked = await captureOwnerReport({ page: ownerPage, capture: ownerCapture, title: "Report without run context",

@@ -743,3 +743,26 @@ platform `cancellation_requested`/fenced `cancelled`/unresolved `unknown`/final
 margin, and retains the separate final proof (19/19 tests). Owner/revocation,
 foreign, success and premature terminal states remain rejected. This attempt
 remains failed evidence rather than being relabelled successful.
+
+On commit `87d287f`, capture `a8dd2394-0b24-4a60-9780-023c2cfe0248` completed
+the core recovery/exhaustion, S4 and M3 worker paths. M3 genuine artifact SHA-256
+is `18d02b6b2b86e7fc7602a009ad2d475ce7ad255ad56911ac5e948cb00cce854e`;
+its known grade is 1/1, with zero original-action resubmissions. Its two code-derived
+bonus lots total 66,667 units, with two reserve/debit pairs and no cash or run refund.
+Root independently compared all 12 event JSON hashes from observation packet
+`69a29c243c0033805c886fe140956054fe2f02e3f92bebbe529f4e5081284b55`
+with the actual BEF rows under `bef_observer`; every hash matches. The complete
+combined run then stopped because the browser report helper populated only Run ID,
+although the combined case requires the real Task ID and Action ID too. Those
+existing UI controls are now filled and the accepted request bindings checked
+(23/23 focused report/recovery tests). The complete recovery stage is now saved
+separately before report/backup work, preserving its independent replay boundary.
+
+Separately, the exact pending R26 refund was resumed by normal coordinator ticks
+after its API had stopped. A subsequent independent read-only verifier confirms
+original receipt `observed`, run `failed`, recovery `refunded`, exactly 180,000 ms
+exclusion, one 33,334-unit refund to the original bonus grant, and zero grade/cash
+refund. Its observed-receipt hash binds to the observed recovery row; the separate
+exhaustion hash binds to recovery latest/refund/audit/failure event. Original
+capture files and run/intent/action/claim counts remain unchanged. The failed R26
+wrapper is retained as failed evidence; this is a separate resume/readback proof.

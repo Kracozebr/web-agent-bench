@@ -898,6 +898,26 @@ export async function observeBefRecoveryOperations(cases) {
   } finally { await pool.end(); }
 }
 
+async function saveRecoveryStage(commonCapture, result, stageRoot, phase, progressFn) {
+  const inputHashesAfter = {};
+  for (const [path, expectedHash] of Object.entries(commonCapture.sourceInputsBefore)) {
+    const verified = await verifyEvidenceReference(commonCapture.repoRoot, { path, sha256: expectedHash }, 'recovery_source_stability');
+    inputHashesAfter[path] = verified.sha256;
+  }
+  const directory = resolve(commonCapture.repoRoot, 'artifacts/runs', stageRoot, commonCapture.runId);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const capture = { schemaVersion: 'beta-platform-recovery-capture/v1', captureId: commonCapture.runId,
+    boundary: 'isolated_local_browser_backend_postgres_bef_files', result,
+    provenance: { databaseIsolation: commonCapture.databaseIsolation, inputHashesBefore: commonCapture.sourceInputsBefore,
+      inputHashesAfter, sourceStableDuringRun: true }, targetHostAcceptance: 'blocked_target_not_selected' };
+  assertSecretFree(capture, 'recovery-stage-capture');
+  const bytes = Buffer.from(`${JSON.stringify(capture, null, 2)}\n`);
+  const path = resolve(directory, 'capture.json');
+  await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
+  await progress(progressFn, { phase, captureId: commonCapture.runId,
+    path: relative(commonCapture.repoRoot, path).split(sep).join('/'), sha256: hash(bytes) });
+}
+
 export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress: progressFn,
   onGenuineRunCompleted }) {
   demand(commonCapture?.databaseIsolation?.databaseName && /^oid_acceptance_[a-f0-9]{32}$/.test(commonCapture.databaseIsolation.databaseName),
@@ -923,22 +943,7 @@ export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, 
       'forged_platform_failure_authority_negative', 'target_host_recovery_authority'] };
   // Preserve the independently replayable recovery boundary before later report
   // and backup work, so a later restore failure cannot erase this raw evidence.
-  const inputHashesAfter = {};
-  for (const [path, expectedHash] of Object.entries(commonCapture.sourceInputsBefore)) {
-    const verified = await verifyEvidenceReference(commonCapture.repoRoot, { path, sha256: expectedHash }, 'recovery_source_stability');
-    inputHashesAfter[path] = verified.sha256;
-  }
-  const directory = resolve(commonCapture.repoRoot, 'artifacts/runs/beta-platform-recovery-stage', commonCapture.runId);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const stageCapture = { schemaVersion: 'beta-platform-recovery-capture/v1', captureId: commonCapture.runId,
-    boundary: 'isolated_local_browser_backend_postgres_bef_files', result: coreResult,
-    provenance: { databaseIsolation: commonCapture.databaseIsolation, inputHashesBefore: commonCapture.sourceInputsBefore,
-      inputHashesAfter, sourceStableDuringRun: true }, targetHostAcceptance: 'blocked_target_not_selected' };
-  assertSecretFree(stageCapture, 'recovery-stage-capture');
-  const stageBytes = Buffer.from(`${JSON.stringify(stageCapture, null, 2)}\n`);
-  await writeFile(resolve(directory, 'capture.json'), stageBytes, { flag: 'wx', mode: 0o600 });
-  await progress(progressFn, { phase: 'recovery_stage_capture_saved', captureId: commonCapture.runId,
-    path: relative(commonCapture.repoRoot, resolve(directory, 'capture.json')).split(sep).join('/'), sha256: hash(stageBytes) });
+  await saveRecoveryStage(commonCapture, coreResult, 'beta-platform-recovery-stage', 'recovery_stage_capture_saved', progressFn);
   await progress(progressFn, { phase: 'recovery_collector_case_started', taskId: 'S4' });
   const collectorS4 = await runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
     { taskId: 'S4', requirePassingEvaluation: true });
@@ -949,5 +954,10 @@ export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, 
     { taskId: 'M3', requirePassingEvaluation: true });
   await progress(progressFn, { phase: 'recovery_collector_case_verified', taskId: 'M3',
     runId: collectorM3.binding.runId, actionId: collectorM3.action.actionId });
-  return { ...coreResult, collectorCases: { S4: collectorS4, M3: collectorM3 } };
+  const result = { ...coreResult, collectorCases: { S4: collectorS4, M3: collectorM3 } };
+  // AICODE-NOTE: Keep the complete replayable result even if a later report or
+  // restore assertion fails. This is a separate immutable artifact from the core stage.
+  await saveRecoveryStage(commonCapture, result, 'beta-platform-recovery-complete-stage',
+    'recovery_complete_stage_capture_saved', progressFn);
+  return result;
 }
