@@ -702,3 +702,31 @@ preparations; no refund or grade was claimed for the failed exhausted case.
 The reader now proves the entire persisted recovery window is contained in the
 actual outage interval instead of incorrectly demanding another full 180-second
 callback wait after API restart (25/25 raw-reader tests pass).
+
+Capture `5dda14a3-81c7-4cd9-9400-97f606b667c9` on commit `07428dc` passed the
+core recovery/exhaustion stage and full S4 worker completion/UI/funding checks.
+The retained core artifact SHA-256 is
+`4ba48dcd2f682d37b12fd8b4246e13e7f3bd2f4da9ad432a4f82b0c13f66d5e4`.
+Raw replay and independent file review verify one original submission, exactly
+180,000 ms recovery/exclusion, one 33,334-unit bonus refund and no exhausted-run
+grade. S4 evidence SHA-256 is
+`60d504672293d37a4d0e01e97a6bf3b255b453a30b060a03f10b21006919f14b`.
+Its newest issued lot remains unused; the run correctly consumes an earlier
+code-derived lot. The worker-funding proof now verifies all consumed lots against
+their own code/redemption/claim records and exact reserve/debit totals.
+
+M3 reconciled the original approve and observed the subsequent swap/unwrap, but
+could not publish its observation packet (`capture_evidence_unavailable`), so
+the full capture remains blocked. An initial token/spender-shape hypothesis was
+rejected: the collector already projects resolved public-address responses into
+logical selections. The reproduced defect is the selected-event contract: the
+collector emits the original event's `eventJsonSha256`, while the writer's exact
+packet validator and fixture omitted that key. The fixture now reproduces the
+emitted shape and the validator requires a valid SHA-256. Real-writer tests cover
+acceptance/replay and malformed hashes; negative cases recompute the surrounding
+census hashes so rejection cannot be attributed merely to stale outer hashes.
+The focused suite passes 22 tests with one existing retained-fixture skip; the
+owner-identity typecheck passes. Token/credential guards remain unchanged.
+Normal cancellation fenced the M3 preparation;
+the failed capture and database are retained and no M3 grade is claimed. The
+earlier all-eight/full12 captures remain historical proofs for their own builds.

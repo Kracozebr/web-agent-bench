@@ -388,12 +388,13 @@ function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
   const eventIds = new Set<string>();
   const eventSequences = new Set<string>();
   for (const item of census.selectedEvents) {
-    const event = requireRecord(item, ['eventId', 'eventSequence', 'operationId', 'eventKind', 'transactionHash', 'eventPayload']);
+    const event = requireRecord(item, ['eventId', 'eventSequence', 'operationId', 'eventKind', 'eventJsonSha256', 'transactionHash', 'eventPayload']);
     const id = String(event.operationId);
     if (!operations.has(id) || !/^[0-9a-f-]{36}$/i.test(String(event.eventId)) || eventIds.has(String(event.eventId)) ||
         !dec(event.eventSequence) || eventSequences.has(String(event.eventSequence)) ||
         !['selected_action_bound', 'prestate_observed', 'original_tx_hash_bound', 'receipt_finalized'].includes(String(event.eventKind)) ||
-        (event.transactionHash !== null && !normTx(event.transactionHash)) || !isRecord(event.eventPayload)) fail('packet_invalid');
+        !HASH.test(String(event.eventJsonSha256)) || (event.transactionHash !== null && !normTx(event.transactionHash)) ||
+        !isRecord(event.eventPayload)) fail('packet_invalid');
     eventIds.add(String(event.eventId));
     eventSequences.add(String(event.eventSequence));
     const list = eventKinds.get(id) ?? [];

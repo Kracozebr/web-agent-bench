@@ -159,7 +159,8 @@ export function makeChainCaptureFixture(taskId:'M3'|'M4'|'H2'):Scenario{
    ['receipt_finalized',transactionHash,{outcome:'success',measurementSha256:measurementSha}]];
   for(let j=0;j<payloads.length;j++){
    const [eventKind,eventTx,eventPayload]=payloads[j]!;
-   selectedEvents.push({eventId:id(100+index*4+j),eventSequence:String(index*4+j+1),operationId:befOp,eventKind,transactionHash:eventTx,eventPayload});
+   selectedEvents.push({eventId:id(100+index*4+j),eventSequence:String(index*4+j+1),operationId:befOp,eventKind,
+    eventJsonSha256:sha(canonicalTaskJson(eventPayload)),transactionHash:eventTx,eventPayload});
   }
   const principal=command.kind==='wrap'?['ETH',String(command.amountWei)]:command.kind==='unwrap'?['WETH',String(command.amountWei)]:
    command.kind==='swap'?[String(command.inputAssetId),String(command.amountInUnits)]:command.kind==='transfer'?['USDC',String(command.amountUnits)]:[null,'0'];

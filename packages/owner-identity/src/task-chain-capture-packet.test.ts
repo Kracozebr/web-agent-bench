@@ -189,6 +189,31 @@ test('packet rejects source-measurement receipt gas that differs from cost and R
  assert.throws(()=>projection(wrongPrice),ChainCapturePacketError);
 });
 
+test('chain census requires the original BEF event JSON hash on every selected event',()=>{
+ const fixture=makeChainCaptureFixture('M3');
+ const before=fixture.packet.bef.before as Record<string,unknown>;
+ const events=before.selectedEvents as Record<string,unknown>[];
+ assert.ok(events.length>0);
+ assert.ok(events.every((event)=>typeof event.eventJsonSha256==='string'&&/^[0-9a-f]{64}$/i.test(event.eventJsonSha256)));
+ assert.doesNotThrow(()=>validateTaskChainCapturePacket(fixture.packet,fixture.taskCase));
+
+ const missing=structuredClone(fixture.packet);
+ const missingBefore=missing.bef.before as Record<string,unknown>;
+ const missingEvents=missingBefore.selectedEvents as Record<string,unknown>[];
+ delete missingEvents[0]!.eventJsonSha256;
+ missing.bef.after=structuredClone(missing.bef.before);
+ missing.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(missing.bef.before)).digest('hex');
+ assert.throws(()=>validateTaskChainCapturePacket(missing,fixture.taskCase),ChainCapturePacketError);
+
+ const malformed=structuredClone(fixture.packet);
+ const malformedBefore=malformed.bef.before as Record<string,unknown>;
+ const malformedEvents=malformedBefore.selectedEvents as Record<string,unknown>[];
+ malformedEvents[0]!.eventJsonSha256='not-a-sha256';
+ malformed.bef.after=structuredClone(malformed.bef.before);
+ malformed.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(malformed.bef.before)).digest('hex');
+ assert.throws(()=>validateTaskChainCapturePacket(malformed,fixture.taskCase),ChainCapturePacketError);
+});
+
 test('invalid collector targets return before opening the owner database transaction',async()=>{
  let transactions=0;
  const deps={db:{transaction:async()=>{transactions++;throw new Error('must-not-run')}}} as never;

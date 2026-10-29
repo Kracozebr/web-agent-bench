@@ -1,6 +1,7 @@
 import { makeChainCaptureFixture } from './task-chain-capture-packet.fixture.js';
 import { validPaidDataCapturePacket } from './task-paid-data-capture-packet.fixture.js';
 import { createS3CapturePacketFixture } from './task-s3-capture-packet.fixture.js';
+import { canonicalTaskJson } from './task-release.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink } from 'node:fs/promises';
@@ -347,6 +348,13 @@ test('observation writer accepts retained positive S1/S2/S4 packet shapes withou
 test('observation sink accepts strict chain, paid-data and S3 packets and rejects unknown variants',async()=>{
  const root=await mkdtemp(join(tmpdir(),'bef-new-observation-packets-'));
  try{const {ports}=await makePorts(root);
+  const malformedChain=structuredClone(makeChainCaptureFixture('M3').packet);
+  const malformedBefore=malformedChain.bef.before as unknown as {selectedEvents:Array<Record<string,unknown>>};
+  malformedBefore.selectedEvents[0]!.eventJsonSha256='not-a-sha256';
+  malformedChain.bef.after=structuredClone(malformedChain.bef.before);
+  malformedChain.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(malformedChain.bef.before)).digest('hex');
+  await assert.rejects(ports.evidenceSink.write(malformedChain),
+   (error:Error)=>error.message==='bef_observer_packet_invalid');
   for(const packet of [makeChainCaptureFixture('M3').packet,validPaidDataCapturePacket(),createS3CapturePacketFixture().packet]){
    let retained!: Awaited<ReturnType<typeof ports.evidenceSink.write>>; await assert.doesNotReject(async()=>{retained=await ports.evidenceSink.write(packet);},packet.schemaVersion);assert.match(retained.sha256,/^[0-9a-f]{64}$/);
    assert.deepEqual(await ports.evidenceSink.write(packet),retained);
