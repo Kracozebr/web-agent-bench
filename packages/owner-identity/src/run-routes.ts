@@ -107,7 +107,7 @@ function makeAcceptResultSchema() {
       quotePrice: z.string(), cashCeiling: z.string(), status: z.enum(["queued", "preparing", "running", "cancellation_requested", "cancelled", "expired", "completed", "failed", "unknown", "disqualified"]),
       queuedAt: z.string(), queueDeadline: z.string(), startedAt: z.string().nullable(), overallDeadline: z.string().nullable(), finishedAt: z.string().nullable(),
       terminalReason: z.string().nullable(), cancellationReason: z.string().nullable(), cancellationRequestedAt: z.string().nullable(),
-      cancellationEvidenceHash: z.string().nullable()
+      cancellationEvidenceHash: z.string().nullable(), queueExpiryFencePending: z.boolean()
     }),
     replayed: z.boolean()
   });

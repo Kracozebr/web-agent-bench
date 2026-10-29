@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import postgres from 'postgres';
 import { activeTaskNeedsCancellation, activeTaskNeedsCancellationAfterRecovery, handoffCommittedSuccessor, isResumablePreDispatchPreparation,
   isBoundedSuccessorWindowFailure, isValidSuccessorLocator, leaseGuardedPreparedTaskStartPort,
   predecessorFinishedBeforeOriginalDeadline, successorFailureCancellationReason, parseLocalBefTaskCoordinatorConfig,
-  PostgresLocalCoordinatorLease, taskIndexFromFenceResult, cleanupFailedLocalBefTaskCoordinatorStartup,
-  type CoordinatorReservedSql } from './bef-task-coordinator.js';
+  parseBetaBefTaskCoordinatorConfig,
+  BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY, PostgresLocalCoordinatorLease, taskIndexFromFenceResult, cleanupFailedLocalBefTaskCoordinatorStartup,
+  writeSafeEvidence, type CoordinatorReservedSql } from './bef-task-coordinator.js';
 import type { PreparedTaskStartPort, TaskPreparationRecord } from './task-preparation.js';
 import { sha256CanonicalTaskJson } from './task-release.js';
 
@@ -25,6 +30,19 @@ const policy = {
   resources: [{ resourceId: 'dataset-a', resourceSha256: 'd'.repeat(64), contentType: 'application/json',
     offers: [{ id: 'canonical', amount: '100000' }] }],
 };
+
+test('beta queue policy adds the 24-hour and accepted caps without changing local defaults', () => {
+  assert.equal(BETA_BEF_RUN_SERVICE_POLICY.queueWaitSeconds, 86400);
+  assert.equal(BETA_BEF_RUN_SERVICE_POLICY.maxQueueWaitSeconds, 86400);
+  assert.equal(BETA_BEF_RUN_SERVICE_POLICY.maxPendingIntentsPerOwner, 2);
+  assert.equal(BETA_BEF_RUN_SERVICE_POLICY.maxPendingIntentsGlobal, 30);
+  assert.equal(BETA_BEF_RUN_SERVICE_POLICY.maxAcceptedRunsPerOwner, 2);
+  assert.equal(BETA_BEF_RUN_SERVICE_POLICY.maxAcceptedRunsGlobal, 8);
+  assert.equal(BETA_BEF_RUN_SERVICE_POLICY.executionCapacity, 1);
+  assert.equal(LOCAL_BEF_RUN_SERVICE_POLICY.queueWaitSeconds, 900);
+  assert.equal(LOCAL_BEF_RUN_SERVICE_POLICY.maxQueueWaitSeconds, 3600);
+  assert.equal('maxAcceptedRunsPerOwner' in LOCAL_BEF_RUN_SERVICE_POLICY, false);
+});
 
 test('local coordinator config accepts only a pinned private fork and local BEF endpoints', () => {
   const parsed = parseLocalBefTaskCoordinatorConfig({
@@ -58,6 +76,76 @@ test('local coordinator config accepts only a pinned private fork and local BEF 
     environments: [{ envId: 'bef-env-a', apiBaseUrl: 'http://bef-api:18545',
       observerRpcUrl: 'http://anvil-a:8545', x402Policy: { ...policy, network: 'eip155:1' } }],
   }));
+});
+
+test('beta coordinator config requires private HTTPS BEF endpoints and private secret references', () => {
+  const config = {
+    schemaVersion: 'beta-bef-task-coordinator-config/v1',
+    adminKeyFile: 'secrets/bef-admin-key',
+    sourceRpcUrl: 'https://source-rpc.example',
+    observationPipeline: { schemaVersion: 'local-bef-training-observation/v1',
+      database: { host: 'bef-observer', port: 55432, database: 'bef' }, passwordFile: 'secrets/bef-observer-password' },
+    environments: [{ envId: 'bef-env-a', apiBaseUrl: 'https://bef-api:18545',
+      observerRpcUrl: 'https://anvil-a:8545', x402Policy: policy }],
+  };
+  assert.equal(parseBetaBefTaskCoordinatorConfig(config).environments[0]?.envId, 'bef-env-a');
+  assert.throws(() => parseBetaBefTaskCoordinatorConfig({ ...config,
+    environments: [{ ...config.environments[0]!, apiBaseUrl: 'http://bef-api:18545' }] }), /beta_bef_coordinator_private_https_required/);
+  assert.throws(() => parseBetaBefTaskCoordinatorConfig({ ...config,
+    environments: [{ ...config.environments[0]!, apiBaseUrl: 'https://bef.example.com' }] }), /beta_bef_coordinator_private_https_required/);
+  assert.throws(() => parseBetaBefTaskCoordinatorConfig({ ...config,
+    observationPipeline: { ...config.observationPipeline, database: { ...config.observationPipeline.database, host: '8.8.8.8' } } }),
+  /beta_bef_observer_database_must_be_private/);
+  assert.throws(() => parseBetaBefTaskCoordinatorConfig({ ...config, adminKeyFile: '../outside-key' }));
+});
+
+test('coordinator evidence writes the nested local default and rejects unsafe overrides and symlink escapes', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'bef-coordinator-evidence-'));
+  const projectRoot = join(temporaryRoot, 'project');
+  const outsideRoot = join(temporaryRoot, 'outside');
+  await Promise.all([mkdir(projectRoot), mkdir(outsideRoot)]);
+  try {
+    const fixtureId = '10000000-0000-4000-8000-000000000001';
+    const fenceId = '10000000-0000-4000-8000-000000000002';
+    const fixture = { kind: 'fixture', preparationId: fixtureId, publicPinsSha256: 'a'.repeat(64) };
+    const fence = { kind: 'fence', preparationId: fenceId, leaseState: 'fenced' };
+    const fixtureRef = await writeSafeEvidence(projectRoot, 'preparation', fixtureId, fixture);
+    const fenceRef = await writeSafeEvidence(projectRoot, 'preparation', fenceId, fence);
+
+    assert.match(fixtureRef.path, /^artifacts\/runs\/owner-identity-bef-task-coordinator\/preparation\//);
+    assert.match(fenceRef.path, /^artifacts\/runs\/owner-identity-bef-task-coordinator\/preparation\//);
+    for (const [reference, expected] of [[fixtureRef, fixture], [fenceRef, fence]] as const) {
+      const bytes = await readFile(resolve(projectRoot, reference.path), 'utf8');
+      assert.deepEqual(JSON.parse(bytes), expected);
+      assert.equal(reference.sha256, createHash('sha256').update(bytes).digest('hex'));
+    }
+
+    const betaStyleRef = await writeSafeEvidence(projectRoot, 'preparation', '10000000-0000-4000-8000-000000000003',
+      { kind: 'fixture', preparationId: '10000000-0000-4000-8000-000000000003' }, 'runs');
+    assert.match(betaStyleRef.path, /^runs\/preparation\//, 'single-component manifest evidence paths remain valid');
+
+    for (const invalidDirectory of ['../escape', '..', '.', 'nested/runs', resolve(temporaryRoot, 'absolute')]) {
+      await assert.rejects(writeSafeEvidence(projectRoot, 'preparation', '10000000-0000-4000-8000-000000000004',
+        { kind: 'invalid-path' }, invalidDirectory), /local_bef_coordinator_evidence_path_invalid/);
+    }
+
+    const escapedRoot = join(projectRoot, 'linked-evidence');
+    await symlink(outsideRoot, escapedRoot, 'dir');
+    await assert.rejects(writeSafeEvidence(projectRoot, 'preparation', '10000000-0000-4000-8000-000000000005',
+      { kind: 'symlink-escape' }, 'linked-evidence'), /local_bef_coordinator_evidence_path_invalid/);
+    assert.deepEqual(await readdir(outsideRoot, { recursive: true }), [],
+      'evidence-root symlink rejection must leave the outside tree empty');
+
+    const categoryRoot = join(projectRoot, 'category-linked-evidence');
+    await mkdir(categoryRoot);
+    await symlink(outsideRoot, join(categoryRoot, 'preparation'), 'dir');
+    await assert.rejects(writeSafeEvidence(projectRoot, 'preparation', '10000000-0000-4000-8000-000000000006',
+      { kind: 'category-symlink-escape' }, 'category-linked-evidence'), /local_bef_coordinator_evidence_path_invalid/);
+    assert.deepEqual(await readdir(outsideRoot, { recursive: true }), [],
+      'category symlink rejection must leave the outside tree empty');
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test('local coordinator advisory lease binds to one backend and fails closed when its lock proof disappears', async () => {

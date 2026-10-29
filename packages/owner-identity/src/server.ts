@@ -1,22 +1,37 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
+import multipart from "@fastify/multipart";
+import { resolve } from "node:path";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { getAddress, verifyMessage } from "viem";
 import { allowedAgentRequestHosts, registerAgentRoutes, resolveAgentPrincipal, type AgentRouteDependencies } from "./agents.js";
 import { registerLedgerRoutes } from "./ledger.js";
+import { registerBonusCodeRoutes } from "./bonus-code-routes.js";
+import { registerBetaOperationsRoutes } from "./beta-operations-routes.js";
+import { registerBetaUsageSupportRoutes } from "./beta-usage-support-routes.js";
+import { pinnedBetaClientRegistryFromManifest } from "./beta-usage-support-export.js";
+import { registerSupportReportRoutes } from "./report-routes.js";
+import { registerSupportReportMcpTools } from "./report-mcp.js";
+import { createReportClosureStateStore } from "./report-closure-state.js";
+import { runReportHousekeeping, runReportRetentionCleanup, type ReportServiceDependencies } from "./report-service.js";
+import { REPORT_IMAGE_MAX_INPUT_BYTES } from "./report-images.js";
 import { registerRunIntentMcpTools, registerRunRoutes } from "./run-routes.js";
 import { consumeRunCancellationOutbox, expireQueuedRuns } from "./run-service.js";
 import type { RunServiceDependencies } from "./run-service.js";
-import { unavailableTaskExecutionReadinessProvider } from "./task-release.js";
+import { unavailableTaskExecutionReadinessProvider, type TaskExecutionReadiness } from "./task-release.js";
+import { registerPublicRankedRoutes } from "./public-ranked.js";
 import { createPostgresTaskReleaseProvider, createPostgresTaskReleaseQuerySource } from "./task-store.js";
 import { closeExpiredTaskActions } from "./task-action-service.js";
 import { cleanupFailedLocalBefTaskCoordinatorStartup, createLocalBefTaskCoordinator,
-  LOCAL_BEF_RUN_SERVICE_POLICY, type LocalBefTaskCoordinator } from "./bef-task-coordinator.js";
+  createBetaBefTaskCoordinator, BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY,
+  type BetaBefTaskCoordinator, type LocalBefTaskCoordinator } from "./bef-task-coordinator.js";
+import { pinBetaRunReleaseProvider } from "./beta-bef-runtime-profile.js";
 import { createAuth, siweRequestFingerprint, withSiweRequest } from "./auth.js";
 import { loadConfig, getGoogleMode } from "./config.js";
 import { createDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
+import { responseError as mapResponseError } from "./http-error-response.js";
 import {
   admissions,
   authFlows,
@@ -80,20 +95,7 @@ function adminProviderName(provider: string): string {
 }
 
 function responseError(reply: FastifyReply, error: unknown) {
-  if (error instanceof HttpError) {
-    return reply.code(error.status).header("Cache-Control", "no-store").send({
-      error: { code: error.code, message: error.message }
-    });
-  }
-  if (error instanceof Error && /unique|duplicate key/i.test(error.message)) {
-    return reply.code(409).header("Cache-Control", "no-store").send({
-      error: { code: "IDENTITY_ALREADY_LINKED", message: "This identity is already linked to another owner" }
-    });
-  }
-  requestSafeLog(error);
-  return reply.code(500).header("Cache-Control", "no-store").send({
-    error: { code: "INTERNAL_ERROR", message: "The request could not be completed" }
-  });
+  return mapResponseError(reply, error, requestSafeLog);
 }
 
 function requestSafeLog(error: unknown) {
@@ -433,6 +435,8 @@ async function start() {
     }
   });
   await app.register(cookie);
+  await app.register(multipart, { limits: { fieldNameSize: 32, fieldSize: 128, fields: 4, files: 1,
+    fileSize: REPORT_IMAGE_MAX_INPUT_BYTES, headerPairs: 16, parts: 5 }, throwFileSizeLimit: false });
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
@@ -441,30 +445,60 @@ async function start() {
     // AICODE-NOTE: Remote agent HTTP acceptance has no browser Origin header; its route authenticates the bearer principal and rejects a mismatched optional Origin.
     const isAgentRunAcceptance = /^\/api\/agent\/run-intents\/[0-9a-f-]{36}\/accept$/i.test(pathname);
     const isAgentTaskOperation = /^\/api\/agent\/runs\/[0-9a-f-]{36}\/tasks\/(?:[0-9]|1[01])\/(?:actions|finish)$/i.test(pathname);
+    const isAgentSupportReportMutation = request.method === "POST" &&
+      /^\/api\/agent\/(?:reports|report-images\/uploads|report-images\/uploads\/[0-9a-f-]{36}\/(?:chunks|finish))$/i.test(pathname);
     if (pathname.startsWith("/api/") && request.method !== "GET" && request.method !== "HEAD" &&
-      !pathname.startsWith("/api/auth/") && pathname !== "/api/agent/mcp" && !isAgentRunAcceptance && !isAgentTaskOperation) {
+      !pathname.startsWith("/api/auth/") && pathname !== "/api/agent/mcp" && !isAgentRunAcceptance &&
+      !isAgentTaskOperation && !isAgentSupportReportMutation) {
       try { await requireOrigin(request); }
       catch (error) { return responseError(reply, error); }
     }
   });
 
-  const runServiceDependencies = {
-    db,
-    admissionReleaseProvider: createPostgresTaskReleaseProvider(db),
-    taskReleaseSource: createPostgresTaskReleaseQuerySource(db),
-    executionReadinessProvider: unavailableTaskExecutionReadinessProvider,
-    ...(config.localBefTaskCoordinatorEnabled ? LOCAL_BEF_RUN_SERVICE_POLICY : {})
-  } satisfies RunServiceDependencies & { taskReleaseSource: ReturnType<typeof createPostgresTaskReleaseQuerySource> };
+  const taskReleaseSource = createPostgresTaskReleaseQuerySource(db);
   let localBefTaskCoordinator: LocalBefTaskCoordinator | undefined;
-  if (config.localBefTaskCoordinatorEnabled) {
+  let betaBefTaskCoordinator: LocalBefTaskCoordinator | undefined;
+  if (config.betaManifest) {
+    betaBefTaskCoordinator = await createBetaBefTaskCoordinator({ db, databaseUrl: config.databaseUrl,
+      config, releaseSource: taskReleaseSource });
+    startupCoordinatorForCleanup = betaBefTaskCoordinator;
+    await betaBefTaskCoordinator.acquire();
+  } else if (config.localBefTaskCoordinatorEnabled) {
     localBefTaskCoordinator = await createLocalBefTaskCoordinator({
       db,
       databaseUrl: config.databaseUrl,
       config,
-      releaseSource: runServiceDependencies.taskReleaseSource,
+      releaseSource: taskReleaseSource,
     });
     startupCoordinatorForCleanup = localBefTaskCoordinator;
     await localBefTaskCoordinator.acquire();
+  }
+  // Durable pause and operations controls are available to an explicitly manifested Beta runtime
+  // or a strict isolated loopback fixture; Beta release/readiness still requires its manifest.
+  const betaOperationsEnabled = config.betaManifest !== undefined || config.localReportAcceptanceEnabled;
+  const operationsPrivateDataDir = config.betaManifest?.storage.privateDataDir ??
+    (config.localReportAcceptanceEnabled ? config.privateDataDir : undefined);
+  const runServiceDependencies = {
+    db,
+    betaOperationsEnabled,
+    ...(betaOperationsEnabled && operationsPrivateDataDir ? { privateDataDir: operationsPrivateDataDir } : {}),
+    bonusOnly: config.betaManifest !== undefined,
+    admissionReleaseProvider: config.betaManifest
+      ? pinBetaRunReleaseProvider(createPostgresTaskReleaseProvider(db), config.betaManifest)
+      : createPostgresTaskReleaseProvider(db),
+    taskReleaseSource,
+    executionReadinessProvider: betaBefTaskCoordinator?.readinessProvider ?? unavailableTaskExecutionReadinessProvider,
+    ...(config.betaManifest ? BETA_BEF_RUN_SERVICE_POLICY : {}),
+    ...(config.localBefTaskCoordinatorEnabled ? LOCAL_BEF_RUN_SERVICE_POLICY : {})
+  } satisfies RunServiceDependencies & { taskReleaseSource: ReturnType<typeof createPostgresTaskReleaseQuerySource> };
+  let reportServiceDependencies: ReportServiceDependencies | undefined;
+  if (config.betaManifest || config.localReportAcceptanceEnabled) {
+    if (!config.privateDataDir || !config.betaReportClosureStateFile) throw new Error("report_closure_state_path_missing");
+    reportServiceDependencies = {
+      db,
+      privateDataDir: resolve(config.privateDataDir),
+      reportClosureState: createReportClosureStateStore(config.betaReportClosureStateFile)
+    };
   }
   const agentRouteDependencies: AgentRouteDependencies = {
     db,
@@ -478,7 +512,10 @@ async function start() {
     manualCredentialTtlSeconds: config.manualCredentialTtlSeconds,
     agentResource: `${config.publicOrigin}/api/agent`,
     agentPreflightUrl: `${config.publicOrigin}/api/agent/preflight`,
-    registerMcpTools: (server, principal) => registerRunIntentMcpTools(server, principal, runServiceDependencies),
+    registerMcpTools: (server, principal) => {
+      registerRunIntentMcpTools(server, principal, runServiceDependencies);
+      if (reportServiceDependencies) registerSupportReportMcpTools(server, principal, reportServiceDependencies);
+    },
     resolveOwner: async (request) => {
       const session = await authenticated(request);
       const context = await ownerFor(session);
@@ -512,16 +549,91 @@ async function start() {
     resolveOwner: async (request) => ownerFor(await authenticated(request))
   });
 
+  registerBonusCodeRoutes(app, {
+    db,
+    ...(config.codeVerifierSecret ? { codeVerifierSecret: config.codeVerifierSecret } : {}),
+    requireAdmin,
+    requireOrigin,
+    rateLimit,
+    rateLimitMax: config.authRateLimitMax,
+    resolveOwner: async (request) => {
+      const context = await ownerFor(await authenticated(request));
+      return { owner: context.owner };
+    }
+  });
+
+  if (reportServiceDependencies) {
+    registerSupportReportRoutes(app, {
+      db, service: reportServiceDependencies, publicOrigin: config.publicOrigin,
+      agentRequestHosts: allowedAgentRequestHosts(config), rateLimitMax: config.authRateLimitMax,
+      agentRateLimitMax: config.agentPreflightRateLimitMax, imageChunkRateLimitMax: 300,
+      resolveOwner: async (request) => {
+        const context = await ownerFor(await authenticated(request));
+        return { owner: context.owner };
+      },
+      resolveAgentPrincipal: (bearer) => resolveAgentPrincipal(agentRouteDependencies, bearer),
+      requireAdmin, requireOrigin, rateLimit
+    });
+  }
+
+  if (betaOperationsEnabled) {
+    registerBetaOperationsRoutes(app, {
+      db,
+      ...(operationsPrivateDataDir ? { privateDataDir: operationsPrivateDataDir } : {}),
+      workerLease: () => {
+        const coordinator = betaBefTaskCoordinator ?? localBefTaskCoordinator;
+        return coordinator ? coordinator.ownsLease() : null;
+      },
+      runtimeHealth: async () => {
+        if (!config.betaManifest) return 'not_configured';
+        const provider = (betaBefTaskCoordinator as BetaBefTaskCoordinator | undefined)?.readinessProvider;
+        if (!provider) return 'unavailable';
+        const ready = await provider.isRuntimeHealthyForRelease(config.betaManifest.release.releaseIdentity,
+          config.betaManifest.release.manifestHash).catch(() => false);
+        return ready ? 'ready' : 'unavailable';
+      },
+      environmentCapacity: async () => {
+        if (!config.betaManifest) return 'not_configured';
+        const provider = (betaBefTaskCoordinator as BetaBefTaskCoordinator | undefined)?.readinessProvider;
+        if (!provider) return 'unavailable';
+        const result = await provider.isPreparedForRelease(config.betaManifest.release.releaseIdentity,
+          config.betaManifest.release.manifestHash).catch((): TaskExecutionReadiness => ({ ready: false }));
+        return result.ready && typeof result.environmentId === 'string' && /^[0-9a-f]{64}$/.test(result.evidenceHash ?? '')
+          ? 'ready' : 'unavailable';
+      },
+      requireAdmin, requireOrigin, rateLimit, rateLimitMax: config.authRateLimitMax,
+    });
+    registerBetaUsageSupportRoutes(app, {
+      db,
+      ...(config.betaManifest ? { clientRegistry: pinnedBetaClientRegistryFromManifest(config.betaManifest) } : {}),
+      requireAdmin,
+      rateLimit,
+      rateLimitMax: config.authRateLimitMax,
+    });
+  }
+
+  // AICODE-NOTE: Public qualification reads use only request.raw.socket.remoteAddress. Fastify trustProxy stays false; a shared proxy cannot enforce an end-user allowlist.
+  registerPublicRankedRoutes(app, { db, config });
+
   app.get("/healthz", async (_request, reply) => {
     await db.execute(sql`SELECT 1`);
     return reply.send({ status: "ok" });
+  });
+
+  app.get("/readyz", async (_request, reply) => {
+    try {
+      await db.execute(sql`SELECT 1`);
+      return reply.send({ status: "ready" });
+    } catch {
+      return reply.code(503).send({ status: "not_ready" });
+    }
   });
 
   app.get("/api/identity/config", async (_request, reply) => reply.send({
     googleEnabled: getGoogleMode(config) !== "disabled",
     googleMode: getGoogleMode(config),
     siwe: {
-      enabled: true,
+      enabled: !config.betaManifest,
       domain: new URL(config.publicOrigin).host,
       uri: config.publicOrigin,
       chainId: config.siweChainId,
@@ -531,13 +643,21 @@ async function start() {
   }));
 
   app.get("/api/identity/connection-profile", async (_request, reply) => reply.send({
-    protocolVersion: "2026-07-28",
+    protocolVersion: config.betaManifest ? undefined : "2026-07-28",
+    protocolVersions: config.betaManifest ? [...new Set(config.betaManifest.clients.filter((profile) => profile.enabled)
+      .flatMap((profile) => profile.protocolVersions))] : ["2026-07-28"],
     serverUrl: `${config.publicOrigin}/api/agent/mcp`,
     resource: `${config.publicOrigin}/api/agent`,
     issuer: `${config.publicOrigin}/api/auth`,
-    clientId: config.mcpClientId,
-    redirectUri: config.mcpClientRedirectUri,
-    registration: "pre-registered",
+    clientId: config.betaManifest ? (config.mcpClientRegistry?.length === 1 ? config.mcpClientRegistry[0]?.clientId ?? null : null) : config.mcpClientId,
+    redirectUri: config.betaManifest ? (config.mcpClientRegistry?.length === 1 ? config.mcpClientRegistry[0]?.redirectUris[0] ?? null : null) : config.mcpClientRedirectUri,
+    clientRegistrations: (config.mcpClientRegistry ?? []).map(({ clientId, redirectUris, clientName }) => ({ clientId, redirectUris, clientName })),
+    clientProfiles: config.betaManifest?.clients.filter((profile) => profile.enabled).map((profile) => ({
+      family: profile.family, edition: profile.edition, version: profile.version, platform: profile.platform,
+      mcpClientName: profile.mcpClientName, mcpClientVersion: profile.mcpClientVersion,
+      protocolVersions: profile.protocolVersions, authMethods: profile.authMethods
+    })) ?? [],
+    registration: config.betaManifest ? (config.mcpClientRegistry?.length ? "pre-registered" : "manual-bearer-only") : "pre-registered",
     authorizationEndpointUrl: `${config.publicOrigin}/api/auth/oauth2/authorize`,
     tokenEndpointUrl: `${config.publicOrigin}/api/auth/oauth2/token`,
     authorizationServerMetadataUrl: `${config.publicOrigin}/.well-known/oauth-authorization-server/api/auth`,
@@ -561,6 +681,10 @@ async function start() {
 
   app.all("/api/auth/*", async (request, reply) => {
     const group = request.url.includes("/siwe/") ? "auth-siwe" : "auth";
+    const authEndpoint = new URL(request.url, config.publicOrigin).pathname;
+    if (config.betaManifest && authEndpoint.startsWith("/api/auth/siwe/")) {
+      return responseError(reply, new HttpError(403, "SIGN_IN_METHOD_DISABLED", "Wallet sign-in is disabled for the beta profile"));
+    }
     let flow: typeof authFlows.$inferSelect | undefined;
     let callbackSession: Authenticated | undefined;
     let contextCookie: string | undefined;
@@ -1060,6 +1184,7 @@ async function start() {
 
   app.post("/api/owner/links/siwe/nonce", async (request, reply) => {
     try {
+      if (config.betaManifest) throw new HttpError(403, "SIGN_IN_METHOD_DISABLED", "Wallet identity linking is disabled for the beta profile");
       await rateLimit(request, "siwe-link", config.siweRateLimitMax);
       const session = await authenticated(request);
       const context = await ownerFor(session);
@@ -1087,6 +1212,7 @@ async function start() {
     let linkOwnerId: string | undefined;
     let linkCompleted = false;
     try {
+      if (config.betaManifest) throw new HttpError(403, "SIGN_IN_METHOD_DISABLED", "Wallet identity linking is disabled for the beta profile");
       await rateLimit(request, "siwe-link", config.siweRateLimitMax);
       const body = asRecord(request.body);
       const opId = operationId(body.operationId);
@@ -1198,7 +1324,8 @@ async function start() {
     }
   });
 
-  const runMaintenanceIntervalMs = config.localBefTaskCoordinatorEnabled
+  const taskCoordinator = betaBefTaskCoordinator ?? localBefTaskCoordinator;
+  const runMaintenanceIntervalMs = (config.localBefTaskCoordinatorEnabled || config.betaManifest)
     ? config.localBefTaskCoordinatorTickMs : 1000;
   const runMaintenanceBatchSize = 50;
   let runMaintenanceTimer: NodeJS.Timeout | undefined;
@@ -1208,8 +1335,8 @@ async function start() {
   async function runMaintenanceTick(): Promise<void> {
     if (runMaintenanceStopped || runMaintenanceInFlight) return;
     const work = (async () => {
-      if (localBefTaskCoordinator) {
-        try { await localBefTaskCoordinator.tick(); }
+      if (taskCoordinator) {
+        try { await taskCoordinator.tick(); }
         catch (error) { requestSafeLog(error); }
       } else {
         try { await expireQueuedRuns(db, runMaintenanceBatchSize); }
@@ -1219,6 +1346,10 @@ async function start() {
       }
       try { await closeExpiredTaskActions({ db }, runMaintenanceBatchSize); }
       catch (error) { requestSafeLog(error); }
+      if (reportServiceDependencies) {
+        try { await runReportHousekeeping(reportServiceDependencies); }
+        catch (error) { requestSafeLog(error); }
+      }
     })();
     runMaintenanceInFlight = work;
     try { await work; }
@@ -1238,9 +1369,10 @@ async function start() {
       runMaintenanceTimer = undefined;
     }
     await runMaintenanceInFlight;
-    await localBefTaskCoordinator?.stop();
+    await taskCoordinator?.stop();
   });
   app.setErrorHandler((error, _request, reply) => responseError(reply, error));
+  if (reportServiceDependencies) await runReportRetentionCleanup(reportServiceDependencies);
   await app.listen({ host: config.apiHost, port: config.apiPort });
   startupCoordinatorForCleanup = undefined;
   void runMaintenanceTick();

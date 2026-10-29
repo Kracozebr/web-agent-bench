@@ -130,6 +130,7 @@ export interface RunLaunchIntent {
   runId: string | null;
   runStatus: string | null;
   queueDeadline: string | null;
+  queueExpiryFencePending: boolean;
   terminalReason: string | null;
 }
 
@@ -158,6 +159,7 @@ export interface OwnerRunProjection {
   cancellationReason: string | null;
   cancellationRequestedAt: string | null;
   cancellationEvidenceHash: string | null;
+  queueExpiryFencePending: boolean;
 }
 
 export interface OwnerRunsResponse { runs: OwnerRunProjection[] }
@@ -246,6 +248,9 @@ const knownMessages: Record<string, string> = {
   CASH_CEILING_EXCEEDED: "The run would require more cash than the owner approved in this intent.",
   CASH_PERMISSION_REQUIRED: "Cash spending requires separate owner permission. No run was admitted.",
   INSUFFICIENT_FUNDS: "Available cash and bonus funds do not cover this run. No run was admitted.",
+  BETA_BONUS_BALANCE_REQUIRED: "Beta runs must be covered fully by bonus credit; cash cannot cover a shortfall. Redeem a bonus code or ask an administrator for a grant.",
+  BETA_STARTS_PAUSED: "New run starts are paused by the administrator. Retry after operations resume; no new run was started.",
+  OPERATIONS_CONTROL_UNAVAILABLE: "Run starts are temporarily unavailable because the operations control could not be read. Retry after service recovers.",
   RELEASE_INVALID: "The active release failed server validation. Intent creation is disabled.",
 };
 
@@ -262,7 +267,8 @@ function readCode(payload: unknown): string | undefined {
 
 export async function apiRequest<T>(path: `/api/${string}`, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
+  if (init.body && !isFormData && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",

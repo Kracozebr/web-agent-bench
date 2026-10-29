@@ -21,9 +21,11 @@ test-results/
 *.tsbuildinfo
 /.pnpm-store/
 /_tmp_*
+/.tmp/
 
 # Local configuration and secrets
 /.local/
+/.private-data/
 .env
 .env.*
 !.env.example

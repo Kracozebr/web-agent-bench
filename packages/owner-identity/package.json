@@ -15,6 +15,8 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "typecheck": "pnpm check",
+    "test:reports-pg": "node --import tsx --test src/report-service.pg.test.ts src/report-routes.pg.test.ts",
+    "test:report-lifecycle-pg": "node --import tsx --test src/report-lifecycle.pg.test.ts",
     "migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
@@ -22,6 +24,7 @@
     "@better-auth/mcp": "1.7.12",
     "@better-auth/oauth-provider": "1.7.12",
     "@fastify/cookie": "11.1.2",
+    "@fastify/multipart": "10.1.4",
     "@modelcontextprotocol/server": "2.4.0",
     "@signinwithethereum/siwe": "4.2.1",
     "@x402/core": "2.28.0",
@@ -29,6 +32,7 @@
     "better-auth": "1.7.12",
     "drizzle-orm": "0.45.4",
     "postgres": "3.4.9",
+    "sharp": "0.35.5",
     "viem": "2.56.9",
     "zod": "4.6.7"
   },

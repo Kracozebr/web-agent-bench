@@ -26,6 +26,10 @@ const apiHostPort = process.env.BEF_API_HOST_PORT ?? "8783";
 if (!/^[1-9][0-9]{0,4}$/.test(apiHostPort) || Number(apiHostPort) > 65535) {
   throw new Error("BEF_API_HOST_PORT must be a valid TCP port");
 }
+const observerHostPort = process.env.BEF_DATABASE_OBSERVER_HOST_PORT ?? "55432";
+if (!/^[1-9][0-9]{0,4}$/.test(observerHostPort) || Number(observerHostPort) > 65535) {
+  throw new Error("BEF_DATABASE_OBSERVER_HOST_PORT must be a valid TCP port");
+}
 const secretRoot = resolve("infrastructure/benchmark-environment/.local/secrets");
 async function secret(name) {
   const value = (await readFile(resolve(secretRoot, name), "utf8")).trim();
@@ -52,7 +56,7 @@ const observerPassword = await secret("database-observer-password");
 const environment = {
   ...process.env,
   BEF_API_BASE_URL: `http://${hostname}:${apiHostPort}`,
-  BEF_DATABASE_OBSERVER_URL: `postgres://bef_observer:${encodeURIComponent(observerPassword)}@${hostname}:55432/bef`,
+  BEF_DATABASE_OBSERVER_URL: `postgres://bef_observer:${encodeURIComponent(observerPassword)}@${hostname}:${observerHostPort}/bef`,
   BEF_ADMIN_KEY: await secret("admin-key"),
   BEF_SERVICE_KEY: await secret("service-key"),
   BEF_SOURCE_PROXY_URL: `http://${hostname}:18544`,

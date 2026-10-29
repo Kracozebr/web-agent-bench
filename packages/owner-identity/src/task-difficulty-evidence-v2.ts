@@ -10,8 +10,8 @@ import { V2ReferenceError, v2Require, type V2Document, type V2ReferenceContext }
 
 const HASH = /^[0-9a-f]{64}$/;
 const EXPECTED_CASES_PIN = {
-  path: 'artifacts/runs/bts-difficulty-v2-case-candidates/8f478f5f-edda-47f8-85b2-35fa2f455a4c/candidate-cases.json',
-  sha256: 'b50836aa76611fe826e4c31e3fcc20f3cedb6e2e05485c0c59d11c79c0462156',
+  path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json',
+  sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b',
 } as const;
 const REVIEW_SCHEMA = 'bts-v2-minimum-action-review/v1';
 const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';

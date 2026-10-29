@@ -20,7 +20,7 @@ const operationIdPattern = /^[A-Za-z0-9_-]{12,128}$/;
 const amountPattern = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/;
 const expiryPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/i;
 
-type LedgerTransaction = Parameters<Parameters<OwnerDatabase["transaction"]>[0]>[0];
+export type LedgerTransaction = Parameters<Parameters<OwnerDatabase["transaction"]>[0]>[0];
 
 export interface LedgerOwnerContext {
   owner: { id: string };
@@ -184,9 +184,17 @@ async function lockOwner(tx: LedgerTransaction, ownerId: string): Promise<boolea
   return result.length > 0;
 }
 
+export async function lockLedgerOwner(tx: LedgerTransaction, ownerId: string): Promise<boolean> {
+  return lockOwner(tx, ownerId);
+}
+
 async function lockIdempotencyKey(tx: LedgerTransaction, actorOwnerId: string, operationId: string): Promise<void> {
   const key = `${actorOwnerId}\n${operationId}`;
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+}
+
+export async function lockLedgerOperationKey(tx: LedgerTransaction, actorOwnerId: string, operationId: string): Promise<void> {
+  await lockIdempotencyKey(tx, actorOwnerId, operationId);
 }
 
 async function databaseNow(tx: LedgerTransaction): Promise<Date> {
@@ -241,7 +249,11 @@ function policyFromReceipt(value: unknown): AgentFinancialPolicy {
   };
 }
 
-export async function issueBonusGrant(db: OwnerDatabase, input: BonusGrantCommand): Promise<BonusGrantResult> {
+export async function issueBonusGrantInTransaction(
+  tx: LedgerTransaction,
+  input: BonusGrantCommand,
+  options: { ownerAlreadyLocked?: boolean; idempotencyKeyAlreadyLocked?: boolean } = {}
+): Promise<BonusGrantResult> {
   const actorOwnerId = parseUuid(input.actorOwnerId, "INVALID_ACTOR", "A verified admin owner is required");
   const ownerId = parseUuid(input.ownerId, "INVALID_OWNER_ID", "ownerId must be a UUID");
   const operationId = parseOperationId(input.operationId);
@@ -252,76 +264,80 @@ export async function issueBonusGrant(db: OwnerDatabase, input: BonusGrantComman
   const amount = formatUnits(amountUnits);
   const hash = payloadHash({ action: "bonus_grant", ownerId, amount, reason, expiresAt: expiresAtText ?? null });
 
-  return db.transaction(async (tx) => {
-    await lockIdempotencyKey(tx, actorOwnerId, operationId);
-    const existingRows = await tx.select().from(ledgerOperations).where(and(
-      eq(ledgerOperations.actorOwnerId, actorOwnerId),
-      eq(ledgerOperations.operationId, operationId)
-    )).limit(1);
-    const existing = existingRows[0];
-    if (existing) {
-      if (existing.action !== "bonus_grant" || existing.payloadHash !== hash) {
-        throw new HttpError(409, "IDEMPOTENCY_CONFLICT", "operationId was already used with a different request");
-      }
-      return grantDtoFromReceipt(existing.responseJson);
+  if (!options.idempotencyKeyAlreadyLocked) await lockIdempotencyKey(tx, actorOwnerId, operationId);
+  const existingRows = await tx.select().from(ledgerOperations).where(and(
+    eq(ledgerOperations.actorOwnerId, actorOwnerId),
+    eq(ledgerOperations.operationId, operationId)
+  )).limit(1);
+  const existing = existingRows[0];
+  if (existing) {
+    if (existing.action !== "bonus_grant" || existing.payloadHash !== hash) {
+      throw new HttpError(409, "IDEMPOTENCY_CONFLICT", "operationId was already used with a different request");
     }
+    return grantDtoFromReceipt(existing.responseJson);
+  }
 
-    if (!(await lockOwner(tx, ownerId))) throw new HttpError(404, "OWNER_NOT_FOUND", "The target owner does not exist");
-    const now = await databaseNow(tx);
-    if (expiresAt && expiresAt.getTime() <= now.getTime()) {
-      throw new HttpError(409, "EXPIRY_NOT_FUTURE", "expiresAt must be later than the database commit time");
-    }
+  if (!options.ownerAlreadyLocked && !(await lockOwner(tx, ownerId))) {
+    throw new HttpError(404, "OWNER_NOT_FOUND", "The target owner does not exist");
+  }
+  const now = await databaseNow(tx);
+  if (expiresAt && expiresAt.getTime() <= now.getTime()) {
+    throw new HttpError(409, "EXPIRY_NOT_FUTURE", "expiresAt must be later than the database commit time");
+  }
 
-    const id = randomUUID();
-    const createdAt = now.toISOString();
-    const grant: BonusGrantView = { id, ownerId, amount, reason, createdAt, expiresAt: expiresAtText ?? null };
-    const responseJson = { grant, operationId };
-    await tx.insert(bonusGrants).values({
-      id,
-      ownerId,
-      amountUnits,
-      issuedByOwnerId: actorOwnerId,
-      reason,
-      operationId,
-      createdAt: now,
-      expiresAt
-    });
-    await tx.insert(ledgerEntries).values({
-      id: randomUUID(),
-      ownerId,
-      actorOwnerId,
-      bonusGrantId: id,
-      operationId,
-      entryType: "bonus_grant",
-      sourceKind: "tester_bonus",
-      amountUnits,
-      availableDeltaUnits: amountUnits,
-      reservedDeltaUnits: 0n,
-      expiredDeltaUnits: 0n,
-      reason,
-      createdAt: now
-    });
-    await tx.insert(ledgerAudit).values({
-      id: randomUUID(),
-      eventType: "bonus_grant_issued",
-      operationId,
-      actorOwnerId,
-      subjectOwnerId: ownerId,
-      metadata: { grantId: id, amount, reason, expiresAt: expiresAtText ?? null, source: "tester_bonus" },
-      createdAt: now
-    });
-    await tx.insert(ledgerOperations).values({
-      id: randomUUID(),
-      actorOwnerId,
-      subjectOwnerId: ownerId,
-      operationId,
-      action: "bonus_grant",
-      payloadHash: hash,
-      responseJson,
-      createdAt: now
-    });
-    return { grant, replayed: false, operationId };
+  const id = randomUUID();
+  const createdAt = now.toISOString();
+  const grant: BonusGrantView = { id, ownerId, amount, reason, createdAt, expiresAt: expiresAtText ?? null };
+  const responseJson = { grant, operationId };
+  await tx.insert(bonusGrants).values({
+    id,
+    ownerId,
+    amountUnits,
+    issuedByOwnerId: actorOwnerId,
+    reason,
+    operationId,
+    createdAt: now,
+    expiresAt
   });
+  await tx.insert(ledgerEntries).values({
+    id: randomUUID(),
+    ownerId,
+    actorOwnerId,
+    bonusGrantId: id,
+    operationId,
+    entryType: "bonus_grant",
+    sourceKind: "tester_bonus",
+    amountUnits,
+    availableDeltaUnits: amountUnits,
+    reservedDeltaUnits: 0n,
+    expiredDeltaUnits: 0n,
+    reason,
+    createdAt: now
+  });
+  await tx.insert(ledgerAudit).values({
+    id: randomUUID(),
+    eventType: "bonus_grant_issued",
+    operationId,
+    actorOwnerId,
+    subjectOwnerId: ownerId,
+    metadata: { grantId: id, amount, reason, expiresAt: expiresAtText ?? null, source: "tester_bonus" },
+    createdAt: now
+  });
+  await tx.insert(ledgerOperations).values({
+    id: randomUUID(),
+    actorOwnerId,
+    subjectOwnerId: ownerId,
+    operationId,
+    action: "bonus_grant",
+    payloadHash: hash,
+    responseJson,
+    createdAt: now
+  });
+  return { grant, replayed: false, operationId };
+}
+
+export async function issueBonusGrant(db: OwnerDatabase, input: BonusGrantCommand): Promise<BonusGrantResult> {
+  return db.transaction((tx) => issueBonusGrantInTransaction(tx, input));
 }
 
 export interface BonusGrantRejectionAudit {

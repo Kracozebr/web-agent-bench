@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { OwnerDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
+import { lockBetaRunStartControl } from "./beta-operations-control.js";
+import { readBetaStorageObservation } from "./beta-operations-observability.js";
 import type {
   TaskReleaseProvider,
   RunAdmissionRelease as SealedAdmissionRelease,
@@ -71,6 +73,12 @@ export interface RunCatalogResponse {
 
 export interface RunServiceDependencies {
   db: OwnerDatabase;
+  /** Configured persistent evidence/report volume; omitted in the non-beta reference adapter. */
+  privateDataDir?: string;
+  /** Enables durable beta pause/start barriers; absent means the non-beta reference behavior. */
+  betaOperationsEnabled?: boolean;
+  /** Beta cohort runs may debit only internal bonus sources, never inherited cash balances. */
+  bonusOnly?: boolean;
   admissionReleaseProvider?: RunReleaseProvider | null;
   executionReadinessProvider?: RunExecutionReadinessProvider | null;
   /** Strict internal path for a specific durable first-task preparation. */
@@ -82,6 +90,8 @@ export interface RunServiceDependencies {
   executionCapacity?: number;
   maxPendingIntentsPerOwner?: number;
   maxPendingIntentsGlobal?: number;
+  maxAcceptedRunsPerOwner?: number;
+  maxAcceptedRunsGlobal?: number;
   trainingOverallTimeoutSeconds?: number;
   maxTrainingOverallTimeoutSeconds?: number;
   successorPreparationPolicyVersion?: string;
@@ -108,6 +118,7 @@ export interface RunIntentView {
   runId: string | null;
   runStatus: RunStatus | null;
   queueDeadline: string | null;
+  queueExpiryFencePending: boolean;
   terminalReason: string | null;
 }
 
@@ -135,6 +146,7 @@ export interface RunView {
   cancellationReason: string | null;
   cancellationRequestedAt: string | null;
   cancellationEvidenceHash: string | null;
+  queueExpiryFencePending: boolean;
 }
 
 export interface CreateLaunchIntentInput {
@@ -186,6 +198,7 @@ interface DbIntentRow {
   owner_policy_revision: number; agent_policy_revision: number; status: RunIntentStatus; created_at: Date | string;
   expires_at: Date | string; accepted_at: Date | string | null; terminal_reason: string | null; run_id: string | null;
   run_status?: RunStatus | null; queue_deadline?: Date | string | null; expired_by_clock?: boolean;
+  run_started_at?: Date | string | null; run_cancellation_reason?: string | null;
 }
 
 interface DbRunRow {
@@ -471,7 +484,9 @@ function runView(row: DbRunRow, cancellationEvidenceHash: string | null = null):
     terminalReason: row.terminal_reason,
     cancellationReason: row.cancellation_reason,
     cancellationRequestedAt: iso(row.cancellation_requested_at),
-    cancellationEvidenceHash
+    cancellationEvidenceHash,
+    queueExpiryFencePending: row.status === "cancellation_requested" && row.started_at === null &&
+      row.cancellation_reason === "queue_deadline_expired"
   };
 }
 
@@ -485,7 +500,7 @@ async function selectRun(tx: RunTransaction, runId: string, ownerId?: string, lo
 
 async function selectIntent(tx: RunTransaction, intentId: string, ownerId?: string, lock = false): Promise<DbIntentRow | null> {
   const rowsFound = await query<DbIntentRow>(tx, sql`
-    SELECT i.*,r.status AS run_status,r.queue_deadline
+    SELECT i.*,r.status AS run_status,r.queue_deadline,r.started_at AS run_started_at,r.cancellation_reason AS run_cancellation_reason
       ,(i.status='pending' AND i.expires_at<=clock_timestamp()) AS expired_by_clock
     FROM oid_run_launch_intent i LEFT JOIN oid_benchmark_run r ON r.id=i.run_id
     WHERE i.id=${intentId} ${ownerId ? sql`AND i.owner_id=${ownerId}` : sql``}
@@ -516,6 +531,8 @@ function intentView(row: DbIntentRow): RunIntentView {
     runId: row.run_id,
     runStatus: row.run_status ?? null,
     queueDeadline: iso(row.queue_deadline),
+    queueExpiryFencePending: row.run_status === "cancellation_requested" && row.run_started_at == null &&
+      row.run_cancellation_reason === "queue_deadline_expired",
     terminalReason: expired ? "intent_expired" : row.terminal_reason
   };
 }
@@ -574,7 +591,10 @@ export async function getRunCatalog(deps: RunServiceDependencies): Promise<RunCa
   ].every(([value, max]) => Number.isSafeInteger(value) && value! > 0 && Number.isSafeInteger(max) && max! >= value!) &&
     Number.isSafeInteger(deps.executionCapacity) && deps.executionCapacity! > 0 &&
     Number.isSafeInteger(deps.maxPendingIntentsPerOwner) && deps.maxPendingIntentsPerOwner! > 0 &&
-    Number.isSafeInteger(deps.maxPendingIntentsGlobal) && deps.maxPendingIntentsGlobal! > 0;
+    Number.isSafeInteger(deps.maxPendingIntentsGlobal) && deps.maxPendingIntentsGlobal! > 0 &&
+    ((deps.maxAcceptedRunsPerOwner === undefined && deps.maxAcceptedRunsGlobal === undefined) ||
+      (Number.isSafeInteger(deps.maxAcceptedRunsPerOwner) && deps.maxAcceptedRunsPerOwner! > 0 &&
+       Number.isSafeInteger(deps.maxAcceptedRunsGlobal) && deps.maxAcceptedRunsGlobal! > 0));
   const taskCatalog = provider?.getPublicCatalog() ?? [];
   if (!provider) return {
     status: "active_release_unavailable", activeRelease: null, readyToStart: false,
@@ -684,6 +704,7 @@ export async function createLaunchIntent(deps: RunServiceDependencies, input: Cr
     if (toBigInt(pendingCounts[0]?.global_pending) >= BigInt(maxGlobalPending)) {
       throw new HttpError(503, "GLOBAL_INTENT_CAPACITY", "The shared pending launch-intent capacity is full");
     }
+    if (deps.betaOperationsEnabled) await lockBetaRunStartControl(tx);
     const intentId = randomUUID();
     const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
     await tx.execute(sql`INSERT INTO oid_run_launch_intent(
@@ -745,7 +766,7 @@ export async function listOwnerRuns(db: OwnerDatabase, ownerIdValue: string): Pr
 async function allocateAndReserveSources(
   tx: RunTransaction,
   input: { ownerId: string; agentId: string; runId: string; amountUnits: bigint; cashCeilingUnits: bigint;
-    allowCashShortfall: boolean; operationId: string; now: Date }
+    allowCashShortfall: boolean; bonusOnly: boolean; operationId: string; now: Date }
 ): Promise<{ bonusUnits: bigint; cashUnits: bigint }> {
   let remaining = input.amountUnits;
   let bonusUnits = 0n;
@@ -774,6 +795,9 @@ async function allocateAndReserveSources(
 
   const cashUnits = remaining;
   if (cashUnits > 0n) {
+    if (input.bonusOnly) {
+      throw new HttpError(409, 'BETA_BONUS_BALANCE_REQUIRED', 'The beta run requires enough bonus credit; cash cannot cover a bonus shortfall');
+    }
     if (!input.allowCashShortfall) throw new HttpError(409, "CASH_PERMISSION_REQUIRED", "The owner has not authorized cash spending for this agent");
     if (cashUnits > input.cashCeilingUnits) throw new HttpError(409, "CASH_CEILING_EXCEEDED", "The required cash portion exceeds the owner-approved ceiling");
     const cashBuckets = await query<{ cash_provenance: string; available_units: bigint | string }>(tx, sql`
@@ -879,6 +903,25 @@ export async function acceptLaunchIntent(deps: RunServiceDependencies, input: Ac
     const financial = await readFinancialPolicy(tx, ownerId, agentId);
     if (financial.revision !== intent.owner_policy_revision) throw new HttpError(409, "STALE_OWNER_POLICY", "Owner financial limits changed after this launch intent was created");
     await tx.execute(sql`SELECT pg_advisory_xact_lock(824731202, 21)`);
+    if (deps.betaOperationsEnabled) await lockBetaRunStartControl(tx);
+    if (deps.maxAcceptedRunsPerOwner !== undefined || deps.maxAcceptedRunsGlobal !== undefined) {
+      const maxAcceptedPerOwner = configuredSeconds(deps.maxAcceptedRunsPerOwner,
+        deps.maxAcceptedRunsPerOwner, "per-owner accepted queue cap");
+      const maxAcceptedGlobal = configuredSeconds(deps.maxAcceptedRunsGlobal,
+        deps.maxAcceptedRunsGlobal, "global accepted queue cap");
+      const acceptedCounts = await query<{ owner_accepted: bigint | string; global_accepted: bigint | string }>(tx, sql`
+        SELECT
+          (SELECT COUNT(*) FROM oid_benchmark_run WHERE owner_id=${ownerId} AND started_at IS NULL
+            AND status IN ('queued','preparing','cancellation_requested')) AS owner_accepted,
+          (SELECT COUNT(*) FROM oid_benchmark_run WHERE started_at IS NULL
+            AND status IN ('queued','preparing','cancellation_requested')) AS global_accepted`);
+      if (toBigInt(acceptedCounts[0]?.owner_accepted) >= BigInt(maxAcceptedPerOwner)) {
+        throw new HttpError(429, "ACCEPTED_QUEUE_OWNER_LIMIT", "The owner has reached the accepted unstarted run limit");
+      }
+      if (toBigInt(acceptedCounts[0]?.global_accepted) >= BigInt(maxAcceptedGlobal)) {
+        throw new HttpError(503, "ACCEPTED_QUEUE_GLOBAL_CAPACITY", "The shared accepted run queue is full");
+      }
+    }
     const release = parseRelease(await provider.getActiveAdmissionRelease(intent.mode, tx), intent.mode);
     if (release.releaseIdentity !== intent.release_identity || release.benchmarkVersion !== intent.benchmark_version ||
       release.manifestHash !== intent.manifest_hash || release.benchmarkHash !== intent.benchmark_hash || release.policyHash !== intent.policy_hash) {
@@ -916,6 +959,7 @@ export async function acceptLaunchIntent(deps: RunServiceDependencies, input: Ac
     const allocation = await allocateAndReserveSources(tx, {
       ownerId, agentId, runId, amountUnits: quoteUnits,
       cashCeilingUnits: toBigInt(intent.cash_ceiling_units), allowCashShortfall: financial.allowCashShortfall,
+      bonusOnly: deps.bonusOnly === true,
       operationId: `runacc_${runId.replaceAll("-", "")}`, now
     });
     await tx.execute(sql`INSERT INTO oid_run_budget_hold(run_id,owner_id,agent_id,mode,utc_day,amount_units,state,created_at)
@@ -1221,6 +1265,8 @@ export async function claimNextQueuedRun(
   }
   const claimId = input.claimId === undefined ? randomUUID() : parseUuid(input.claimId, "claimId");
   await expireQueuedRuns(deps.db, maxCandidates);
+  if (deps.betaOperationsEnabled && deps.privateDataDir &&
+      (await readBetaStorageObservation(deps.privateDataDir)).status !== 'ready') return null;
   return deps.db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(824731202,22)`);
     const existing = await query<{ run_id: string; claim_id: string; turn_number: bigint | string }>(tx, sql`SELECT run_id,claim_id,turn_number
@@ -1287,6 +1333,10 @@ export async function claimNextQueuedRun(
       break;
     }
     if (!candidate || !candidateRun) return null;
+    // Match create/accept/start lock order: hold this candidate owner before taking the
+    // shared operations-control barrier, so a queued administrator pause cannot form a
+    // wait-queue cycle with a worker that already owns the candidate row.
+    if (deps.betaOperationsEnabled) await lockBetaRunStartControl(tx);
     now = await databaseNow(tx);
     const nextTurn = toBigInt(state.turn_number) + 1n;
     const [claimed] = await tx.execute(sql`UPDATE oid_benchmark_run SET status='preparing'
@@ -1316,6 +1366,10 @@ export async function startQueuedRun(
   const preparedTaskStart = deps.preparedTaskStart;
   if (!provider || (!readinessProvider && !preparedTaskStart)) {
     throw new HttpError(503, "EXECUTOR_NOT_READY", "Validated release and genuine executor readiness are required before start");
+  }
+  if (deps.betaOperationsEnabled && deps.privateDataDir &&
+      (await readBetaStorageObservation(deps.privateDataDir)).status !== 'ready') {
+    throw new HttpError(503, 'RUN_STORAGE_CAPACITY_LOW', 'Private storage capacity is below the safe start threshold');
   }
   const initial = await deps.db.transaction(async (tx) => {
     const found = await query<{ owner_id: string; agent_id: string; release_identity: string; manifest_hash: string; mode: RunMode; task_ids: string[];
@@ -1379,6 +1433,7 @@ export async function startQueuedRun(
     await lockOwner(tx, initial.owner_id);
     const strictAgent = preparedTaskStart ? await readAgent(tx, initial.owner_id, initial.agent_id, true) : null;
     const run = await liveRunOr404(tx, runId, initial.owner_id, true);
+    if (deps.betaOperationsEnabled) await lockBetaRunStartControl(tx);
     if (run.status !== "preparing") throw new HttpError(409, "RUN_NOT_PREPARING", "The run does not hold a preparation claim");
     requireStoredSuccessorPreparationPolicy(run.task_ids, run.successor_preparation_policy_version,
       run.successor_preparation_timeout_seconds);
@@ -1416,10 +1471,11 @@ export async function startQueuedRun(
     }
     const cashRows = await query<{ cash_units: bigint | string }>(tx, sql`SELECT COALESCE(SUM(amount_units),0)::bigint AS cash_units
       FROM oid_run_reservation WHERE run_id=${run.id} AND source_kind='cash_usdc' AND state='held'`);
-    if (toBigInt(cashRows[0]?.cash_units) > 0n && !financial.allowCashShortfall) {
-      await releaseRunHolds(tx, run, now, "cash_permission_revoked");
-      await tx.execute(sql`UPDATE oid_benchmark_run SET status='cancelled',finished_at=${now.toISOString()},terminal_reason='cash_permission_revoked' WHERE id=${run.id}`);
-      await appendEvent(tx, run.id, "coordinator", "run.start_rejected", { reason: "cash_permission_revoked" });
+    if (toBigInt(cashRows[0]?.cash_units) > 0n && (deps.bonusOnly || !financial.allowCashShortfall)) {
+      const reason = deps.bonusOnly ? 'beta_bonus_only_policy' : 'cash_permission_revoked';
+      await releaseRunHolds(tx, run, now, reason);
+      await tx.execute(sql`UPDATE oid_benchmark_run SET status='cancelled',finished_at=${now.toISOString()},terminal_reason=${reason} WHERE id=${run.id}`);
+      await appendEvent(tx, run.id, "coordinator", "run.start_rejected", { reason });
       return { run: await liveRunOr404(tx, run.id, initial.owner_id), replayed: false, preparedPreparation: undefined as TaskPreparationRecord | undefined };
     }
     const expiredBonus = await query<{ exists: boolean }>(tx, sql`SELECT EXISTS(

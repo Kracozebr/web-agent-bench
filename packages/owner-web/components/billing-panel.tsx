@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApiError, apiRequest, errorText, getCurrentOwner, type OwnerBillingHistoryEntry, type OwnerBillingResponse, type OwnerProjection } from "@/lib/api";
+import { OwnerBonusCodesPanel } from "@/components/owner-bonus-codes-panel";
 
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return "No expiry";
@@ -184,6 +185,8 @@ export function BillingPanel() {
               </article>
             </div>
           </section>
+
+          <OwnerBonusCodesPanel onRedeemed={loadBilling} />
 
           <section className="card" aria-labelledby="billing-grants-title">
             <div className="section-heading">

@@ -17,7 +17,7 @@ const ROOT = '/workspace';
 const EVIDENCE_ROOT = 'artifacts/runs/genuine-s1-owner-run';
 const SEQUENCE_EVIDENCE_ROOT = 'artifacts/runs/genuine-training-sequence-owner-run';
 const RANKED_EVIDENCE_ROOT = 'artifacts/runs/genuine-ranked-worker-owner-run';
-const OPEN_TASK_IDS = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'];
+export const OPEN_TASK_IDS = Object.freeze(['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2']);
 const RANKED_TASK_IDS = ['S1', 'S2', 'S3', 'S4', 'M1', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3', 'U1'];
 const SUPPORTED_TASKS = new Set(OPEN_TASK_IDS);
 const evidenceRootForTask = (taskId = 'S1') => {
@@ -27,11 +27,11 @@ const evidenceRootForTask = (taskId = 'S1') => {
 const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
 const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
 const PIN = Object.freeze({
-  validation: { path: 'artifacts/runs/bts-difficulty-v2-release-validation/382d65b5-fd03-4ba1-95e5-ccde5e35d737/validation.json', sha256: '5b12c392d4f1db240c5bc5fae2fc0a74d0359f521e271eb9fb529c18b2e94943' },
-  cases: { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/8f478f5f-edda-47f8-85b2-35fa2f455a4c/candidate-cases.json', sha256: 'b50836aa76611fe826e4c31e3fcc20f3cedb6e2e05485c0c59d11c79c0462156' },
-  release: { path: 'artifacts/runs/bts-difficulty-v2-release-candidates/6e63f0a7-6bc8-4512-a544-d57ef4f8bb63/candidate-release.json', sha256: 'c7ad713ad931b1ec2cf623912230a07776a4da8fea06c3b53443dc64a2f8e8b5' },
-  minimum: { path: 'artifacts/runs/bts-v2-minimum-action-review/1a25da07-3301-400c-ab6d-c6e96f81da2d/review.json', sha256: 'e67cbc3a81c96491edfbdc7cea15dd47aa0498c4dcdd75c2374b8ffc5e06a77d' },
-  references: { path: 'artifacts/runs/bts-v2-reference-verification/34182407-1f19-4d9c-9dc1-1a4e31a466a7/verification.json', sha256: '18bb2a9dc5b81b6e163223e2842d01e828c32bbb1623c00a419f1be6fba594d8' },
+  validation: { path: 'artifacts/runs/bts-difficulty-v2-release-validation/a8755b14-6868-42d4-977b-39314c067cd4/validation.json', sha256: 'e63308ed99100555f1f29b51b37269fdb3ead580a34367431d17adc177aa6bea' },
+  cases: { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json', sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b' },
+  release: { path: 'artifacts/runs/bts-difficulty-v2-release-candidates/9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979/candidate-release.json', sha256: '32e71ec759ccd0d3b612e5d87db969ad13e1d9d5213ab77f9a8eadc9e4f6a67f' },
+  minimum: { path: 'artifacts/runs/bts-v2-minimum-action-review/763f6ca9-dc4f-4d56-a7e5-bb193d9cdc7a/review.json', sha256: 'd89e33a02ce9100e6993638c4fb3224d2e09d81136a49078e83ee916966faae0' },
+  references: { path: 'artifacts/runs/bts-v2-reference-verification/6be1a286-111c-40bf-a320-1fd8e4b99426/verification.json', sha256: 'f77ef62de268c41295f6b23665cbb4a4f9b41083eaba78826de06a091dac981b' },
 });
 const HEX_HASH = /^[0-9a-f]{64}$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -41,6 +41,133 @@ const fail = (code) => Object.assign(new Error(code), { code });
 
 function demand(condition, code) {
   if (!condition) throw fail(code);
+}
+
+export function normalizeTrainingSequenceTaskIds(requested) {
+  // This limits the owner-capture harness to the already-used S1/S2 sequence or
+  // the complete canonical open inventory. It does not change service selection policy.
+  const validIds = Array.isArray(requested) && requested.every((id) => typeof id === 'string' && SUPPORTED_TASKS.has(id)) &&
+    new Set(requested).size === requested.length;
+  const s1s2 = validIds && requested.length === 2 && requested.includes('S1') && requested.includes('S2');
+  const allOpen = validIds && JSON.stringify(requested) === JSON.stringify(OPEN_TASK_IDS);
+  demand(s1s2 || allOpen, 'unsupported_genuine_task_selection');
+  return s1s2 ? ['S1', 'S2'] : [...OPEN_TASK_IDS];
+}
+
+export function trainingSequenceTransitions(taskIds) {
+  const selected = normalizeTrainingSequenceTaskIds(taskIds);
+  return selected.slice(1).map((toTaskId, transitionIndex) => ({
+    fromTaskIndex: transitionIndex,
+    fromTaskId: selected[transitionIndex],
+    toTaskIndex: transitionIndex + 1,
+    toTaskId,
+  }));
+}
+
+export function trainingSequenceTransitionBasis({ taskIds, transition, runStartedEvents, activationEvents, terminalizationEvents,
+  initialOverallDeadline }) {
+  const timestampMillis = (value) => value instanceof Date ? value.getTime() : Date.parse(value ?? '');
+  const selected = normalizeTrainingSequenceTaskIds(taskIds);
+  const expectedTransition = trainingSequenceTransitions(selected).find((entry) =>
+    entry.toTaskIndex === transition?.toTaskIndex);
+  demand(expectedTransition && transition?.fromTaskIndex === expectedTransition.fromTaskIndex &&
+    transition?.fromTaskId === expectedTransition.fromTaskId && transition?.toTaskId === expectedTransition.toTaskId,
+  'successor_public_task_binding_mismatch');
+
+  const currentActivations = activationEvents.filter((event) => event.payload?.toTaskIndex === expectedTransition.toTaskIndex);
+  const predecessorTerminalizations = terminalizationEvents.filter((event) =>
+    event.payload?.taskIndex === expectedTransition.fromTaskIndex);
+  demand(currentActivations.length === 1 && currentActivations[0].payload?.fromTaskIndex === expectedTransition.fromTaskIndex &&
+    currentActivations[0].payload?.fromTaskId === expectedTransition.fromTaskId &&
+    currentActivations[0].payload?.toTaskId === expectedTransition.toTaskId,
+  'successor_activation_event_binding_invalid');
+  demand(predecessorTerminalizations.length === 1 &&
+    predecessorTerminalizations[0].payload?.taskId === expectedTransition.fromTaskId,
+  'successor_predecessor_terminalization_missing_or_stale');
+  demand(runStartedEvents.length === 1, 'successor_run_start_event_invalid');
+
+  const priorActivations = activationEvents.filter((event) => event.payload?.toTaskIndex === expectedTransition.fromTaskIndex);
+  const priorActivationEvent = expectedTransition.fromTaskIndex === 0 ? null : priorActivations[0];
+  demand(expectedTransition.fromTaskIndex === 0 ? priorActivations.length === 0 : priorActivations.length === 1,
+    'successor_prior_activation_missing_or_ambiguous');
+  const previousTransitionEvent = priorActivationEvent ?? runStartedEvents[0];
+  const deadlineValue = priorActivationEvent
+    ? priorActivationEvent.payload?.overallDeadline : runStartedEvents[0]?.payload?.overallDeadline;
+  const previousDeadline = timestampMillis(deadlineValue);
+  const initialDeadlineIsProvided = initialOverallDeadline !== null && initialOverallDeadline !== undefined;
+  const initialDeadline = timestampMillis(initialOverallDeadline);
+  const sequenceValue = (event) => {
+    const sequence = typeof event?.sequence === 'string' && /^\d+$/.test(event.sequence)
+      ? BigInt(event.sequence)
+      : Number.isSafeInteger(event?.sequence) && event.sequence > 0 ? BigInt(event.sequence) : null;
+    return sequence !== null && sequence > 0n ? sequence : null;
+  };
+  const previousSequence = sequenceValue(previousTransitionEvent);
+  const predecessorSequence = sequenceValue(predecessorTerminalizations[0]);
+  const activationSequence = sequenceValue(currentActivations[0]);
+  demand(Number.isFinite(previousDeadline) &&
+    (expectedTransition.fromTaskIndex !== 0 || !initialDeadlineIsProvided ||
+      (Number.isFinite(initialDeadline) && initialDeadline === previousDeadline)) &&
+    timestampMillis(currentActivations[0].payload?.previousOverallDeadline) === previousDeadline,
+  'successor_previous_deadline_missing_or_stale');
+  demand(previousSequence !== null && predecessorSequence !== null && activationSequence !== null &&
+    previousSequence < predecessorSequence && predecessorSequence < activationSequence,
+  'successor_transition_event_order_invalid');
+  return {
+    activationEvent: currentActivations[0],
+    predecessorTerminalizationEvent: predecessorTerminalizations[0],
+    priorActivationEvent,
+    previousTransitionEvent,
+    previousDeadlineValue: deadlineValue,
+    previousDeadline,
+  };
+}
+
+export function trainingSuccessorActivationResult({ transition, proof }) {
+  const taskIndex = transition?.toTaskIndex;
+  const taskId = transition?.toTaskId;
+  demand(Number.isSafeInteger(taskIndex) && taskIndex > 0 && typeof taskId === 'string' &&
+    proof?.taskIndex === taskIndex && proof?.taskId === taskId,
+  'successor_activation_result_binding_invalid');
+  return { ...proof, fromTaskIndex: transition.fromTaskIndex, fromTaskId: transition.fromTaskId,
+    toTaskIndex: taskIndex, toTaskId: taskId, taskIndex, taskId };
+}
+
+export function trainingSuccessorActivationChainMatches(taskIds, activations) {
+  const transitions = trainingSequenceTransitions(taskIds);
+  return Array.isArray(activations) && activations.length === transitions.length &&
+    transitions.every((transition, index) => {
+      const entry = activations[index];
+      return entry?.fromTaskIndex === transition.fromTaskIndex && entry?.fromTaskId === transition.fromTaskId &&
+        entry?.toTaskIndex === transition.toTaskIndex && entry?.toTaskId === transition.toTaskId &&
+        entry?.taskIndex === transition.toTaskIndex && entry?.taskId === transition.toTaskId;
+    });
+}
+
+export function trainingCleanupLeasePrefixIsFenced({ mode, preparations, taskIds }) {
+  if (!Array.isArray(preparations)) return false;
+  if (mode === 'ranked') {
+    return preparations.every((entry, index) => entry.lease_state === 'fenced' && entry.task_index === index);
+  }
+  return mode === 'training' && Array.isArray(taskIds) && preparations.length <= taskIds.length &&
+    preparations.every((entry, index) => entry.lease_state === 'fenced' && entry.task_index === index &&
+      entry.task_id === taskIds[index]);
+}
+
+export function quoteTrainingSelectionUnits(release, taskIds) {
+  const tasks = release.trainingTasks;
+  const inventory = tasks.map((task) => task.taskId);
+  const totalWeight = tasks.reduce((sum, task) => sum + task.taskWeight, 0);
+  const selectedWeight = tasks.filter((task) => taskIds.includes(task.taskId))
+    .reduce((sum, task) => sum + task.taskWeight, 0);
+  demand(JSON.stringify(inventory) === JSON.stringify(OPEN_TASK_IDS) && totalWeight === 15 &&
+    selectedWeight > 0 && Number.isSafeInteger(selectedWeight), 'training_quote_release_inventory_invalid');
+  return (BigInt(release.trainingPriceUnits) * BigInt(selectedWeight) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
+}
+
+export function trainingSequenceGrantAmountUnits(quoteUnits) {
+  demand(typeof quoteUnits === 'bigint' && quoteUnits > 0n, 'training_sequence_quote_invalid');
+  return quoteUnits > 100_000n ? quoteUnits : 100_000n;
 }
 
 function safeErrorCode(error, fallback = 'genuine_s1_case_failed') {
@@ -127,7 +254,7 @@ export async function validateAndActivatePinnedRelease({ repositoryRoot, databas
     validation.claims?.ownerRunAcceptance === false && validation.claims?.taskGrade === false,
   'pinned_release_validation_not_authoritative');
   demand(capturedRelease.schemaVersion === 'bts-task-release-candidate-capture/v2' &&
-    capturedRelease.captureId === '6e63f0a7-6bc8-4512-a544-d57ef4f8bb63' &&
+    capturedRelease.captureId === '9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979' &&
     capturedRelease.classification === 'full_inventory_candidate_not_validated_or_activated_release',
   'pinned_release_candidate_invalid');
   demand(candidateCases.schemaVersion === 'bts-difficulty-v2-case-candidates/v1' &&
@@ -1161,131 +1288,126 @@ async function readOwnerTrainingFeedbackTasks(ownerPage, runId, expectedResults)
   }
 }
 
-async function verifyTrainingSuccessorActivation({ input, record, observerPool, runId, task, oldOverallDeadline,
-  release, priorTaskResult, predecessorTerminalization, dispatchIdentity }) {
+async function verifyTrainingSuccessorActivation({ input, record, observerPool, runId, task, taskIds, transition,
+  oldOverallDeadline, release, priorTaskResult, predecessorTerminalization, dispatchIdentity }) {
   const timestampMillis = (value) => value instanceof Date ? value.getTime() : Date.parse(value ?? '');
-  demand(task.taskIndex === 1 && task.taskId === 'S2' && task.mode === 'training', 'successor_public_task_binding_mismatch');
+  const taskIndex = transition?.toTaskIndex;
+  const predecessorIndex = transition?.fromTaskIndex;
+  const predecessorTaskId = transition?.fromTaskId;
+  const taskId = transition?.toTaskId;
+  demand(Number.isSafeInteger(taskIndex) && taskIndex > 0 && predecessorIndex === taskIndex - 1 &&
+    taskIds?.[predecessorIndex] === predecessorTaskId && taskIds?.[taskIndex] === taskId &&
+    task.taskIndex === taskIndex && task.taskId === taskId && task.mode === 'training',
+  'successor_public_task_binding_mismatch');
   const snapshot = await readRunSnapshot(observerPool, { runId });
   const run = snapshot.run[0];
-  const successor = snapshot.tasks.find((item) => item.task_index === 1);
-  const predecessor = snapshot.tasks.find((item) => item.task_index === 0);
-  const execution = snapshot.execution.find((item) => item.task_index === 1);
-  const preparation = snapshot.preparations.find((item) => item.task_index === 1);
+  const successor = snapshot.tasks.find((item) => item.task_index === taskIndex);
+  const predecessor = snapshot.tasks.find((item) => item.task_index === predecessorIndex);
+  const execution = snapshot.execution.find((item) => item.task_index === taskIndex);
+  const preparation = snapshot.preparations.find((item) => item.task_index === taskIndex);
   const activatedEvents = snapshot.runEvents.filter((event) => event.eventType === 'task.activated');
-  const activationEvent = activatedEvents[0];
-  const payload = activationEvent?.payload;
-  const taskCase = release.trainingTasks.find((entry) => entry.taskId === 'S2');
+  const activationMatches = activatedEvents.filter((event) => event.payload?.toTaskIndex === taskIndex);
   const startedEvents = snapshot.runEvents.filter((event) => event.eventType === 'run.started');
   const allTerminalizationEvents = snapshot.runEvents.filter((event) => event.eventType === 'task.terminalized');
-  const terminalizationEvents = allTerminalizationEvents.filter((event) =>
-    event.payload?.taskIndex === 0);
+  const terminalizationEvents = allTerminalizationEvents.filter((event) => event.payload?.taskIndex === predecessorIndex);
+  const transitionBasis = trainingSequenceTransitionBasis({ taskIds, transition, runStartedEvents: startedEvents,
+    activationEvents: activatedEvents, terminalizationEvents: allTerminalizationEvents, initialOverallDeadline: oldOverallDeadline });
+  const activationEvent = transitionBasis.activationEvent;
+  const payload = activationEvent?.payload;
+  const priorActivation = transitionBasis.priorActivationEvent;
+  const taskCase = release.trainingTasks.find((entry) => entry.taskId === taskId);
   const finishedAt = timestampMillis(predecessorTerminalization?.finishedAt ?? '');
   const activatedAt = timestampMillis(payload?.activatedAt ?? '');
-  const previousDeadline = timestampMillis(oldOverallDeadline ?? '');
+  const previousDeadlineValue = transitionBasis.previousDeadlineValue;
+  const previousDeadline = transitionBasis.previousDeadline;
   const currentDeadline = timestampMillis(run?.overall_deadline ?? '');
   const interval = activatedAt - finishedAt;
   const expectedDeadline = previousDeadline + interval;
   const expectedTaskDeadline = Math.min(activatedAt + Number(taskCase?.taskDeadlineSeconds) * 1000, expectedDeadline);
-  const expectedInterval = payload?.preparationIntervalMilliseconds;
+  const previousTransitionEvent = transitionBasis.previousTransitionEvent;
   const activationConditions = [
-    ["run?.status === 'running'", () => Boolean(run?.status === 'running')],
-    ["run.started_at", () => Boolean(run.started_at)],
-    ["startedEvents.length === 1", () => Boolean(startedEvents.length === 1)],
-    ["JSON.stringify(run.task_ids) === JSON.stringify(['S1', 'S2'])", () => Boolean(JSON.stringify(run.task_ids) === JSON.stringify(['S1', 'S2']))],
-    ["snapshot.tasks.length === 2", () => Boolean(snapshot.tasks.length === 2)],
-    ["snapshot.preparations.length === 2", () => Boolean(snapshot.preparations.length === 2)],
-    ["snapshot.preparations[0].task_index === 0", () => Boolean(snapshot.preparations[0].task_index === 0)],
-    ["snapshot.preparations[1].task_index === 1", () => Boolean(snapshot.preparations[1].task_index === 1)],
-    ["snapshot.execution.length === 2", () => Boolean(snapshot.execution.length === 2)],
-    ["snapshot.execution[0].task_index === 0", () => Boolean(snapshot.execution[0].task_index === 0)],
-    ["snapshot.execution[1].task_index === 1", () => Boolean(snapshot.execution[1].task_index === 1)],
-    ["snapshot.evaluation.length === 1", () => Boolean(snapshot.evaluation.length === 1)],
-    ["snapshot.evaluation[0].taskIndex === 0", () => Boolean(snapshot.evaluation[0].taskIndex === 0)],
-    ["allTerminalizationEvents.length === 1", () => Boolean(allTerminalizationEvents.length === 1)],
-    ['predecessor terminalization outcome agrees with reconstructed result', () => predecessorTerminalization.outcome === priorTaskResult.outcome],
-    ['predecessor terminalization closure agrees with persisted task', () => predecessorTerminalization.closureId === predecessor.closure_id],
-    ['start, predecessor terminalization and successor activation have authoritative event order', () =>
-      BigInt(startedEvents[0].sequence) < BigInt(terminalizationEvents[0].sequence) &&
+    ['running training run', () => Boolean(run?.mode === 'training' && run?.status === 'running' && run.finished_at == null)],
+    ['one authoritative run start', () => Boolean(startedEvents.length === 1 && run.started_at)],
+    ['selected task rows retain pinned order', () => JSON.stringify(run.task_ids) === JSON.stringify(taskIds) &&
+      snapshot.tasks.length === taskIds.length && snapshot.tasks.every((item, index) =>
+        item.task_index === index && item.task_id === taskIds[index])],
+    ['preparation rows cover only the reached task prefix', () => snapshot.preparations.length === taskIndex + 1 &&
+      snapshot.preparations.every((item, index) => item.task_index === index)],
+    ['execution rows cover only the reached task prefix', () => snapshot.execution.length === taskIndex + 1 &&
+      snapshot.execution.every((item, index) => item.task_index === index)],
+    ['evaluations cover every completed predecessor', () => snapshot.evaluation.length === taskIndex &&
+      snapshot.evaluation.every((item, index) => item.taskIndex === index)],
+    ['one terminalization per completed predecessor', () => allTerminalizationEvents.length === taskIndex &&
+      allTerminalizationEvents.every((event, index) => event.payload?.taskIndex === index)],
+    ['activation events cover the reached successor prefix', () => activatedEvents.length === taskIndex &&
+      activatedEvents.every((event, index) => event.payload?.toTaskIndex === index + 1) && activationMatches.length === 1],
+    ['predecessor terminalization agrees with reconstructed result and row', () =>
+      predecessorTerminalization?.taskIndex === predecessorIndex && predecessorTerminalization?.taskId === predecessorTaskId &&
+      predecessorTerminalization?.outcome === priorTaskResult?.outcome &&
+      predecessorTerminalization?.closureId === predecessor?.closure_id],
+    ['run start, predecessor terminalization and current activation are ordered', () =>
+      BigInt(previousTransitionEvent.sequence) < BigInt(terminalizationEvents[0].sequence) &&
       BigInt(terminalizationEvents[0].sequence) < BigInt(activationEvent.sequence)],
-    ["startedEvents[0].source === 'coordinator'", () => Boolean(startedEvents[0].source === 'coordinator')],
-    ["startedEvents[0].runId === runId", () => Boolean(startedEvents[0].runId === runId)],
-    ["startedEvents[0].payload?.taskId === 'S1'", () => Boolean(startedEvents[0].payload?.taskId === 'S1')],
-    ["startedEvents[0].payload?.environmentId === predecessorTerminalization.environmentId", () => Boolean(startedEvents[0].payload?.environmentId === predecessorTerminalization.environmentId)],
-    ["timestampMillis(startedEvents[0].payload?.overallDeadline ?? '') === timestampMillis(oldOverallDeadline)", () => Boolean(timestampMillis(startedEvents[0].payload?.overallDeadline ?? '') === timestampMillis(oldOverallDeadline))],
-    ["predecessor?.status === (priorTaskResult.outcome === 'failed' ? 'failed' : 'completed')", () => Boolean(predecessor?.status === (priorTaskResult.outcome === 'failed' ? 'failed' : 'completed'))],
-    ["predecessor?.finished_at", () => Boolean(predecessor?.finished_at)],
-    ["timestampMillis(predecessor.finished_at) === finishedAt", () => Boolean(timestampMillis(predecessor.finished_at) === finishedAt)],
-    ["terminalizationEvents.length === 1", () => Boolean(terminalizationEvents.length === 1)],
-    ["successor?.task_id === 'S2'", () => Boolean(successor?.task_id === 'S2')],
-    ["successor.status === 'active'", () => Boolean(successor.status === 'active')],
-    ["successor.started_at", () => Boolean(successor.started_at)],
-    ["execution", () => Boolean(execution)],
-    ["preparation", () => Boolean(preparation)],
-    ["preparation.task_id === 'S2'", () => Boolean(preparation.task_id === 'S2')],
-    ["preparation.preparation_status === 'ready'", () => Boolean(preparation.preparation_status === 'ready')],
-    ["preparation.lease_state === 'leased'", () => Boolean(preparation.lease_state === 'leased')],
-    ["preparation.observed_generation_id === execution.generation_id", () => Boolean(preparation.observed_generation_id === execution.generation_id)],
-    ["preparation.environment_id === execution.env_id", () => Boolean(preparation.environment_id === execution.env_id)],
-    ["preparation.case_id === execution.case_id", () => Boolean(preparation.case_id === execution.case_id)],
-    ["preparation.case_hash === execution.case_hash", () => Boolean(preparation.case_hash === execution.case_hash)],
-    ["task.caseHash === execution.case_hash", () => Boolean(task.caseHash === execution.case_hash)],
-    ["preparation.initial_state_sha256 === execution.initial_state_sha256", () => Boolean(preparation.initial_state_sha256 === execution.initial_state_sha256)],
-    ["run.environment_id === preparation.environment_id", () => Boolean(run.environment_id === preparation.environment_id)],
-    ["execution.preparation_id === preparation.preparation_id", () => Boolean(execution.preparation_id === preparation.preparation_id)],
-    ["execution.lease_id === preparation.lease_id", () => Boolean(execution.lease_id === preparation.lease_id)],
-    ["execution.lease_state === 'leased'", () => Boolean(execution.lease_state === 'leased')],
-    ["UUID.test(preparation.preparation_id)", () => Boolean(UUID.test(preparation.preparation_id))],
-    ["UUID.test(preparation.lease_id)", () => Boolean(UUID.test(preparation.lease_id))],
-    ["UUID.test(execution.generation_id)", () => Boolean(UUID.test(execution.generation_id))],
-    ["activatedEvents.length === 1", () => Boolean(activatedEvents.length === 1)],
-    ["activationEvent.source === 'coordinator'", () => Boolean(activationEvent.source === 'coordinator')],
-    ["activationEvent.payloadHash === eventPayloadHash(payload)", () => Boolean(activationEvent.payloadHash === eventPayloadHash(payload))],
-    ["payload?.runId === runId", () => Boolean(payload?.runId === runId)],
-    ["payload.fromTaskIndex === 0", () => Boolean(payload.fromTaskIndex === 0)],
-    ["payload.toTaskIndex === 1", () => Boolean(payload.toTaskIndex === 1)],
-    ["payload.fromTaskId === 'S1'", () => Boolean(payload.fromTaskId === 'S1')],
-    ["payload.toTaskId === 'S2'", () => Boolean(payload.toTaskId === 'S2')],
-    ["payload.successorPreparationPolicyVersion === 'local-bef-successor-preparation/v1'", () => Boolean(payload.successorPreparationPolicyVersion === 'local-bef-successor-preparation/v1')],
-    ["payload.successorPreparationTimeoutSeconds === 180", () => Boolean(payload.successorPreparationTimeoutSeconds === 180)],
-    ["run.successor_preparation_policy_version === payload.successorPreparationPolicyVersion", () => Boolean(run.successor_preparation_policy_version === payload.successorPreparationPolicyVersion)],
-    ["Number(run.successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds", () => Boolean(Number(run.successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds)],
-    ["run.intent_successor_preparation_policy_version === payload.successorPreparationPolicyVersion", () => Boolean(run.intent_successor_preparation_policy_version === payload.successorPreparationPolicyVersion)],
-    ["Number(run.intent_successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds", () => Boolean(Number(run.intent_successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds)],
-    ["Number.isFinite(finishedAt)", () => Boolean(Number.isFinite(finishedAt))],
-    ["Number.isFinite(activatedAt)", () => Boolean(Number.isFinite(activatedAt))],
-    ["Number.isFinite(previousDeadline)", () => Boolean(Number.isFinite(previousDeadline))],
-    ["interval >= 0", () => Boolean(interval >= 0)],
-    ["interval <= 180_000", () => Boolean(interval <= 180_000)],
-    ["expectedInterval === interval", () => Boolean(expectedInterval === interval)],
-    ["timestampMillis(payload.predecessorFinishedAt) === finishedAt", () => Boolean(timestampMillis(payload.predecessorFinishedAt) === finishedAt)],
-    ["timestampMillis(payload.previousOverallDeadline) === previousDeadline", () => Boolean(timestampMillis(payload.previousOverallDeadline) === previousDeadline)],
-    ["timestampMillis(payload.overallDeadline) === expectedDeadline", () => Boolean(timestampMillis(payload.overallDeadline) === expectedDeadline)],
-    ["currentDeadline === expectedDeadline", () => Boolean(currentDeadline === expectedDeadline)],
-    ["Number.isSafeInteger(Number(taskCase?.taskDeadlineSeconds))", () => Boolean(Number.isSafeInteger(Number(taskCase?.taskDeadlineSeconds)))],
-    ["timestampMillis(payload.taskDeadline) === expectedTaskDeadline", () => Boolean(timestampMillis(payload.taskDeadline) === expectedTaskDeadline)],
-    ["timestampMillis(successor.deadline_at) === expectedTaskDeadline", () => Boolean(timestampMillis(successor.deadline_at) === expectedTaskDeadline)],
-    ["payload.predecessorReceipt?.inputHash === predecessorTerminalization.inputHash", () => Boolean(payload.predecessorReceipt?.inputHash === predecessorTerminalization.inputHash)],
-    ["payload.predecessorReceipt?.resultHash === predecessorTerminalization.resultHash", () => Boolean(payload.predecessorReceipt?.resultHash === predecessorTerminalization.resultHash)],
-    ["payload.predecessorReceipt?.closureId === predecessorTerminalization.closureId", () => Boolean(payload.predecessorReceipt?.closureId === predecessorTerminalization.closureId)],
-    ["payload.predecessorReceipt?.outcome === predecessorTerminalization.outcome", () => Boolean(payload.predecessorReceipt?.outcome === predecessorTerminalization.outcome)],
-    ["payload.predecessorReceipt?.preparationId === predecessorTerminalization.preparationId", () => Boolean(payload.predecessorReceipt?.preparationId === predecessorTerminalization.preparationId)],
-    ["payload.predecessorReceipt?.leaseId === predecessorTerminalization.leaseId", () => Boolean(payload.predecessorReceipt?.leaseId === predecessorTerminalization.leaseId)],
-    ["payload.predecessorReceipt?.generationId === predecessorTerminalization.generationId", () => Boolean(payload.predecessorReceipt?.generationId === predecessorTerminalization.generationId)],
-    ["payload.predecessorReceipt?.fenceEvidenceHash === predecessorTerminalization.fenceEvidenceHash", () => Boolean(payload.predecessorReceipt?.fenceEvidenceHash === predecessorTerminalization.fenceEvidenceHash)],
-    ["payload.preparation?.preparationId === preparation.preparation_id", () => Boolean(payload.preparation?.preparationId === preparation.preparation_id)],
-    ["payload.preparation?.leaseId === preparation.lease_id", () => Boolean(payload.preparation?.leaseId === preparation.lease_id)],
-    ["payload.preparation?.environmentId === preparation.environment_id", () => Boolean(payload.preparation?.environmentId === preparation.environment_id)],
-    ["payload.preparation?.generationId === execution.generation_id", () => Boolean(payload.preparation?.generationId === execution.generation_id)],
-    ["payload.preparation?.environmentManifestSha256 === preparation.environment_manifest_sha256", () => Boolean(payload.preparation?.environmentManifestSha256 === preparation.environment_manifest_sha256)],
-    ["payload.preparation?.applicationSourceHash === preparation.application_source_hash", () => Boolean(payload.preparation?.applicationSourceHash === preparation.application_source_hash)],
-    ["payload.binding?.runId === runId", () => Boolean(payload.binding?.runId === runId)],
-    ["payload.binding?.taskIndex === 1", () => Boolean(payload.binding?.taskIndex === 1)],
-    ["payload.binding?.generationId === execution.generation_id", () => Boolean(payload.binding?.generationId === execution.generation_id)],
-    ["payload.binding?.envId === execution.env_id", () => Boolean(payload.binding?.envId === execution.env_id)],
-    ["payload.binding?.manifestHash === preparation.environment_manifest_sha256", () => Boolean(payload.binding?.manifestHash === preparation.environment_manifest_sha256)],
-    ["payload.binding?.applicationSourceHash === preparation.application_source_hash", () => Boolean(payload.binding?.applicationSourceHash === preparation.application_source_hash)],
-    ["payload.binding?.participantId === (execution.participant_id ?? null)", () => Boolean(payload.binding?.participantId === (execution.participant_id ?? null))],
-    ["payload.binding?.payerAddress === (execution.payer_address?.toLowerCase() ?? null)", () => Boolean(payload.binding?.payerAddress === (execution.payer_address?.toLowerCase() ?? null))],
+    ['start identity and initial deadline are stable', () => startedEvents[0].source === 'coordinator' &&
+      startedEvents[0].runId === runId && startedEvents[0].payload?.taskId === taskIds[0] &&
+      (taskIndex !== 1 || (startedEvents[0].payload?.environmentId === predecessorTerminalization.environmentId &&
+        timestampMillis(startedEvents[0].payload?.overallDeadline ?? '') === timestampMillis(oldOverallDeadline)))],
+    ['predecessor was terminalized with its reconstructed outcome', () =>
+      predecessor?.task_id === predecessorTaskId &&
+      predecessor?.status === (priorTaskResult.outcome === 'failed' ? 'failed' : 'completed') &&
+      predecessor?.finished_at && timestampMillis(predecessor.finished_at) === finishedAt &&
+      terminalizationEvents.length === 1],
+    ['current selected task is active', () => successor?.task_id === taskId && successor.status === 'active' && successor.started_at],
+    ['current preparation and execution share a leased generation', () => Boolean(execution && preparation &&
+      preparation.task_id === taskId && preparation.preparation_status === 'ready' && preparation.lease_state === 'leased' &&
+      preparation.observed_generation_id === execution.generation_id && preparation.environment_id === execution.env_id &&
+      preparation.case_id === execution.case_id && preparation.case_hash === execution.case_hash &&
+      task.caseHash === execution.case_hash && preparation.initial_state_sha256 === execution.initial_state_sha256 &&
+      run.environment_id === preparation.environment_id && execution.preparation_id === preparation.preparation_id &&
+      execution.lease_id === preparation.lease_id && execution.lease_state === 'leased' &&
+      UUID.test(preparation.preparation_id) && UUID.test(preparation.lease_id) && UUID.test(execution.generation_id))],
+    ['current activation event binds this exact adjacent transition', () => activationEvent.source === 'coordinator' &&
+      activationEvent.payloadHash === eventPayloadHash(payload) && payload?.runId === runId &&
+      payload.fromTaskIndex === predecessorIndex && payload.toTaskIndex === taskIndex &&
+      payload.fromTaskId === predecessorTaskId && payload.toTaskId === taskId],
+    ['pinned training successor policy is retained', () =>
+      payload.successorPreparationPolicyVersion === 'local-bef-successor-preparation/v1' &&
+      payload.successorPreparationTimeoutSeconds === 180 &&
+      run.successor_preparation_policy_version === payload.successorPreparationPolicyVersion &&
+      Number(run.successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds &&
+      run.intent_successor_preparation_policy_version === payload.successorPreparationPolicyVersion &&
+      Number(run.intent_successor_preparation_timeout_seconds) === payload.successorPreparationTimeoutSeconds],
+    ['bounded preparation interval extends the correct prior deadline', () =>
+      Number.isFinite(finishedAt) && Number.isFinite(activatedAt) && Number.isFinite(previousDeadline) &&
+      interval >= 0 && interval <= 180_000 && payload.preparationIntervalMilliseconds === interval &&
+      timestampMillis(payload.predecessorFinishedAt) === finishedAt &&
+      timestampMillis(payload.previousOverallDeadline) === previousDeadline &&
+      timestampMillis(payload.overallDeadline) === expectedDeadline && currentDeadline === expectedDeadline &&
+      Number.isSafeInteger(Number(taskCase?.taskDeadlineSeconds)) &&
+      timestampMillis(payload.taskDeadline) === expectedTaskDeadline &&
+      timestampMillis(successor.deadline_at) === expectedTaskDeadline],
+    ['activation receipt binds the independently observed predecessor terminalization', () =>
+      payload.predecessorReceipt?.inputHash === predecessorTerminalization.inputHash &&
+      payload.predecessorReceipt?.resultHash === predecessorTerminalization.resultHash &&
+      payload.predecessorReceipt?.closureId === predecessorTerminalization.closureId &&
+      payload.predecessorReceipt?.outcome === predecessorTerminalization.outcome &&
+      payload.predecessorReceipt?.preparationId === predecessorTerminalization.preparationId &&
+      payload.predecessorReceipt?.leaseId === predecessorTerminalization.leaseId &&
+      payload.predecessorReceipt?.generationId === predecessorTerminalization.generationId &&
+      payload.predecessorReceipt?.fenceEvidenceHash === predecessorTerminalization.fenceEvidenceHash],
+    ['activation preparation and execution binding match persisted owner rows', () =>
+      payload.preparation?.preparationId === preparation.preparation_id &&
+      payload.preparation?.leaseId === preparation.lease_id &&
+      payload.preparation?.environmentId === preparation.environment_id &&
+      payload.preparation?.generationId === execution.generation_id &&
+      payload.preparation?.environmentManifestSha256 === preparation.environment_manifest_sha256 &&
+      payload.preparation?.applicationSourceHash === preparation.application_source_hash &&
+      payload.binding?.runId === runId && payload.binding?.taskIndex === taskIndex &&
+      payload.binding?.generationId === execution.generation_id && payload.binding?.envId === execution.env_id &&
+      payload.binding?.manifestHash === preparation.environment_manifest_sha256 &&
+      payload.binding?.applicationSourceHash === preparation.application_source_hash &&
+      payload.binding?.participantId === (execution.participant_id ?? null) &&
+      payload.binding?.payerAddress === (execution.payer_address?.toLowerCase() ?? null)],
   ];
   const failedConditions = activationConditions.filter(([, check]) => {
     try { return !check(); } catch { return true; }
@@ -1303,7 +1425,7 @@ async function verifyTrainingSuccessorActivation({ input, record, observerPool, 
   'successor_dispatch_claim_or_slot_changed');
 
   const { postgresByEnvironment, close } = await createObserverPorts({ repositoryRoot: input.repoRoot, runId,
-    environmentId: preparation.environment_id, taskId: 'S2', taskIndex: 1 });
+    environmentId: preparation.environment_id, taskId, taskIndex });
   try {
     const rows = await postgresByEnvironment[preparation.environment_id].readPreparedProof({
       preparationId: preparation.preparation_id, generationId: execution.generation_id });
@@ -1315,7 +1437,7 @@ async function verifyTrainingSuccessorActivation({ input, record, observerPool, 
     'successor_bef_preparation_readback_mismatch');
     const originalFence = predecessorTerminalization;
     const oldObserver = await createObserverPorts({ repositoryRoot: input.repoRoot, runId,
-      environmentId: originalFence.environmentId, taskId: 'S1', taskIndex: 0 });
+      environmentId: originalFence.environmentId, taskId: predecessorTaskId, taskIndex: predecessorIndex });
     let oldFence;
     try {
       const oldRows = await oldObserver.postgresByEnvironment[originalFence.environmentId].readFenceProof({
@@ -1325,8 +1447,9 @@ async function verifyTrainingSuccessorActivation({ input, record, observerPool, 
         oldFence.preparation_generation_id === originalFence.generationId,
       'predecessor_generation_fence_changed_after_successor_activation');
     } finally { await oldObserver.close(); }
-    const verified = { taskIndex: 1, taskId: 'S2', preparationId: preparation.preparation_id,
-      leaseId: preparation.lease_id, environmentId: preparation.environment_id, generationId: execution.generation_id,
+    const verified = { fromTaskIndex: predecessorIndex, fromTaskId: predecessorTaskId,
+      taskIndex, taskId, preparationId: preparation.preparation_id, leaseId: preparation.lease_id,
+      environmentId: preparation.environment_id, generationId: execution.generation_id,
       binding: { manifestHash: execution.manifest_hash, applicationSourceHash: execution.application_source_hash },
       predecessorFinishedAt: new Date(finishedAt).toISOString(), activatedAt: new Date(activatedAt).toISOString(),
       preparationIntervalMilliseconds: interval, previousOverallDeadline: new Date(previousDeadline).toISOString(),
@@ -1340,11 +1463,11 @@ async function verifyTrainingSuccessorActivation({ input, record, observerPool, 
       befPreparationStatus: bef.preparation_status, befGenerationStatus: bef.generation_status,
       predecessorGenerationStatus: oldFence.generation_status,
       oldGenerationFenceStillAuthoritative: predecessorTerminalization.generationId !== execution.generation_id };
-    record('server_successor_activation_and_independent_owner_bef_readback', 'verified', verified);
-    return verified;
+    const activationResult = trainingSuccessorActivationResult({ transition, proof: verified });
+    record('server_successor_activation_and_independent_owner_bef_readback', 'verified', activationResult);
+    return activationResult;
   } finally { await close(); }
 }
-
 async function verifyRankedSuccessorActivation({ input, record, observerPool, runId, task,
   release, predecessorTerminalization, priorTaskResult, dispatchIdentity }) {
   const timestampMillis = (value) => value instanceof Date ? value.getTime() : Date.parse(value ?? '');
@@ -1652,11 +1775,36 @@ async function verifyWorkerRunCompletionUi({ input, output, record, state, snaps
     reserveRows.length === 1 && reserveRows[0].amount_units === run.quote_price_units && reserveRows[0].source_kind === reservation.source_kind &&
     state.ownerRefundCount === 0 &&
     state.moneySha256 === output.automaticInitialMoneySha256, 'automatic_worker_completion_state_mismatch');
+  if (input.bonusCodeFunding === true) {
+    const codeGrantId = output.bonusFunding?.grantId;
+    const onlyCodeLot = state.reservations.length === 1 && state.reservations[0].source_kind === 'tester_bonus' &&
+      state.reservations[0].bonus_grant_id === codeGrantId && state.reservations[0].cash_provenance === null &&
+      state.reservations[0].amount_units === run.quote_price_units;
+    const reserveAndDebit = state.ledger.filter((entry) => entry.entry_type === 'reserve' || entry.entry_type === 'debit');
+    demand(UUID.test(codeGrantId ?? '') && onlyCodeLot && reserveAndDebit.length === 2 &&
+      reserveAndDebit.every((entry) => entry.source_kind === 'tester_bonus' && entry.amount_units === run.quote_price_units) &&
+      reserveAndDebit.some((entry) => entry.entry_type === 'reserve') && reserveAndDebit.some((entry) => entry.entry_type === 'debit'),
+    'bonus_code_grant_not_bound_to_worker_reserve_and_start_debit');
+    output.bonusFunding.workerRunFunding = {
+      status: 'verified',
+      runId: run.id,
+      mode: run.mode,
+      taskIds: run.task_ids,
+      quoteUnits: run.quote_price_units,
+      reservation: state.reservations[0],
+      reserveEntries: reserveAndDebit.filter((entry) => entry.entry_type === 'reserve'),
+      startDebitEntries: reserveAndDebit.filter((entry) => entry.entry_type === 'debit'),
+      cashReservationCount: state.reservations.filter((row) => row.source_kind === 'cash_usdc').length,
+      cashLedgerEntryCount: state.ledger.filter((row) => row.source_kind === 'cash_usdc').length,
+      bonusGrantIdMatchesCodeReceipt: true,
+    };
+  }
   const completed = state.completionEvents[0];
   const payload = typeof completed.payload_json === 'string' ? JSON.parse(completed.payload_json) : completed.payload_json;
+  const finalTrainingActivation = output.trainingSuccessorActivations?.at(-1) ?? output.successorActivation;
   const finishedMilliseconds = state.run.finished_at instanceof Date ? state.run.finished_at.getTime() : Date.parse(state.run.finished_at ?? '');
   demand(completed.source === 'coordinator' && completed.payload_hash === eventPayloadHash(payload) && payload?.runId === run.id &&
-    (mode === 'training' && expected.length > 1 ? BigInt(completed.sequence) > BigInt(output.successorActivation?.activationEventSequence ?? 0) : state.terminalizationEvents.every((event) => BigInt(event.sequence) < BigInt(completed.sequence))) &&
+    (mode === 'training' && expected.length > 1 ? BigInt(completed.sequence) > BigInt(finalTrainingActivation?.activationEventSequence ?? 0) : state.terminalizationEvents.every((event) => BigInt(event.sequence) < BigInt(completed.sequence))) &&
     payload.mode === mode && JSON.stringify(payload.taskIds) === JSON.stringify(run.task_ids) &&
     Number.isFinite(finishedMilliseconds) && Date.parse(payload.finishedAt ?? '') === finishedMilliseconds &&
     Array.isArray(payload.tasks) && payload.tasks.length === expected.length && payload.tasks.every((proof, index) => {
@@ -1699,7 +1847,8 @@ async function verifyWorkerRunCompletionUi({ input, output, record, state, snaps
   if (mode === 'ranked') verifyRankedHandoffState({ output, state, run, expected, completed, payload });
   if (mode === 'training') output.ownerTrainingFeedbackUi = output.ownerRunResultsUi;
   output.completionBridge = { classification: mode === 'ranked' ? 'automatic_server_worker_ranked_completion_with_readonly_handoff_verification' : 'automatic_server_worker_lifecycle_with_readonly_harness_verification',
-    automaticWorkerEvaluation: true, actualServerWorkerSuccessorAdvancement: mode === 'training' && expected.length > 1 && output.successorActivation?.taskIndex === 1,
+    automaticWorkerEvaluation: true, actualServerWorkerSuccessorAdvancement: mode === 'training' && expected.length > 1 &&
+      output.trainingSuccessorActivations?.length === expected.length - 1,
     harnessObservationSealWrites: false, harnessEvaluationWrites: false, harnessFenceWrites: false, harnessCompletionWrites: false };
   output.automaticWorkerEvaluationVerified = true;
   record('automatic_worker_completion_and_owner_results_ui', 'verified', output.ownerRunResultsUi);
@@ -2152,6 +2301,8 @@ async function fenceAndCompleteKnownS1({ input, output, record, observerPool, po
       remainingExecutionSlots: afterTerminalization.slots.length, moneyStateUnchanged: true,
       moneyStateSha256: afterTerminalization.moneySha256,
       originalGenerationFenceStatus: 'verified' };
+    output.predecessorTerminalizations ??= [];
+    output.predecessorTerminalizations[taskIndex] = output.predecessorTerminalization;
     record('known_training_predecessor_terminalization_and_readonly_owner_database', 'verified', {
       taskIndex, taskId, terminalizationEvents: terminalizationEvents.length,
       claimStatus: afterTerminalization.claims[0].status, slotsRemaining: afterTerminalization.slots.length,
@@ -2234,7 +2385,8 @@ async function fenceAndCompleteKnownS1({ input, output, record, observerPool, po
       : 'internal_observer_evaluation_fence_and_training_completion_bridge_not_worker_action_dispatch',
     status: 'completed', automaticWorkerEvaluation: false,
     ...(!sequenceMode ? { automaticWorkerEvaluationOrAdvance: false } : {}),
-    actualServerWorkerSuccessorAdvancement: sequenceMode && output.successorActivation?.taskIndex === 1,
+    actualServerWorkerSuccessorAdvancement: sequenceMode &&
+      output.trainingSuccessorActivations?.length === taskIds.length - 1,
     taskGradePublished: false,
     taskGradePublicationScope: 'public_ranked_or_leaderboard_surface',
     ownerFeedbackVisibility: output.internalEvaluationBridge.ownerFeedbackVisibility,
@@ -2424,13 +2576,19 @@ async function requestOwnerCancellation({ ownerPage, runId, observerPool, output
       if (row && ['cancelled', 'failed', 'expired', 'completed', 'disqualified', 'unknown'].includes(row.status)) {
         output.runAfterCleanup = row;
         const preparationIndexes = latest.preparations.map((entry) => entry.task_index);
-        const sequenceObservedS2 = output.taskIds?.[1] === 'S2' && output.successorActivation?.taskIndex === 1;
+        const trainingSequenceObserved = output.mode === 'training' && output.taskIds?.length > 1;
+        const sequenceObservedS2 = trainingSequenceObserved && output.taskIds?.[1] === 'S2' &&
+          output.trainingSuccessorActivations?.some((entry) => entry.toTaskIndex === 1) === true;
+        const transitionCount = output.trainingSuccessorActivations?.length ?? 0;
+        const trainingSequenceTransitionsObserved = trainingSequenceObserved && transitionCount === output.taskIds.length - 1;
         output.cleanupEvidence = { terminalStatus: row.status,
           cancellationEvidencePresent: typeof row.cancellation_evidence_hash === 'string' && HEX_HASH.test(row.cancellation_evidence_hash),
+          ...(output.mode === 'training' ? { sequenceObservedS2, trainingSequenceTransitionsObserved,
+            successorActivationCount: transitionCount } : {}),
           preparationLeaseCount: latest.preparations.length,
           preparationTaskIndexes: preparationIndexes,
-          allTaskLeasesFenced: latest.preparations.every((entry, index) => entry.lease_state === 'fenced' && entry.task_index === index) &&
-            (!sequenceObservedS2 || (latest.preparations.length === 2 && preparationIndexes[0] === 0 && preparationIndexes[1] === 1)) };
+          allTaskLeasesFenced: trainingCleanupLeasePrefixIsFenced({ mode: output.mode,
+            preparations: latest.preparations, taskIds: output.taskIds }) };
         return;
       }
       await delay(750);
@@ -2446,7 +2604,7 @@ async function requestOwnerCancellation({ ownerPage, runId, observerPool, output
 
 /**
  * AICODE-NOTE: This opt-in harness uses the real owner UI and agent API plus read-only owner/BEF observers.
- * The two-task mode observes the real server successor preparation, activation, and session attach after private known-result terminalization.
+ * Training sequences observe each real server successor preparation and activation after private known-result terminalization.
  * Evaluation and completion remain a private harness bridge; the worker does not grade or dispatch participant actions, and this is not full acceptance.
  */
 async function runGenuineOwnerRunCase(input) {
@@ -2457,24 +2615,27 @@ async function runGenuineOwnerRunCase(input) {
   demand(!input.primaryClientOnly || (input.bddProbes === true && rankedMode && input.automaticWorkerEvaluation === true),
     'primary_client_profile_requires_ranked_bdd_worker');
   const trainingSequenceMode = sequenceMode && mode === 'training';
-  const taskIds = sequenceMode ? input.taskIds : [input.taskId ?? 'S1'];
+  const taskIds = sequenceMode
+    ? rankedMode ? input.taskIds : normalizeTrainingSequenceTaskIds(input.taskIds ?? ['S1', 'S2'])
+    : [input.taskId ?? 'S1'];
   demand(Array.isArray(taskIds) && taskIds.length >= 1 &&
     (rankedMode ? sequenceMode && JSON.stringify(taskIds) === JSON.stringify(RANKED_TASK_IDS) && input.automaticWorkerEvaluation === true
       : taskIds.every((id) => SUPPORTED_TASKS.has(id)) &&
-        (sequenceMode ? JSON.stringify(taskIds) === JSON.stringify(['S1', 'S2']) : taskIds.length === 1)),
+        (sequenceMode ? JSON.stringify(taskIds) === JSON.stringify(normalizeTrainingSequenceTaskIds(taskIds)) : taskIds.length === 1)),
   'unsupported_genuine_task_selection');
+  const taskTransitions = trainingSequenceMode ? trainingSequenceTransitions(taskIds) : [];
   const taskId = taskIds[0];
-  demand(!['M1', 'M3', 'M4', 'H1', 'H2'].includes(taskId) || input.automaticWorkerEvaluation === true,
-    'open_task_capture_requires_server_worker');
+  demand(rankedMode || !taskIds.some((id) => ['M1', 'M3', 'M4', 'H1', 'H2'].includes(id)) ||
+    input.automaticWorkerEvaluation === true, 'open_task_capture_requires_server_worker');
   const output = {
     schemaVersion: rankedMode ? 'genuine-ranked-worker-owner-run-capture/v1'
       : sequenceMode ? 'genuine-training-sequence-owner-run-capture/v1' : 'genuine-' + taskId.toLowerCase() + '-owner-run-capture/v1',
     classification: input.automaticWorkerEvaluation
       ? (rankedMode ? 'local_full_ranked_run_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance'
-        : sequenceMode ? 'local_two_task_training_sequence_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance'
+        : sequenceMode ? 'local_' + taskIds.length + '_task_training_sequence_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance'
         : 'local_first_task_with_server_worker_observation_evaluation_fence_completion_not_full_scenario_or_product_acceptance')
       : sequenceMode
-      ? 'local_two_task_training_sequence_with_internal_grade_fence_completion_bridge_and_real_worker_advancement_not_full_scenario_or_product_acceptance'
+      ? 'local_' + taskIds.length + '_task_training_sequence_with_internal_grade_fence_completion_bridge_and_real_worker_advancement_not_full_scenario_or_product_acceptance'
       : 'local_first_task_capture_not_full_scenario_acceptance_or_product_release_acceptance',
     captureId: input.captureId ?? randomUUID(),
     fullScenarioAcceptance: false,
@@ -2540,37 +2701,65 @@ async function runGenuineOwnerRunCase(input) {
     demand(observerIdentity?.role === 'oid_observer' && observerIdentity.readonly === 'on', 'owner_observer_role_invalid');
     output.database = { databaseName: observerIdentity.database_name, observerRole: observerIdentity.role, readOnly: true };
 
-    record('owner_bonus_fixture_ui_and_readonly_database', 'started');
-    const grantForm = input.adminPage.getByTestId('bonus-grant-form');
-    await grantForm.waitFor({ state: 'visible', timeout: 15_000 });
-    const grantAmountUnits = rankedMode ? BigInt(release.rankedPriceUnits) * (bddContext && !input.primaryClientOnly ? 3n : 1n) : 100_000n;
+    record(input.bonusCodeFunding ? 'owner_bonus_code_issue_redeem_and_readonly_database' : 'owner_bonus_fixture_ui_and_readonly_database', 'started');
+    const selectedTrainingQuoteUnits = trainingSequenceMode ? quoteTrainingSelectionUnits(release, taskIds) : null;
+    const grantAmountUnits = rankedMode
+      ? BigInt(release.rankedPriceUnits) * (bddContext && !input.primaryClientOnly ? 3n : 1n)
+      : trainingSequenceMode ? trainingSequenceGrantAmountUnits(selectedTrainingQuoteUnits) : 100_000n;
     demand(grantAmountUnits > 0n, 'synthetic_run_budget_invalid');
     const grantAmount = formatUsdcUnits(grantAmountUnits);
-    const grantReason = rankedMode ? 'Synthetic local full ranked worker acceptance fixture'
-      : trainingSequenceMode ? 'Synthetic local S1 to S2 training-sequence acceptance fixture'
-      : 'Synthetic local ' + taskId + ' first-task acceptance fixture';
-    await grantForm.getByTestId('bonus-grant-owner-id').fill(input.ownerId);
-    await grantForm.getByTestId('bonus-grant-amount').fill(grantAmount);
-    await grantForm.getByTestId('bonus-grant-reason').fill(grantReason);
-    await grantForm.getByTestId('bonus-grant-expiry').fill('');
-    const grantPromise = input.adminPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/admin/bonus-grants'
-      && response.request().method() === 'POST', { timeout: 15_000 });
-    await grantForm.getByTestId('bonus-grant-submit').click();
-    const grantHttp = await grantPromise;
-    let grantBody = {};
-    try { grantBody = await grantHttp.json(); } catch { /* HTTP status is retained below. */ }
-    const grantId = grantBody?.grant?.id;
-    const grantOperationId = grantBody?.operationId;
-    demand(grantHttp.status() === 200 && UUID.test(grantId) && typeof grantOperationId === 'string', 'bonus_grant_ui_failed');
-    const grantDb = await checkBonusGrant(observerPool, grantId, input.ownerId, grantOperationId);
-    demand(grantDb.grant.length === 1 && BigInt(grantDb.grant[0].amount_units) === grantAmountUnits &&
-      grantDb.ledgerEntries.some((entry) => BigInt(entry.available_delta_units) === grantAmountUnits), 'bonus_grant_database_binding_mismatch');
-    output.bonusGrant = { grantId, operationId: grantOperationId, amountUnits: grantAmountUnits.toString(), browserHttpStatus: grantHttp.status(),
-      database: grantDb };
-    record('owner_bonus_fixture_ui_and_readonly_database', 'verified', { grantId, amountUnits: grantAmountUnits.toString() });
+    let grantId;
+    if (input.bonusCodeFunding === true) {
+      const { issueAndRedeemBonusCodeForWorker } = await import('./bonus-code-cases.mjs');
+      const funding = await issueAndRedeemBonusCodeForWorker({
+        adminPage: input.adminPage,
+        ownerPage: input.ownerPage,
+        adminCapture: input.adminCapture,
+        ownerCapture: input.ownerCapture,
+        ownerId: input.ownerId,
+        observerDatabaseUrl: input.observerDatabaseUrl,
+        label: 'Worker funding ' + input.captureId.slice(0, 8),
+        amount: grantAmount,
+        amountUnits: grantAmountUnits.toString(),
+      });
+      grantId = funding.grantId;
+      output.bonusFunding = funding;
+      output.bonusGrant = { grantId, operationId: funding.grantOperationId, amountUnits: funding.amountUnits,
+        sourceKind: 'tester_bonus', codeId: funding.issue.codeId, database: funding.database };
+      record('owner_bonus_code_issue_redeem_and_readonly_database', 'verified', {
+        codeId: funding.issue.codeId, redemptionId: funding.redemption.redemptionId,
+        grantId, amountUnits: grantAmountUnits.toString(), sourceKind: 'tester_bonus',
+      });
+    } else {
+      const grantForm = input.adminPage.getByTestId('bonus-grant-form');
+      await grantForm.waitFor({ state: 'visible', timeout: 15_000 });
+      const grantReason = rankedMode ? 'Synthetic local full ranked worker acceptance fixture'
+        : trainingSequenceMode ? 'Synthetic local ' + taskIds.join(' to ') + ' training-sequence acceptance fixture'
+        : 'Synthetic local ' + taskId + ' first-task acceptance fixture';
+      await grantForm.getByTestId('bonus-grant-owner-id').fill(input.ownerId);
+      await grantForm.getByTestId('bonus-grant-amount').fill(grantAmount);
+      await grantForm.getByTestId('bonus-grant-reason').fill(grantReason);
+      await grantForm.getByTestId('bonus-grant-expiry').fill('');
+      const grantPromise = input.adminPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/admin/bonus-grants'
+        && response.request().method() === 'POST', { timeout: 15_000 });
+      await grantForm.getByTestId('bonus-grant-submit').click();
+      const grantHttp = await grantPromise;
+      let grantBody = {};
+      try { grantBody = await grantHttp.json(); } catch { /* HTTP status is retained below. */ }
+      grantId = grantBody?.grant?.id;
+      const grantOperationId = grantBody?.operationId;
+      demand(grantHttp.status() === 200 && UUID.test(grantId) && typeof grantOperationId === 'string', 'bonus_grant_ui_failed');
+      const grantDb = await checkBonusGrant(observerPool, grantId, input.ownerId, grantOperationId);
+      demand(grantDb.grant.length === 1 && BigInt(grantDb.grant[0].amount_units) === grantAmountUnits &&
+        grantDb.ledgerEntries.some((entry) => BigInt(entry.available_delta_units) === grantAmountUnits), 'bonus_grant_database_binding_mismatch');
+      output.bonusGrant = { grantId, operationId: grantOperationId, amountUnits: grantAmountUnits.toString(), browserHttpStatus: grantHttp.status(),
+        database: grantDb };
+      record('owner_bonus_fixture_ui_and_readonly_database', 'verified', { grantId, amountUnits: grantAmountUnits.toString() });
+    }
 
     await input.ownerPage.goto('/agents', { waitUntil: 'domcontentloaded' });
-    const card = await createCard(input.ownerPage, 'Genuine ' + taskId + ' local capture ' + input.captureId.slice(0, 8));
+    const captureTaskLabel = trainingSequenceMode ? taskIds.join('-') : taskId;
+    const card = await createCard(input.ownerPage, 'Genuine ' + captureTaskLabel + ' local capture ' + input.captureId.slice(0, 8));
     const agentId = card.id;
     const agentCard = input.ownerPage.getByTestId('agent-card-' + agentId);
     await agentCard.waitFor({ state: 'visible', timeout: 12_000 });
@@ -2585,7 +2774,7 @@ async function runGenuineOwnerRunCase(input) {
     demand(permissionHttp.status() === 200 && permissionBody?.agent?.permissions?.[mode] === true,
       'agent_mode_permission_ui_failed');
     const financialPolicy = await setS1FinancialPolicyThroughOwnerUi({ ownerPage: input.ownerPage, observerPool,
-      ownerId: input.ownerId, agentId, limitUnits: rankedMode ? BigInt(release.rankedPriceUnits) : 100_000n });
+      ownerId: input.ownerId, agentId, limitUnits: rankedMode ? BigInt(release.rankedPriceUnits) : grantAmountUnits });
     record('owner_agent_financial_policy_ui_and_readonly_database', 'verified', {
       agentId, operationId: financialPolicy.operationId, revision: financialPolicy.revision,
       operationLimitUnits: financialPolicy.operationLimitUnits, utcDayLimitUnits: financialPolicy.utcDayLimitUnits,
@@ -2668,6 +2857,8 @@ async function runGenuineOwnerRunCase(input) {
           output.release.trainingTasks.every((entry, index) => entry.taskId === catalog.activeRelease.openTaskIds[index]) && totalWeight === 15) &&
       selectedWeight > 0, 'validated_release_pricing_projection_invalid');
     const quoteUnits = rankedMode ? fullPrice : ((fullPrice * BigInt(selectedWeight)) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
+    demand(!trainingSequenceMode || (quoteUnits === selectedTrainingQuoteUnits && grantAmountUnits >= quoteUnits),
+      'training_sequence_release_quote_or_funding_mismatch');
     const quoteMatch = /Server quote for this selection:\s*([0-9]+(?:\.[0-9]+)?)\s+USDC/i.exec(quoteText);
     demand(quoteMatch && exactUsdcUnits(quoteMatch[1]) === quoteUnits, 'owner_quote_does_not_match_validated_release_weights');
     const intentPromise = input.ownerPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/owner/runs/intents'
@@ -2833,6 +3024,7 @@ async function runGenuineOwnerRunCase(input) {
     const evidenceSource = new TaskSealedEvidenceSource({ taskReleaseSource, evidenceRoot: input.repoRoot });
     for (let taskIndex = 0; taskIndex < taskIds.length; taskIndex += 1) {
       const currentTaskId = taskIds[taskIndex];
+      const trainingTransition = taskTransitions.find((transition) => transition.toTaskIndex === taskIndex) ?? null;
       let successorActivation = null;
       const captured = await captureAndEvaluateTrainingTask({ input, output, record, observerPool, bearer: actorCredential,
         runId, taskIndex, taskId: currentTaskId, intentId, createIntentOperationId, acceptOperationId,
@@ -2844,11 +3036,14 @@ async function runGenuineOwnerRunCase(input) {
             dispatchIdentity: output.dispatchIdentity });
           output.rankedSuccessorActivations ??= [];
           output.rankedSuccessorActivations.push(successorActivation);
-        } : trainingSequenceMode && taskIndex === 1 ? async (task) => {
+        } : trainingTransition ? async (task) => {
           successorActivation = await verifyTrainingSuccessorActivation({ input, record, observerPool, runId, task,
-            oldOverallDeadline: output.runInitial.overallDeadline, release: output.release,
-            priorTaskResult: output.taskEvaluations[0].result, predecessorTerminalization: output.predecessorTerminalization,
+            taskIds, transition: trainingTransition, oldOverallDeadline: output.runInitial.overallDeadline,
+            release: output.release, priorTaskResult: output.taskEvaluations[trainingTransition.fromTaskIndex].result,
+            predecessorTerminalization: output.predecessorTerminalizations?.[trainingTransition.fromTaskIndex],
             dispatchIdentity: output.dispatchIdentity });
+          output.trainingSuccessorActivations ??= [];
+          output.trainingSuccessorActivations.push(successorActivation);
           output.successorActivation = successorActivation;
         } : null });
       if (rankedMode && taskIndex < taskIds.length - 1) {
@@ -2860,16 +3055,22 @@ async function runGenuineOwnerRunCase(input) {
           terminalizedTaskIndex: taskIndex, nextTaskIndex: taskIndex + 1,
           trigger: 'known_terminalization_after_exact_generation_fence', manualPreparationOrActivation: false });
       }
-      if (trainingSequenceMode && taskIndex === 0) {
+      if (trainingSequenceMode && taskIndex < taskIds.length - 1) {
         demand((input.automaticWorkerEvaluation ? captured.terminalization?.observedFromWorker === true
-          : captured.terminalization?.replayed === false) && output.predecessorTerminalization?.status === 'verified',
+          : captured.terminalization?.replayed === false) && output.predecessorTerminalizations?.[taskIndex]?.status === 'verified',
           'successor_worker_waited_before_known_predecessor_terminalization');
-        output.workerAdvancement = { status: 'awaited_from_real_server_worker', nextTaskIndex: 1,
+        const advancement = { status: 'awaited_from_real_server_worker', predecessorTaskIndex: taskIndex,
+          predecessorTaskId: currentTaskId, nextTaskIndex: taskIndex + 1, nextTaskId: taskIds[taskIndex + 1],
           trigger: 'known_terminalization_after_exact_generation_fence', manualPreparationOrActivation: false };
+        output.workerAdvancements ??= [];
+        output.workerAdvancements.push(advancement);
+        if (taskIndex === 0) output.workerAdvancement = advancement;
       }
-      if (trainingSequenceMode && taskIndex === 1) demand(successorActivation?.taskIndex === 1,
-        'successor_activation_not_independently_verified');
+      if (trainingSequenceMode && taskIndex > 0) demand(successorActivation?.taskIndex === taskIndex &&
+        successorActivation.taskId === currentTaskId, 'successor_activation_not_independently_verified');
     }
+    if (trainingSequenceMode) demand(trainingSuccessorActivationChainMatches(taskIds, output.trainingSuccessorActivations),
+    'training_successor_transition_chain_incomplete');
     if (rankedMode) demand(output.rankedSuccessorActivations?.length === RANKED_TASK_IDS.length - 1 &&
       output.rankedSuccessorActivations.every((entry, index) => entry.taskIndex === index + 1 &&
         entry.predecessorTaskIndex === index && entry.taskId === RANKED_TASK_IDS[index + 1] &&
@@ -2937,7 +3138,7 @@ export async function runGenuineS1OwnerCase(input) {
 }
 
 export async function runGenuineTrainingSequenceOwnerCase(input) {
-  return runGenuineOwnerRunCase({ ...input, sequenceMode: true, taskIds: ['S1', 'S2'] });
+  return runGenuineOwnerRunCase({ ...input, sequenceMode: true, taskIds: input.taskIds ?? ['S1', 'S2'] });
 }
 
 export async function runGenuineRankedOwnerCase(input) {
@@ -2975,14 +3176,15 @@ export async function writeGenuineS1StartupBlock({ repositoryRoot, captureId, ph
 }
 
 export async function writeGenuineTrainingSequenceCapture({ repositoryRoot, capture, provenance }) {
+  const taskIds = normalizeTrainingSequenceTaskIds(capture.taskIds);
   demand(UUID.test(capture.captureId) && capture.schemaVersion === 'genuine-training-sequence-owner-run-capture/v1' &&
-    JSON.stringify(capture.taskIds) === JSON.stringify(['S1', 'S2']), 'training_sequence_capture_identity_invalid');
+    JSON.stringify(capture.taskIds) === JSON.stringify(taskIds), 'training_sequence_capture_identity_invalid');
   const directory = resolve(repositoryRoot, SEQUENCE_EVIDENCE_ROOT, capture.captureId);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const payload = { ...capture, provenance, fullScenarioAcceptance: false,
     claims: { productReleaseActivation: false, internalTaskEvaluationRecorded: capture.internalTaskEvaluationRecorded === true,
       taskGradePublished: false, ownerAcceptance: false, bddLifecycleChanged: false,
-      realWorkerSuccessorAdvancement: capture.successorActivation?.taskIndex === 1,
+      realWorkerSuccessorAdvancement: capture.trainingSuccessorActivations?.length === capture.taskIds.length - 1,
       automaticWorkerEvaluation: capture.automaticWorkerEvaluationVerified === true } };
   assertSecretFree(payload, 'genuine-training-sequence-capture');
   const bytes = Buffer.from(JSON.stringify(payload, null, 2) + '\n');
@@ -2991,18 +3193,20 @@ export async function writeGenuineTrainingSequenceCapture({ repositoryRoot, capt
     classification: payload.classification, status: capture.status, fullScenarioAcceptance: false,
     artifacts: [{ path: 'capture.json', sha256: sha256(bytes),
       boundary: capture.automaticWorkerEvaluationRequested
-        ? 'local two-task training sequence with server worker lifecycle and readonly harness verification; not full scenario acceptance'
-        : 'local two-task training sequence with internal grading and completion bridge plus real worker advancement; not full scenario acceptance' }] };
+        ? 'local ' + capture.taskIds.length + '-task training sequence with server worker lifecycle and readonly harness verification; not full scenario acceptance'
+        : 'local ' + capture.taskIds.length + '-task training sequence with internal grading and completion bridge plus real worker advancement; not full scenario acceptance' }] };
   await writeFile(resolve(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   return { directory: relative(repositoryRoot, directory).split(sep).join('/'), manifest, sha256: sha256(bytes) };
 }
 
-export async function writeGenuineTrainingSequenceStartupBlock({ repositoryRoot, captureId, phase, reasonCode, automaticWorkerEvaluation = false }) {
+export async function writeGenuineTrainingSequenceStartupBlock({ repositoryRoot, captureId, phase, reasonCode,
+  automaticWorkerEvaluation = false, taskIds = ['S1', 'S2'] }) {
+  const selectedTaskIds = normalizeTrainingSequenceTaskIds(taskIds);
   return writeGenuineTrainingSequenceCapture({ repositoryRoot, capture: {
-    schemaVersion: 'genuine-training-sequence-owner-run-capture/v1', captureId, taskIds: ['S1', 'S2'], mode: 'training',
+    schemaVersion: 'genuine-training-sequence-owner-run-capture/v1', captureId, taskIds: selectedTaskIds, mode: 'training',
     status: 'blocked', classification: automaticWorkerEvaluation
-      ? 'local_two_task_training_sequence_server_worker_lifecycle_requested_not_full_scenario_or_product_acceptance'
-      : 'local_two_task_training_sequence_with_internal_grade_fence_completion_bridge_and_real_worker_advancement_not_full_scenario_or_product_acceptance',
+      ? 'local_training_sequence_server_worker_lifecycle_requested_not_full_scenario_or_product_acceptance'
+      : 'local_training_sequence_with_internal_grade_fence_completion_bridge_and_real_worker_advancement_not_full_scenario_or_product_acceptance',
     automaticWorkerEvaluationRequested: automaticWorkerEvaluation, automaticWorkerEvaluationVerified: false,
     fullScenarioAcceptance: false, productReleaseActivation: false, internalTaskEvaluationRecorded: false, taskGradePublished: false,
     stages: [{ name: phase, status: 'blocked', reasonCode }], participantActions: [],

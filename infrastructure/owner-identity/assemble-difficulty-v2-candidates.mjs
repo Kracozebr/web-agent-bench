@@ -170,8 +170,8 @@ async function main() {
   must(integrity.status === 'verified' && integrity.classification === 'raw_artifact_integrity_and_trace_binding_not_semantic_task_acceptance',
     'integrity_contract_invalid');
   await pinned(integrity.retainedInputIndex.path, integrity.retainedInputIndex.sha256);
-  const identityPath = 'artifacts/runs/bts-runtime-feasibility-verification/3cc7ef14-3571-4334-b4be-bd9769928485/verification.json';
-  const identityInput = await pinned(identityPath, '6c8c5bf93c535a0491c6b2c6710947ed45248c15511f4bc81270f2e90b1ccb4f');
+  const identityPath = 'artifacts/runs/bts-runtime-feasibility-verification/5da32b24-3bbe-4e23-8969-ee954d7acf72/verification.json';
+  const identityInput = await pinned(identityPath, '0d0032dd24f5a9e8c4bcccf9e80088287f719ec1299a4649ba9de0300825feb0');
   const identity = identityInput.value.executionIdentity, identityHash = sha256CanonicalTaskJson(identity);
   must(identityHash === identityInput.value.executionIdentityHash, 'identity_hash_mismatch');
   const policyPath = 'infrastructure/owner-identity/task-release-local-policy.json';

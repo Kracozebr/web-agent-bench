@@ -259,7 +259,8 @@ export function RunLaunchPanel() {
       delete pendingRunCancels.current[runId];
       setRuns((current) => [response.run, ...current.filter((item) => item.id !== response.run.id)]);
       setIntents((current) => current.map((item) => item.runId === response.run.id
-        ? { ...item, runStatus: response.run.status, queueDeadline: response.run.queueDeadline }
+        ? { ...item, runStatus: response.run.status, queueDeadline: response.run.queueDeadline,
+          queueExpiryFencePending: response.run.queueExpiryFencePending }
         : item));
       setMessage(response.run.status === "cancelled"
         ? "The server confirmed the pre-start run cancellation and hold release."
@@ -459,6 +460,9 @@ export function RunLaunchPanel() {
                 {intent.runId ? <><dt>Run ID</dt><dd>{intent.runId}</dd></> : null}
                 {intent.runStatus ? <><dt>Run status</dt><dd>{intent.runStatus}</dd></> : null}
                 {intent.queueDeadline ? <><dt>Queue deadline</dt><dd>{timestamp(intent.queueDeadline)}</dd></> : null}
+                {intent.queueExpiryFencePending ? <><dt>Queue expiry</dt><dd className="notice notice-warning" data-testid={`intent-queue-expiry-fence-${intent.id}`}>
+                  This run expired before starting. Cancellation is finishing; reserved bonus USDC will be released after cleanup is confirmed.
+                </dd></> : null}
                 {intent.terminalReason ? <><dt>Terminal reason</dt><dd>{intent.terminalReason}</dd></> : null}
               </dl>
               {intent.status === "pending" ? (
@@ -518,7 +522,9 @@ export function RunLaunchPanel() {
                   {run.cancellationEvidenceHash ? <><dt>Cancellation evidence</dt><dd>{run.cancellationEvidenceHash}</dd></> : null}
                 </dl>
                 <RunFeedbackPanel runId={run.id} />
-                {run.status === "cancellation_requested" ? <div className="notice notice-warning">The cancellation request is recorded and awaits confirmed executor fence evidence.</div> : null}
+                {run.queueExpiryFencePending ? <div className="notice notice-warning" data-testid={`run-queue-expiry-fence-${run.id}`}>
+                  This run expired before starting. Cancellation is finishing; reserved bonus USDC will be released after cleanup is confirmed.
+                </div> : run.status === "cancellation_requested" ? <div className="notice notice-warning">The cancellation request is recorded and awaits confirmed executor fence evidence.</div> : null}
                 {canCancelRun ? <button className="button button-danger" data-testid={`run-cancel-${run.id}`} type="button" onClick={() => void cancelRun(run.id)} disabled={busy}>Cancel admitted run</button> : null}
               </article>
             );

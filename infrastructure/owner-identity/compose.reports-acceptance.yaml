@@ -1,0 +1,11 @@
+# Opt-in local capture storage on Docker's native filesystem. Preserve the
+# normative 20% disk reserve instead of weakening it for a nearly full host mount.
+services:
+  runtime:
+    environment:
+      OID_LOCAL_REPORT_CAPTURE_BASE: /local-report-captures
+    volumes:
+      - report-acceptance-data:/local-report-captures
+
+volumes:
+  report-acceptance-data:

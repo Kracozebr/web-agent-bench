@@ -9,6 +9,7 @@ if (parsedApiOrigin.pathname !== "/" || parsedApiOrigin.search || parsedApiOrigi
 
 const nextConfig: NextConfig = {
   logging: { incomingRequests: false },
+  experimental: { cpus: 2 },
   async rewrites() {
     return [
       {

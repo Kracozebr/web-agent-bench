@@ -23,6 +23,10 @@ const ENVIRONMENTS = [
   { envId: 'bef-env-b', proxyPort: 28545 },
 ];
 const EXPECTED_LOCAL_API_PORT = '38783';
+const observerHostPort = process.env.BEF_DATABASE_OBSERVER_HOST_PORT ?? '55432';
+if (!/^[1-9][0-9]{0,4}$/.test(observerHostPort) || Number(observerHostPort) > 65535) {
+  throw new Error('invalid_observer_host_port');
+}
 const root = process.cwd();
 const secretPaths = {
   adminKey: 'infrastructure/benchmark-environment/.local/secrets/admin-key',
@@ -247,7 +251,7 @@ async function main() {
   }
   const observerUrl = new URL(ownerUrl.toString());
   observerUrl.hostname = 'host.docker.internal';
-  observerUrl.port = '55432';
+  observerUrl.port = observerHostPort;
   observerUrl.username = 'bef_observer';
   observerUrl.password = secrets.observerPassword;
   const pool = new Pool({

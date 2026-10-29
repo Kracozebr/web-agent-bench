@@ -40,12 +40,16 @@ interface AgentsResponse { agents: AgentCard[] }
 interface AgentResponse { agent: AgentCard }
 
 interface ConnectionProfile {
-  protocolVersion: string;
+  protocolVersion?: string;
+  protocolVersions?: string[];
   serverUrl: string;
   resource: string;
   issuer: string;
-  clientId: string;
-  redirectUri: string;
+  clientId: string | null;
+  redirectUri: string | null;
+  clientRegistrations: { clientId: string; redirectUris: string[]; clientName: string }[];
+  clientProfiles: { family: string; edition: string | null; version: string | null; platform: string | null;
+    mcpClientName: string | null; mcpClientVersion: string | null; protocolVersions: string[]; authMethods: string[] }[];
   registration: string;
   authorizationEndpointUrl: string;
   tokenEndpointUrl: string;
@@ -761,7 +765,7 @@ export function AgentManagementPanel() {
         <div className="section-heading">
           <div>
             <h2 id="connection-profile-title">Remote HTTP MCP connection</h2>
-            <p className="fine">This local profile accepts the registered client ID and exact redirect URI shown below; other client editions are unverified. Configure that registered MCP client with the server URL, then start authorization to choose an existing agent and review its current permissions in the browser.</p>
+            <p className="fine">Use a client edition listed in the pinned profile. OAuth clients must use one of the exact registered callbacks; manual bearer profiles do not use an OAuth callback. Start authorization to choose an existing agent and review its current permissions in the browser.</p>
           </div>
         </div>
         {connectionProfileLoading ? <p className="loading" role="status">Loading the configured connection profile…</p> : null}
@@ -770,11 +774,19 @@ export function AgentManagementPanel() {
           <>
             <dl className="kv-list">
               <dt>Remote HTTP MCP URL</dt><dd data-testid="connection-profile-server-url"><code>{connectionProfile.serverUrl}</code></dd>
-              <dt>Protocol version</dt><dd data-testid="connection-profile-protocol">{connectionProfile.protocolVersion}</dd>
+              <dt>Protocol versions</dt><dd data-testid="connection-profile-protocol">{(connectionProfile.protocolVersions ??
+                (connectionProfile.protocolVersion ? [connectionProfile.protocolVersion] : [])).join(", ")}</dd>
               <dt>Protected resource</dt><dd data-testid="connection-profile-resource"><code>{connectionProfile.resource}</code></dd>
-              <dt>Registered client ID</dt><dd data-testid="connection-profile-client-id"><code>{connectionProfile.clientId}</code></dd>
-              <dt>Redirect URI</dt><dd data-testid="connection-profile-redirect-uri"><code>{connectionProfile.redirectUri}</code></dd>
+              <dt>Registered client ID</dt><dd data-testid="connection-profile-client-id">{connectionProfile.clientId ? <code>{connectionProfile.clientId}</code> : "No single OAuth client is selected"}</dd>
+              <dt>Redirect URI</dt><dd data-testid="connection-profile-redirect-uri">{connectionProfile.redirectUri ? <code>{connectionProfile.redirectUri}</code> : "Use a callback from the registered client list"}</dd>
               <dt>Registration</dt><dd data-testid="connection-profile-registration">{connectionProfile.registration}</dd>
+              {connectionProfile.clientRegistrations.map((client) => <div key={client.clientId}>
+                <dt>{client.clientName} client ID</dt><dd><code>{client.clientId}</code></dd>
+                <dt>{client.clientName} callbacks</dt><dd>{client.redirectUris.map((uri) => <code key={uri}>{uri} </code>)}</dd>
+              </div>)}
+              {connectionProfile.clientProfiles.map((profile) => <div key={profile.family}>
+                <dt>{profile.family} client profile</dt><dd>{profile.edition} {profile.version} · {profile.platform} · MCP {profile.protocolVersions.join(", ")} · {profile.authMethods.join(", ")}</dd>
+              </div>)}
             </dl>
             <details className="stack-sm">
               <summary>Discovery and authorization endpoints</summary>

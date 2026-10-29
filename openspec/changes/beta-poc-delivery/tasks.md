@@ -10,7 +10,7 @@ until their named result exists, and implementation separate from gate completio
 
 - [x] 1.1 Obtain approval of BPC-REQ-001–015, BPC-SC-001–026, their negative variants/defaults and external beta extension; record the decision in approval.md (artifact gate).
 - [ ] 1.2 Select the not-yet-chosen server/domain and arrange access; create/configure the absent Google OAuth project, verify the owner-selected admin account subject; arrange missing Claude Code/Desktop/Hermes access and pin all four editions/model access and qualification/release manifest states and schema/secret references; validate missing/invalid profile inputs fail closed (BPC-SC-001/008/013).
-- [ ] 1.3 Add review-approved BPC runtime contracts, named mappers/adapters and Gherkin mirrors using existing active-delta tooling; missing producer/observation must be blocked (artifact traceability; BPC-SC-023).
+- [x] 1.3 Add review-approved BPC runtime contracts, named mappers/adapters and Gherkin mirrors using existing active-delta tooling; missing producer/observation must be blocked (artifact traceability; BPC-SC-023).
 - [ ] 1.4 Factor reusable local worker/readiness dependencies into an explicit beta entry/profile without relaxing local-mode guards; validate release/environment and exclude fixtures (BPC-SC-013).
 - [ ] 1.5 Configure target-host web/API/worker, HTTPS/trusted origins and private DB/BEF admin/RPC interfaces with persistent DB/evidence paths (BPC-SC-013/021).
 - [ ] 1.6 Implement/validate the remote allowlisted transport and exact OAuth callback/client registry where required; retain strict/default/local regression behavior (BPC-SC-008).
@@ -73,7 +73,7 @@ until their named result exists, and implementation separate from gate completio
 ## 8. Acceptance, cohort and closeout (P14–P15; days 6–14)
 
 - [ ] 8.1 Run initial 3–5-person test after included paths are ready; retain stable source/client/profile evidence and receive real human/agent reports; fix observed blockers and repeat affected gates (BPC-SC-001–022/024–026).
-- [ ] 8.2 Produce deduplicated owner/client usage and support export excluding bonus usage from paid conversion; verify missing/duplicate/conflicting records (BPC-SC-023).
+- [x] 8.2 Produce deduplicated owner/client usage and support export excluding bonus usage from paid conversion; verify missing/duplicate/conflicting records (BPC-SC-023).
 - [ ] 8.3 Run all mandatory beta gates on the frozen target build, semantic/traceability audit and read-only evidence replay; record passed/failed/blocked/not_run distinctly, preserve old MVP states (BPC-SC-023).
 - [ ] 8.4 Record explicit beta readiness decision and expanded-cohort conditions using complete evidence, setup/known limits and operator recovery guide; do not infer release from elapsed time or a green source build (BPC-SC-023).
 - [ ] 8.5 Sync/archive only this capability after all beta tasks/gates pass, rerun synchronized traceability/replay and update PoC/MVP status without closing unrelated changes (artifact closeout).

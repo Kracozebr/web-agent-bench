@@ -43,8 +43,8 @@ async function main() {
   must(sha(manifestBytes) === candidate.executionIdentity.environmentManifestSha256
     && sha256CanonicalTaskJson(candidate.executionIdentity) === candidate.executionIdentityHash
     && bef.tools.participantProtocol === candidate.participantToolProtocol, 'runtime_identity_mismatch');
-  const witnessPath = 'artifacts/runs/bts-release-feasibility-witness/fd4a1f22-91dc-4718-969b-b41fdec8e2ec/witness.json';
-  const witnessSha256 = 'ba193786e1f8efaddb4d8e7e30cafdca09c9ab48ea70d93bab649b4b6ca87a12';
+  const witnessPath = 'artifacts/runs/bts-release-feasibility-witness/f28df42b-6341-467a-9be9-380e63ab4325/witness.json';
+  const witnessSha256 = 'd092485d3a0a2b807be43411d318bafc8340506ef1873660f4dfa05ebaff6a56';
   await pinned(witnessPath, witnessSha256);
   const sourceInputs = [{ path: args[1], sha256: args[3] }, { path: policyPath, sha256: sha(policyBytes) },
     { path: 'infrastructure/benchmark-environment/manifest.json', sha256: sha(manifestBytes) },

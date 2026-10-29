@@ -6,16 +6,24 @@ import { isIP } from 'node:net';
 import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { readBetaOperationsMode } from './beta-operations-control.js';
+import { readBetaStorageObservation } from './beta-operations-observability.js';
 import type { OwnerDatabase } from './db.js';
 import { BefTaskExecutor, type ExecuteTaskActionResult, type SafeTaskActionEvidence } from './bef-task-executor.js';
-import { BefTaskPreparationAdapter } from './bef-task-preparation.js';
+import { BefTaskPreparationAdapter, type BefPreparationDiagnostic } from './bef-task-preparation.js';
 import type { OwnerIdentityConfig } from './config.js';
 import { claimNextQueuedRun, consumeRunCancellationOutbox, expireQueuedRuns, requestRunCancellationFromCoordinator,
-  startQueuedRun, SUCCESSOR_PREPARATION_POLICY_VERSION, type RunServiceDependencies, type LocalCoordinatorCancellationReason } from './run-service.js';
+  startQueuedRun, SUCCESSOR_PREPARATION_POLICY_VERSION, type RunServiceDependencies, type LocalCoordinatorCancellationReason,
+  type RunExecutionReadinessProvider } from './run-service.js';
 import { activatePreparedRankedSuccessor, activatePreparedTrainingSuccessor } from './task-successor-activation.js';
 import { findPinnedResourceOffer, type PinnedX402Policy } from './task-action-x402.js';
-import { sha256CanonicalTaskJson, type TaskCase, type TaskReleaseQuerySource } from './task-release.js';
+import { sha256CanonicalTaskJson, type TaskCase, type TaskExecutionReadiness, type TaskReleaseQuerySource } from './task-release.js';
 import { createPostgresTaskReleaseProvider } from './task-store.js';
+import { getTaskEvaluatorBuildHash } from './task-result-service.js';
+import { assertBetaBuildMatchesManifest, createBetaBefReadinessProvider, betaReleaseMatchesManifest, pinBetaRunReleaseProvider,
+  type BetaBefReadinessProvider } from './beta-bef-runtime-profile.js';
+import { observeBetaBuildIdentity } from './beta-runtime-build-identity.js';
+import type { BetaDeploymentManifest } from './beta-profile.js';
 import { createPreparedSuccessorTaskStartPort, createPreparedTaskStartPort, createTaskPreparationCancellationExecutor,
   fenceTaskPreparationWithEvidence, getTaskPreparation, prepareSuccessorTaskExecution, prepareTaskExecution,
   type PreparedTaskStartPort,
@@ -52,6 +60,27 @@ export const LOCAL_BEF_RUN_SERVICE_POLICY = Object.freeze({
   executionCapacity: 1,
   maxPendingIntentsPerOwner: 20,
   maxPendingIntentsGlobal: 100,
+  trainingOverallTimeoutSeconds: 1800,
+  maxTrainingOverallTimeoutSeconds: 3600,
+  successorPreparationPolicyVersion: SUCCESSOR_PREPARATION_POLICY_VERSION,
+  successorPreparationTimeoutSeconds: 180,
+});
+
+/**
+ * AICODE-NOTE: Beta queue limits are separate from the guarded local policy. This pins only
+ * admission/queue mechanics; it deliberately supplies no executor readiness or start port.
+ * The beta worker must independently prove its release/environment before runs can start.
+ */
+export const BETA_BEF_RUN_SERVICE_POLICY = Object.freeze({
+  intentTtlSeconds: 900,
+  maxIntentTtlSeconds: 3600,
+  queueWaitSeconds: 86400,
+  maxQueueWaitSeconds: 86400,
+  executionCapacity: 1,
+  maxPendingIntentsPerOwner: 2,
+  maxPendingIntentsGlobal: 30,
+  maxAcceptedRunsPerOwner: 2,
+  maxAcceptedRunsGlobal: 8,
   trainingOverallTimeoutSeconds: 1800,
   maxTrainingOverallTimeoutSeconds: 3600,
   successorPreparationPolicyVersion: SUCCESSOR_PREPARATION_POLICY_VERSION,
@@ -98,8 +127,30 @@ const LocalCoordinatorFileSchema = z.object({
   }).strict()).min(1).max(8),
 }).strict();
 
+const BetaCoordinatorFileSchema = z.object({
+  schemaVersion: z.literal('beta-bef-task-coordinator-config/v1'),
+  adminKeyFile: z.string().min(1).max(256),
+  sourceRpcUrl: z.string().min(1).max(2048),
+  observationPipeline: z.object({
+    schemaVersion: z.literal('local-bef-training-observation/v1'),
+    database: z.object({ host: z.string().min(1).max(253), port: z.number().int().min(1).max(65535),
+      database: z.literal('bef') }).strict(),
+    passwordFile: z.string().min(1).max(256),
+  }).strict().optional(),
+  environments: z.array(z.object({
+    envId: z.string().regex(ENV_ID),
+    apiBaseUrl: z.string().min(1).max(2048),
+    observerRpcUrl: z.string().min(1).max(2048),
+    x402Policy: PolicySchema,
+  }).strict()).min(1).max(8),
+}).strict();
+
 type LocalCoordinatorFile = z.infer<typeof LocalCoordinatorFileSchema>;
 type LocalEnvironment = LocalCoordinatorFile['environments'][number];
+type BetaCoordinatorFile = z.infer<typeof BetaCoordinatorFileSchema>;
+type CoordinatorEnvironment = { envId: string; apiBaseUrl: string; observerRpcUrl: string; x402Policy: PinnedX402Policy };
+type LoadedCoordinatorConfig = { adminKey: string; sourceRpcUrl: string; environments: CoordinatorEnvironment[];
+  observationDatabase?: BefObserverDatabaseConfig };
 type PostgresClient = ReturnType<typeof postgres>;
 type ReservedPostgresConnection = Awaited<ReturnType<PostgresClient['reserve']>>;
 
@@ -111,7 +162,10 @@ export interface LocalBefTaskCoordinator {
   /** Stops work, drops RAM credentials, and releases the reserved database connection. */
   stop(): Promise<void>;
   ownsLease(): boolean;
+  readinessProvider?: RunExecutionReadinessProvider;
 }
+
+export type BetaBefTaskCoordinator = LocalBefTaskCoordinator & { readinessProvider: BetaBefReadinessProvider };
 
 /** Release startup-owned resources in order, even when coordinator teardown itself fails. */
 export async function cleanupFailedLocalBefTaskCoordinatorStartup(
@@ -184,6 +238,24 @@ function validateUrl(raw: string, options: { localOnly: boolean; httpOnly?: bool
   return url.origin;
 }
 
+function validateBetaPrivateServiceUrl(raw: string): string {
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error('beta_bef_coordinator_url_invalid'); }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const privateHost = allowedLocalHost(host) || host.endsWith('.internal') || host.endsWith('.svc');
+  if (url.protocol !== 'https:' || !privateHost || url.username || url.password || url.search || url.hash ||
+      (url.pathname !== '' && url.pathname !== '/')) throw new Error('beta_bef_coordinator_private_https_required');
+  return url.origin;
+}
+
+function validateBetaSourceRpcUrl(raw: string): string {
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error('beta_bef_source_rpc_url_invalid'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+      (url.pathname !== '' && url.pathname !== '/')) throw new Error('beta_bef_source_rpc_https_required');
+  return url.origin;
+}
+
 function assertPolicy(policyValue: unknown): PinnedX402Policy {
   const policy = PolicySchema.parse(policyValue) as PinnedX402Policy;
   if (policy.network !== `eip155:${policy.localAnvil.chainId}` || policy.localAnvil.identity !== 'private-anvil-fork' ||
@@ -218,6 +290,32 @@ export function parseLocalBefTaskCoordinatorConfig(value: unknown): LocalCoordin
     }
   }
   validateUrl(parsed.sourceRpcUrl, { localOnly: false });
+  return parsed;
+}
+
+export function parseBetaBefTaskCoordinatorConfig(value: unknown): BetaCoordinatorFile {
+  const parsed = BetaCoordinatorFileSchema.parse(value);
+  if (!parsed.adminKeyFile.startsWith('secrets/')) throw new Error('beta_bef_admin_key_path_invalid');
+  privateRelativePath('.', parsed.adminKeyFile, 'secrets');
+  if (parsed.observationPipeline) {
+    if (!parsed.observationPipeline.passwordFile.startsWith('secrets/')) throw new Error('beta_bef_observer_secret_path_invalid');
+    privateRelativePath('.', parsed.observationPipeline.passwordFile, 'secrets');
+  }
+  if (parsed.observationPipeline && !allowedLocalHost(parsed.observationPipeline.database.host)) {
+    throw new Error('beta_bef_observer_database_must_be_private');
+  }
+  const seen = new Set<string>();
+  for (const environment of parsed.environments) {
+    if (seen.has(environment.envId)) throw new Error('beta_bef_coordinator_environment_duplicate');
+    seen.add(environment.envId);
+    validateBetaPrivateServiceUrl(environment.apiBaseUrl);
+    validateBetaPrivateServiceUrl(environment.observerRpcUrl);
+    const policy = assertPolicy(environment.x402Policy);
+    if (policy.manifestSha256.toLowerCase() !== environment.x402Policy.manifestSha256.toLowerCase()) {
+      throw new Error('beta_bef_coordinator_manifest_pin_mismatch');
+    }
+  }
+  validateBetaSourceRpcUrl(parsed.sourceRpcUrl);
   return parsed;
 }
 
@@ -257,6 +355,57 @@ export async function loadLocalBefTaskCoordinatorConfig(configPath: string, proj
       ...(observationDatabase ? { observationDatabase } : {}) };
   } catch {
     throw new Error('local_bef_coordinator_configuration_unavailable');
+  }
+}
+
+export async function loadBetaBefTaskCoordinatorConfig(configPath: string, privateDataDir: string): Promise<LoadedCoordinatorConfig> {
+  try {
+    if (!isAbsolute(configPath) || !isAbsolute(privateDataDir)) throw new Error('invalid_absolute_path');
+    const privateRoot = await realpath(resolve(privateDataDir));
+    const configAbsolute = resolve(configPath);
+    if (!under(privateRoot, configAbsolute)) throw new Error('config_outside_private_data');
+    const configReal = await realpath(configAbsolute);
+    if (!under(privateRoot, configReal)) throw new Error('config_symlink_escape');
+    const configStats = await stat(configReal);
+    assertPrivateMode(configStats);
+    if (!configStats.isFile() || configStats.size < 2 || configStats.size > 256 * 1024) throw new Error('invalid_size');
+    const parsed = parseBetaBefTaskCoordinatorConfig(JSON.parse((await readFile(configReal)).toString('utf8')) as unknown);
+
+    if (!parsed.adminKeyFile.startsWith('secrets/')) throw new Error('admin_key_path_invalid');
+    const keyAbsolute = privateRelativePath(privateRoot, parsed.adminKeyFile, 'secrets');
+    const keyReal = await realpath(keyAbsolute);
+    if (!under(resolve(privateRoot, 'secrets'), keyReal)) throw new Error('admin_key_path_escape');
+    const keyStats = await stat(keyReal);
+    assertPrivateMode(keyStats);
+    if (!keyStats.isFile() || keyStats.size < 16 || keyStats.size > 4096) throw new Error('admin_key_size_invalid');
+    let adminKey = (await readFile(keyReal, 'utf8')).trim();
+    if (adminKey.length < 16 || adminKey.length > 4096 || /[\r\n\u0000]/.test(adminKey)) throw new Error('admin_key_invalid');
+
+    let observationDatabase: BefObserverDatabaseConfig | undefined;
+    if (parsed.observationPipeline) {
+      const rawPasswordPath = parsed.observationPipeline.passwordFile;
+      if (!rawPasswordPath.startsWith('secrets/')) throw new Error('observer_secret_path_invalid');
+      const passwordAbsolute = privateRelativePath(privateRoot, rawPasswordPath, 'secrets');
+      const passwordReal = await realpath(passwordAbsolute);
+      if (!under(resolve(privateRoot, 'secrets'), passwordReal)) throw new Error('observer_secret_path_escape');
+      const observerSecretStats = await stat(passwordReal);
+      assertPrivateMode(observerSecretStats);
+      if (!observerSecretStats.isFile() || observerSecretStats.size < 16 || observerSecretStats.size > 4096) {
+        throw new Error('observer_secret_size_invalid');
+      }
+      let observerPassword = (await readFile(passwordReal, 'utf8')).trim();
+      if (observerPassword.length < 16 || observerPassword.length > 4096 || /[\r\n\u0000]/.test(observerPassword)) {
+        throw new Error('observer_secret_invalid');
+      }
+      observationDatabase = { ...parsed.observationPipeline.database, password: observerPassword };
+      observerPassword = '';
+    }
+    const loaded = { adminKey, sourceRpcUrl: validateBetaSourceRpcUrl(parsed.sourceRpcUrl),
+      environments: parsed.environments as CoordinatorEnvironment[], ...(observationDatabase ? { observationDatabase } : {}) };
+    adminKey = '';
+    return loaded;
+  } catch {
+    throw new Error('beta_bef_coordinator_configuration_unavailable');
   }
 }
 
@@ -640,7 +789,7 @@ function numericIdentity(value: unknown): bigint | null {
   } catch { return null; }
 }
 
-function environmentMaps(environments: LocalEnvironment[]) {
+function environmentMaps(environments: CoordinatorEnvironment[], profile: 'local' | 'beta') {
   const apiBaseByEnvironment: Record<string, string> = {};
   const observerRpcByEnvironment: Record<string, string> = {};
   const participantApiByEnvironment: Record<string, string> = {};
@@ -648,11 +797,15 @@ function environmentMaps(environments: LocalEnvironment[]) {
   const pinnedX402PolicyByEnvironment: Record<string, PinnedX402Policy> = {};
   for (const environment of environments) {
     const id = environment.envId;
-    apiBaseByEnvironment[id] = validateUrl(environment.apiBaseUrl, { localOnly: true, httpOnly: true });
-    if (!allowedParticipantApiHost(new URL(apiBaseByEnvironment[id]!).hostname)) {
+    apiBaseByEnvironment[id] = profile === 'local'
+      ? validateUrl(environment.apiBaseUrl, { localOnly: true, httpOnly: true })
+      : validateBetaPrivateServiceUrl(environment.apiBaseUrl);
+    if (profile === 'local' && !allowedParticipantApiHost(new URL(apiBaseByEnvironment[id]!).hostname)) {
       throw new Error('local_bef_coordinator_participant_api_host_invalid');
     }
-    observerRpcByEnvironment[id] = validateUrl(environment.observerRpcUrl, { localOnly: true, httpOnly: true });
+    observerRpcByEnvironment[id] = profile === 'local'
+      ? validateUrl(environment.observerRpcUrl, { localOnly: true, httpOnly: true })
+      : validateBetaPrivateServiceUrl(environment.observerRpcUrl);
     participantApiByEnvironment[id] = apiBaseByEnvironment[id]!;
     const policy = assertPolicy(environment.x402Policy);
     anvilManifestPinByEnvironment[id] = {
@@ -669,21 +822,35 @@ function environmentMaps(environments: LocalEnvironment[]) {
     anvilManifestPinByEnvironment, pinnedX402PolicyByEnvironment };
 }
 
-async function writeSafeEvidence(projectRoot: string, category: 'preparation' | 'action' | 'lifecycle', id: string, value: unknown): Promise<{ path: string; sha256: string }> {
+export async function writeSafeEvidence(projectRoot: string, category: 'preparation' | 'action' | 'lifecycle', id: string,
+  value: unknown, evidenceDirectory = EVIDENCE_DIR): Promise<{ path: string; sha256: string }> {
   if (!UUID.test(id)) throw new Error('local_bef_coordinator_evidence_identity_invalid');
-  const root = resolve(projectRoot, EVIDENCE_DIR, category);
+  const singleComponentDirectory = /^[A-Za-z0-9._-]{1,80}$/.test(evidenceDirectory)
+    && evidenceDirectory !== '.' && evidenceDirectory !== '..';
+  if (evidenceDirectory !== EVIDENCE_DIR && !singleComponentDirectory) {
+    throw new Error('local_bef_coordinator_evidence_path_invalid');
+  }
+  const projectRootAbsolute = resolve(projectRoot);
+  const evidenceRoot = resolve(projectRootAbsolute, evidenceDirectory);
+  if (!under(projectRootAbsolute, evidenceRoot)) throw new Error('local_bef_coordinator_evidence_path_invalid');
+  await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
+  const realProjectRoot = await realpath(projectRootAbsolute);
+  const realEvidenceRoot = await realpath(evidenceRoot);
+  if (!under(realProjectRoot, realEvidenceRoot)) throw new Error('local_bef_coordinator_evidence_path_invalid');
+  const root = resolve(realEvidenceRoot, category);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const realRoot = await realpath(root);
-  if (!under(resolve(projectRoot, EVIDENCE_DIR), realRoot)) throw new Error('local_bef_coordinator_evidence_path_invalid');
+  if (!under(realEvidenceRoot, realRoot)) throw new Error('local_bef_coordinator_evidence_path_invalid');
   const bytes = Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
   const name = `${id.toLowerCase()}-${randomUUID()}.json`;
   const absolute = resolve(realRoot, name);
   await writeFile(absolute, bytes, { flag: 'wx', mode: 0o600 });
-  return { path: `${EVIDENCE_DIR}/${category}/${name}`, sha256: hash(bytes.toString('utf8')) };
+  return { path: `${evidenceDirectory}/${category}/${name}`, sha256: hash(bytes.toString('utf8')) };
 }
 
 function buildEnvironmentSelector(input: {
-  db: OwnerDatabase; releaseSource: TaskReleaseQuerySource; environments: LocalEnvironment[]; fetchImpl: typeof fetch;
+  db: OwnerDatabase; releaseSource: TaskReleaseQuerySource; environments: CoordinatorEnvironment[]; fetchImpl: typeof fetch;
+  profile: 'local' | 'beta'; betaManifest?: BetaDeploymentManifest; apiBaseByEnvironment: Record<string, string>;
 }) {
   return {
     async selectEnvironment(target: { runId: string; taskIndex: number; manifestHash: string; environmentManifestSha256: string; taskCase: TaskCase }): Promise<string> {
@@ -691,6 +858,9 @@ function buildEnvironmentSelector(input: {
       const run = runRows[0];
       if (!run || run.manifest_hash.toLowerCase() !== target.manifestHash.toLowerCase()) throw new Error('local_bef_coordinator_run_pin_unavailable');
       const release = await input.releaseSource.getValidatedReleaseRecord(run.release_identity, run.manifest_hash);
+      if (input.profile === 'beta' && (!input.betaManifest || !betaReleaseMatchesManifest(release, input.betaManifest))) {
+        throw new Error('beta_bef_coordinator_active_release_pin_mismatch');
+      }
       const identity = release?.manifest.executionIdentity;
       const pinnedCase = release?.manifest.cases[run.mode as 'training' | 'ranked']?.find((item) => item.taskId === target.taskCase.taskId);
       if (!release || !identity || !pinnedCase || pinnedCase.caseId !== target.taskCase.caseId ||
@@ -709,7 +879,7 @@ function buildEnvironmentSelector(input: {
         let response: Response;
         let body: Record<string, unknown> | null;
         try {
-          response = await input.fetchImpl(new URL('/healthz', validateUrl(environment.apiBaseUrl, { localOnly: true, httpOnly: true })), {
+          response = await input.fetchImpl(new URL('/healthz', input.apiBaseByEnvironment[environment.envId]!), {
             method: 'GET', redirect: 'error', signal: AbortSignal.timeout(5000),
           });
           const bytes = new Uint8Array(await response.arrayBuffer());
@@ -753,10 +923,63 @@ export async function createLocalBefTaskCoordinator(input: {
   const projectRoot = input.projectRoot ?? PROJECT_ROOT;
   const configPath = input.config.localBefTaskCoordinatorConfigPath;
   if (!configPath) throw new Error('local_bef_coordinator_config_path_missing');
-  const fileConfig = await loadLocalBefTaskCoordinatorConfig(configPath, projectRoot);
-  const maps = environmentMaps(fileConfig.environments);
+  const loadedConfig = await loadLocalBefTaskCoordinatorConfig(configPath, projectRoot);
+  const fileConfig: LoadedCoordinatorConfig = { ...loadedConfig,
+    environments: loadedConfig.environments.map((environment) => ({ ...environment,
+      x402Policy: assertPolicy(environment.x402Policy) })) };
   const batchSize = input.config.localBefTaskCoordinatorBatchSize;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 20) throw new Error('local_bef_coordinator_batch_size_invalid');
+  return createBefTaskCoordinatorCore({ db: input.db, databaseUrl: input.databaseUrl, projectRoot,
+    releaseSource: input.releaseSource, ...(input.fetch ? { fetch: input.fetch } : {}), fileConfig, batchSize, profile: 'local' });
+}
+
+export async function createBetaBefTaskCoordinator(input: {
+  db: OwnerDatabase;
+  databaseUrl: string;
+  config: Pick<OwnerIdentityConfig, 'betaBefTaskCoordinatorConfigPath' | 'localBefTaskCoordinatorBatchSize' |
+    'localBefTaskCoordinatorTickMs' | 'privateDataDir' | 'betaManifest'>;
+  projectRoot?: string;
+  releaseSource: TaskReleaseQuerySource;
+  fetch?: typeof fetch;
+}): Promise<BetaBefTaskCoordinator> {
+  const manifest = input.config.betaManifest;
+  const privateDataDir = input.config.privateDataDir;
+  const configPath = input.config.betaBefTaskCoordinatorConfigPath;
+  if (!manifest || !privateDataDir || !configPath) throw new Error('beta_bef_coordinator_profile_missing');
+  const fileConfig = await loadBetaBefTaskCoordinatorConfig(configPath, privateDataDir);
+  const repositoryRoot = input.projectRoot ?? PROJECT_ROOT;
+  const build = await observeBetaBuildIdentity({ repositoryRoot, evaluatorSourceSha256: await getTaskEvaluatorBuildHash(),
+    expected: manifest.source });
+  assertBetaBuildMatchesManifest(manifest, build);
+  const readinessProvider = createBetaBefReadinessProvider({ db: input.db, releaseSource: input.releaseSource,
+    manifest, build, environments: fileConfig.environments, sourceRpcUrl: fileConfig.sourceRpcUrl,
+    ...(input.fetch ? { fetchImpl: input.fetch } : {}) });
+  const coordinator = await createBefTaskCoordinatorCore({ db: input.db, databaseUrl: input.databaseUrl,
+    projectRoot: resolve(privateDataDir), releaseSource: input.releaseSource, ...(input.fetch ? { fetch: input.fetch } : {}), fileConfig,
+    batchSize: input.config.localBefTaskCoordinatorBatchSize, profile: 'beta', betaManifest: manifest,
+    evidenceDirectory: manifest.storage.evidenceDirectory, readinessProvider });
+  return Object.assign(coordinator, { readinessProvider });
+}
+
+async function createBefTaskCoordinatorCore(input: {
+  db: OwnerDatabase;
+  databaseUrl: string;
+  projectRoot: string;
+  releaseSource: TaskReleaseQuerySource;
+  fetch?: typeof fetch;
+  fileConfig: LoadedCoordinatorConfig;
+  batchSize: number;
+  profile: 'local' | 'beta';
+  betaManifest?: BetaDeploymentManifest;
+  evidenceDirectory?: string;
+  readinessProvider?: BetaBefReadinessProvider;
+}): Promise<LocalBefTaskCoordinator> {
+  const projectRoot = input.projectRoot;
+  const fileConfig = input.fileConfig;
+  const evidenceDirectory = input.evidenceDirectory ?? EVIDENCE_DIR;
+  const maps = environmentMaps(fileConfig.environments, input.profile);
+  const batchSize = input.batchSize;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 20) throw new Error(`${input.profile}_bef_coordinator_batch_size_invalid`);
   const fetchImpl = input.fetch ?? fetch;
   const leaseClient = postgres(input.databaseUrl, { max: 1, idle_timeout: 0, connect_timeout: 10 });
   const lease = new PostgresLocalCoordinatorLease(leaseClient);
@@ -768,13 +991,16 @@ export async function createLocalBefTaskCoordinator(input: {
   const preparationEvidenceSink = {
     async write(value: { kind: 'fixture' | 'baseline' | 'fence'; preparationId: string; environmentId: string;
       publicPinsSha256: string; evidence: Record<string, unknown> }) {
-      return { ...await writeSafeEvidence(projectRoot, 'preparation', value.preparationId, value),
+      return { ...await writeSafeEvidence(projectRoot, 'preparation', value.preparationId, value, evidenceDirectory),
         boundary: 'actual_tool_http_x402_local_evm_application_store' as const };
     },
   };
+  const preparationDiagnostic = async (value: BefPreparationDiagnostic) => {
+    await writeSafeEvidence(projectRoot, 'lifecycle', value.preparationId, value, evidenceDirectory);
+  };
   const actionEvidenceSink = {
     async write(value: SafeTaskActionEvidence) {
-      return writeSafeEvidence(projectRoot, 'action', value.actionId, value);
+      return writeSafeEvidence(projectRoot, 'action', value.actionId, value, evidenceDirectory);
     },
   };
   const adapter = new BefTaskPreparationAdapter({
@@ -785,6 +1011,7 @@ export async function createLocalBefTaskCoordinator(input: {
     anvilManifestPinByEnvironment: maps.anvilManifestPinByEnvironment,
     releaseSource: input.releaseSource,
     evidenceSink: preparationEvidenceSink,
+    preparationDiagnostic,
     fetch: fetchImpl,
   });
   const executor = new BefTaskExecutor({ db: input.db, taskReleaseSource: input.releaseSource,
@@ -803,7 +1030,8 @@ export async function createLocalBefTaskCoordinator(input: {
     releaseSource: input.releaseSource,
     preparationAdapter: guardedPreparationAdapter,
     environmentSelector: buildEnvironmentSelector({ db: input.db, releaseSource: input.releaseSource,
-      environments: fileConfig.environments, fetchImpl }),
+      environments: fileConfig.environments, fetchImpl, profile: input.profile,
+      ...(input.betaManifest ? { betaManifest: input.betaManifest } : {}), apiBaseByEnvironment: maps.apiBaseByEnvironment }),
   };
   const evidenceSource = new TaskSealedEvidenceSource({
     taskReleaseSource: input.releaseSource,
@@ -831,10 +1059,17 @@ export async function createLocalBefTaskCoordinator(input: {
   );
   const runServiceDependencies: RunServiceDependencies = {
     db: input.db,
-    admissionReleaseProvider: createPostgresTaskReleaseProvider(input.db),
+    betaOperationsEnabled: input.profile === 'beta',
+    bonusOnly: input.profile === 'beta',
+    ...(input.profile === 'beta' && input.betaManifest
+      ? { privateDataDir: input.betaManifest.storage.privateDataDir }
+      : {}),
+    admissionReleaseProvider: input.betaManifest
+      ? pinBetaRunReleaseProvider(createPostgresTaskReleaseProvider(input.db), input.betaManifest)
+      : createPostgresTaskReleaseProvider(input.db),
     executionReadinessProvider: null,
     preparedTaskStart,
-    ...LOCAL_BEF_RUN_SERVICE_POLICY,
+    ...(input.profile === 'beta' ? BETA_BEF_RUN_SERVICE_POLICY : LOCAL_BEF_RUN_SERVICE_POLICY),
   };
   const baseCancellationExecutor = createTaskPreparationCancellationExecutor(preparationDependencies, executor);
   const cancellationExecutor = {
@@ -989,7 +1224,13 @@ export async function createLocalBefTaskCoordinator(input: {
       }
       await requestCancellation(target.runId, 'coordinator_preparation_failed');
       await drainCancellations();
-    } catch {
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error &&
+          (error.code === 'BETA_STARTS_PAUSED' || error.code === 'RUN_STORAGE_CAPACITY_LOW')) {
+        // Keep the accepted run, its original queue deadline, and its durable ready preparation.
+        // The worker will retry after resume/capacity recovery; the final start transaction is the fence.
+        return;
+      }
       // A worker that lost its singleton lease must not cancel or otherwise touch
       // another process's live RAM session. The next lease owner performs recovery.
       try { await lease.assertHeld(); } catch { return; }
@@ -1160,7 +1401,8 @@ export async function createLocalBefTaskCoordinator(input: {
       JOIN LATERAL (SELECT status FROM oid_task_preparation_observation WHERE preparation_id=i.preparation_id
         ORDER BY revision DESC LIMIT 1) o ON true
       LEFT JOIN oid_task_preparation_dispatch d ON d.preparation_id=i.preparation_id
-      WHERE r.status='preparing' AND o.status='preparing' AND d.preparation_id IS NULL
+      WHERE r.status='preparing' AND ((o.status='preparing' AND d.preparation_id IS NULL) OR
+        (${runServiceDependencies.betaOperationsEnabled} AND o.status='ready' AND d.state='completed'))
       ORDER BY r.queued_at,r.id LIMIT 1`) as unknown as Array<{ run_id: string; claim_id: string }>;
     await lease.assertHeld();
     const row = rows[0];
@@ -1199,6 +1441,20 @@ export async function createLocalBefTaskCoordinator(input: {
     }
   }
 
+  async function betaRuntimeHealthy(): Promise<boolean> {
+    if (!input.readinessProvider || !input.betaManifest) return true;
+    return input.readinessProvider.isRuntimeHealthyForRelease(input.betaManifest.release.releaseIdentity,
+      input.betaManifest.release.manifestHash).catch(() => false);
+  }
+
+  async function betaEnvironmentCapacityAvailable(): Promise<boolean> {
+    if (!input.betaManifest) return true;
+    if (!input.readinessProvider) return false;
+    const result = await input.readinessProvider.isPreparedForRelease(input.betaManifest.release.releaseIdentity,
+      input.betaManifest.release.manifestHash).catch((): TaskExecutionReadiness => ({ ready: false }));
+    return result.ready && typeof result.environmentId === 'string' && HASH.test(result.evidenceHash ?? '');
+  }
+
   async function processClosedTrainingTasks(): Promise<void> {
     if (!observationPorts) return;
     await lease.assertHeld();
@@ -1226,7 +1482,7 @@ export async function createLocalBefTaskCoordinator(input: {
       const serialized = JSON.stringify(progress);
       if (observationProgress.get(key) !== serialized) {
         // Optional safe diagnostics never replace the immutable task evidence or its grade.
-        await writeSafeEvidence(projectRoot, 'lifecycle', row.run_id, progress).catch(() => undefined);
+        await writeSafeEvidence(projectRoot, 'lifecycle', row.run_id, progress, evidenceDirectory).catch(() => undefined);
         observationProgress.set(key, serialized);
         if (observationProgress.size > 128) observationProgress.delete(observationProgress.keys().next().value!);
       }
@@ -1246,17 +1502,32 @@ export async function createLocalBefTaskCoordinator(input: {
     await cancelRunningBindingsWithoutRam();
     await drainCancellations();
     await discardFencedSessions();
-    if (!(await resumePreDispatchPreparation()) && !(await resumePreparingWithoutIntent())) {
-      await lease.assertHeld();
-      const claim = await claimNextQueuedRun(runServiceDependencies, { maxCandidates: batchSize });
-      await lease.assertHeld();
-      if (claim?.run.status === 'preparing') {
-        await prepareAndStart({ runId: claim.run.id, taskIndex: 0, claimId: claim.claimId });
+    const runtimeHealthy = await betaRuntimeHealthy();
+    if (runtimeHealthy) {
+      let admissionsActive = !runServiceDependencies.betaOperationsEnabled;
+      if (runServiceDependencies.betaOperationsEnabled) {
+        try { admissionsActive = await readBetaOperationsMode(input.db) === 'active'; }
+        catch { admissionsActive = false; }
       }
+      const storageReady = !runServiceDependencies.betaOperationsEnabled || !runServiceDependencies.privateDataDir ||
+        (await readBetaStorageObservation(runServiceDependencies.privateDataDir)).status === 'ready';
+      if (admissionsActive && storageReady) {
+        const resumedPreDispatch = await resumePreDispatchPreparation();
+        if (!resumedPreDispatch && await betaEnvironmentCapacityAvailable()) {
+          if (!(await resumePreparingWithoutIntent())) {
+            await lease.assertHeld();
+            const claim = await claimNextQueuedRun(runServiceDependencies, { maxCandidates: batchSize });
+            await lease.assertHeld();
+            if (claim?.run.status === 'preparing') {
+              await prepareAndStart({ runId: claim.run.id, taskIndex: 0, claimId: claim.claimId });
+            }
+          }
+        }
+      }
+      if (await betaEnvironmentCapacityAvailable()) await advanceKnownSuccessors();
     }
-    await advanceKnownSuccessors();
     await discardFencedSessions();
-    await dispatchAttachedSessions();
+    if (runtimeHealthy) await dispatchAttachedSessions();
   }
 
   let observationPorts: BefObservationPorts | null = null;

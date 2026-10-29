@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { resolve, relative, sep } from "node:path";
+import { isAbsolute, resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import pg from "pg";
@@ -22,12 +22,17 @@ import { runAapOauthCases } from "./oauth-cases.mjs";
 import { runBillingCases } from "./billing-cases.mjs";
 import { saveBillingEvidence } from "./billing-evidence.mjs";
 import { runFinancialUiCases } from "./financial-ui-cases.mjs";
+import { runBonusCodeCases } from "./bonus-code-cases.mjs";
+import { saveBonusCodeEvidence } from "./bonus-code-evidence.mjs";
+import { runReportCases } from "./report-cases.mjs";
+import { saveReportEvidence } from "./report-evidence.mjs";
 import { runLaunchBoundaryCases, saveLaunchBoundaryCapture } from "./run-cases.mjs";
 import { runTransactionCases } from "./run-transaction-cases.mjs";
 import { benchmarkBddCaptureDecision, saveBenchmarkBddEvidence } from "./bdd-evidence.mjs";
 import { provisionGenuineS1CoordinatorConfig, runGenuineS1OwnerCase, runGenuineTrainingSequenceOwnerCase, runGenuineRankedOwnerCase,
   writeGenuineS1Capture, writeGenuineS1StartupBlock, writeGenuineTrainingSequenceCapture,
-  writeGenuineTrainingSequenceStartupBlock, writeGenuineRankedCapture, writeGenuineRankedStartupBlock } from "./genuine-s1-cases.mjs";
+  writeGenuineTrainingSequenceStartupBlock, writeGenuineRankedCapture, writeGenuineRankedStartupBlock,
+  OPEN_TASK_IDS } from "./genuine-s1-cases.mjs";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(packageRoot, "../..");
@@ -37,10 +42,17 @@ const adminSubject = "oid-admin-fixture-sub";
 const clientId = "oid-local-" + randomBytes(8).toString("hex") + ".apps.example.invalid";
 const clientSecret = randomBytes(32).toString("base64url");
 const runId = randomUUID();
-const genuineRankedOptIn = process.argv.includes("--genuine-ranked-worker-owner-run");
-const genuineWorkerSequenceOptIn = process.argv.includes("--genuine-training-sequence-worker-owner-run");
+const bonusCodesOptIn = process.argv.includes("--bonus-codes-only");
+const reportsOptIn = process.argv.includes("--reports-only");
+const bonusFundedTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-sequence-worker-owner-run");
+const bonusFundedRankedOptIn = process.argv.includes("--genuine-bonus-funded-ranked-worker-owner-run");
+const genuineAllOpenTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-all-open-worker-owner-run");
+const bonusFundedOptIn = bonusFundedTrainingOptIn || bonusFundedRankedOptIn || genuineAllOpenTrainingOptIn;
+const genuineRankedOptIn = process.argv.includes("--genuine-ranked-worker-owner-run") || bonusFundedRankedOptIn;
+const genuineWorkerSequenceOptIn = process.argv.includes("--genuine-training-sequence-worker-owner-run") ||
+  bonusFundedTrainingOptIn || genuineAllOpenTrainingOptIn;
 const genuineSequenceOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || process.argv.includes("--genuine-training-sequence-owner-run");
-const genuineWorkerTaskId = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
+const genuineWorkerTaskId = OPEN_TASK_IDS.find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
 const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || genuineWorkerTaskId !== undefined;
 const genuineTaskId = genuineWorkerTaskId ?? ["S1", "S2", "S4"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
@@ -59,6 +71,7 @@ let phase = "startup";
 let apiChild;
 let apiEnvironment;
 let databaseIsolation;
+let reportCaptureIsolation;
 let sourceInputsBeforeCheckpoint;
 let genuineArtifactWritten = false;
 
@@ -125,6 +138,35 @@ async function isolateAcceptanceDatabase() {
   databaseIsolation = { databaseName, runId, createdForCapture: true, retainedForInspection: true };
 }
 
+async function prepareReportCaptureIsolation(databaseName) {
+  const expectedDatabaseName = `oid_acceptance_${runId.replaceAll("-", "")}`;
+  if (databaseName !== expectedDatabaseName || !/^oid_acceptance_[a-f0-9]{32}$/.test(databaseName)) {
+    throw Object.assign(new Error("report_capture_database_identity_mismatch"), { code: "BPC_REPORT_DB_IDENTITY_MISMATCH" });
+  }
+  const configuredBase = process.env.OID_LOCAL_REPORT_CAPTURE_BASE;
+  if (configuredBase !== undefined && (!reportsOptIn || !isAbsolute(configuredBase))) {
+    throw Object.assign(new Error("report_capture_base_requires_absolute_path_and_reports_opt_in"), { code: "BPC_REPORT_CAPTURE_BASE_INVALID" });
+  }
+  const captureBase = resolve(configuredBase ?? resolve(repoRoot, "artifacts/runs/bpc-report-captures"));
+  const captureIsolationRoot = resolve(captureBase, databaseName);
+  if (resolve(captureIsolationRoot, "..") !== captureBase) {
+    throw Object.assign(new Error("report_capture_root_escaped_configured_base"), { code: "BPC_REPORT_CAPTURE_ROOT_ESCAPE" });
+  }
+  const captureParent = resolve(captureIsolationRoot, "..");
+  await mkdir(captureParent, { recursive: true, mode: 0o700 });
+  // The unique database name is also the filesystem root identity. Never reuse a
+  // prior root: reports store private screenshots and closure state beneath it.
+  await mkdir(captureIsolationRoot, { recursive: false, mode: 0o700 });
+  const privateDataDir = resolve(captureIsolationRoot, "private-data");
+  await mkdir(privateDataDir, { recursive: false, mode: 0o700 });
+  const closureStatePath = resolve(captureIsolationRoot, "beta-report-closure-state.json");
+  const contractPath = resolve(repoRoot, "tests/bdd/changes/beta-poc-delivery/harness-contracts.json");
+  const sourceEvidenceSha256 = sha256(await readFile(contractPath));
+  const initialClosure = { schemaVersion: "beta-report-closure-state/v1", betaEndedAt: null, sourceEvidenceSha256 };
+  await writeFile(closureStatePath, `${JSON.stringify(initialClosure, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  return { captureIsolationRoot, privateDataDir, closureStatePath };
+}
+
 function requireLoopbackOrigin(value, name) {
   const url = new URL(value);
   if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname)) throw new Error(name + " must be loopback HTTP");
@@ -160,15 +202,63 @@ async function restartOwnerApi() {
   await stopChild(apiChild);
   apiChild = startChild([resolve(repoRoot, "packages/owner-identity/dist/server.js")], apiEnvironment, "restarted API", process.execPath);
   await waitHttp(new URL("/healthz", apiOrigin), (response) => response.ok, "restarted owner API");
+  return true;
+}
+
+function safeCommandErrorDiagnostic(label, exitCode, signal, stderrBytes) {
+  const raw = Buffer.concat(stderrBytes).toString("utf8").slice(0, 64_000);
+  const redact = (value) => String(value)
+    .replace(/(?:postgres(?:ql)?:\/\/)[^\s'"<>]+/gi, "[redacted database URL]")
+    .replace(/\bOID_[A-Z0-9_]+\s*[:=]\s*[^\s,;]+/gi, "[redacted OID setting]")
+    .replace(/BPC-[A-Za-z0-9_-]{43}/g, "[redacted bonus code]")
+    .replace(/\b(?:aap1|oid1|oat1)_[A-Za-z0-9_-]{32,}\b/gi, "[redacted credential]")
+    .replace(/\b(?:sk|pk|rk|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/gi, "[redacted token]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/([?&](?:code|state|access_token|refresh_token|id_token|client_secret)=)[^&#\s]+/gi, "$1[redacted]")
+    .replace(/\b(password|secret|token|authorization|cookie|client_secret)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .trim()
+    .slice(0, 320);
+  const diagnostic = {
+    command: label,
+    exitCode: Number.isInteger(exitCode) ? exitCode : null,
+    signal: typeof signal === "string" ? signal : null,
+  };
+  const databaseCode = /(?:\bcode\b|SQLSTATE)\s*[:=]\s*['"]?([0-9A-Z]{5})/i.exec(raw)?.[1];
+  const databaseTable = /\btable\s*[:=]\s*['"]([^'"\r\n]+)['"]/i.exec(raw)?.[1];
+  const databaseConstraint = /\bconstraint\s*[:=]\s*['"]([^'"\r\n]+)['"]/i.exec(raw)?.[1];
+  const databaseMessage = /(?:PostgresError|error|message)\s*[:=]\s*['"]?([^\r\n'"`]+)/i.exec(raw)?.[1];
+  if (databaseCode) diagnostic.databaseCode = redact(databaseCode);
+  if (databaseTable) diagnostic.databaseTable = redact(databaseTable);
+  if (databaseConstraint) diagnostic.databaseConstraint = redact(databaseConstraint);
+  if (databaseMessage) diagnostic.databaseMessage = redact(databaseMessage);
+  if (label === "owner web build") {
+    const tail = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-12).map(redact).join("\n").slice(0, 2400);
+    if (tail) diagnostic.stderrTail = tail;
+  }
+  return diagnostic;
 }
 
 async function runCommand(args, env, label) {
-  const child = spawn(pnpm, args, { cwd: repoRoot, env, stdio: "ignore" });
+  const child = spawn(pnpm, args, { cwd: repoRoot, env, stdio: ["ignore", "ignore", "pipe"] });
+  const stderrBytes = [];
+  let stderrLength = 0;
+  child.stderr.on("data", (chunk) => {
+    if (stderrLength >= 64_000) return;
+    const remaining = 64_000 - stderrLength;
+    const bounded = chunk.subarray(0, remaining);
+    stderrBytes.push(bounded);
+    stderrLength += bounded.length;
+  });
   const result = await new Promise((resolvePromise, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => resolvePromise({ code, signal }));
   });
-  if (result.code !== 0) throw new Error(label + " failed with exit " + String(result.code ?? result.signal));
+  if (result.code !== 0) {
+    throw Object.assign(new Error(label + " failed with exit " + String(result.code ?? result.signal)), {
+      code: label === "API build" ? "API_BUILD_FAILED" : label === "database migration" ? "DATABASE_MIGRATION_FAILED" : "ACCEPTANCE_COMMAND_FAILED",
+      safeDiagnostic: safeCommandErrorDiagnostic(label, result.code, result.signal, stderrBytes),
+    });
+  }
 }
 
 async function waitHttp(url, predicate, label) {
@@ -185,6 +275,14 @@ async function waitHttp(url, predicate, label) {
 
 async function startRuntime() {
   phase = "runtime_preflight";
+  const domainOptIns = [bonusCodesOptIn, reportsOptIn].filter(Boolean).length;
+  if (domainOptIns > 1 || (domainOptIns === 1 && process.argv.slice(2).filter((argument) => argument !== "--").length !== 1)) {
+    throw Object.assign(new Error("beta_poc_domain_cli_shape_invalid"), { code: "BPC_CLI_SHAPE_INVALID" });
+  }
+  if (process.env.OID_LOCAL_REPORT_CAPTURE_BASE !== undefined &&
+      (!reportsOptIn || !isAbsolute(process.env.OID_LOCAL_REPORT_CAPTURE_BASE))) {
+    throw Object.assign(new Error("report_capture_base_requires_absolute_path_and_reports_opt_in"), { code: "BPC_REPORT_CAPTURE_BASE_INVALID" });
+  }
   if (process.platform !== "linux") throw new Error("Run owner acceptance inside the pinned Linux Docker runtime");
     if (genuineS1OptIn) {
     if (process.argv.length !== 3) throw Object.assign(new Error("genuine_s1_cli_shape_invalid"), { code: "GENUINE_S1_CLI_SHAPE_INVALID" });
@@ -199,6 +297,7 @@ async function startRuntime() {
 
   phase = "isolated_acceptance_database";
   await isolateAcceptanceDatabase();
+  if (reportsOptIn) reportCaptureIsolation = await prepareReportCaptureIsolation(databaseIsolation.databaseName);
   console.log(JSON.stringify({ event: "oid_acceptance_database_isolated", captureId: runId,
     databaseName: databaseIsolation.databaseName, retainedForInspection: true }));
 
@@ -215,6 +314,7 @@ async function startRuntime() {
     OID_GOOGLE_FIXTURE_ORIGIN: fixture.origin,
     OID_ADMIN_PROVIDER: "google",
     OID_ADMIN_SUBJECT: adminSubject,
+    OID_BONUS_CODE_VERIFIER_SECRET: randomBytes(32).toString("base64url"),
     OID_REGISTRATION_MODE: "closed",
     OID_AUTH_RATE_LIMIT_MAX: "120",
     OID_SIWE_RATE_LIMIT_MAX: "120",
@@ -223,15 +323,28 @@ async function startRuntime() {
     // genuine owner-run CLI and its tmpfs override. Compose alone cannot opt in.
     OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: genuineS1OptIn ? "true" : "false",
     OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG ?? ".local/owner-identity/bef-task-coordinator.json",
+    OID_LOCAL_REPORT_ACCEPTANCE_ENABLED: reportsOptIn ? "true" : "false",
     NODE_ENV: "development",
+    ...(reportsOptIn ? {
+      OID_PRIVATE_DATA_DIR: reportCaptureIsolation.privateDataDir,
+      OID_BETA_REPORT_CLOSURE_STATE_FILE: reportCaptureIsolation.closureStatePath,
+      OID_LOCAL_REPORT_CAPTURE_ROOT: reportCaptureIsolation.captureIsolationRoot,
+    } : {}),
   };
+  // This is a runner-only path selection; the API receives only the per-capture root.
+  delete apiEnv.OID_LOCAL_REPORT_CAPTURE_BASE;
   // Keep acceptance rate buckets and cookies isolated across independent runs.
   apiEnv.OID_AUTH_SECRET = randomBytes(48).toString("base64url");
   apiEnv.NODE_OPTIONS = [apiEnv.NODE_OPTIONS, "--import=" + preload].filter(Boolean).join(" ");
 
-  phase = "database_migration";
+  phase = "api_build";
   await runCommand(["--filter", "@web-agent-bench/owner-identity", "build"], apiEnv, "API build");
+  phase = "database_migration";
   await runCommand(["--filter", "@web-agent-bench/owner-identity", "migrate"], apiEnv, "database migration");
+  const webEnv = { ...process.env, OID_API_URL: apiOrigin, HOSTNAME: "127.0.0.1", NODE_ENV: "production" };
+  delete webEnv.OID_LOCAL_REPORT_CAPTURE_BASE;
+  phase = "web_build";
+  await runCommand(["--filter", "@web-agent-bench/owner-web", "build"], webEnv, "owner web build");
   phase = "owner_api_startup";
   apiEnvironment = apiEnv;
   apiChild = startChild([resolve(repoRoot, "packages/owner-identity/dist/server.js")], apiEnv, "API", process.execPath);
@@ -241,7 +354,6 @@ async function startRuntime() {
   }, "owner API");
 
   phase = "owner_web_startup";
-  const webEnv = { ...process.env, OID_API_URL: apiOrigin, HOSTNAME: "127.0.0.1", NODE_ENV: "production" };
   startChild(["--filter", "@web-agent-bench/owner-web", "exec", "next", "start", "-p", "3000", "-H", "127.0.0.1"], webEnv, "web");
   await waitHttp(publicOrigin, (response) => response.status >= 200 && response.status < 500, "owner web");
   phase = "observer_and_browser_startup";
@@ -498,6 +610,18 @@ async function collectSourceHashes() {
     resolve(repoRoot, "tests/bdd/features/tester_bonus_billing.feature"),
     resolve(repoRoot, "tests/bdd/mappers/test_tester_bonus_billing_bdd.py"),
     resolve(repoRoot, "tools/replay_tbb_acceptance.py"),
+    resolve(repoRoot, "openspec/changes/beta-poc-delivery"),
+    resolve(repoRoot, "tests/bdd/changes/beta-poc-delivery"),
+    resolve(repoRoot, "tests/bdd/features/beta_poc_delivery.feature"),
+    resolve(repoRoot, "tests/bdd/mappers/test_beta_poc_delivery_bdd.py"),
+    resolve(repoRoot, "tests/bdd/adapters/beta_poc_delivery.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_beta_poc_delivery_evidence.py"),
+    resolve(repoRoot, "tests/bdd/adapters/beta_poc_report_verifier.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_beta_poc_report_verifier.py"),
+    resolve(repoRoot, "tools/replay_bpc_bonus_local.py"),
+    resolve(repoRoot, "tools/replay_bpc_reports_local.py"),
+    resolve(repoRoot, "tools/replay_bpc_operations_local.mjs"),
+    resolve(repoRoot, "infrastructure/owner-identity/compose.reports-acceptance.yaml"),
     resolve(repoRoot, "openspec/changes/benchmark-run-lifecycle"),
     resolve(repoRoot, "openspec/changes/benchmark-task-suite"),
     resolve(repoRoot, "tests/bdd/changes/benchmark-run-lifecycle"),
@@ -680,24 +804,146 @@ async function main() {
     const confirmed = await waitOwner(ownerLogin.page, "authenticated");
     if (confirmed.owner?.id !== ownerId || confirmed.owner?.admissionStatus !== "admitted") throw new Error("Activation did not confirm the same admitted owner in the real owner projection");
     const activationOperation = ownerLogin.capture.requests.filter((item) => item.path === "/api/admission/activate" && item.method === "POST").at(-1)?.operationId;
+    if (bonusCodesOptIn) {
+      phase = "bonus_code_browser_and_postgres_capture";
+      const result = await runBonusCodeCases({
+        adminPage: admin.page,
+        ownerPage: ownerLogin.page,
+        ownerId,
+        newContext,
+        publicOrigin,
+        login: (context, scenarioId, subject) => googleLogin(context, scenarioId, subject),
+        observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
+        databaseUrl: process.env.OID_DATABASE_URL,
+        restartApi: restartOwnerApi,
+        rerunMigrations: async () => {
+          await stopChild(apiChild);
+          await runCommand(["--filter", "@web-agent-bench/owner-identity", "migrate"], apiEnvironment,
+            "bonus-code migration preservation replay");
+          apiChild = startChild([resolve(repoRoot, "packages/owner-identity/dist/server.js")], apiEnvironment,
+            "API after migration preservation replay", process.execPath);
+          await waitHttp(new URL("/healthz", apiOrigin), (response) => response.ok, "owner API after migration replay");
+        },
+      });
+      phase = "bonus_code_source_provenance_after";
+      const sourceHashesAfter = await collectSourceHashes();
+      const contractPath = resolve(repoRoot, "tests/bdd/changes/beta-poc-delivery/harness-contracts.json");
+      const sourceHashMap = (rows) => Object.fromEntries(rows.map((row) => [row.path, row.sha256]));
+      const inputHashesBefore = sourceHashMap(sourceHashesBefore);
+      const inputHashesAfter = sourceHashMap(sourceHashesAfter);
+      const provenance = {
+        runId,
+        databaseIsolation,
+        inputHashesBefore,
+        inputHashesAfter,
+        sourceStableDuringRun: JSON.stringify(inputHashesBefore) === JSON.stringify(inputHashesAfter),
+        contractSha256: sha256(await readFile(contractPath)),
+      };
+      const saved = await saveBonusCodeEvidence({ result, provenance, repositoryRoot: repoRoot });
+      await ownerContext.close();
+      await adminContext.close();
+      const localFailures = [
+        ...Object.values(result.scenarioData).filter((scenario) => scenario.localStatus === "failed").map((scenario) => scenario.scenarioId),
+        ...(result.migrationPreservation?.status === "failed" ? ["migration_preservation"] : []),
+      ];
+      const localBlockers = [
+        ...Object.values(result.scenarioData).filter((scenario) => scenario.localStatus === "partial").map((scenario) => scenario.scenarioId),
+        ...(result.migrationPreservation?.status === "observed" || result.migrationPreservation?.status === "failed"
+          ? [] : ["migration_preservation"]),
+      ];
+      const captureStatus = !provenance.sourceStableDuringRun
+        ? "invalidated_source_changed"
+        : localFailures.length > 0 ? "local_failed"
+          : localBlockers.length > 0 ? "blocked_local_evidence" : "blocked_beta_gates";
+      console.log(JSON.stringify({
+        schemaVersion: "beta-poc-delivery-capture-summary/v1",
+        runId,
+        captureStatus,
+        localBoundary: result.localBoundary,
+        migrationPreservationStatus: result.migrationPreservation?.status ?? "not_run",
+        sourceStableDuringRun: provenance.sourceStableDuringRun,
+        localFailures,
+        localBlockers,
+        sourceInputCount: sourceHashesBefore.length,
+        ...saved,
+      }, null, 2));
+      if (!provenance.sourceStableDuringRun || localFailures.length > 0) process.exitCode = 2;
+      return;
+    }
+    if (reportsOptIn) {
+      phase = "report_browser_and_postgres_capture";
+      const result = await runReportCases({
+        adminPage: admin.page,
+        ownerPage: ownerLogin.page,
+        ownerId,
+        publicOrigin,
+        databaseUrl: process.env.OID_DATABASE_URL,
+        observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
+        captureIsolationRoot: reportCaptureIsolation.captureIsolationRoot,
+        privateDataDir: reportCaptureIsolation.privateDataDir,
+        closureStatePath: reportCaptureIsolation.closureStatePath,
+        isolatedAcceptance: true,
+      });
+      phase = "report_source_provenance_after";
+      const sourceHashesAfter = await collectSourceHashes();
+      const sourceHashMap = (rows) => Object.fromEntries(rows.map((row) => [row.path, row.sha256]));
+      const inputHashesBefore = sourceHashMap(sourceHashesBefore);
+      const inputHashesAfter = sourceHashMap(sourceHashesAfter);
+      const provenance = {
+        runId,
+        databaseIsolation,
+        inputHashesBefore,
+        inputHashesAfter,
+        sourceStableDuringRun: JSON.stringify(inputHashesBefore) === JSON.stringify(inputHashesAfter),
+      };
+      const saved = await saveReportEvidence({ result, provenance, repositoryRoot: repoRoot });
+      await ownerContext.close();
+      await adminContext.close();
+      const localFailures = Object.values(result.scenarioData)
+        .filter((scenario) => scenario.localStatus === "failed").map((scenario) => scenario.scenarioId);
+      const localBlockers = Object.values(result.scenarioData)
+        .filter((scenario) => scenario.localStatus !== "complete").map((scenario) => scenario.scenarioId);
+      const captureStatus = !provenance.sourceStableDuringRun
+        ? "invalidated_source_changed"
+        : localFailures.length > 0 ? "local_failed" : "blocked_local_evidence";
+      console.log(JSON.stringify({
+        schemaVersion: "beta-poc-delivery-report-capture-summary/v1",
+        runId,
+        captureStatus,
+        localBoundary: result.localBoundary,
+        localOperations: result.localOperations,
+        sourceStableDuringRun: provenance.sourceStableDuringRun,
+        localFailures,
+        localBlockers,
+        sourceInputCount: sourceHashesBefore.length,
+        databaseName: databaseIsolation.databaseName,
+        ...saved,
+      }, null, 2));
+      if (!provenance.sourceStableDuringRun || localFailures.length > 0) process.exitCode = 2;
+      return;
+    }
     if (genuineS1OptIn) {
       phase = genuineRankedOptIn ? "genuine_ranked_worker_owner_run" : genuineSequenceOptIn ? "genuine_training_sequence_owner_run" : "genuine_s1_first_task_owner_run";
       const captureInput = {
         captureId: runId,
         bddProbes: process.env.OID_ACCEPTANCE_BDD_PROBES === "true",
         primaryClientOnly: process.env.OID_ACCEPTANCE_PRIMARY_CLIENT_ONLY === "true",
+        bonusCodeFunding: bonusFundedOptIn,
         restartApi: restartOwnerApi,
         mode: genuineRankedOptIn ? "ranked" : "training",
         automaticWorkerEvaluation: genuineWorkerOptIn,
-        ...(genuineRankedOptIn ? { sequenceMode: true, taskIds: ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"] } : {}),
+        ...(genuineRankedOptIn ? { sequenceMode: true, taskIds: ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"] }
+          : genuineAllOpenTrainingOptIn ? { sequenceMode: true, taskIds: OPEN_TASK_IDS } : {}),
         ...(genuineSequenceOptIn ? {} : { taskId: genuineTaskId }),
         repoRoot,
         databaseUrl: process.env.OID_DATABASE_URL,
         observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
         publicOrigin,
         adminPage: admin.page,
+        adminCapture: admin.captureApi,
         foreignOwnerPage: admin.page,
         ownerPage: ownerLogin.page,
+        ownerCapture: ownerLogin.captureApi,
         ownerId,
         setup: {
           adminProviderFixture: true,
@@ -714,17 +960,74 @@ async function main() {
         : genuineSequenceOptIn
         ? await runGenuineTrainingSequenceOwnerCase(captureInput)
         : await runGenuineS1OwnerCase(captureInput);
-      const adminBrowser = projectGenuineBrowserCapture(admin.capture, (path) => path === "/api/admin/bonus-grants" || path.startsWith("/api/admin/invitations"));
+      if (bonusFundedTrainingOptIn) {
+        phase = "bonus_only_cash_substitution_negative";
+        let negativeProof;
+        try {
+          const { runBonusOnlyCashSubstitutionCase } = await import("./bonus-funding-cases.mjs");
+          negativeProof = await runBonusOnlyCashSubstitutionCase({
+            databaseUrl: process.env.OID_DATABASE_URL,
+            observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
+            captureId: runId,
+          });
+        } catch (error) {
+          const reasonCode = typeof error?.code === "string" && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
+            ? error.code : "bonus_only_cash_substitution_probe_failed";
+          negativeProof = {
+            schemaVersion: "bpc-sc005-bonus-only-cash-substitution-negative/v1",
+            boundary: "local_isolated_direct_service_with_independent_read_only_postgres",
+            status: "failed",
+            reasonCode,
+            productBoundaryClaims: { browser: false, targetHost: false, externalModel: false, fullScenarioAcceptance: false },
+          };
+        }
+        if (!negativeProof || typeof negativeProof !== "object" || Array.isArray(negativeProof)) {
+          negativeProof = {
+            schemaVersion: "bpc-sc005-bonus-only-cash-substitution-negative/v1",
+            boundary: "local_isolated_direct_service_with_independent_read_only_postgres",
+            status: "failed",
+            reasonCode: "bonus_only_cash_substitution_invalid_result",
+            productBoundaryClaims: { browser: false, targetHost: false, externalModel: false, fullScenarioAcceptance: false },
+          };
+        }
+        const negativeVerified = negativeProof.status === "verified";
+        const negativeReasonCode = typeof negativeProof.reasonCode === "string" ? negativeProof.reasonCode
+          : "bonus_only_cash_substitution_unverified";
+        capture.bonusOnlyCashSubstitutionNegative = negativeProof;
+        capture.stages ??= [];
+        capture.stages.push({ name: "bonus_only_cash_substitution_negative",
+          status: negativeVerified ? "verified" : "blocked",
+          ...(!negativeVerified ? { reasonCode: negativeReasonCode } : {}) });
+        if (!negativeVerified) {
+          const secondaryBlocker = { stage: "bonus_only_cash_substitution_negative", reasonCode: negativeReasonCode };
+          if (capture.blocker) {
+            capture.supplementaryBlockers ??= [];
+            capture.supplementaryBlockers.push(secondaryBlocker);
+          } else {
+            capture.blocker = secondaryBlocker;
+          }
+          capture.status = "blocked";
+        }
+      }
+      const adminBrowser = projectGenuineBrowserCapture(admin.capture, (path) => path === "/api/admin/bonus-grants"
+        || path.startsWith("/api/admin/bonus-codes") || path.startsWith("/api/admin/invitations"));
       const ownerBrowser = projectGenuineBrowserCapture(ownerLogin.capture, (path) => path === "/api/admission/activate" ||
         path === "/api/owner/runs/catalog" || path === "/api/owner/runs/intents" || path.endsWith("/results") ||
+        path.startsWith("/api/owner/bonus-codes") ||
         /^\/api\/owner\/runs\/[^/]+\/cancel$/.test(path) ||
         path === "/api/owner/agents" || /^\/api\/owner\/agents\/[^/]+\/(?:permissions|credentials|manual-credential|financial-policy)$/.test(path));
       capture.browserWitness = { classification: "safe_same_origin_browser_request_response_metadata_no_bodies_or_headers",
         admin: adminBrowser, owner: ownerBrowser };
       const ownerRequests = ownerLogin.capture.requests;
       const operationForPath = (pathPattern, method) => ownerRequests.find((row) => row.method === method && pathPattern.test(row.path))?.operationId ?? null;
+      const fundingActionManifest = capture.bonusFunding
+        ? [
+          correlateGenuineUiOperation(admin.capture, "admin_bonus_code_issue", capture.bonusFunding.issue?.operationId, "/api/admin/bonus-codes"),
+          correlateGenuineUiOperation(ownerLogin.capture, "owner_bonus_code_redeem", capture.bonusFunding.redemption?.operationId, "/api/owner/bonus-codes/redeem"),
+        ]
+        : [correlateGenuineUiOperation(admin.capture, "admin_bonus_grant_submit", capture.bonusGrant?.operationId, "/api/admin/bonus-grants")];
       capture.browserActionManifest = [
-        correlateGenuineUiOperation(admin.capture, "admin_bonus_grant_submit", capture.bonusGrant?.operationId, "/api/admin/bonus-grants"),
+        ...fundingActionManifest,
         correlateGenuineUiOperation(ownerLogin.capture, "owner_activation", capture.setup?.ownerActivationOperationId, "/api/admission/activate"),
         correlateGenuineUiOperation(ownerLogin.capture, "owner_agent_create", capture.agent?.createdOperationId, "/api/owner/agents"),
         correlateGenuineUiOperation(ownerLogin.capture, "owner_mode_permission_save",
@@ -1056,7 +1359,7 @@ main().catch(async (error) => {
         ? await writeGenuineRankedStartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code })
         : genuineSequenceOptIn
         ? await writeGenuineTrainingSequenceStartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code,
-          automaticWorkerEvaluation: genuineWorkerOptIn })
+          automaticWorkerEvaluation: genuineWorkerOptIn, taskIds: genuineAllOpenTrainingOptIn ? OPEN_TASK_IDS : undefined })
         : await writeGenuineS1StartupBlock({ repositoryRoot: repoRoot, captureId: runId, phase, reasonCode: code, taskId: genuineTaskId,
           automaticWorkerEvaluation: genuineWorkerOptIn });
       genuineArtifactWritten = true;

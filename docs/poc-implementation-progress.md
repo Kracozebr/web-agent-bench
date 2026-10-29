@@ -1,0 +1,545 @@
+# PoC implementation progress
+
+Checkpoint: 29 October 2026, Europe/Moscow. Approved planning baseline:
+`2db5f5f`, pushed to `origin/dev`. This document reports implementation and
+verification separately; agent reports are not accepted as runtime proof.
+
+## Active work
+
+The first three implementation processes stopped with a usage-limit error. On
+the user's instruction to continue, three Luna/max continuations resumed from
+the existing files: `bonus_continue`, `reports_continue`, `runtime_continue`.
+On the next continuation, the active processes are `bonus_resume`,
+`reports_resume` and `runtime_resume`, again Luna/max. The original owner names
+below identify the work slices, not live process names.
+
+| Owner | Slice | Observed progress | Verification |
+| --- | --- | --- | --- |
+| implement_bonus_codes (Luna/max) | Codes, atomic redemption, UI and BDD/E2E | Schema/migration/service/routes, admin and owner UI, browser producer and evidence writer added | Root replay verifies local browser issue/claim in capture 97e0f8c3. Separate source-aware shortfall probe returns 409 despite enough cash; root verifies unchanged bonus/cash, no charge/run. Current-lock release activation passes. Captures f519ab49 and a3387be8 now prove code-funded all-eight training and full12 completion, with root live PG/ledger/fence-file replay; native models and target gates remain open |
+| implement_reports (Luna/max) | Reports, images, triage, retention and BDD/E2E | HTTP/MCP routes, multipart upload, UI, private normalization/storage, closure state and browser/PG producer added | Browser capture 1cd16537 passes with stable 384-input inventory; root verifies all 11 report observations plus operations pause/resume. Lifecycle 3/3 and authenticated local MCP smoke pass with independent live PG/file replay. Corrected report-aware restore/expiry rehearsal 5d1e4d20 passes with root replay; four native clients and combined restore remain open |
+| implement_beta_runtime (Luna/max) | Qualification/runtime, clients, queue and central integration | Beta coordinator/readiness, queue policy, MCP registry/parser, central report wiring, partial recovery library and operations pause added | Identity/web checks pass; real PG recovery and pause lock regressions pass. Current-lock feasibility verifies and all 20 fresh reference captures pass raw integrity verification. Candidate validation and isolated release activation pass; code-funded all-eight training and full12 worker completion now pass locally. Trusted production recovery authority remains missing |
+| Main agent | Coordination, source review, common BDD wiring and acceptance review | Approved 26 semantic contracts installed and mirrors generated; module ownership assigned | Semantic harness audit passes 26 contracts; reader/report tests 14/14; runtime mappers 26 skipped. Usage/support export regression independently passes 5/5 (task 8.2 complete). Bonus-only dump/restore matches all 83 tables. No mandatory beta gate accepted |
+
+## Coordination rules in use
+
+- Subagents report each coherent slice with changed files, actual commands/results,
+  blockers and next action. The main agent reviews source and evidence.
+- Runtime agent owns shared server/config/migration/schema/MCP integration.
+  Domain agents provide exports and independent adapter/capture modules directly.
+  During BEF-only recovery, bonus_resume has the narrow server registration and
+  operations-panel export-button slot; root and runtime do not edit those slots.
+- Reports agent alone updates the package/lock files for the necessary pinned
+  image decoder. Build/install/capture operations on the shared stand are serialized.
+- Escalated read-only Docker inspection found only the existing healthy OID
+  PostgreSQL container. No app runtime was active at that checkpoint. No existing
+  DB/evidence reset is authorized by these inspections.
+- User-facing E2E must initiate through real browser controls and independently
+  inspect PostgreSQL/backend effects. Unit checks, synthetic provider tests and
+  source existence do not close external Google/client/target-host gates.
+
+## Current review items
+
+- Reports: align ORM schema and migration on conditional uploader identity,
+  source/reporter consistency and image-output constraints. Preserve deletion
+  receipts before cascade removes report/image metadata.
+- Codes: inspect concurrency/lock order, exact replay and source-linked credit;
+  require actual isolated PostgreSQL race tests before accepting the service.
+- Beta runtime: preserve local-profile restrictions and distinguish qualification
+  from four-client cohort release; queue expiry must expose pending safe fencing.
+- Qualification: the raw peer behind an HTTPS proxy identifies the proxy, not the
+  end user. Allowlisting that peer alone cannot prove a restricted external
+  qualification audience. Require enforced ingress restrictions and negative proof.
+
+No complete PoC runtime acceptance or external deployment is claimed here.
+
+## Executed checks (intermediate source; not a release build)
+
+- `python -B tools/generate_bdd_mirrors.py --change beta-poc-delivery --check`:
+  passed; 26 approved scenarios match structurally.
+- `./infrastructure/owner-identity/tool.ps1 pnpm --filter @web-agent-bench/owner-web check`:
+  passed, exit 0.
+- Identity `check` in the same pinned Docker runtime: failed on optional beta
+  config-path typing and the sharp output-info type. Findings assigned to their
+  module owners; a later passing run must explicitly supersede this result.
+- `pnpm --filter @web-agent-bench/owner-identity exec node --import tsx --test
+  src/config.test.ts src/beta-profile.test.ts` through the wrapper: 7 tests,
+  5 passed, 2 failed. The two production negative fixtures hit unrelated new
+  path validation first; fixes must preserve the intended production guards.
+- Reports agent reported a successful pinned runtime image build and frozen
+  dependency install; root reviewed the limited lockfile diff. This is dependency
+  setup evidence, not report normalization or browser acceptance evidence.
+- Follow-up after the assigned fixes: identity `check` passed, exit 0; the same
+  config/profile command passed all 7 tests with no skips. These results supersede
+  the two failures above for that intermediate source state. Later integration
+  edits still require their own affected checks.
+- After central schema/route integration, identity `check` found a new optional
+  `codeVerifierSecret` argument typing error in server wiring; assigned to runtime.
+- Affected MCP/run-route/cancellation regressions: 8 tests, 7 passed, 1 skipped,
+  exit 0. The skipped between-task cancellation case is not runtime proof.
+- Latest follow-up after central integration fixes: both identity and owner-web
+  `check` passed, exit 0. The bonus continuation now owns the isolated browser/DB
+  capture window; no bonus/report browser acceptance has yet been reported.
+- Operations inventory core added in `infrastructure/owner-identity/beta-backup-inventory.mjs`
+  with read-only `verify-beta-backup.mjs`. Four Docker file-integrity tests passed:
+  valid byte inventory, corrupt/missing/symlink/escaping paths, authoritative
+  closure preventing old-dump report resurrection, bounded checkpoint rotation
+  including expiry retirement. Synthetic test bytes are not a database dump or
+  screenshot acceptance capture. Daily backup, consistent DB checkpoint and
+  isolated restore/retry rehearsal remain not_run; file verification never
+  authorizes restored writes.
+- Central BPC reader tests also ran in the pinned Docker runtime: 7 passed.
+  The first bonus opt-in capture (`9d38741b-3b7e-463f-9192-ca22b18f03c9`)
+  stopped at the API build, before migration/browser actions. Three new report
+  type errors were assigned and repaired. Its isolated acceptance database was
+  retained; the primary database was not reset or migrated. A new capture is
+  required after the fix; this attempt proves no bonus acceptance.
+- Subsequent attempts found stale web output and a native Next worker-thread
+  abort before bonus actions. Explicit production builds with a two-worker Next
+  CPU cap pass; the runner now builds web before starting the API. These fixes
+  are harness/build results, not a successful bonus journey.
+- Latest agent checkpoint at 22:31 MSK: identity/web checks and production web
+  build passed; pure report image/closure tests 9/9; central reader/report replay
+  tests 13/13. All 26 BPC mappers skip without target captures. None of the 26
+  mandatory gates is accepted. Report browser/PG capture is not yet implemented.
+- Root review at 22:48 MSK verified the first narrow local browser journey from
+  capture `0654bcb8-636d-4d88-811d-b74c2290edbb`: real admin issue and owner claim
+  for a group code (2.125001 bonus USDC) and single-use code (3.000007), visible
+  balance deltas, independent read-only PostgreSQL redemption/grant/ledger/
+  operation/audit lineage, and unchanged cash. Reproduce with
+  `./infrastructure/owner-identity/tool.ps1 python -B -m tools.replay_bpc_bonus_local`.
+  This verifies only local issuance/redemption. The capture's broader negative
+  matrix had producer Origin-header defects, now being corrected and rerun.
+  BPC-SC-005 remains blocked: code-funded training/full12 and the external target
+  boundary are not proven. No mandatory BPC gate is closed by this local replay.
+- Corrected bonus capture `97e0f8c3-0546-42b9-8497-94a5b68523dc` completed
+  with exit 0 at 22:51 MSK. Root independently replayed issue/claim lineage and
+  verified stable source inventories. SC-003/004/006 local matrices complete;
+  SC-005 partial. Every official target gate remains blocked.
+- On the next continuation, existing project containers were found stopped.
+  PostgreSQL restart hit a Windows bind prohibition at loopback port 55433.
+  Root checked port 65433, recreated only the PostgreSQL container with the
+  same persistent volume and `OID_DATABASE_HOST_PORT=65433`, and verified health.
+  Internal `postgres:5432` and retained acceptance DBs were preserved.
+- Root local PostgreSQL dump/restore rehearsal completed at 23:33 MSK, exit 0:
+  checkpoint `1b7f5241c76c4c19956c00bc9ab9e2a0`, all 83 public-table counts and
+  full-row SHA-256 fingerprints match; source unchanged. This bonus-only fixture
+  had no reports/images. See [backup inventory note](poc-backup-inventory.md).
+  No screenshot/worker reconciliation or safe-retry acceptance is claimed.
+- Report capture `82176614-e6e6-4d9e-8ddd-c54d13ee581a` stopped with exit 1
+  awaiting the first report POST response. Its unique DB is retained; the failure
+  does not establish a successful browser report path or final source stability.
+- Root review found report replay omitted action-row invariance and platform
+  refund replay rejected its already-finalized run. Assigned fixes were applied:
+  report verifier tests 5/5 and runtime config/recovery tests 11/11 pass. Recovery
+  tests use a queued test DB abstraction; they do not prove SQL or concurrency.
+- Root semantic harness audit initially failed because the generic evidence
+  case exposed no scenario-specific execute/verify methods or literal observation
+  names. The adapter now dispatches explicit approved scenario methods with
+  unchanged raw facts, negative checks and fail-closed missing evidence. Audit
+  `python -B tools/check_bdd_harness.py --change beta-poc-delivery --json` passes
+  all 26 contracts; reader/report unit tests pass 14/14; all 26 environment mapper
+  tests explicitly skip pending target evidence. Artifact task 1.3 is complete;
+  no mandatory runtime gate is thereby accepted.
+- Second report attempt `e7524da8-5616-4387-a35f-62b177b76555` identified real
+  HTTP 507 `REPORT_IMAGE_STORAGE_LOW` before any upload/report row: the project
+  filesystem has roughly 12.7% free space, below the approved 20% floor. That
+  guard remains unchanged. The opt-in `compose.reports-acceptance.yaml` moves
+  local capture storage to a persistent native Docker volume with sufficient
+  space; existing host captures are retained. The next browser capture must
+  independently verify this path. This is local infrastructure, not a target
+  host capacity acceptance result.
+- The native volume capacity precheck passed (roughly 998 GB free of 1.081 TB).
+  Third report attempt `ab8b901f-aae9-4ba6-a2df-d772e67981ee` uploaded a real
+  screenshot with HTTP 201 and left one ready upload, then report creation
+  returned HTTP 500. Root independently confirmed these rows. Forced-rollback
+  service probes traced PostgreSQL `22P02` to raw UUID array binding and then
+  `ERR_INVALID_ARG_TYPE` to raw JSON object binding. All affected report/image
+  bindings were repaired; rollback probes exercise creation/attachment/audit
+  and nonempty/empty retention arrays without committing. Fresh UI acceptance
+  remains required after these fixes.
+- Actual PostgreSQL recovery regression passed in unique retained databases
+  `oid_acceptance_f2a2a568e40f4ce4b3fa56de6544d9bf` and
+  `oid_acceptance_181a2805abad483685edd77056f4b05d`: wrong environment rejected,
+  two concurrent finalizations yield one settlement and one replay, reconnect
+  replay preserves one refund. Root independently read the first DB through
+  `oid_observer` with read-only enabled: run failed, recovery refunded, one refund
+  receipt/ledger entry, 250 minimum units. The second test also denies observer
+  writes. Authority is explicitly injected test evidence; no production monitor
+  or connected recovery acceptance is claimed.
+- Report capture four `8896ee55-a0ab-43c2-8ab5-a6a9c0cce46b` committed real
+  owner UI reports and an attached private screenshot, then stopped on an
+  asynchronous lost-response assertion. Capture five
+  `b4858122-0fa0-4e46-aff9-97b91c6e32d6` passed the corrected response-loss retry
+  but stopped on an unsupported `min(uuid)` aggregate in its observer query.
+  Read-only PostgreSQL independently showed exactly one report/operation for
+  that retry. The observer query now uses `min(id::text)`.
+- Capture six `0628d3e3-ea1b-413a-adb6-b4b1001d1430` stopped with exit 1 at the
+  over-5-MiB multipart negative request timeout. Diagnosis must distinguish
+  bounded rejection latency from a stuck handler; no timeout relaxation or
+  negative-matrix acceptance is inferred. These failed attempts have no complete
+  source-after/evidence bundle and do not establish the whole report/admin E2E.
+  Positive code-funded training/full12 captures are next while this is diagnosed.
+- Follow-up HTTP diagnosis confirmed two separate multipart defects: partial
+  durable staging before complete input validation, and an unconsumed
+  `preParsing` Transform that backpressured the raw request also consumed by
+  `@fastify/multipart`. The same isolated parser returned 413 without that second
+  pipe and stalled with it. The fix must preserve the total envelope bound for
+  both Content-Length and chunked requests, validate all parts before durable
+  staging, and prove bounded rejection with unchanged PostgreSQL state.
+- The focused real-loopback HTTP/PostgreSQL regressions subsequently passed
+  2/2: 5 MiB+1 known-length file returns 413, a trailing extra field returns 400,
+  and chunked envelope overflow returns 413. Independent read-only counts for
+  reports/audits/uploads/chunks/deletion receipts/rate/ledger/runs/tasks/actions
+  remain unchanged. The existing partial upload in capture six is retained;
+  the regression added no rows. This is a local rejection regression, not a
+  replacement for the still-missing complete owner/admin browser capture.
+- Review also found inconsistent owner/global-advisory/control lock ordering
+  across create, accept and queued claim. The ordering is aligned; isolated PG
+  regression work is still in progress. A queued pause request is not itself a
+  committed pause, and no claim that the old order demonstrably deadlocked is
+  made without a reproduced PostgreSQL cycle. The required behavior is denial
+  after pause has linearized, with original deadlines and financial state intact.
+- The lock regression subsequently passed 1/1 in retained DB
+  `oid_acceptance_fa8c3c16477040eda652858087dcfd22` (5.97 seconds wall time).
+  Root independently read `oid_observer`, read-only `on`, final pause revision 3,
+  three control events and zero intents created after that pause timestamp.
+  PostgreSQL allowed create/accept before the pause acquired its control row;
+  the test accepts this valid pre-pause branch and checks paused claim/start
+  effects and preserved queue deadlines separately. Identity/web typechecks pass.
+- Training startup `306fbd90-9ed7-4841-b932-6a0061b5943e` rejected an extra CLI
+  separator before any build or DB action. The corrected direct-node invocation
+  `af39e11a-810a-4943-9f14-96352ab23e5f` then stopped before positive release
+  activation. A supplemental negative-probe serializer masked the original
+  blocker; it now saves that probe separately and preserves primary failures.
+  Root's independent historical-pin audit found all five artifact hashes match,
+  but their source inputs pin the old `pnpm-lock.yaml`. The approved multipart/
+  sharp additions changed that file. Current-lock feasibility and 20 fresh
+  local-fork case probes are required before refreshing release evidence and
+  exact PIN references; no old artifact or SHA guard is rewritten or weakened.
+- Reports capture seven reached the inert-text assertion but read stale detail
+  state immediately after a different report was clicked. Capture eight
+  `a4e3922b-9dbe-4ec5-a13c-fb422f84bee5` passed the corrected inert-text check,
+  then failed at browser evidence serialization: the capture wrapper exposes
+  arrays under `.capture`. Root independently read four reports, four distinct
+  operations, four creation audits, one attached image and zero ledger/task/
+  action rows; the single linked-run fixture remains. Admin triage was not
+  reached. A wrapper-contract regression and a new full capture remain required.
+- Complete local report capture `e3155475-4e32-4b35-a51a-c0d780559ab7` exited 0:
+  no local failures, all 377 source inputs stable. Root ran
+  `python -B -m tools.replay_bpc_reports_local` in pinned Docker, exit 0. All six
+  owner and five admin raw observations verify, including duplicate-free retry,
+  independent private image hashes, list filters and audited close/reopen.
+  Official SC018/020 manifests remain blocked. Four native clients, external
+  Google/host, complete negative matrix and retention purge/restore are not_run.
+- Separate local shortfall capture `9589f738-1795-4569-a88d-2aefd58669b0`
+  stores before/helper-result/after artifacts under
+  `artifacts/runs/bpc-bonus-shortfall-helper/`. Root checked every indexed file
+  hash/size and independently read the exact synthetic owner through the
+  read-only observer: 250000 bonus units, 2000000 cash units, zero reserves or
+  debits, zero runs; before/after ledger and totals match. Service returned 409
+  `BETA_BONUS_BALANCE_REQUIRED`. This is direct-service/local evidence only,
+  using synthetic cash and the real code-derived lot; no central gate promoted.
+- Current-lock feasibility witness `f28df42b-6341-467a-9be9-380e63ab4325`
+  passed verifier `5da32b24-3bbe-4e23-8969-ee954d7acf72`; root checked both
+  file hashes. Execution identity is
+  `72aeadc411180708f4498a03619a1708b88eb053753c60b3fb35fcb3eb5609e2`.
+  Fresh S1 training/ranked probes captured and fenced, with matching source pins.
+  S2 training `bf50be68-5646-45e5-b5e2-314b5e71a320` returned reset HTTP 503:
+  response says generation fenced, environment unknown. It is not counted as a
+  successful reference; exact generation/lease state must be reconciled before
+  another start. Existing evidence, primary DBs and volumes remain preserved.
+- SC023 usage/support aggregation passed its deterministic and isolated read-only
+  PostgreSQL regressions (2/2). It uses one repeatable-read snapshot, persisted
+  action/grant bindings and a supplied pinned registry; preflight connections,
+  manual support time and paid conversion remain explicitly unmeasured. Report
+  history is incomplete after retention deletion. Admin route/download wiring
+  is in progress; this does not close task 8.2 or the target acceptance gate.
+- Root corrected the operations pending-intent count to exclude expired intents,
+  matching admission capacity semantics. A rolled-back transaction in isolated
+  `oid_acceptance_fa8c3c16477040eda652858087dcfd22` presented one live and one
+  expired pending intent: the actual operations snapshot returned one, and a
+  full before/after intent read matched after rollback. No durable fixture or
+  primary database change was made.
+- The guarded env-A recovery subsequently succeeded. A single journaled reset
+  returned JSON-RPC null; independent `bef_observer`/Anvil readback showed all
+  483 generations and 150 preparations fenced, zero unresolved operations and
+  latest exactly equal to the pinned block/hash. Root checked after-artifact
+  SHA-256 `4ad850aae06e66bdac6f54ff4cc85c6500f5dd2597ca54d05c090edc9bbf0d79`
+  under `artifacts/runs/bef-env-a-reset-step-execution/db91f2ec-53bb-47a2-a502-90d1de8dd011/`.
+  An intermittent source-proxy 502 delayed preflight; no mutation was sent while
+  that prerequisite failed. New reference capture resumes with a new S2 UUID.
+- Admin usage/support JSON route and operations-panel download are implemented.
+  Registry SHA-256 is explicitly derived from the startup-validated deployment
+  client projection, separately from benchmark release hashes. Without a beta
+  manifest the strict local fixture returns 503 rather than inventing a registry.
+  Identity/web typechecks pass. Focused route HTTP/read-only PG regression passes
+  3/3, using injected authorization; real-session browser validation remains next.
+- Fresh browser capture `1cd16537-6c25-4469-960b-85ef058ab3ca` exited 0 with
+  all 384 source inputs stable and no local failures. Root's report replay again
+  verifies all six owner and five admin observations. Supplementary SC021
+  pause/resume, report reads while paused, real-session non-admin denial and
+  missing-registry export denial also pass. Root's independent operations replay
+  verifies raw SHA-256 `4b7573992e63d84c43909ce0a6d9c097ef0f9eeb37e2b278648bc4a17c4b973f`
+  and live read-only PostgreSQL: revision 2, two new audit events, preserved
+  report/run/action/ledger counts. This is partial local coverage; target
+  health/load/restart and native-client gates remain blocked/not_run.
+- The first isolated lifecycle regression `9e82ad6f-c517-4456-ae1c-e3c3756bc100`
+  stopped on a test pre-race count error: two images were already attached,
+  whereas the test expected one. Actual observer state showed three attached
+  and one ready/unlinked after exactly one race winner. The old DB/artifact are
+  retained. The corrected test is being rerun on a new database; no whole
+  quota/retention acceptance is inferred from the first partial attempt.
+- Corrected lifecycle capture `50bc8604-ef2a-4f96-ac53-7542399e785b` passes
+  3/3 tests. Local HTTP/PG checks cover seeded rolling quota, three staged images,
+  chunk ordering/replay/conflict, foreign principal denial, orphan cleanup and
+  concurrent cap enforcement. The synthetic historical closure preserves the
+  exact 2592000-second interval, with real HTTP reads before and denials after
+  an independently observed database deadline. Root checked artifact SHA-256
+  `bed8c3fa54489fcb648656f00af4fa8b02c41b4f7b423836813cf444fcb0be8e`
+  and independently read the retained DB/files: zero reports/uploads/chunks/files,
+  one complete deletion receipt and unchanged grade/run/bonus/ledger sentinel
+  digest `4d3ce497994e815920f5528ec1679550ea909144f08845a6950ea2042d4e1113`.
+  This does not establish old-backup sanitization or four native-client acceptance.
+- Root independently reran both usage-export suites with both PostgreSQL opt-ins
+  enabled against the isolated `af39` fixture: 5 passed, 0 failed/skipped. This
+  completes implementation task 8.2; central SC023 release acceptance, cohort
+  measurement and task 8.3 remain open. The local real-session browser also
+  verifies non-admin export denial and missing-manifest failure, not a fabricated
+  positive deployment-registry download.
+- Authenticated local MCP smoke `33941ef0-833f-44a7-9634-3c81fd264da3`
+  completes through the production database-backed bearer resolver and HTTP MCP
+  transport. Root independently verifies artifact SHA-256
+  `8dd4e626aed233ecfe695057cc4b4c384c8b0e1993ee306560fbe48e3d68c281`,
+  live observer-role PostgreSQL and normalized private image bytes: one report,
+  audit and attached upload, zero retained raw chunks, five usage receipts.
+  Nonempty ledger/run/task/action/timer state retains digest
+  `703d32fe4f3d27908639fb6fbb5a60b7d4ed7c2695cc2efce4aa44f9cb28ab9c`.
+  Ordered chunks, exact replay, conflict, foreign access and revoked bearer
+  checks are local synthetic-credential evidence; UI token issuance, native
+  clients, model execution and SC019 release acceptance remain unproven.
+- Offline report-aware backup rehearsal checkpoint
+  `f05253e8809d4b889d4d4dd972a850e7` finishes successfully. The saved operator
+  DPAPI-wrapped key is read back to decrypt the database dump; a tampered copy
+  is rejected. Root independently compares all 88 table row hashes in the
+  untouched source and isolated restored database, verifies every inventoried
+  file and the restored 24786-byte screenshot (SHA-256
+  `b21455ad59dcec1c7f6c386917d9209c52e7961377680ca89bb564918842332f`).
+  A second clone uses a synthetic expired closure: zero reports/uploads/images,
+  four complete deletion receipts and unchanged non-support table hashes.
+  Original inventory SHA-256 is
+  `6d32a2bac3411cad5e39420ce86422b069486780134916a0da4f521de0b7b06a`;
+  sanitized inventory SHA-256 is
+  `db0d298f3b537b933918a75c6f960cab8382ae53f65e3f193f9078799bad9fc9`.
+  Journal `025-complete.json` incorrectly labels the expired stage `prepared`;
+  actual cleanup/finalization journals and independent live readback establish
+  the result. The summary mapping was corrected without rewriting capture
+  evidence. Independent follow-up review required guards for leftover raw
+  chunks, original-checkpoint invariance through clone cleanup, receipt identity
+  on retry and a complete helper dependency source map. The corrected guarded
+  replay is recorded below; this earlier artifact remains preserved as historical
+  evidence only. This report-only fixture does not prove combined bonus/run
+  restore, application restart, daily scheduling, target-host recovery or full
+  SC022/026.
+- Fresh current-lock release candidate validation passes in
+  `artifacts/runs/bts-difficulty-v2-release-validation/a8755b14-6868-42d4-977b-39314c067cd4/validation.json`,
+  SHA-256 `e63308ed99100555f1f29b51b37269fdb3ead580a34367431d17adc177aa6bea`:
+  `validated_candidate`, 20 semantic reference results, approved difficulty proof.
+  Root checks the artifact identity/hash. Retained reference and minimum reviews
+  both pass 20/20. Semantic comparison
+  `62365f4f-e48b-4d9e-822f-94b2cbf54df5` preserves task/rubric/weight/rule/deadline
+  and price semantics; changed synthetic addresses bind to actual probe records,
+  and remaining native-balance differences follow observed gas costs.
+  Earlier blocked validator artifact `f0a29a7b-3054-4ec2-b971-2532454d8f1e`
+  retains the stale candidate-binding failure. The production verifier now pins
+  the new candidate with unchanged verification logic. Isolated activation and
+  positive bonus-funded owner training/full12 runs remain next, not established
+  by offline validation.
+- Corrected report-aware backup/restore rehearsal `5d1e4d201d484ed1b9839c9b9afbfa2b`
+  completed with source `oid_acceptance_1cd165376c254469960b85ef058ab3ca`, restore
+  clone `oid_restore_754bf3568e584a5096e5d5a4ec41d5ae`, and synthetic-expiry clone
+  `oid_restore_b788628abcb14b2ca76b81da4b8fe626`. The journal/evidence under
+  `.local/owner-identity/report-restore-rehearsals/5d1e4d201d484ed1b9839c9b9afbfa2b/`
+  shows all 88 table fingerprints and 152 implementation pins stable, source
+  and restored tables/sequences matching, DPAPI current-user key recovery, and
+  tampered-ciphertext rejection. The restored screenshot is 24,786 bytes with
+  SHA-256 `b21455ad59dcec1c7f6c386917d9209c52e7961377680ca89bb564918842332f`;
+  the journal interval was 51.94 seconds, not an RTO. The expiry clone ended with
+  zero reports/uploads/images, four complete deletion receipts, no pending or
+  failed receipts, and unchanged non-report tables/sequences plus source DB,
+  closure and images. Expiry used synthetic closure state in the clone only;
+  grades/ledger restoration was not proven, the restored application was not
+  started, and this does not close full SC022/026, off-host, target-host, or
+  production RPO/RTO requirements.
+- Release BDD capture `f3e9a531-9e3a-4768-9ffa-fbad32354c3d` passed local
+  `BTS-SC-001` and `BTS-SC-002` activation observations. Each persisted runtime
+  capture reports 17/17 observations, zero not-run/failed, validated activation,
+  and unchanged PostgreSQL state with no run or ledger rows:
+  `artifacts/runs/acceptance/BTS-SC-001/runs/96c0e3de-9318-4470-8ddc-0c4940a0bbc3/runtime-capture.json`
+  and
+  `artifacts/runs/acceptance/BTS-SC-002/runs/6712c9d0-d82b-455b-8f9a-d2de8968e1d8/runtime-capture.json`.
+  Root's independent PostgreSQL activation replay agrees. This is release
+  activation evidence without task execution; no central gate is promoted.
+- Positive browser training-sequence capture
+  `90714c34-be23-4924-9178-4288e08c578d` remains blocked and explicitly has
+  `fullScenarioAcceptance=false`; its evidence is under
+  `artifacts/runs/genuine-training-sequence-owner-run/90714c34-be23-4924-9178-4288e08c578d/`.
+  The browser-issued bonus-code path produced a 100,000-unit grant. A separate
+  post-capture read-only PostgreSQL observation in
+  `.tmp/check-bonus-preparation-block.mjs` found a 66,667-unit held
+  `tester_bonus` reservation with no cash effect; the capture's earlier embedded
+  owner-balance snapshot reports zero reserved bonus, so these are distinct
+  observation times. The run did not start (`started_at` is null), had zero
+  participant actions, no recorded internal evaluation or grade, and an
+  unverified worker-evaluation request. It remains `cancellation_requested`
+  after `coordinator_preparation_failed`; cancellation evidence and task-lease
+  fencing are absent from the capture, so the final fence is unproven.
+- The positive capture records blocker code
+  `strict_preparation_or_task_issue_timeout`. Follow-up found a coordinator
+  evidence-path bug for its exact nested local default; the writer in
+  `packages/owner-identity/src/bef-task-coordinator.ts` now enforces canonical
+  containment while allowing that default and safe single-component overrides. Its filesystem regression
+  reports 14 passed and one existing skip; identity typecheck and build passed.
+  The blocked capture predates that fix and has not been rerun, so the fix does
+  not change its acceptance status or prove a unique cause for the timeout.
+- After the fix, a guarded one-shot standard coordinator recovery against the
+  same isolated `90714c34` database completed its cancellation tick in 176 ms.
+  Before/after journals are preserved in `.tmp/recover-bonus-cancellation-90714/`;
+  SHA-256 values are `8a9f9f1ece0fc7098db2e22d53a131029f54b7ea8f2ee1b5786c980bb33086e6`
+  and `4bd02e138f89c44f8606cebce363dfd2b41312028712cb2c82a14951e712906b`.
+  Root independently ran `.tmp/check-bonus-cancellation-recovery.mjs` with the
+  read-only observer role: the run is cancelled, its lease is fenced with a
+  verified evidence-file hash, claim/slot are released, reservation/budget hold
+  are released, and the original bonus balance is 100,000 available / zero
+  reserved. Exactly one 66,667-unit release offsets the original reserve; no
+  start debit, task action, or evaluation exists. No manual ledger edits or BEF
+  reset were used. This is cancellation recovery evidence, not successful
+  training completion; the original failed capture remains unchanged.
+- Fresh post-fix capture `93d332b8-b216-45cd-b7e8-7642c976b7a7` retained
+  stable 387-input provenance but stopped before task issue. Capture SHA-256 is
+  `c55c2c86cec276c711aa886c1a6d70bb406d67822b095cb7e4603cbe6af63497`.
+  Run `b0a47cd0-429d-4d8c-80a1-d477a8f8d20a` recorded
+  `preparation_identity_mismatch` with no BEF generation. Its cancellation now
+  completes automatically. Root independently verifies the durable fence file,
+  released slot/claim/holds, 100,000 available / zero reserved bonus, and no start
+  debit, task action, or evaluation. The exact adapter health replay currently
+  succeeds and source/local RPC batches match the pinned block; this does not
+  identify the predicate that failed during the original attempt. Safe internal
+  preparation diagnostics are being added before another capture. The failed
+  artifact remains blocked; training/full12 completion is still unproven.
+- Internal pre-PUT refusal diagnostics now persist one event per preparation
+  attempt with exactly `preparationId`, `environmentId`, `phase`, and static
+  `reasonCode`. No request/header/payer/credential or raw exception data is
+  recorded. Diagnostic sink failure preserves the existing unknown outcome and
+  zero-PUT guard. Focused adapter tests pass 16/16, identity typecheck and build
+  pass; a new runtime capture is required to prove its observation boundary.
+- Diagnostic capture `87a79e57-be75-4662-a4aa-4411431b2e12` kept stable
+  provenance and stopped before task issue. Capture SHA-256 is
+  `025a553fa53103fce85a97d6387abc8de4f239990d6d4b5bb068290596cf04f6`.
+  Its four-field lifecycle event records `source_rpc_response/response_invalid`
+  (event SHA-256 `e915de91a52b73e15f0b4a622ea13b8c3dac95cd85227b7f1cac0874dec3f305`).
+  No BEF generation was created. Root's read-only replay confirms automatic
+  cancellation and full original-source reservation release, no debit/actions/
+  evaluations, and a verified fence evidence file. A later health replay with
+  the same Google transport preload succeeds; source call usage is below its
+  10,000-item limit. Source metrics have ten cumulative upstream errors, without
+  per-request attribution. HTTP/protocol classification and one bounded
+  transient-HTTP preflight read retry are being implemented; successful task
+  execution remains unproven.
+- The acceptance harness now supports the fixed bonus-funded all-open opt-in
+  `--genuine-bonus-funded-training-all-open-worker-owner-run`. It preserves the
+  S1/S2 mode, verifies each adjacent predecessor/activation/deadline/fence binding,
+  and derives one-ceiling training quote and sufficient bonus funding from the
+  pinned release. Root's focused sequence and existing bonus-capture contract
+  tests pass 9/9; runner syntax check passes. This is harness verification, not
+  observed all-eight task completion or SC014 acceptance. The additional report
+  negative-test draft remains unapplied pending fixture/evidence corrections.
+- The source/local initial pre-PUT identity RPC batches now permit one 250 ms
+  delayed retry for HTTP 502/503/504 only. Logical pin mismatch, malformed/RPC
+  errors, ordinary baseline reads and cached reconciliation are not retried;
+  admin preparation PUT remains exactly once. Final refusal diagnostics classify
+  HTTP/protocol failures without recording raw responses. The adapter suite
+  passes 24/24, including retry recovery/exhaustion, no-PUT wrong pins, redaction,
+  and one-shot cached reconciliation. Identity typecheck/build pass. Root also
+  restored the indexed task-0 predecessor record in the legacy non-worker
+  sequence bridge; no new legacy non-worker runtime acceptance is claimed.
+- All-eight capture `f64d4135-3060-4052-890c-99199f5aff66` (SHA-256
+  `3d015572ca2b52585d911e731abed6d54a486cbd98a8c6911fdee472450acef2`)
+  proves the first actual code-funded task: S1 completed with an independently
+  reconstructed known `passed` evaluation and credit 1/1, and the server
+  activated S2. The harness then rejected a correct deadline because
+  `Date.parse(Date)` lost milliseconds; persisted run-start and activation
+  deadline values both retain `.332Z`. This was a harness comparison error,
+  not a demonstrated product deadline mismatch. The failed capture is preserved.
+  Root independently verified the code/redemption/grant linkage, one 500,000-unit
+  reserve and one debit, no refund/cash substitution, zero remaining reserve,
+  released claim/slot, delivered cancellation outbox and both fence file hashes.
+  The run was voluntarily cancelled by harness cleanup after starting; S2 has no
+  evaluation and full-run completion remains unproven. The old capture's false
+  `allTaskLeasesFenced` combined fencing with incomplete transition proof; live
+  owner and BEF readbacks prove both exact generations fenced. Date precision
+  and truthful selected-prefix cleanup are corrected; focused tests now pass
+  12/12, including stale/malformed deadlines and a prepared but unverified
+  successor. The next frozen-source captures below supersede this blocker.
+- All-eight training capture `f519ab49-7ab9-46ff-a1b5-ecdd215e15c1`
+  (SHA-256 `f10bc0f3ca1a4052ae7ab007305a709d6d6573efd4523214c9c125e572c1bbfb`)
+  completed through browser code issue/redemption, actual server-worker actions,
+  independent observations/evaluations, seven successor activations and owner
+  results UI. S1/S4/M1/M3/M4/H1/H2 passed 1/1; S2 was partial 7/10. Root's
+  separate read-only PostgreSQL replay verifies the grant/redemption/reservation
+  linkage, exactly one 500,000-unit reserve and start debit, no cash substitution,
+  zero remaining balance/reserve, eight evaluations, one completion, released
+  dispatch claim, zero slots and all eight fence-file hashes.
+- Full12 ranked capture `a3387be8-053a-495b-a7da-33561c0d3e6c`
+  (SHA-256 `fae995ccf7d08f4d4db522301793ad093c5d6d3d73fa21f6efc3e3baab1aabce`)
+  completed with automatic server-worker lifecycle, owner results UI and internal
+  ranked handoff verification. Root independently verifies code-derived funding,
+  exactly one 1,000,000-unit reserve/debit, no cash substitution, twelve
+  evaluations, one completion, released claim, zero slots and twelve fence-file
+  hashes. Both captures retained identical before/after 388-input capture
+  inventories; root also checked the broader 683-path R7 freeze unchanged.
+  These are local reference-participant/fixture-Google captures; native model,
+  external Google, public leaderboard UI and target-host acceptance remain open.
+- Applied reviewed report negative-test extensions and the narrow Fastify
+  `FST_ERR_CTP_BODY_TOO_LARGE` mapping to HTTP 413 `REQUEST_BODY_TOO_LARGE`.
+  The previous generic fallback could map parser rejection to 500 (source
+  diagnosis, not a captured pre-fix response). Actual report-route `app.inject`
+  now verifies bounded 413 before auth/rate-limit/service entry; the separate
+  PostgreSQL multipart test was skipped in this focused invocation. Identity
+  typecheck passes, report producer/evidence tests pass 3/3 and independent
+  verifier tests pass 7/7. New browser assertions cover separate foreign run and
+  action IDs, field and HTTP-envelope bounds, conflicting retry, denied admin
+  status/foreign screenshot reads and admin inert-text rendering. A fresh
+  browser capture below supplies local runtime evidence; SC018/020 remain open.
+- Fresh report capture `850e258a-1352-411f-a0dd-e0e46dfc5d70` exited 0 with
+  no local failures, stable 389-input capture inventory and independently checked
+  684-path R8 source freeze. `python -B -m tools.replay_bpc_reports_local`
+  independently replays all eleven owner/admin positive observations. Additional
+  raw-verifier replay confirms SC018 foreign run **and** foreign action denial,
+  forbidden fields, actual oversized HTTP envelope 413, inert HTML text,
+  response-loss retry and conflicting retry. SC020 replay confirms stale
+  revision, foreign owner read, unauthorized status, inert admin text and
+  foreign screenshot denial. The remaining local negatives are SC018
+  `report_flood` and SC020 `agent_admin_attempt`; no complete negative matrix
+  or external gate is claimed. Authenticated negative probes use actual HTTP
+  requests from browser contexts, explicitly distinct from UI clicks.
+  Local operations artifact SHA-256
+  `e94cf5cd4e48e50bc1678ba1b49677143e3813a689caa3f8d4cb67067f67cac1`
+  passes separate live read-only PG replay: control revision 2, two new audit
+  events, no domain changes. Actual target and all-four-native-client gates
+  remain blocked. Existing restore rehearsals retain their original source
+  databases; this capture has not undergone a new backup/restore rehearsal.
+  Separate live observer transactions confirm five reports, seven audits, two
+  attached normalized images, zero chunks and zero ledger entries. Two runs,
+  one task and one immutable action are the retained synthetic authorization
+  fixtures, not executed benchmark work. Admin close/reopen persists revisions
+  2/3 and exactly two status audits. A read-only native-volume inspection finds
+  exactly two private WebP files, mode 0600, each 24,786 bytes and SHA-256
+  `b21455ad59dcec1c7f6c386917d9209c52e7961377680ca89bb564918842332f`,
+  matching the attached database rows. Both happen to contain the same
+  screenshot bytes; authorization was tested against their distinct owner IDs.
+- Ranked terminal readback independently confirms twelve known evaluations:
+  eleven passed 1/1 and S2 partial 7/10. The exact weighted overall is `1285/13`
+  out of 100; simple tier `185/2`, other tiers `100/1`. Aggregate/handoff,
+  version snapshot, completion/eligibility event hashes, first-action marker and
+  best-result pointer bind to the completed run. This verifies persisted
+  internal/public-eligibility records; public HTTP/UI rendering remains unrun.

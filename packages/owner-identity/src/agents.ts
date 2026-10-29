@@ -6,9 +6,10 @@ import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { selectAgentMcpTransport } from "./agent-mcp-profile.js";
+import { reportUploadChunkSchema } from "./report-service.js";
 import { withOAuthSelection, type OAuthSelectionContext } from "./auth.js";
 import type { createAuth } from "./auth.js";
-import type { OwnerIdentityConfig } from "./config.js";
+import { findMcpClient, type OwnerIdentityConfig } from "./config.js";
 import type { OwnerDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
 import {
@@ -111,14 +112,15 @@ async function parseOAuthQuery(value: unknown, dependencies: AgentRouteDependenc
   const state = params.get("state") ?? "";
   const challenge = params.get("code_challenge") ?? "";
   const nonceValues = params.getAll("nonce");
+  const registeredClient = findMcpClient(dependencies.config, clientId);
   if (params.get("response_type") !== "code" || params.getAll("response_type").length !== 1 ||
-    params.getAll("client_id").length !== 1 || clientId !== dependencies.config.mcpClientId ||
-    params.getAll("redirect_uri").length !== 1 || redirectUri !== dependencies.config.mcpClientRedirectUri ||
+    params.getAll("client_id").length !== 1 || !registeredClient || !registeredClient.redirectUris.includes(redirectUri) ||
+    params.getAll("redirect_uri").length !== 1 ||
     params.get("code_challenge_method") !== "S256" || params.getAll("code_challenge_method").length !== 1 ||
     params.getAll("code_challenge").length !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(challenge) ||
     !state || state.length > 512 || params.getAll("state").length !== 1 || resources.length !== 1 || resources[0] !== dependencies.agentResource ||
     params.getAll("scope").length !== 1 || scopes.length !== 1 || scopes[0] !== "agent:operate") {
-    throw new HttpError(400, "OAUTH_REQUEST_NOT_SUPPORTED", "Only the registered public client, exact loopback callback, S256 PKCE, agent resource, and agent:operate scope are supported");
+    throw new HttpError(400, "OAUTH_REQUEST_NOT_SUPPORTED", "Only a registered public client, its exact callback, S256 PKCE, the agent resource, and agent:operate scope are supported");
   }
   if (nonceValues.length > 1 || (nonceValues[0] !== undefined && (nonceValues[0].length < 1 || nonceValues[0].length > 512))) {
     throw new HttpError(400, "OAUTH_REQUEST_NOT_SUPPORTED", "OAuth nonce must be a single value no longer than 512 characters");
@@ -472,6 +474,7 @@ const uuidError = () => new HttpError(404, "AGENT_NOT_FOUND", "Agent was not fou
 
 export interface AgentPrincipal {
   credentialSource?: "manual" | "oauth";
+  oauthClientId?: string;
   ownerId: string;
   agentId: string;
   grantId: string;
@@ -487,6 +490,14 @@ export interface AgentPrincipal {
 function bearerChallenge(dependencies: AgentRouteDependencies): string {
   const metadataUrl = `${dependencies.config.publicOrigin}/.well-known/oauth-protected-resource/api/agent`;
   return `Bearer resource_metadata="${metadataUrl}", scope="agent:operate"`;
+}
+
+function isValidatedSupportScreenshotChunk(body: unknown): boolean {
+  const message = body !== null && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+  const params = message.params !== null && typeof message.params === "object" && !Array.isArray(message.params)
+    ? message.params as Record<string, unknown> : {};
+  return message.jsonrpc === "2.0" && message.method === "tools/call" && params.name === "support.screenshot.chunk" &&
+    reportUploadChunkSchema.safeParse(params.arguments).success;
 }
 
 export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies, bearer: string): Promise<AgentPrincipal | undefined> {
@@ -549,8 +560,10 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
   const ownerId = payload.oid_owner_id;
   const agentId = payload.oid_agent_id;
   const grantId = payload.oid_grant_id;
+  const oauthClientId = payload.azp;
+  const registeredClient = typeof oauthClientId === "string" ? findMcpClient(dependencies.config, oauthClientId) : undefined;
   if (!resourceMatches || payload.iss !== `${dependencies.config.publicOrigin}/api/auth` ||
-    payload.azp !== dependencies.config.mcpClientId || payload.scope !== "agent:operate" || payload.oid_role !== "agent" ||
+    !registeredClient || payload.scope !== "agent:operate" || payload.oid_role !== "agent" ||
     typeof payload.sub !== "string" || typeof ownerId !== "string" || typeof agentId !== "string" || typeof grantId !== "string" ||
     typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1) return undefined;
 
@@ -589,13 +602,14 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
     .limit(1);
   const row = rows[0];
   if (!row || row.ownerId !== ownerId || row.agentId !== agentId || row.authUserId !== payload.sub ||
-    row.oauthClientId !== dependencies.config.mcpClientId || row.authorizationClientId !== dependencies.config.mcpClientId ||
+    row.oauthClientId !== oauthClientId || row.authorizationClientId !== oauthClientId ||
     row.resource !== dependencies.agentResource || row.authorizationResource !== row.resource || row.role !== "agent" ||
     row.authorizationCodeHash === null || row.admissionStatus !== "admitted" || row.grantRevokedAt || row.accessRevokedAt ||
     row.grantGeneration !== row.accessGeneration || row.grantGeneration !== generation || row.authorizationGeneration !== generation ||
     row.grantExpiresAt <= now) return undefined;
   return {
     credentialSource: "oauth",
+    oauthClientId: oauthClientId as string,
     ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, credentialId: row.grantId,
     resource: row.resource, role: row.role, accessGeneration: row.accessGeneration, accessRevision: row.accessRevision,
     policyRevision: row.policyRevision,
@@ -617,13 +631,23 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     const match = typeof authorization === "string" ? /^Bearer ([^\s]{1,8192})$/.exec(authorization) : null;
     if (!match) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
 
-    await dependencies.rateLimit(request, "agent-preflight-ip", dependencies.preflightRateLimitMax);
+    // MCP upload chunks may require up to 214 ordered requests for one 5 MiB image.
+    // Keep all MCP traffic IP-bounded at 300/min; the per-credential 60/min default
+    // remains in force except for the schema-validated screenshot chunk tool below.
+    await dependencies.rateLimit(request, "agent-mcp-ip", 300);
     const principal = await resolveAgentPrincipal(dependencies, match[1]!);
     if (!principal) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
-    await dependencies.rateLimit(request, `agent-preflight-${principal.credentialId}`, dependencies.preflightRateLimitMax);
 
-    const localCodexTransport = selectAgentMcpTransport(dependencies.config,
-      principal.credentialSource === "manual", request.body, request.headers) === "codex-local";
+    const selectedTransport = selectAgentMcpTransport(dependencies.config,
+      principal.credentialSource === "manual", request.body, request.headers, principal.oauthClientId);
+    const localCodexTransport = selectedTransport === "codex-local";
+    const betaRemoteTransport = selectedTransport === "beta-remote";
+    if (betaRemoteTransport && isValidatedSupportScreenshotChunk(request.body)) {
+      await dependencies.rateLimit(request, "agent-mcp-screenshot-chunk-ip", 300);
+      await dependencies.rateLimit(request, `agent-mcp-screenshot-chunk-${principal.credentialId}`, 300);
+    } else {
+      await dependencies.rateLimit(request, `agent-preflight-${principal.credentialId}`, dependencies.preflightRateLimitMax);
+    }
     const outputSchema = z.object({
       status: z.enum(["allowed", "denied"]),
       operationId: z.string(),
@@ -632,7 +656,10 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     });
     const mcpHandler = createMcpHandler(() => {
       const server = new McpServer({ name: "Web3 Agent Bench", version: "1.0.0" }, {
-        supportedProtocolVersions: localCodexTransport ? ["2026-07-28", "2025-06-18"] : ["2026-07-28"],
+        supportedProtocolVersions: localCodexTransport ? ["2026-07-28", "2025-06-18"] : betaRemoteTransport
+          ? [...new Set(dependencies.config.betaManifest?.clients.filter((profile) => profile.enabled)
+            .flatMap((profile) => profile.protocolVersions) ?? ["2026-07-28"])]
+          : ["2026-07-28"],
         maxToolInputElements: 8
       });
       server.registerTool("identity.preflight", {
@@ -654,7 +681,8 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
       });
       dependencies.registerMcpTools?.(server, principal);
       return server;
-    }, { legacy: localCodexTransport ? "stateless" : "reject", responseMode: "json", keepAliveMs: 0, maxRequestBodySize: 64 * 1024 });
+    }, { legacy: localCodexTransport || betaRemoteTransport ? "stateless" : "reject",
+      responseMode: "json", keepAliveMs: 0, maxRequestBodySize: 64 * 1024 });
 
     const headers = new Headers();
     for (const key of ["accept", "authorization", "content-type", "mcp-protocol-version", "mcp-method", "mcp-name", "mcp-session-id", "last-event-id", "origin", "user-agent"]) {
@@ -689,7 +717,8 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     const session = await dependencies.auth.api.getSession({ headers: providerHeaders(request) });
     if (!session || session.user.id !== auth.owner.authUserId) throw new HttpError(401, "UNAUTHORIZED", "An authenticated owner session is required");
     const client = await dependencies.db.query.oauthClients.findFirst({ where: eq(oauthClients.clientId, signed.clientId) });
-    if (!client || client.disabled || client.clientId !== dependencies.config.mcpClientId) {
+    const registeredClient = findMcpClient(dependencies.config, signed.clientId);
+    if (!client || client.disabled || !registeredClient || !registeredClient.redirectUris.includes(signed.redirectUri)) {
       throw new HttpError(400, "OAUTH_CLIENT_NOT_REGISTERED", "The OAuth client is not registered");
     }
     const now = new Date();

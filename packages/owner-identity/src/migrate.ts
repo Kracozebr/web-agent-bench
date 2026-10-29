@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { migrateRankedRuns } from './task-ranked-run-migrate.js';
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
@@ -9,6 +10,10 @@ import { migrateTaskResults } from "./task-result-migrate.js";
 import { migrateTaskExecutionBindings } from "./task-execution-binding-migrate.js";
 import { migrateTaskPreparations } from "./task-preparation-migrate.js";
 import { migrateTaskObservations } from "./task-observation-migrate.js";
+import { migrateBonusCodes } from "./bonus-code-migrate.js";
+import { migrateReports } from "./report-migrate.js";
+import { migrateBetaPlatformRecovery } from "./beta-platform-recovery.js";
+import { migrateBetaOperationsControl } from "./beta-operations-control.js";
 
 const statements = [
   `CREATE TABLE IF NOT EXISTS oid_auth_user (
@@ -274,11 +279,15 @@ async function main() {
       await migrateRuns(tx);
       await migrateTaskStore(tx);
       await migrateTaskActions(tx);
+      await migrateBetaPlatformRecovery(tx);
+      await migrateBetaOperationsControl(tx);
       await migrateTaskResults(tx);
       await migrateTaskExecutionBindings(tx);
       await migrateTaskPreparations(tx);
       await migrateTaskObservations(tx);
       await migrateRankedRuns(tx);
+      await migrateBonusCodes(tx);
+      await migrateReports(tx);
       const resource = `${config.publicOrigin}/api/agent`;
       const now = new Date().toISOString();
       await tx.unsafe(
@@ -286,30 +295,36 @@ async function main() {
          VALUES ('oid-agent-resource-v1',$1,'Web3 Agent Bench agent resource',3600,ARRAY['agent:operate'],false,$2::timestamptz,$2::timestamptz,1)
          ON CONFLICT (identifier) DO NOTHING`, [resource, now]
       );
-      await tx.unsafe(
-        `INSERT INTO oid_oauth_client(
-           id,client_id,disabled,skip_consent,subject_type,scopes,client_credentials_scopes,created_at,updated_at,name,
-           redirect_uris,token_endpoint_auth_method,application_type,grant_types,response_types,require_pkce
-         ) VALUES ('oid-local-mcp-client-v1',$1,false,false,'public',ARRAY['agent:operate'],'{}',$3::timestamptz,$3::timestamptz,'Local MCP Acceptance Client',
-           ARRAY[$2],'none','native',ARRAY['authorization_code'],ARRAY['code'],true)
-         ON CONFLICT (client_id) DO NOTHING`, [config.mcpClientId, config.mcpClientRedirectUri, now]
-      );
-      const clientCheck = await tx.unsafe(
-        `SELECT client_id FROM oid_oauth_client WHERE client_id=$1 AND redirect_uris=ARRAY[$2]::text[]
-           AND scopes=ARRAY['agent:operate']::text[] AND require_pkce=true AND disabled=false`,
-        [config.mcpClientId, config.mcpClientRedirectUri]
-      );
-      if (clientCheck.length !== 1) throw new Error("The registered MCP client does not match the configured client id, callback, scope, and PKCE policy");
       const resourceCheck = await tx.unsafe(
         "SELECT identifier FROM oid_oauth_resource WHERE identifier=$1 AND allowed_scopes @> ARRAY['agent:operate']::text[] AND disabled=false",
         [resource]
       );
       if (resourceCheck.length !== 1) throw new Error("The registered OAuth resource does not match the configured agent resource and scope");
-      await tx.unsafe(
-        `INSERT INTO oid_oauth_client_resource(id,client_id,resource_id,created_at)
-         VALUES ('oid-local-mcp-client-resource-v1',$1,$2,$3::timestamptz) ON CONFLICT (client_id,resource_id) DO NOTHING`,
-        [config.mcpClientId, resource, now]
-      );
+      for (const [index, registeredClient] of (config.mcpClientRegistry ?? []).entries()) {
+        const clientHash = createHash("sha256").update(registeredClient.clientId).digest("hex").slice(0, 32);
+        const clientDbId = config.betaManifest ? `oid-beta-mcp-${clientHash}` : index === 0 ? "oid-local-mcp-client-v1" : `oid-mcp-client-${clientHash}`;
+        const resourceLinkId = config.betaManifest ? `oid-beta-mcp-resource-${clientHash}` : index === 0 ? "oid-local-mcp-client-resource-v1" : `oid-mcp-resource-${clientHash}`;
+        await tx.unsafe(
+          `INSERT INTO oid_oauth_client(
+             id,client_id,disabled,skip_consent,subject_type,scopes,client_credentials_scopes,created_at,updated_at,name,
+             redirect_uris,token_endpoint_auth_method,application_type,grant_types,response_types,require_pkce
+           ) VALUES ($1,$2,false,false,'public',ARRAY['agent:operate'],'{}',$5::timestamptz,$5::timestamptz,$3,
+             $4::text[],'none','native',ARRAY['authorization_code'],ARRAY['code'],true)
+           ON CONFLICT (client_id) DO NOTHING`, [clientDbId, registeredClient.clientId, registeredClient.clientName,
+            registeredClient.redirectUris, now]
+        );
+        const clientCheck = await tx.unsafe(
+          `SELECT client_id FROM oid_oauth_client WHERE client_id=$1 AND redirect_uris=$2::text[]
+             AND scopes=ARRAY['agent:operate']::text[] AND require_pkce=true AND disabled=false`,
+          [registeredClient.clientId, registeredClient.redirectUris]
+        );
+        if (clientCheck.length !== 1) throw new Error("A registered MCP client does not match its pinned callbacks, scope, and PKCE policy");
+        await tx.unsafe(
+          `INSERT INTO oid_oauth_client_resource(id,client_id,resource_id,created_at)
+           VALUES ($1,$2,$3,$4::timestamptz) ON CONFLICT (client_id,resource_id) DO NOTHING`,
+          [resourceLinkId, registeredClient.clientId, resource, now]
+        );
+      }
       await tx.unsafe(
         "INSERT INTO oid_registration_policy(id,mode,revision) VALUES (1,$1,1) ON CONFLICT (id) DO NOTHING",
         [config.registrationMode]

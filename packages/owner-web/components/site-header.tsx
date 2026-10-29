@@ -8,7 +8,9 @@ const links = [
   { href: "/account", label: "Owner account" },
   { href: "/agents", label: "Agents" },
   { href: "/runs", label: "Runs" },
+  { href: "/public/agents", label: "Public results" },
   { href: "/billing", label: "Billing" },
+  { href: "/reports", label: "Reports" },
   { href: "/admin", label: "Administration" },
 ];
 
@@ -29,7 +31,10 @@ export function SiteHeader() {
           <Link
             key={link.href}
             href={link.href}
-            aria-current={pathname === link.href || (link.href === "/billing" && pathname.startsWith("/billing/")) ? "page" : undefined}
+            aria-current={pathname === link.href || (link.href === "/billing" && pathname.startsWith("/billing/")) ||
+              (link.href === "/public/agents" && pathname.startsWith("/public/agents/")) ||
+              (link.href === "/reports" && pathname.startsWith("/reports/")) ||
+              (link.href === "/admin" && pathname.startsWith("/admin/")) ? "page" : undefined}
           >
             {link.label}
           </Link>

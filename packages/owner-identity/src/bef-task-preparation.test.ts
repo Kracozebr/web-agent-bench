@@ -6,6 +6,7 @@ import { sha256CanonicalTaskJson } from './task-release.js';
 import {
   BefTaskPreparationAdapter,
   taskPreparationPublicPinsSha256,
+  type BefPreparationDiagnostic,
   type BefTaskPreparationAdapterDependencies,
   type SafeTaskPreparationEvidence,
 } from './bef-task-preparation.js';
@@ -283,12 +284,19 @@ function rpcResult(url: URL, request: Record<string, unknown>, options: { baseli
   return null;
 }
 
-function makeFetch(intent: TaskPreparationIntentPins, options: { losePutReply?: boolean; baselineMismatch?: boolean; baselineMalformedAbiResult?: boolean; facilitatorAddress?: string } = {}): {
+function makeFetch(intent: TaskPreparationIntentPins, options: {
+  losePutReply?: boolean; baselineMismatch?: boolean; baselineMalformedAbiResult?: boolean; facilitatorAddress?: string;
+  sourceHealthHttpStatuses?: Array<number | null>; localHealthHttpStatuses?: Array<number | null>; sourceHealthMalformedBody?: string;
+  sourceHealthResponseVariant?: 'rpc_error' | 'correlation_invalid' | 'item_shape_invalid' | 'result_missing' | 'batch_shape_invalid';
+  sourceRpcPinMismatch?: boolean;
+} = {}): {
   fetch: typeof fetch; get putCount(): number; get putBody(): Record<string, unknown> | null; get reconcilePostCount(): number;
-  calls: string[];
+  get sourceHealthBatchCount(): number; get localHealthBatchCount(): number; calls: string[];
 } {
   let putCount = 0;
   let reconcilePostCount = 0;
+  let sourceHealthBatchCount = 0;
+  let localHealthBatchCount = 0;
   let putBody: Record<string, unknown> | null = null;
   let status: Record<string, unknown> | null = null;
   const calls: string[] = [];
@@ -334,7 +342,39 @@ function makeFetch(intent: TaskPreparationIntentPins, options: { losePutReply?: 
     if (method === 'POST' && ['source.test', 'observer.test'].includes(url.hostname)) {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown> | Array<Record<string, unknown>>;
       if (Array.isArray(body)) {
-        return jsonResponse(200, body.map((item) => ({ jsonrpc: '2.0', id: item.id, result: rpcResult(url, item, options) })));
+        const sourceHealthBatch = url.hostname === 'source.test' && body.some((item) => item.id === 'source-chain-id');
+        const localHealthBatch = url.hostname === 'observer.test' && body.some((item) => item.id === 'local-chain-id');
+        if (sourceHealthBatch) {
+          const attempt = sourceHealthBatchCount++;
+          const status = options.sourceHealthHttpStatuses?.[attempt];
+          if (status !== undefined && status !== null) return jsonResponse(status, { error: 'RAW_SECRET_SENTINEL' });
+          if (attempt === 0 && options.sourceHealthMalformedBody !== undefined) {
+            return new Response(options.sourceHealthMalformedBody, { status: 200, headers: { 'content-type': 'application/json' } });
+          }
+          if (attempt === 0 && options.sourceHealthResponseVariant) {
+            const responses = body.map((item) => ({ jsonrpc: '2.0', id: item.id, result: rpcResult(url, item, options) }));
+            if (options.sourceHealthResponseVariant === 'batch_shape_invalid') return jsonResponse(200, responses.slice(0, 1));
+            const first = responses[0]!;
+            if (options.sourceHealthResponseVariant === 'rpc_error') {
+              delete first.result;
+              Object.assign(first, { error: { code: -32000, message: 'RAW_SECRET_SENTINEL' } });
+            } else if (options.sourceHealthResponseVariant === 'correlation_invalid') first.id = 'unexpected-id';
+            else if (options.sourceHealthResponseVariant === 'item_shape_invalid') first.jsonrpc = '1.0';
+            else if (options.sourceHealthResponseVariant === 'result_missing') delete first.result;
+            return jsonResponse(200, responses);
+          }
+        }
+        if (localHealthBatch) {
+          const attempt = localHealthBatchCount++;
+          const status = options.localHealthHttpStatuses?.[attempt];
+          if (status !== undefined && status !== null) return jsonResponse(status, { error: 'RAW_SECRET_SENTINEL' });
+        }
+        return jsonResponse(200, body.map((item) => {
+          const result = rpcResult(url, item, options);
+          if (options.sourceRpcPinMismatch && url.hostname === 'source.test' && item.id === 'source-pinned-block' &&
+              result && typeof result === 'object') return { jsonrpc: '2.0', id: item.id, result: { ...result, hash: `0x${'0'.repeat(64)}` } };
+          return { jsonrpc: '2.0', id: item.id, result };
+        }));
       }
       // The payer is stored on the fixture status created by the PUT; use it to bind the transfer proof.
       const req = { ...body };
@@ -351,6 +391,8 @@ function makeFetch(intent: TaskPreparationIntentPins, options: { losePutReply?: 
     get putCount() { return putCount; },
     get putBody() { return putBody; },
     get reconcilePostCount() { return reconcilePostCount; },
+    get sourceHealthBatchCount() { return sourceHealthBatchCount; },
+    get localHealthBatchCount() { return localHealthBatchCount; },
     calls,
   };
 }
@@ -565,18 +607,176 @@ test('prepares from a secret-free public projection and same-block baseline', as
 test('a case-pinned payment recipient must match the selected environment before preparation PUT', async () => {
   const { intent, release } = makeRelease('S2');
   const evidence: SafeTaskPreparationEvidence[] = [];
+  const diagnostics: BefPreparationDiagnostic[] = [];
   const wrongEnvironment = makeFetch(intent, { facilitatorAddress: `0x${'8'.repeat(40)}` });
-  const adapter = new BefTaskPreparationAdapter(testDependencies(release, wrongEnvironment.fetch, evidence));
-  assert.deepEqual(await adapter.prepare({ intent, dispatchId: 'dispatch-wrong-payee-environment' }),
+  const dependencies = testDependencies(release, wrongEnvironment.fetch, evidence);
+  dependencies.preparationDiagnostic = async (value) => {
+    diagnostics.push(value);
+    throw new Error('diagnostic sink failure must not leak this message');
+  };
+  const adapter = new BefTaskPreparationAdapter(dependencies);
+  const refused = await adapter.prepare({ intent, dispatchId: 'dispatch-wrong-payee-environment' });
+  assert.deepEqual(refused,
     { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
   assert.equal(wrongEnvironment.putCount, 0);
   assert.equal(evidence.length, 0);
+  assert.deepEqual(diagnostics, [{
+    preparationId,
+    environmentId,
+    phase: 'facilitator_pin',
+    reasonCode: 'pin_mismatch',
+  }]);
+  assert.deepEqual(Object.keys(diagnostics[0]!).sort(), ['environmentId', 'phase', 'preparationId', 'reasonCode']);
+  assert.equal(JSON.stringify(diagnostics[0]).includes('diagnostic sink failure'), false);
 
   const matchingEnvironment = makeFetch(intent, { facilitatorAddress: donorAddress });
   const matchingAdapter = new BefTaskPreparationAdapter(testDependencies(release, matchingEnvironment.fetch, []));
   const prepared = await matchingAdapter.prepare({ intent, dispatchId: 'dispatch-matching-payee-environment' });
   assert.equal(prepared.status, 'prepared');
   assert.equal(matchingEnvironment.putCount, 1);
+});
+
+test('a transient pre-PUT source RPC HTTP 502 retries once, then prepares with one PUT and no stale diagnostic', async () => {
+  const { intent, release } = makeRelease();
+  const evidence: SafeTaskPreparationEvidence[] = [];
+  const diagnostics: BefPreparationDiagnostic[] = [];
+  const mock = makeFetch(intent, { sourceHealthHttpStatuses: [502] });
+  const dependencies = testDependencies(release, mock.fetch, evidence);
+  dependencies.preparationDiagnostic = (value) => { diagnostics.push(value); };
+  const adapter = new BefTaskPreparationAdapter(dependencies);
+
+  const outcome = await adapter.prepare({ intent, dispatchId: 'dispatch-source-health-transient' });
+
+  assert.equal(outcome.status, 'prepared');
+  assert.equal(mock.sourceHealthBatchCount, 2);
+  assert.equal(mock.putCount, 1);
+  assert.deepEqual(diagnostics, [], 'the recovered first-attempt failure is not persisted as a refusal');
+});
+
+test('two pre-PUT source RPC HTTP 502 responses remain unknown, emit only a static class, and perform zero PUTs', async () => {
+  const { intent, release } = makeRelease();
+  const diagnostics: BefPreparationDiagnostic[] = [];
+  const mock = makeFetch(intent, { sourceHealthHttpStatuses: [502, 502] });
+  const dependencies = testDependencies(release, mock.fetch, []);
+  dependencies.preparationDiagnostic = (value) => { diagnostics.push(value); };
+  const adapter = new BefTaskPreparationAdapter(dependencies);
+
+  const outcome = await adapter.prepare({ intent, dispatchId: 'dispatch-source-health-exhausted' });
+
+  assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
+  assert.equal(mock.sourceHealthBatchCount, 2);
+  assert.equal(mock.putCount, 0);
+  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'http_502' }]);
+  assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false);
+});
+
+test('a non-retryable source RPC HTTP 500 is classified and stops before PUT', async () => {
+  const { intent, release } = makeRelease();
+  const diagnostics: BefPreparationDiagnostic[] = [];
+  const mock = makeFetch(intent, { sourceHealthHttpStatuses: [500, 200] });
+  const dependencies = testDependencies(release, mock.fetch, []);
+  dependencies.preparationDiagnostic = (value) => { diagnostics.push(value); };
+  const adapter = new BefTaskPreparationAdapter(dependencies);
+
+  const outcome = await adapter.prepare({ intent, dispatchId: 'dispatch-source-health-non-retryable' });
+
+  assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
+  assert.equal(mock.sourceHealthBatchCount, 1, 'only 502/503/504 may retry');
+  assert.equal(mock.putCount, 0);
+  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'http_5xx' }]);
+});
+
+test('a valid pre-PUT source RPC response with a wrong pinned block is not retried', async () => {
+  const { intent, release } = makeRelease();
+  const diagnostics: BefPreparationDiagnostic[] = [];
+  const mock = makeFetch(intent, { sourceRpcPinMismatch: true });
+  const dependencies = testDependencies(release, mock.fetch, []);
+  dependencies.preparationDiagnostic = (value) => { diagnostics.push(value); };
+  const adapter = new BefTaskPreparationAdapter(dependencies);
+
+  const outcome = await adapter.prepare({ intent, dispatchId: 'dispatch-source-health-wrong-pin' });
+
+  assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
+  assert.equal(mock.sourceHealthBatchCount, 1);
+  assert.equal(mock.putCount, 0);
+  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_pin', reasonCode: 'pin_mismatch' }]);
+});
+
+test('malformed pre-PUT RPC response diagnostics omit the raw body and do not retry HTTP 200', async () => {
+  const { intent, release } = makeRelease();
+  const diagnostics: BefPreparationDiagnostic[] = [];
+  const mock = makeFetch(intent, { sourceHealthMalformedBody: 'RAW_SECRET_SENTINEL { malformed' });
+  const dependencies = testDependencies(release, mock.fetch, []);
+  dependencies.preparationDiagnostic = (value) => { diagnostics.push(value); };
+  const adapter = new BefTaskPreparationAdapter(dependencies);
+
+  const outcome = await adapter.prepare({ intent, dispatchId: 'dispatch-source-health-malformed' });
+
+  assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
+  assert.equal(mock.sourceHealthBatchCount, 1);
+  assert.equal(mock.putCount, 0);
+  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'invalid_json' }]);
+  assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false);
+});
+
+test('HTTP 200 JSON-RPC, item-shape, batch-shape, and correlation failures use static diagnostics without retrying', async () => {
+  const cases = [
+    { variant: 'rpc_error' as const, reasonCode: 'rpc_error' as const },
+    { variant: 'correlation_invalid' as const, reasonCode: 'correlation_invalid' as const },
+    { variant: 'item_shape_invalid' as const, reasonCode: 'item_shape_invalid' as const },
+    { variant: 'result_missing' as const, reasonCode: 'result_missing' as const },
+    { variant: 'batch_shape_invalid' as const, reasonCode: 'batch_shape_invalid' as const },
+  ];
+  for (const { variant, reasonCode } of cases) {
+    const { intent, release } = makeRelease();
+    const diagnostics: BefPreparationDiagnostic[] = [];
+    const mock = makeFetch(intent, { sourceHealthResponseVariant: variant });
+    const dependencies = testDependencies(release, mock.fetch, []);
+    dependencies.preparationDiagnostic = (value) => { diagnostics.push(value); };
+    const adapter = new BefTaskPreparationAdapter(dependencies);
+
+    const outcome = await adapter.prepare({ intent, dispatchId: `dispatch-source-rpc-${variant}` });
+
+    assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' }, variant);
+    assert.equal(mock.sourceHealthBatchCount, 1, `${variant} must not trigger a retry`);
+    assert.equal(mock.putCount, 0, `${variant} must remain before PUT`);
+    assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode }], variant);
+    assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false, variant);
+  }
+});
+
+test('a transient pre-PUT local RPC HTTP 503 retries once before the one preparation PUT', async () => {
+  const { intent, release } = makeRelease();
+  const diagnostics: BefPreparationDiagnostic[] = [];
+  const mock = makeFetch(intent, { localHealthHttpStatuses: [503] });
+  const dependencies = testDependencies(release, mock.fetch, []);
+  dependencies.preparationDiagnostic = (value) => { diagnostics.push(value); };
+  const adapter = new BefTaskPreparationAdapter(dependencies);
+
+  const outcome = await adapter.prepare({ intent, dispatchId: 'dispatch-local-health-transient' });
+
+  assert.equal(outcome.status, 'prepared');
+  assert.equal(mock.sourceHealthBatchCount, 1);
+  assert.equal(mock.localHealthBatchCount, 2);
+  assert.equal(mock.putCount, 1);
+  assert.deepEqual(diagnostics, []);
+});
+
+test('cached preparation reconciliation does not retry a transient RPC failure after the original PUT', async () => {
+  const { intent, release } = makeRelease();
+  const mock = makeFetch(intent, { sourceHealthHttpStatuses: [null, 502] });
+  const adapter = new BefTaskPreparationAdapter(testDependencies(release, mock.fetch, []));
+
+  const first = await adapter.prepare({ intent, dispatchId: 'dispatch-cached-reconcile-first' });
+  assert.equal(first.status, 'prepared');
+  assert.equal(mock.putCount, 1);
+  assert.equal(mock.sourceHealthBatchCount, 1);
+
+  const second = await adapter.prepare({ intent, dispatchId: 'dispatch-cached-reconcile-second' });
+
+  assert.deepEqual(second, { status: 'unknown', reasonCode: 'preparation_identity_mismatch', generationId });
+  assert.equal(mock.sourceHealthBatchCount, 2, 'the cached reconcile health batch is one-shot');
+  assert.equal(mock.putCount, 1, 'reconciliation must not issue another PUT');
 });
 
 test('rejects non-ABI quantity-shaped eth_call results instead of accepting them as words', async () => {

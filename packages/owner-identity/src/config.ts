@@ -1,4 +1,8 @@
 import { isIP } from "node:net";
+import { readFileSync } from "node:fs";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { betaMcpClientRegistry, parseBetaDeploymentManifest, type BetaDeploymentManifest,
+  type BetaMcpClientRegistration } from "./beta-profile.js";
 
 export type RegistrationMode = "closed" | "open";
 export type GoogleMode = "google" | "provider-fixture" | "disabled";
@@ -20,7 +24,8 @@ export interface OwnerIdentityConfig {
   manualCredentialTtlSeconds: number;
   mcpClientId: string;
   mcpClientRedirectUri: string;
-  mcpTransportProfile?: "strict-2026-07-28" | "codex-local-manual-2025-06-18";
+  mcpClientRegistry?: BetaMcpClientRegistration[];
+  mcpTransportProfile?: "strict-2026-07-28" | "codex-local-manual-2025-06-18" | "beta-remote-v1";
   agentCredentialRateLimitMax: number;
   agentPreflightRateLimitMax: number;
   authRateLimitMax: number;
@@ -30,14 +35,39 @@ export interface OwnerIdentityConfig {
   nonceTtlSeconds: 900;
   nodeEnv: string;
   localBefTaskCoordinatorEnabled: boolean;
+  localReportAcceptanceEnabled: boolean;
   localBefTaskCoordinatorConfigPath?: string;
+  localReportCaptureRoot?: string;
   localBefTaskCoordinatorTickMs: number;
   localBefTaskCoordinatorBatchSize: number;
+  betaManifest?: BetaDeploymentManifest;
+  betaBefTaskCoordinatorConfigPath?: string;
+  betaReportClosureStateFile?: string;
+  privateDataDir?: string;
+  codeVerifierSecret?: string;
+}
+
+export function findMcpClient(config: OwnerIdentityConfig, clientId: string) {
+  if (config.mcpClientRegistry) return config.mcpClientRegistry.find((client) => client.clientId === clientId);
+  if (config.betaManifest || clientId !== config.mcpClientId) return undefined;
+  return { clientId, redirectUris: [config.mcpClientRedirectUri], clientName: "Local MCP Acceptance Client" };
 }
 
 function optional(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const value = env[key]?.trim();
   return value ? value : undefined;
+}
+
+export function isPathOutsideDirectory(directory: string, candidate: string | undefined): boolean {
+  if (!candidate || !isAbsolute(candidate)) return false;
+  const rel = relative(resolve(directory), resolve(candidate));
+  return rel !== "" && (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel));
+}
+
+export function isPathWithinDirectory(directory: string, candidate: string | undefined): boolean {
+  if (!candidate || !isAbsolute(candidate)) return false;
+  const rel = relative(resolve(directory), resolve(candidate));
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
 function integer(env: NodeJS.ProcessEnv, key: string, fallback: number, min: number, max: number): number {
@@ -90,10 +120,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
   const authSecret = optional(env, "OID_AUTH_SECRET");
   if (!databaseUrl) throw new Error("OID_DATABASE_URL is required");
   if (!authSecret || authSecret.length < 32) throw new Error("OID_AUTH_SECRET must contain at least 32 characters");
+  const nodeEnv = env.NODE_ENV?.toLowerCase() ?? "development";
+  const localReportAcceptanceEnabled = booleanFlag(env, "OID_LOCAL_REPORT_ACCEPTANCE_ENABLED", false);
+  if (localReportAcceptanceEnabled && nodeEnv !== "development" && nodeEnv !== "test") {
+    throw new Error("OID_LOCAL_REPORT_ACCEPTANCE_ENABLED is allowed only in development or test");
+  }
+  const betaManifestPath = optional(env, "OID_BETA_MANIFEST_FILE");
+  let betaManifest: BetaDeploymentManifest | undefined;
+  if (betaManifestPath) {
+    if (!isAbsolute(betaManifestPath)) throw new Error("OID_BETA_MANIFEST_FILE must be an absolute path");
+    try {
+      betaManifest = parseBetaDeploymentManifest(JSON.parse(readFileSync(betaManifestPath, "utf8")) as unknown);
+    } catch {
+      throw new Error("OID_BETA_MANIFEST_FILE must reference a readable valid beta manifest");
+    }
+  }
+  const rawPrivateDataDir = optional(env, "OID_PRIVATE_DATA_DIR");
+  if (rawPrivateDataDir && !isAbsolute(rawPrivateDataDir)) throw new Error("OID_PRIVATE_DATA_DIR must be an absolute path");
+  if (nodeEnv === "production" && !rawPrivateDataDir) throw new Error("OID_PRIVATE_DATA_DIR is required in production");
+  const privateDataDir = resolve(rawPrivateDataDir ?? ".local/owner-identity/private-data");
+  const codeVerifierSecret = optional(env, "OID_BONUS_CODE_VERIFIER_SECRET");
+  if (codeVerifierSecret && Buffer.byteLength(codeVerifierSecret, "utf8") < 32) {
+    throw new Error("OID_BONUS_CODE_VERIFIER_SECRET must contain at least 32 bytes");
+  }
 
   const configuredMcpClientId = optional(env, "OID_MCP_CLIENT_ID");
   const configuredMcpClientRedirectUri = optional(env, "OID_MCP_CLIENT_REDIRECT_URI");
-  if (env.NODE_ENV === "production" && (!configuredMcpClientId || !configuredMcpClientRedirectUri)) {
+  if (nodeEnv === "production" && !betaManifest && (!configuredMcpClientId || !configuredMcpClientRedirectUri)) {
     throw new Error("OID_MCP_CLIENT_ID and OID_MCP_CLIENT_REDIRECT_URI must be explicitly configured in production");
   }
   const mcpClientId = configuredMcpClientId ?? "oid-local-mcp-client";
@@ -120,7 +173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     throw new Error("OID_GOOGLE_CLIENT_ID and OID_GOOGLE_CLIENT_SECRET must be configured together");
   }
   const googleFixtureOrigin = optional(env, "OID_GOOGLE_FIXTURE_ORIGIN");
-  if (googleFixtureOrigin && env.NODE_ENV === "production") {
+  if (googleFixtureOrigin && nodeEnv === "production") {
     throw new Error("OID_GOOGLE_FIXTURE_ORIGIN is forbidden in production");
   }
   if (googleFixtureOrigin) {
@@ -140,7 +193,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
   }
   const localBefTaskCoordinatorEnabled = booleanFlag(env, "OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED", false);
   const localBefTaskCoordinatorConfigPath = optional(env, "OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG");
-  const nodeEnv = env.NODE_ENV?.toLowerCase() ?? "development";
   if (localBefTaskCoordinatorEnabled && nodeEnv === "production") {
     throw new Error("OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED is forbidden in production");
   }
@@ -155,8 +207,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     throw new Error("OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG is required when the local BEF task coordinator is enabled");
   }
 
-  const mcpTransportProfile = optional(env, "OID_MCP_TRANSPORT_PROFILE") ?? "strict-2026-07-28";
-  if (mcpTransportProfile !== "strict-2026-07-28" && mcpTransportProfile !== "codex-local-manual-2025-06-18") {
+  const betaBefTaskCoordinatorConfigPath = optional(env, "OID_BETA_BEF_TASK_COORDINATOR_CONFIG");
+  const betaReportClosureStateFile = optional(env, "OID_BETA_REPORT_CLOSURE_STATE_FILE");
+  const localReportCaptureRootRaw = optional(env, "OID_LOCAL_REPORT_CAPTURE_ROOT");
+  let localReportCaptureRoot: string | undefined;
+  if (localReportAcceptanceEnabled) {
+    const publicUrl = new URL(origin(env));
+    const captureRootValid = Boolean(localReportCaptureRootRaw && isAbsolute(localReportCaptureRootRaw) &&
+      /^oid_acceptance_[0-9a-f]{32}$/i.test(basename(localReportCaptureRootRaw)));
+    if (captureRootValid) localReportCaptureRoot = resolve(localReportCaptureRootRaw!);
+    if (betaManifest || !rawPrivateDataDir ||
+        !betaReportClosureStateFile || !isAbsolute(betaReportClosureStateFile) ||
+        !isPathOutsideDirectory(privateDataDir, betaReportClosureStateFile) || !isLoopbackHost(apiHost) ||
+        !isLoopbackHost(publicUrl.hostname) || !captureRootValid || !localReportCaptureRoot ||
+        !isPathWithinDirectory(localReportCaptureRoot, privateDataDir) || resolve(privateDataDir) === localReportCaptureRoot ||
+        !isPathWithinDirectory(localReportCaptureRoot, betaReportClosureStateFile) ||
+        resolve(betaReportClosureStateFile) === localReportCaptureRoot) {
+      throw new Error("Local report acceptance requires a named per-capture loopback runtime with private data and external closure state beneath its capture root");
+    }
+  }
+  const configuredMcpTransportProfile = optional(env, "OID_MCP_TRANSPORT_PROFILE");
+  const mcpTransportProfile = configuredMcpTransportProfile ?? (betaManifest ? "beta-remote-v1" : "strict-2026-07-28");
+  if (mcpTransportProfile !== "strict-2026-07-28" && mcpTransportProfile !== "codex-local-manual-2025-06-18" &&
+      mcpTransportProfile !== "beta-remote-v1") {
     throw new Error("OID_MCP_TRANSPORT_PROFILE is not a supported pinned profile");
   }
   if (mcpTransportProfile === "codex-local-manual-2025-06-18") {
@@ -166,12 +239,41 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
       throw new Error("The Codex MCP compatibility profile requires the local BEF coordinator and loopback HTTP origin");
     }
   }
+  if (mcpTransportProfile === "beta-remote-v1" && !betaManifest) {
+    throw new Error("The beta remote MCP profile requires OID_BETA_MANIFEST_FILE");
+  }
+  if (betaManifest) {
+    const apiPort = integer(env, "OID_API_PORT", 8784, 1, 65535);
+    const betaCoordinatorConfigPath = betaBefTaskCoordinatorConfigPath && isAbsolute(betaBefTaskCoordinatorConfigPath)
+      ? resolve(betaBefTaskCoordinatorConfigPath) : "";
+    const betaCoordinatorConfigRelative = betaCoordinatorConfigPath ? relative(privateDataDir, betaCoordinatorConfigPath) : "";
+    const betaCoordinatorConfigInsidePrivateData = betaCoordinatorConfigRelative !== "" && betaCoordinatorConfigRelative !== ".." &&
+      !betaCoordinatorConfigRelative.startsWith(`..${sep}`) && !isAbsolute(betaCoordinatorConfigRelative);
+    const closureStateOutsidePrivateData = isPathOutsideDirectory(privateDataDir, betaReportClosureStateFile);
+    if (nodeEnv !== "production" || mcpTransportProfile !== "beta-remote-v1" || localBefTaskCoordinatorEnabled ||
+        configuredMcpClientId || configuredMcpClientRedirectUri || !betaCoordinatorConfigInsidePrivateData ||
+        !closureStateOutsidePrivateData ||
+        !rawPrivateDataDir || !codeVerifierSecret || !googleClientId || !googleClientSecret || googleFixtureOrigin ||
+        origin(env) !== betaManifest.publicOrigin || apiHost !== betaManifest.apiBindHost || apiPort !== betaManifest.apiPort ||
+        googleClientId !== betaManifest.google.clientId || adminProvider !== "google" || adminSubject !== betaManifest.google.adminSubject ||
+        registrationMode !== (betaManifest.state === "cohort_release" ? "open" : "closed") ||
+        privateDataDir !== resolve(betaManifest.storage.privateDataDir)) {
+      throw new Error("The beta runtime environment does not match its pinned manifest and secret references");
+    }
+  }
+  const mcpClientRegistry = betaManifest ? betaMcpClientRegistry(betaManifest) : [{
+    clientId: mcpClientId,
+    redirectUris: [mcpClientRedirectUri],
+    clientName: "Local MCP Acceptance Client"
+  }];
+  const firstRegisteredClient = mcpClientRegistry[0];
+  const apiPort = integer(env, "OID_API_PORT", 8784, 1, 65535);
   return {
     databaseUrl,
     authSecret,
     publicOrigin: origin(env),
     apiHost,
-    apiPort: integer(env, "OID_API_PORT", 8784, 1, 65535),
+    apiPort,
     ...(googleClientId ? { googleClientId } : {}),
     ...(googleClientSecret ? { googleClientSecret } : {}),
     ...(googleFixtureOrigin ? { googleFixtureOrigin } : {}),
@@ -181,8 +283,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     sessionTtlSeconds: integer(env, "OID_SESSION_TTL_SECONDS", 604800, 300, 31536000),
     invitationTtlSeconds: integer(env, "OID_INVITATION_TTL_SECONDS", 604800, 60, 2592000),
     manualCredentialTtlSeconds: integer(env, "OID_MANUAL_CREDENTIAL_TTL_SECONDS", 86400, 300, 2592000),
-    mcpClientId,
-    mcpClientRedirectUri,
+    mcpClientId: firstRegisteredClient?.clientId ?? (betaManifest ? "oid-beta-manual-only" : mcpClientId),
+    mcpClientRedirectUri: firstRegisteredClient?.redirectUris[0] ?? mcpClientRedirectUri,
+    mcpClientRegistry,
     mcpTransportProfile,
     agentCredentialRateLimitMax: integer(env, "OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX", 30, 1, 1000),
     agentPreflightRateLimitMax: integer(env, "OID_AGENT_PREFLIGHT_RATE_LIMIT_MAX", 60, 1, 1000),
@@ -191,11 +294,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     rateLimitWindowSeconds: integer(env, "OID_RATE_LIMIT_WINDOW_SECONDS", 60, 1, 3600),
     siweChainId: 8453,
     nonceTtlSeconds: 900,
-    nodeEnv: env.NODE_ENV ?? "development",
+    nodeEnv,
     localBefTaskCoordinatorEnabled,
+    localReportAcceptanceEnabled,
     ...(localBefTaskCoordinatorConfigPath ? { localBefTaskCoordinatorConfigPath } : {}),
+    ...(localReportCaptureRoot ? { localReportCaptureRoot } : {}),
     localBefTaskCoordinatorTickMs: integer(env, "OID_LOCAL_BEF_TASK_COORDINATOR_TICK_MS", 1000, 500, 10000),
-    localBefTaskCoordinatorBatchSize: integer(env, "OID_LOCAL_BEF_TASK_COORDINATOR_BATCH_SIZE", 10, 1, 20)
+    localBefTaskCoordinatorBatchSize: integer(env, "OID_LOCAL_BEF_TASK_COORDINATOR_BATCH_SIZE", 10, 1, 20),
+    ...(betaManifest && betaBefTaskCoordinatorConfigPath ? { betaManifest, betaBefTaskCoordinatorConfigPath } : {}),
+    ...((betaManifest || localReportAcceptanceEnabled) && betaReportClosureStateFile
+      ? { betaReportClosureStateFile: resolve(betaReportClosureStateFile) } : {}),
+    privateDataDir,
+    ...(codeVerifierSecret ? { codeVerifierSecret } : {})
   };
 }
 

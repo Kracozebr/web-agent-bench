@@ -41,11 +41,18 @@ const APPROVE_SELECTOR = '0x095ea7b3';
 const BALANCE_OF_SELECTOR = '0x70a08231';
 const ALLOWANCE_SELECTOR = '0xdd62ed3e';
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
+const HEALTH_RPC_RETRY_BACKOFF_MS = 250;
 const PREPARATION_BOUNDARY = 'actual_tool_http_x402_local_evm_application_store' as const;
 
 type JsonRecord = Record<string, unknown>;
 type RpcRequest = { jsonrpc: '2.0'; id: string; method: string; params: unknown[] };
 type RpcResponse = { jsonrpc?: unknown; id?: unknown; result?: unknown; error?: unknown };
+type HttpJsonResponse = { status: number; body: unknown; bodyFailure?: 'too_large' | 'invalid_json' };
+type RpcBatchOptions = {
+  /** Only pre-PUT source/local identity batches may retry transient upstream statuses. */
+  preflightHealth?: true;
+  onFailure?: (reasonCode: BefPreparationDiagnosticReasonCode) => Promise<void> | void;
+};
 type EvidenceReference = { path: string; sha256: string; boundary: typeof PREPARATION_BOUNDARY };
 
 export type SafeTaskPreparationEvidence = {
@@ -61,6 +68,57 @@ export interface TaskPreparationEvidenceSink {
   /** Persist only the already allow-listed, secret-free preparation projection. */
   write(value: SafeTaskPreparationEvidence): Promise<EvidenceReference>;
 }
+
+export type BefPreparationDiagnosticPhase =
+  | 'release_pin'
+  | 'case_pin'
+  | 's4_fixture_spec'
+  | 'api_origin'
+  | 'api_health'
+  | 'facilitator_pin'
+  | 'anvil_pin'
+  | 'source_health'
+  | 'source_rpc_response'
+  | 'source_rpc_pin'
+  | 'local_rpc_response'
+  | 'local_rpc_pin'
+  | 'existing_status';
+
+export type BefPreparationDiagnosticReasonCode =
+  | 'lookup_failed'
+  | 'pin_mismatch'
+  | 'fixture_spec_invalid'
+  | 'invalid_configuration'
+  | 'response_unavailable'
+  | 'response_invalid'
+  | 'http_502'
+  | 'http_503'
+  | 'http_504'
+  | 'http_4xx'
+  | 'http_5xx'
+  | 'http_status_other'
+  | 'response_too_large'
+  | 'invalid_json'
+  | 'batch_shape_invalid'
+  | 'rpc_error'
+  | 'item_shape_invalid'
+  | 'correlation_invalid'
+  | 'result_missing'
+  | 'request_failed'
+  | 'already_present';
+
+/** Bounded internal diagnostics: never add request values or raw error text here. */
+export type BefPreparationDiagnostic = {
+  preparationId: string;
+  environmentId: string;
+  phase: BefPreparationDiagnosticPhase;
+  reasonCode: BefPreparationDiagnosticReasonCode;
+};
+
+type PreparationDiagnosticReporter = (
+  phase: BefPreparationDiagnosticPhase,
+  reasonCode: BefPreparationDiagnosticReasonCode,
+) => Promise<void>;
 
 export type BefTaskPreparationAdapterDependencies = {
   /** Trusted service URLs keyed by the release-selected environment id. */
@@ -80,6 +138,8 @@ export type BefTaskPreparationAdapterDependencies = {
   }>>;
   releaseSource: TaskReleaseQuerySource;
   evidenceSink: TaskPreparationEvidenceSink;
+  /** Optional internal sink for one allow-listed refusal diagnostic per prepare attempt. */
+  preparationDiagnostic?: (value: BefPreparationDiagnostic) => Promise<void> | void;
   fetch?: typeof fetch;
   requestTimeoutMs?: number;
 };
@@ -504,21 +564,56 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
     return true;
   }
 
-  private async loadPinnedCase(intent: TaskPreparationIntentPins): Promise<PinnedCase | null> {
-    const release = await this.deps.releaseSource.getValidatedReleaseRecord(intent.releaseIdentity, intent.manifestHash);
-    if (!release || release.releaseIdentity !== intent.releaseIdentity || release.manifestHash.toLowerCase() !== intent.manifestHash.toLowerCase() ||
-        release.manifest.executionIdentityHash.toLowerCase() !== intent.executionIdentityHash.toLowerCase() ||
-        release.manifest.executionIdentity.environmentManifestSha256.toLowerCase() !== intent.environmentManifestSha256.toLowerCase() ||
-        release.manifest.executionIdentity.x402ServiceSha256.toLowerCase() !== intent.applicationSourceHash.toLowerCase()) return null;
-    const cases = [...release.manifest.cases.training, ...release.manifest.cases.ranked].filter((item) =>
-      item.caseId === intent.caseId && item.caseHash.toLowerCase() === intent.caseHash.toLowerCase() &&
-      item.taskId === intent.taskId && item.executionIdentityHash.toLowerCase() === intent.executionIdentityHash.toLowerCase() &&
-      item.initialState.stateSha256.toLowerCase() === intent.initialStateSha256.toLowerCase());
-    return cases.length === 1 ? { release, taskCase: cases[0]! } : null;
+  private async loadPinnedCase(intent: TaskPreparationIntentPins, diagnose?: PreparationDiagnosticReporter): Promise<PinnedCase | null> {
+    let release: ValidatedTaskReleaseRecord | null;
+    try {
+      release = await this.deps.releaseSource.getValidatedReleaseRecord(intent.releaseIdentity, intent.manifestHash);
+    } catch (error) {
+      await diagnose?.('release_pin', 'lookup_failed');
+      throw error;
+    }
+    let phase: 'release_pin' | 'case_pin' = 'release_pin';
+    try {
+      if (!release || release.releaseIdentity !== intent.releaseIdentity || release.manifestHash.toLowerCase() !== intent.manifestHash.toLowerCase() ||
+          release.manifest.executionIdentityHash.toLowerCase() !== intent.executionIdentityHash.toLowerCase() ||
+          release.manifest.executionIdentity.environmentManifestSha256.toLowerCase() !== intent.environmentManifestSha256.toLowerCase() ||
+          release.manifest.executionIdentity.x402ServiceSha256.toLowerCase() !== intent.applicationSourceHash.toLowerCase()) {
+        await diagnose?.('release_pin', 'pin_mismatch');
+        return null;
+      }
+      phase = 'case_pin';
+      const cases = [...release.manifest.cases.training, ...release.manifest.cases.ranked].filter((item) =>
+        item.caseId === intent.caseId && item.caseHash.toLowerCase() === intent.caseHash.toLowerCase() &&
+        item.taskId === intent.taskId && item.executionIdentityHash.toLowerCase() === intent.executionIdentityHash.toLowerCase() &&
+        item.initialState.stateSha256.toLowerCase() === intent.initialStateSha256.toLowerCase());
+      if (cases.length !== 1) {
+        await diagnose?.('case_pin', 'pin_mismatch');
+        return null;
+      }
+      return { release, taskCase: cases[0]! };
+    } catch (error) {
+      await diagnose?.(phase, 'request_failed');
+      throw error;
+    }
   }
 
   private async prepareOnce(intent: TaskPreparationIntentPins): Promise<TaskPreparationAdapterOutcome> {
     if (!validIntent(intent)) return this.unknown('preparation_identity_mismatch');
+    let diagnosticEmitted = false;
+    const diagnose: PreparationDiagnosticReporter = async (phase, reasonCode) => {
+      if (diagnosticEmitted) return;
+      diagnosticEmitted = true;
+      try {
+        await this.deps.preparationDiagnostic?.({
+          preparationId: intent.preparationId,
+          environmentId: intent.environmentId,
+          phase,
+          reasonCode,
+        });
+      } catch {
+        // Diagnostics are best effort and must not change preparation's fail-closed result.
+      }
+    };
     if (this.fencing.has(intent.preparationId.toLowerCase())) return this.unknown('restart_reconciliation_required');
     const publicPinsSha256 = taskPreparationPublicPinsSha256(intent);
     const cached = this.credentials.get(intent.preparationId.toLowerCase());
@@ -536,9 +631,10 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
     }
 
     let pinned: PinnedCase | null;
-    try { pinned = await this.loadPinnedCase(intent); } catch { return this.unknown('adapter_call_failed'); }
+    try { pinned = await this.loadPinnedCase(intent, diagnose); } catch { return this.unknown('adapter_call_failed'); }
     if (!pinned) return this.unknown('preparation_identity_mismatch');
     if (pinned.taskCase.taskId === 'S4' && !positiveS4FixtureSpec(pinned.release, pinned.taskCase)) {
+      await diagnose('s4_fixture_spec', 'fixture_spec_invalid');
       return this.unknown('preparation_identity_mismatch');
     }
 
@@ -547,14 +643,27 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
     try {
       apiBase = this.apiBase(intent.environmentId);
       publicPins = taskPreparationPublicPinsSha256(intent);
-    } catch { return this.unknown('adapter_call_failed'); }
+    } catch {
+      await diagnose('api_origin', 'invalid_configuration');
+      return this.unknown('adapter_call_failed');
+    }
 
     try {
-      const healthy = await this.validateEnvironmentHealth(intent, pinned.release, apiBase, pinned.taskCase);
+      const healthy = await this.validateEnvironmentHealth(intent, pinned.release, apiBase, pinned.taskCase, diagnose, true);
       if (!healthy) return this.unknown('preparation_identity_mismatch');
 
-      const existing = await this.readPublicStatus(intent, apiBase);
+      let existing: Awaited<ReturnType<typeof this.readPublicStatus>>;
+      try {
+        existing = await this.readPublicStatus(intent, apiBase);
+      } catch {
+        await diagnose('existing_status', 'request_failed');
+        return this.unknown('adapter_call_failed');
+      }
+      if (existing.kind === 'invalid') await diagnose('existing_status', 'response_invalid');
       if (existing.kind !== 'missing') {
+        if (existing.kind === 'status') {
+          await diagnose('existing_status', existing.status.request?.publicPinsSha256 === publicPins ? 'already_present' : 'pin_mismatch');
+        }
         return this.unknown(existing.kind === 'status' && existing.status.request?.publicPinsSha256 === publicPins
           ? 'restart_reconciliation_required' : 'preparation_identity_mismatch');
       }
@@ -1244,80 +1353,130 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
     release: ValidatedTaskReleaseRecord,
     apiBase: URL,
     taskCase: TaskCase,
+    diagnose?: PreparationDiagnosticReporter,
+    allowPreflightRetry = false,
   ): Promise<boolean> {
-    const identity = release.manifest.executionIdentity;
-    const anvilPin = this.deps.anvilManifestPinByEnvironment[intent.environmentId];
-    if (!anvilPin || !HASH.test(anvilPin.manifestSha256) ||
-        anvilPin.manifestSha256.toLowerCase() !== intent.environmentManifestSha256.toLowerCase() ||
-        !anvilPin.executionNetwork || !anvilPin.hardFork || !/^\d+\.\d+\.\d+$/.test(anvilPin.anvilVersion) ||
-        identity.sourceNetwork.toLowerCase() !== `eip155:${identity.sourceChainId}` ||
-        identity.localNetwork.toLowerCase() !== `eip155:${identity.localChainId}`) return false;
-    const healthResult = await this.httpJson(endpoint(apiBase, '/healthz'), { method: 'GET', cache: 'no-store', redirect: 'error' });
-    const health = object(healthResult.body);
-    if (healthResult.status !== 200 || !health || health.status !== 'ready' || health.boundary !== 'benchmark-environment-api' ||
-        typeof health.manifestSha256 !== 'string' || health.manifestSha256.toLowerCase() !== intent.environmentManifestSha256.toLowerCase() ||
-        typeof health.applicationSourceSha256 !== 'string' || health.applicationSourceSha256.toLowerCase() !== intent.applicationSourceHash.toLowerCase() ||
-        !Array.isArray(health.environments)) return false;
-    const environments = health.environments.map(object).filter((item): item is JsonRecord => item !== null && item.envId === intent.environmentId);
-    if (environments.length !== 1) return false;
-    // AICODE-NOTE: Equal fork baselines do not make a different environment's
-    // facilitator compatible with a case's immutable public payment tuple.
-    let requiredRecipient: string | null = null;
-    switch (taskCase.taskId) {
-      case 'M1': requiredRecipient = taskCase.objective.paymentRequirements.recipient; break;
-      case 'S2': requiredRecipient = taskCase.objective.completePaymentRequirements.recipient; break;
-      case 'S3': case 'M2': requiredRecipient = taskCase.objective.required.recipient; break;
+    let phase: BefPreparationDiagnosticPhase = 'release_pin';
+    const reject = async (at: BefPreparationDiagnosticPhase, reason: BefPreparationDiagnosticReasonCode): Promise<false> => {
+      await diagnose?.(at, reason);
+      return false;
+    };
+    try {
+      const identity = release.manifest.executionIdentity;
+      if (identity.sourceNetwork.toLowerCase() !== `eip155:${identity.sourceChainId}` ||
+          identity.localNetwork.toLowerCase() !== `eip155:${identity.localChainId}`) {
+        return await reject('release_pin', 'pin_mismatch');
+      }
+
+      phase = 'anvil_pin';
+      const anvilPin = this.deps.anvilManifestPinByEnvironment[intent.environmentId];
+      if (!anvilPin || !HASH.test(anvilPin.manifestSha256) || !anvilPin.executionNetwork || !anvilPin.hardFork ||
+          !/^\d+\.\d+\.\d+$/.test(anvilPin.anvilVersion)) {
+        return await reject('anvil_pin', 'invalid_configuration');
+      }
+      if (anvilPin.manifestSha256.toLowerCase() !== intent.environmentManifestSha256.toLowerCase()) {
+        return await reject('anvil_pin', 'pin_mismatch');
+      }
+
+      phase = 'api_health';
+      const healthResult = await this.httpJson(endpoint(apiBase, '/healthz'), { method: 'GET', cache: 'no-store', redirect: 'error' });
+      const health = object(healthResult.body);
+      if (healthResult.status !== 200 || !health || health.status !== 'ready') {
+        return await reject('api_health', 'response_unavailable');
+      }
+      if (health.boundary !== 'benchmark-environment-api' ||
+          typeof health.manifestSha256 !== 'string' || health.manifestSha256.toLowerCase() !== intent.environmentManifestSha256.toLowerCase() ||
+          typeof health.applicationSourceSha256 !== 'string' || health.applicationSourceSha256.toLowerCase() !== intent.applicationSourceHash.toLowerCase()) {
+        return await reject('api_health', 'pin_mismatch');
+      }
+      if (!Array.isArray(health.environments)) return await reject('api_health', 'response_invalid');
+      const environments = health.environments.map(object).filter((item): item is JsonRecord => item !== null && item.envId === intent.environmentId);
+      if (environments.length !== 1) return await reject('api_health', 'pin_mismatch');
+
+      // AICODE-NOTE: Equal fork baselines do not make a different environment's
+      // facilitator compatible with a case's immutable public payment tuple.
+      phase = 'facilitator_pin';
+      let requiredRecipient: string | null = null;
+      switch (taskCase.taskId) {
+        case 'M1': requiredRecipient = taskCase.objective.paymentRequirements.recipient; break;
+        case 'S2': requiredRecipient = taskCase.objective.completePaymentRequirements.recipient; break;
+        case 'S3': case 'M2': requiredRecipient = taskCase.objective.required.recipient; break;
+      }
+      if (requiredRecipient !== null) {
+        const facilitator = object(environments[0]!.facilitator);
+        if (!ADDRESS.test(requiredRecipient) || typeof facilitator?.address !== 'string' ||
+            !ADDRESS.test(facilitator.address) || facilitator.address.toLowerCase() !== requiredRecipient.toLowerCase()) {
+          return await reject('facilitator_pin', 'pin_mismatch');
+        }
+      }
+
+      phase = 'anvil_pin';
+      const rawAnvil = object(environments[0]!.anvil);
+      if (!rawAnvil || typeof rawAnvil.clientVersion !== 'string' || typeof rawAnvil.chainId !== 'string' ||
+          typeof rawAnvil.executionNetwork !== 'string' || typeof rawAnvil.hardFork !== 'string' ||
+          typeof rawAnvil.forkBlockNumber !== 'string' || typeof rawAnvil.forkBlockHash !== 'string') {
+        return await reject('anvil_pin', 'response_invalid');
+      }
+      if (!rawAnvil.clientVersion.toLowerCase().includes(`anvil/v${anvilPin.anvilVersion}`.toLowerCase()) ||
+          BigInt(rawAnvil.chainId) !== BigInt(identity.localChainId) ||
+          // CAIP-2 localNetwork and Anvil's engine executionNetwork are separate pins.
+          rawAnvil.executionNetwork.toLowerCase() !== anvilPin.executionNetwork.toLowerCase() ||
+          rawAnvil.hardFork.toLowerCase() !== anvilPin.hardFork.toLowerCase() ||
+          BigInt(rawAnvil.forkBlockNumber) !== BigInt(identity.localForkBlockNumber) ||
+          !hash32Matches(rawAnvil.forkBlockHash, identity.sourceBlockHash)) {
+        return await reject('anvil_pin', 'pin_mismatch');
+      }
+
+      phase = 'source_health';
+      const sourceBase = normalizeOrigin(this.deps.sourceRpcUrl, 'bef_task_preparation_source_rpc_unconfigured');
+      const sourceHealthResult = await this.httpJson(endpoint(sourceBase, '/healthz'), { method: 'GET', cache: 'no-store', redirect: 'error' });
+      const sourceHealth = object(sourceHealthResult.body);
+      if (sourceHealthResult.status !== 200 || !sourceHealth || sourceHealth.status !== 'ok') {
+        return await reject('source_health', 'response_unavailable');
+      }
+      if (sourceHealth.boundary !== 'source-readonly-proxy' ||
+          sourceHealth.manifestSha256 !== intent.environmentManifestSha256.toLowerCase()) {
+        return await reject('source_health', 'pin_mismatch');
+      }
+
+      phase = 'source_rpc_response';
+      const sourceBlockTag = `0x${BigInt(identity.sourceBlockNumber).toString(16)}`;
+      const sourceRpc = await this.callRpcBatch(sourceBase, [
+        { jsonrpc: '2.0', id: 'source-chain-id', method: 'eth_chainId', params: [] },
+        { jsonrpc: '2.0', id: 'source-pinned-block', method: 'eth_getBlockByNumber', params: [sourceBlockTag, false] },
+      ], { ...(allowPreflightRetry ? { preflightHealth: true } : {}),
+        onFailure: async (reasonCode) => { await diagnose?.('source_rpc_response', reasonCode); } });
+      if (!sourceRpc) return await reject('source_rpc_response', 'response_invalid');
+      phase = 'source_rpc_pin';
+      const sourceResults = new Map(sourceRpc.responses.map((item) => [item.id, item.result]));
+      const sourceBlock = object(sourceResults.get('source-pinned-block'));
+      const sourceChainId = hexQuantity(sourceResults.get('source-chain-id'));
+      if (!sourceBlock || sourceChainId !== BigInt(identity.sourceChainId) ||
+          sourceBlock.number?.toString().toLowerCase() !== sourceBlockTag || typeof sourceBlock.hash !== 'string' ||
+          !hash32Matches(sourceBlock.hash, identity.sourceBlockHash)) {
+        return await reject('source_rpc_pin', 'pin_mismatch');
+      }
+
+      phase = 'local_rpc_response';
+      const localBlockTag = `0x${BigInt(identity.localForkBlockNumber).toString(16)}`;
+      const localRpc = await this.callRpcBatch(this.observerRpc(intent.environmentId), [
+        { jsonrpc: '2.0', id: 'local-chain-id', method: 'eth_chainId', params: [] },
+        { jsonrpc: '2.0', id: 'local-pinned-block', method: 'eth_getBlockByNumber', params: [localBlockTag, false] },
+      ], { ...(allowPreflightRetry ? { preflightHealth: true } : {}),
+        onFailure: async (reasonCode) => { await diagnose?.('local_rpc_response', reasonCode); } });
+      if (!localRpc) return await reject('local_rpc_response', 'response_invalid');
+      phase = 'local_rpc_pin';
+      const localResults = new Map(localRpc.responses.map((item) => [item.id, item.result]));
+      const localBlock = object(localResults.get('local-pinned-block'));
+      const localChainId = hexQuantity(localResults.get('local-chain-id'));
+      return localBlock && localChainId === BigInt(identity.localChainId) &&
+        localBlock.number?.toString().toLowerCase() === localBlockTag && typeof localBlock.hash === 'string' &&
+        hash32Matches(localBlock.hash, identity.sourceBlockHash)
+        ? true : await reject('local_rpc_pin', 'pin_mismatch');
+    } catch (error) {
+      await diagnose?.(phase, 'request_failed');
+      throw error;
     }
-    if (requiredRecipient !== null) {
-      const facilitator = object(environments[0]!.facilitator);
-      if (!ADDRESS.test(requiredRecipient) || typeof facilitator?.address !== 'string'
-        || !ADDRESS.test(facilitator.address)
-        || facilitator.address.toLowerCase() !== requiredRecipient.toLowerCase()) return false;
-    }
-    const rawAnvil = object(environments[0]!.anvil);
-    if (!rawAnvil || typeof rawAnvil.clientVersion !== 'string' || typeof rawAnvil.chainId !== 'string' ||
-        typeof rawAnvil.executionNetwork !== 'string' || typeof rawAnvil.hardFork !== 'string' ||
-        typeof rawAnvil.forkBlockNumber !== 'string' || typeof rawAnvil.forkBlockHash !== 'string' ||
-        !rawAnvil.clientVersion.toLowerCase().includes(`anvil/v${anvilPin.anvilVersion}`.toLowerCase()) ||
-        BigInt(rawAnvil.chainId) !== BigInt(identity.localChainId) ||
-        // CAIP-2 localNetwork and Anvil's engine executionNetwork are separate pins.
-        rawAnvil.executionNetwork.toLowerCase() !== anvilPin.executionNetwork.toLowerCase() ||
-        rawAnvil.hardFork.toLowerCase() !== anvilPin.hardFork.toLowerCase() ||
-        BigInt(rawAnvil.forkBlockNumber) !== BigInt(identity.localForkBlockNumber) ||
-        !hash32Matches(rawAnvil.forkBlockHash, identity.sourceBlockHash)) return false;
-
-    const sourceBase = normalizeOrigin(this.deps.sourceRpcUrl, 'bef_task_preparation_source_rpc_unconfigured');
-    const sourceHealthResult = await this.httpJson(endpoint(sourceBase, '/healthz'), { method: 'GET', cache: 'no-store', redirect: 'error' });
-    const sourceHealth = object(sourceHealthResult.body);
-    if (sourceHealthResult.status !== 200 || !sourceHealth || sourceHealth.status !== 'ok' ||
-        sourceHealth.boundary !== 'source-readonly-proxy' || sourceHealth.manifestSha256 !== intent.environmentManifestSha256.toLowerCase()) return false;
-
-    const sourceBlockTag = `0x${BigInt(identity.sourceBlockNumber).toString(16)}`;
-    const sourceRpc = await this.callRpcBatch(sourceBase, [
-      { jsonrpc: '2.0', id: 'source-chain-id', method: 'eth_chainId', params: [] },
-      { jsonrpc: '2.0', id: 'source-pinned-block', method: 'eth_getBlockByNumber', params: [sourceBlockTag, false] },
-    ]);
-    if (!sourceRpc) return false;
-    const sourceResults = new Map(sourceRpc.responses.map((item) => [item.id, item.result]));
-    const sourceBlock = object(sourceResults.get('source-pinned-block'));
-    const sourceChainId = hexQuantity(sourceResults.get('source-chain-id'));
-    if (!sourceBlock || sourceChainId !== BigInt(identity.sourceChainId) ||
-        sourceBlock.number?.toString().toLowerCase() !== sourceBlockTag || typeof sourceBlock.hash !== 'string' ||
-        !hash32Matches(sourceBlock.hash, identity.sourceBlockHash)) return false;
-
-    const localRpc = await this.callRpcBatch(this.observerRpc(intent.environmentId), [
-      { jsonrpc: '2.0', id: 'local-chain-id', method: 'eth_chainId', params: [] },
-      { jsonrpc: '2.0', id: 'local-pinned-block', method: 'eth_getBlockByNumber',
-        params: [`0x${BigInt(identity.localForkBlockNumber).toString(16)}`, false] },
-    ]);
-    if (!localRpc) return false;
-    const localResults = new Map(localRpc.responses.map((item) => [item.id, item.result]));
-    const localBlock = object(localResults.get('local-pinned-block'));
-    const localChainId = hexQuantity(localResults.get('local-chain-id'));
-    const localBlockTag = `0x${BigInt(identity.localForkBlockNumber).toString(16)}`;
-    return Boolean(localBlock && localChainId === BigInt(identity.localChainId) &&
-      localBlock.number?.toString().toLowerCase() === localBlockTag && typeof localBlock.hash === 'string' &&
-      hash32Matches(localBlock.hash, identity.sourceBlockHash));
   }
 
   private healthProjection(intent: TaskPreparationIntentPins, release: ValidatedTaskReleaseRecord): JsonRecord {
@@ -1452,12 +1611,12 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
     });
   }
 
-  private async httpJson(url: URL, init: RequestInit): Promise<{ status: number; body: unknown }> {
+  private async httpJson(url: URL, init: RequestInit): Promise<HttpJsonResponse> {
     const response = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(this.requestTimeoutMs) });
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_JSON_BYTES) return { status: response.status, body: null };
+    if (bytes.byteLength > MAX_JSON_BYTES) return { status: response.status, body: null, bodyFailure: 'too_large' };
     try { return { status: response.status, body: JSON.parse(new TextDecoder().decode(bytes)) as unknown }; }
-    catch { return { status: response.status, body: null }; }
+    catch { return { status: response.status, body: null, bodyFailure: 'invalid_json' }; }
   }
 
   private async callRpc(url: URL, request: RpcRequest): Promise<unknown> {
@@ -1471,22 +1630,54 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
     return body.result;
   }
 
-  private async callRpcBatch(url: URL, requests: RpcRequest[]): Promise<RpcObservation | null> {
-    if (!requests.length || requests.length > 256) return null;
-    const response = await this.httpJson(url, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requests), cache: 'no-store', redirect: 'error',
-    });
-    if (response.status !== 200 || !Array.isArray(response.body) || response.body.length !== requests.length) return null;
-    const expected = new Map(requests.map((request) => [request.id, request]));
-    const responses: Array<{ id: string; result: unknown }> = [];
-    for (const raw of response.body) {
-      const item = object(raw) as RpcResponse | null;
-      if (!item || item.jsonrpc !== '2.0' || typeof item.id !== 'string' || !expected.has(item.id) ||
-          Object.hasOwn(item, 'error') || !Object.hasOwn(item, 'result')) return null;
-      responses.push({ id: item.id, result: item.result });
+  private async callRpcBatch(url: URL, requests: RpcRequest[], options: RpcBatchOptions = {}): Promise<RpcObservation | null> {
+    const fail = async (reasonCode: BefPreparationDiagnosticReasonCode): Promise<null> => {
+      try { await options.onFailure?.(reasonCode); } catch { /* diagnostics never change the read-only check result */ }
+      return null;
+    };
+    if (!requests.length || requests.length > 256 || (options.preflightHealth === true && requests.length > 2)) {
+      return options.onFailure ? fail('batch_shape_invalid') : null;
     }
-    if (new Set(responses.map((item) => item.id)).size !== requests.length) return null;
-    return { requests, responses };
+    const attemptLimit = options.preflightHealth === true ? 2 : 1;
+    for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
+      const response = await this.httpJson(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requests), cache: 'no-store', redirect: 'error',
+      });
+      if (response.status !== 200) {
+        if (options.preflightHealth === true && attempt === 0 && [502, 503, 504].includes(response.status)) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, HEALTH_RPC_RETRY_BACKOFF_MS));
+          continue;
+        }
+        const reasonCode: BefPreparationDiagnosticReasonCode = response.status === 502 ? 'http_502'
+          : response.status === 503 ? 'http_503'
+          : response.status === 504 ? 'http_504'
+          : response.status >= 400 && response.status < 500 ? 'http_4xx'
+          : response.status >= 500 && response.status < 600 ? 'http_5xx' : 'http_status_other';
+        return options.onFailure ? fail(reasonCode) : null;
+      }
+      if (response.bodyFailure === 'too_large') return options.onFailure ? fail('response_too_large') : null;
+      if (response.bodyFailure === 'invalid_json') return options.onFailure ? fail('invalid_json') : null;
+      if (!Array.isArray(response.body) || response.body.length !== requests.length) {
+        return options.onFailure ? fail('batch_shape_invalid') : null;
+      }
+      const expected = new Map(requests.map((request) => [request.id, request]));
+      const responses: Array<{ id: string; result: unknown }> = [];
+      for (const raw of response.body) {
+        const item = object(raw) as RpcResponse | null;
+        if (!item || item.jsonrpc !== '2.0' || typeof item.id !== 'string') {
+          return options.onFailure ? fail('item_shape_invalid') : null;
+        }
+        if (!expected.has(item.id)) return options.onFailure ? fail('correlation_invalid') : null;
+        if (Object.hasOwn(item, 'error')) return options.onFailure ? fail('rpc_error') : null;
+        if (!Object.hasOwn(item, 'result')) return options.onFailure ? fail('result_missing') : null;
+        responses.push({ id: item.id, result: item.result });
+      }
+      if (new Set(responses.map((item) => item.id)).size !== requests.length) {
+        return options.onFailure ? fail('correlation_invalid') : null;
+      }
+      return { requests, responses };
+    }
+    return options.onFailure ? fail('response_invalid') : null;
   }
 
   private apiBase(envId: string): URL {

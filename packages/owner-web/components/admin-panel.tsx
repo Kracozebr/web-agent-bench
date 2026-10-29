@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApiError, apiRequest, errorText, getCurrentOwner, InvitationRecord, newOperationId, OwnerProjection, RegistrationPolicy } from "@/lib/api";
 import { BonusGrantPanel } from "@/components/bonus-grant-panel";
@@ -187,6 +188,8 @@ export function AdminPanel() {
         <p className="eyebrow">Configured administrator</p>
         <h1>Admission controls</h1>
         <p className="lede">Manage owner admission and issue immutable tester bonus grants. The API verifies administrator authority for every action.</p>
+        <p className="fine"><Link href="/admin/bonus-codes" data-testid="admin-bonus-codes-link">Manage redeemable bonus codes</Link></p>
+        <p className="fine"><Link href="/admin/reports" data-testid="admin-reports-link">Review private support reports</Link></p>
       </div>
       <BonusGrantPanel />
       <div className="content-grid">
