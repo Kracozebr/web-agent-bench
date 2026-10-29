@@ -5,7 +5,7 @@ import json
 import re
 
 from tests.bdd.adapters.beta_poc_delivery import load_capture
-from tests.bdd.adapters.beta_poc_report_verifier import _derive_018, _derive_020
+from tests.bdd.adapters.beta_poc_report_verifier import NEGATIVE_NAMES, _derive_018, _derive_020, _derive_negatives
 
 
 def verify_local_report_path() -> dict:
@@ -39,6 +39,13 @@ def verify_local_report_path() -> dict:
     missing = [name for facts in (owner_facts, admin_facts) for name, value in facts.items() if value is not True]
     if missing:
         raise AssertionError(f"Local report facts unverified: {', '.join(missing)}")
+    owner_negatives = _derive_negatives("BPC-SC-018", captures["BPC-SC-018"][1])
+    admin_negatives = _derive_negatives("BPC-SC-020", captures["BPC-SC-020"][1])
+    if set(owner_negatives) != set(NEGATIVE_NAMES["BPC-SC-018"]) or set(admin_negatives) != set(NEGATIVE_NAMES["BPC-SC-020"]):
+        raise AssertionError("The raw report verifier returned an incomplete local negative inventory")
+    missing_negatives = [name for facts in (owner_negatives, admin_negatives) for name, value in facts.items() if value is not True]
+    if missing_negatives:
+        raise AssertionError(f"Local report negative facts unverified: {', '.join(missing_negatives)}")
     admin = captures["BPC-SC-020"][1]["browser"]
     controls = {row.get("controlId") for row in admin.get("actions", []) if row.get("action") == "click"}
     if not {"admin-report-close", "admin-report-reopen"} <= controls:
@@ -49,6 +56,9 @@ def verify_local_report_path() -> dict:
         "ownerFormScreenshotPrivateStorageAndAdminTriage": "verified",
         "ownerObservations": owner_facts,
         "adminObservations": admin_facts,
+        "ownerNegativeObservations": owner_negatives,
+        "adminNegativeObservations": admin_negatives,
+        "localNegativeMatrix": "verified_for_BPC-SC-018_and_BPC-SC-020",
         "betaGateStatuses": {key: value[0]["status"] for key, value in captures.items()},
         "externalGoogleAndTargetHost": "not_run",
         "fourNativeClients": "not_run",

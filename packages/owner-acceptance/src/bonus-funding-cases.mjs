@@ -93,9 +93,16 @@ async function readOnlySnapshot(observer, ids) {
       financial_operation_id,created_at::text FROM oid_bonus_code_redemption WHERE id=$1`, [ids.redemptionId])).rows[0] ?? null;
     const grant = (await client.query(`SELECT id::text,owner_id::text,issued_by_owner_id::text,amount_units::text,
       reason,operation_id,expires_at::text FROM oid_bonus_grant WHERE id=$1`, [ids.grantId])).rows[0] ?? null;
-    const entries = (await client.query(`SELECT id::text,entry_type,source_kind,bonus_grant_id::text,operation_id,
+    const claimOperations = (await client.query(`SELECT owner_id::text,operation_id,code_id::text,redemption_id::text,created_at::text
+      FROM oid_bonus_code_claim_operation WHERE code_id=$1 AND owner_id=$2 ORDER BY operation_id`, [ids.codeId, ids.ownerId])).rows;
+    const entries = (await client.query(`SELECT id::text,owner_id::text,actor_owner_id::text,entry_type,source_kind,bonus_grant_id::text,operation_id,
       amount_units::text,available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,cash_provenance
       FROM oid_ledger_entry WHERE owner_id=$1 ORDER BY created_at,id`, [ids.ownerId])).rows;
+    const ledgerOperations = (await client.query(`SELECT id::text,operation_id,action,actor_owner_id::text,subject_owner_id::text
+      FROM oid_ledger_operation WHERE operation_id=$1 ORDER BY id`, [ids.grantOperationId])).rows;
+    const audits = (await client.query(`SELECT id::text,event_type,operation_id,actor_owner_id::text,subject_owner_id::text,metadata
+      FROM oid_ledger_audit WHERE operation_id=ANY($1::text[]) ORDER BY operation_id,id`,
+    [[ids.claimOperationId, ids.grantOperationId]])).rows;
     const totals = (await client.query(`SELECT source_kind,COALESCE(SUM(available_delta_units),0)::text AS available_units,
       COALESCE(SUM(reserved_delta_units),0)::text AS reserved_units,
       COUNT(*) FILTER (WHERE entry_type IN ('reserve','debit'))::int AS reserve_or_debit_count
@@ -106,12 +113,16 @@ async function readOnlySnapshot(observer, ids) {
       quote_price_units::text,cash_ceiling_units::text FROM oid_run_launch_intent WHERE id=$1`, [ids.intentId])).rows[0] ?? null;
     const runs = (await client.query(`SELECT id::text,status,quote_price_units::text,cash_ceiling_units::text
       FROM oid_benchmark_run WHERE intent_id=$1`, [ids.intentId])).rows;
+    const runOperations = (await client.query(`SELECT id::text,operation_id,actor_kind,actor_agent_id::text,action,response_json
+      FROM oid_run_operation WHERE owner_id=$1 AND operation_id=ANY($2::text[]) ORDER BY operation_id,id`,
+    [ids.ownerId, [ids.acceptOperationId]])).rows;
     const reservations = (await client.query(`SELECT run_id::text,source_kind,bonus_grant_id::text,cash_provenance,
       amount_units::text,state FROM oid_run_reservation WHERE owner_id=$1`, [ids.ownerId])).rows;
     const budgetHolds = (await client.query(`SELECT h.run_id::text,h.state,h.amount_units::text
       FROM oid_run_budget_hold h JOIN oid_benchmark_run r ON r.id=h.run_id WHERE r.owner_id=$1`, [ids.ownerId])).rows;
     await client.query("COMMIT");
-    return { identity, code, redemption, grant, entries, totals, policy, intent, runs, reservations, budgetHolds };
+    return { identity, code, redemption, grant, claimOperations, entries, ledgerOperations, audits,
+      totals, policy, intent, runs, runOperations, reservations, budgetHolds };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -218,8 +229,10 @@ export async function runBonusOnlyCashSubstitutionCase({ databaseUrl, observerDa
       operationId: key(),
     });
     const grantOperationId = `bcg_${sha256(`${issue.code.id}\0${owner.ownerId}`)}`;
+    const acceptOperationId = key();
     const ids = { codeId: issue.code.id, redemptionId: redemption.redemption.id, grantId: redemption.redemption.grantId,
-      ownerId: owner.ownerId, agentId: owner.agentId, intentId: intentResult.intent.id };
+      ownerId: owner.ownerId, agentId: owner.agentId, intentId: intentResult.intent.id,
+      claimOperationId: redemption.operationId, grantOperationId, acceptOperationId };
     const before = await readOnlySnapshot(observer, ids);
     assert.equal(before.identity.role, "oid_observer", "The before snapshot must use the independent observer role");
     assert.equal(before.identity.database_name, expectedDatabaseName, "The before snapshot must use the isolated acceptance database");
@@ -232,7 +245,7 @@ export async function runBonusOnlyCashSubstitutionCase({ databaseUrl, observerDa
         agentId: owner.agentId,
         accessGeneration: 1,
         intentId: intentResult.intent.id,
-        operationId: key(),
+        operationId: acceptOperationId,
       });
     } catch (error) {
       rejection = { status: Number.isInteger(error?.status) ? error.status : null,
@@ -267,7 +280,7 @@ export async function runBonusOnlyCashSubstitutionCase({ databaseUrl, observerDa
     assert.equal(verified, true, "Bonus-only acceptance must reject a code-lot shortfall despite sufficient cash and owner cash permission");
 
     return {
-      schemaVersion: "bpc-sc005-bonus-only-cash-substitution-negative/v1",
+      schemaVersion: "bpc-sc005-bonus-only-cash-substitution/v1",
       boundary: "local_isolated_direct_service_with_independent_read_only_postgres",
       status: "verified",
       captureId,
@@ -276,16 +289,21 @@ export async function runBonusOnlyCashSubstitutionCase({ databaseUrl, observerDa
         fullPriceUnits: ports.release.priceUnits, selectedQuoteUnits: SELECTED_QUOTE_UNITS },
       funding: { codeId: ids.codeId, issueOperationId: issue.operationId, issuerOwnerId: issuer.ownerId,
         redemptionId: ids.redemptionId, redemptionOperationId: redemption.operationId, ownerId: owner.ownerId,
-        grantId: ids.grantId, grantOperationId, codeGrantUnits: "250000", bonusAvailableUnits: bonusAvailable.toString(),
+        grantId: ids.grantId, grantOperationId, acceptOperationId, codeGrantUnits: "250000", bonusAvailableUnits: bonusAvailable.toString(),
         cashAvailableUnits: cashAvailable.toString(), shortfallUnits: shortfall.toString(), cashCeilingUnits: SELECTED_QUOTE_UNITS },
       rejection,
       codeGrantLineageVerified: codeGrantBound,
       noCashFallbackEffects,
       connectionIdentity,
       intent: after.intent,
-      before: { observer: before.identity, totals: before.totals, ledgerEntries: before.entries },
-      after: { observer: after.identity, totals: after.totals, ledgerEntries: after.entries,
-        runs: after.runs, reservations: after.reservations, budgetHolds: after.budgetHolds },
+      before: { observer: before.identity, code: before.code, redemption: before.redemption, grant: before.grant,
+        claimOperations: before.claimOperations, ledgerOperations: before.ledgerOperations, audits: before.audits,
+        totals: before.totals, ledgerEntries: before.entries, policy: before.policy, intent: before.intent,
+        runs: before.runs, runOperations: before.runOperations, reservations: before.reservations, budgetHolds: before.budgetHolds },
+      after: { observer: after.identity, code: after.code, redemption: after.redemption, grant: after.grant,
+        claimOperations: after.claimOperations, ledgerOperations: after.ledgerOperations, audits: after.audits,
+        totals: after.totals, ledgerEntries: after.entries, policy: after.policy, intent: after.intent,
+        runs: after.runs, runOperations: after.runOperations, reservations: after.reservations, budgetHolds: after.budgetHolds },
       productBoundaryClaims: { browser: false, targetHost: false, externalModel: false, fullScenarioAcceptance: false },
     };
   } finally {

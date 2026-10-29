@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -53,6 +54,22 @@ def _is_rows(value: Any) -> bool:
 
 def _hash(value: Any) -> bool:
     return isinstance(value, str) and SHA256_RE.fullmatch(value) is not None
+
+
+def _contains_agent_credential_material(value: Any) -> bool:
+    if isinstance(value, dict):
+        forbidden_fragments = ("token", "bearer", "secret", "verifier")
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z]", "", str(key).lower())
+            if any(fragment in normalized for fragment in forbidden_fragments) \
+                    or (normalized.startswith("authorization") and normalized != "authorizationscheme") \
+                    or _contains_agent_credential_material(item):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_agent_credential_material(item) for item in value)
+    elif isinstance(value, str):
+        return re.search(r"\baap1_[A-Za-z0-9_-]{43}\b", value) is not None
+    return False
 
 
 def _sha256_text(value: Any) -> str | None:
@@ -124,6 +141,280 @@ def _attempt_rejected(evidence: dict[str, Any], name: str, statuses: set[int], e
         if type(row.get(key)) is not int:
             return False
     return row["reportRowsBefore"] == row["reportRowsAfter"] and row["uploadRowsBefore"] == row["uploadRowsAfter"]
+
+
+def _same_state_projections(row: dict[str, Any]) -> bool:
+    if row.get("effectScope") != "report_and_domain_rows_excluding_oid_rate_limit" \
+            or row.get("noReportOrDomainEffects") is not True:
+        return False
+    for prefix in ("reportState", "domainState"):
+        before_text = row.get(f"{prefix}BeforeJson")
+        after_text = row.get(f"{prefix}AfterJson")
+        before_hash = row.get(f"{prefix}BeforeSha256")
+        after_hash = row.get(f"{prefix}AfterSha256")
+        if not isinstance(before_text, str) or not isinstance(after_text, str) \
+                or len(before_text.encode("utf-8")) > 8 * 1024 * 1024 \
+                or len(after_text.encode("utf-8")) > 8 * 1024 * 1024 \
+                or not _hash(before_hash) or not _hash(after_hash) \
+                or _sha256_text(before_text) != before_hash or _sha256_text(after_text) != after_hash:
+            return False
+        try:
+            before_value = json.loads(before_text)
+            after_value = json.loads(after_text)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        if prefix == "reportState":
+            expected_keys = {"totalCounts", "reports", "audits", "uploads", "imageUsageRows",
+                             "reportDeletionReceipts", "uploadGcReceipts"}
+            for value in (before_value, after_value):
+                if not isinstance(value, dict) or set(value) != expected_keys \
+                        or not isinstance(value.get("totalCounts"), dict) \
+                        or set(value["totalCounts"]) != {"reports", "uploads"} \
+                        or any(type(value["totalCounts"][key]) is not int or value["totalCounts"][key] < 0
+                               for key in ("reports", "uploads")) \
+                        or any(not _is_rows(value.get(key)) for key in expected_keys - {"totalCounts"}):
+                    return False
+            if any(type(row.get(key)) is not int for key in (
+                "reportRowsBefore", "reportRowsAfter", "uploadRowsBefore", "uploadRowsAfter"
+            )) \
+                    or before_value["totalCounts"]["reports"] != row["reportRowsBefore"] \
+                    or after_value["totalCounts"]["reports"] != row["reportRowsAfter"] \
+                    or before_value["totalCounts"]["uploads"] != row["uploadRowsBefore"] \
+                    or after_value["totalCounts"]["uploads"] != row["uploadRowsAfter"]:
+                return False
+        else:
+            expected_keys = {"financialRows", "runRows", "taskRows", "actionRows", "timerRows"}
+            if any(not isinstance(value, dict) or set(value) != expected_keys
+                   or any(not _is_rows(value.get(key)) for key in expected_keys)
+                   for value in (before_value, after_value)):
+                return False
+        if before_value != after_value:
+            return False
+    return True
+
+
+def _rate_limit_snapshot_rows(value: Any, bucket_index: int) -> dict[str, int] | None:
+    if not isinstance(value, list):
+        return None
+    rows: dict[str, int] = {}
+    for item in value:
+        if not isinstance(item, dict) or not _hash(item.get("keyHashSha256")) \
+                or type(item.get("bucketStart")) is not int or item.get("bucketStart") != bucket_index \
+                or type(item.get("requestCount")) is not int or item.get("requestCount") < 0:
+            return None
+        key_hash = item["keyHashSha256"]
+        if key_hash in rows:
+            return None
+        rows[key_hash] = item["requestCount"]
+    return rows
+
+
+def _rate_limit_transition(row: dict[str, Any], prefill_attempt_count: int) -> bool:
+    observation = row.get("rateLimitObservation")
+    if not isinstance(observation, dict) or observation.get("table") != "oid_rate_limit" \
+            or observation.get("group") != "support-report-owner-create" \
+            or observation.get("maxPerWindow") != 120 or observation.get("windowSeconds") != 60 \
+            or observation.get("databaseRole") != "oid_observer" \
+            or observation.get("transactionReadOnly") != "on" \
+            or not isinstance(observation.get("databaseName"), str) \
+            or re.fullmatch(r"oid_acceptance_[a-f0-9]{32}", observation["databaseName"]) is None:
+        return False
+    before = observation.get("before")
+    after = observation.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    for snapshot in (before, after):
+        if snapshot.get("databaseRole") != "oid_observer" or snapshot.get("transactionReadOnly") != "on" \
+                or snapshot.get("databaseName") != observation.get("databaseName"):
+            return False
+    try:
+        before_clock = before["databaseClockEpochSeconds"]
+        after_clock = after["databaseClockEpochSeconds"]
+        before_bucket = before["bucketIndex"]
+        after_bucket = after["bucketIndex"]
+        before_start = before["bucketStartSeconds"]
+        after_start = after["bucketStartSeconds"]
+    except KeyError:
+        return False
+    if any(type(value) is not int for value in (before_clock, after_clock, before_bucket, after_bucket, before_start, after_start)) \
+            or before_clock <= 0 or after_clock < before_clock or before_bucket != after_bucket \
+            or before_bucket != before_clock // 60 or after_bucket != after_clock // 60 \
+            or before_start != before_bucket * 60 or after_start != after_bucket * 60:
+        return False
+    before_rows = _rate_limit_snapshot_rows(before.get("rows"), before_bucket)
+    after_rows = _rate_limit_snapshot_rows(after.get("rows"), after_bucket)
+    if before_rows is None or after_rows is None:
+        return False
+    request_count_delta = prefill_attempt_count + 1
+    candidates = []
+    for key_hash, final_count in after_rows.items():
+        prior_count = before_rows.get(key_hash, 0)
+        delta = final_count - prior_count
+        if prior_count < 120 and delta == request_count_delta:
+            candidates.append((key_hash, prior_count, final_count, delta))
+    if len(candidates) != 1:
+        return False
+    key_hash, prior_count, final_count, delta = candidates[0]
+    return observation.get("targetKeyHashSha256") == key_hash \
+        and observation.get("priorRequestCount") == prior_count \
+        and observation.get("finalRequestCount") == final_count \
+        and observation.get("requestCountDelta") == delta \
+        and prior_count + prefill_attempt_count == 121 \
+        and final_count == prior_count + request_count_delta
+
+
+def _report_flood_rejected(evidence: dict[str, Any]) -> bool:
+    row = _attempt(evidence, "report_flood")
+    if row is None or not _attempt_rejected(evidence, "report_flood", {429}, {"RATE_LIMITED"}):
+        return False
+    attempts = row.get("prefillAttempts")
+    valid_shape = row.get("validPayloadShape")
+    if not isinstance(attempts, list) or not 1 <= len(attempts) <= 121 or not all(isinstance(item, dict) for item in attempts):
+        return False
+    if row.get("attemptCap") != 121 or row.get("configuredRateLimitMax") != 120 or row.get("windowSeconds") != 60 \
+            or type(row.get("elapsedMs")) is not int \
+            or not 0 <= row["elapsedMs"] < 55_000:
+        return False
+    if any(item.get("responseStatus") != 400 or item.get("errorCode") != "INVALID_REPORT" for item in attempts[:-1]):
+        return False
+    if attempts[-1].get("responseStatus") != 429 or attempts[-1].get("errorCode") != "RATE_LIMITED":
+        return False
+    if not isinstance(valid_shape, dict) or valid_shape.get("fieldNames") != ["body", "operationId", "title"] \
+            or valid_shape.get("operationIdIsCanonical") is not True \
+            or type(valid_shape.get("titleLength")) is not int or not 1 <= valid_shape["titleLength"] <= 160 \
+            or type(valid_shape.get("bodyLength")) is not int or not 1 <= valid_shape["bodyLength"] <= 4000 \
+            or not _hash(row.get("validOperationIdSha256")):
+        return False
+    return _rate_limit_transition(row, len(attempts)) and _same_state_projections(row)
+
+
+def _owner_ui_issue_response_matches_binding(issuance: dict[str, Any], binding: dict[str, Any], agent_id: str) -> bool:
+    response_ids = issuance.get("issueResponseIdHashes")
+    return isinstance(response_ids, dict) and response_ids.get("status") == 201 \
+        and response_ids.get("agentIdSha256") == _sha256_text(agent_id) \
+        and response_ids.get("credentialIdSha256") == binding.get("credentialIdSha256") \
+        and response_ids.get("grantIdSha256") == binding.get("grantIdSha256")
+
+
+def _agent_admin_attempt_rejected(evidence: dict[str, Any]) -> bool:
+    proof = evidence.get("agentBearerProof")
+    binding = proof.get("credentialBinding") if isinstance(proof, dict) else None
+    preflight = proof.get("preflight") if isinstance(proof, dict) else None
+    issuance = proof.get("ownerUiIssuance") if isinstance(proof, dict) else None
+    if not isinstance(proof, dict) or not isinstance(binding, dict) or not isinstance(preflight, dict) \
+            or not isinstance(issuance, dict):
+        return False
+    if _contains_agent_credential_material(proof):
+        return False
+    if proof.get("credentialSource") != "owner_ui_issue_once" or proof.get("fixtureType") != "synthetic_local_agent_credential" \
+            or proof.get("authorizationScheme") != "Bearer" or proof.get("sessionCookiePresent") is not False:
+        return False
+    if binding.get("databaseRole") != "oid_observer" or binding.get("transactionReadOnly") != "on" \
+            or type(binding.get("matchingCredentialGrantRows")) is not int \
+            or binding.get("matchingCredentialGrantRows") != 1 or binding.get("grantSource") != "manual" \
+            or binding.get("grantRole") != "agent" or binding.get("grantRevokedAt") is not None:
+        return False
+    binding_hashes = (binding.get("credentialIdSha256"), binding.get("grantIdSha256"),
+                      binding.get("ownerIdSha256"), binding.get("agentIdSha256"), binding.get("resourceSha256"))
+    if not all(_hash(value) for value in binding_hashes):
+        return False
+    try:
+        grant_expiry = datetime.fromisoformat(str(binding.get("grantExpiresAt")).replace("Z", "+00:00"))
+        binding_observed = datetime.fromisoformat(str(binding.get("observedAt")).replace("Z", "+00:00"))
+        if grant_expiry.tzinfo is None or binding_observed.tzinfo is None or grant_expiry <= binding_observed:
+            return False
+    except (ValueError, TypeError):
+        return False
+    issuance_actions = issuance.get("actions")
+    issuance_requests = issuance.get("requests")
+    if not isinstance(issuance_actions, list) or not isinstance(issuance_requests, list):
+        return False
+    issued_agent_id = None
+    for row in issuance_requests:
+        if not isinstance(row, dict) or row.get("method") != "POST" or row.get("status") != 201 \
+                or not isinstance(row.get("path"), str):
+            continue
+        match = re.fullmatch(r"/api/owner/agents/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/manual-credential", row["path"])
+        if match:
+            issued_agent_id = match.group(1)
+            break
+    if not issued_agent_id or _sha256_text(issued_agent_id) != binding.get("agentIdSha256") \
+            or not _owner_ui_issue_response_matches_binding(issuance, binding, issued_agent_id) \
+            or not any(isinstance(row, dict) and row.get("method") == "POST" and row.get("path") == "/api/owner/agents"
+                       and row.get("status") == 201 for row in issuance_requests) \
+            or not any(isinstance(row, dict) and row.get("action") == "click" and row.get("controlId") == "agent-create"
+                       for row in issuance_actions) \
+            or not any(isinstance(row, dict) and row.get("action") == "click"
+                       and row.get("controlId") == f"credential-issue-{issued_agent_id}" for row in issuance_actions):
+        return False
+    if preflight.get("method") != "GET" or preflight.get("path") != "/api/agent/preflight" \
+            or preflight.get("responseStatus") != 200 or preflight.get("allowed") is not True \
+            or preflight.get("role") != "agent" or preflight.get("authorizationScheme") != "Bearer" \
+            or preflight.get("sessionCookiePresent") is not False or preflight.get("resourceMatches") is not True \
+            or preflight.get("agentIdSha256") != binding.get("agentIdSha256") \
+            or preflight.get("resourceSha256") != binding.get("resourceSha256"):
+        return False
+
+    pair = _snapshot_pair(evidence)
+    if pair is None:
+        return False
+    before, after = pair
+    report_hash = proof.get("targetReportIdSha256")
+    image_hash = proof.get("targetImageIdSha256")
+    if not _hash(report_hash) or not _hash(image_hash):
+        return False
+    report = next((item for item in after["reports"] if _sha256_text(item.get("id")) == report_hash), None)
+    if not isinstance(report, dict) or report.get("ownerIdSha256") != binding.get("ownerIdSha256") \
+            or not isinstance(report.get("imageIds"), list) \
+            or not any(_sha256_text(image_id) == image_hash for image_id in report["imageIds"]):
+        return False
+    image = next((item for item in after["uploads"] if _sha256_text(item.get("id")) == image_hash), None)
+    if not isinstance(image, dict) or image.get("status") != "attached" or image.get("reportId") != report.get("id") \
+            or image.get("ownerIdSha256") != binding.get("ownerIdSha256") or not _hash(image.get("outputSha256")):
+        return False
+    previews = evidence.get("browser", {}).get("previews") if isinstance(evidence.get("browser"), dict) else None
+    if not isinstance(previews, list) or not any(
+        isinstance(item, dict) and item.get("accessRole") == "admin" and item.get("status") == 200
+        and item.get("sha256") == image.get("outputSha256") for item in previews
+    ):
+        return False
+
+    attempts = evidence.get("negativeAttempts")
+    rows = [item for item in attempts if isinstance(item, dict) and item.get("name") == "agent_admin_attempt"] \
+        if isinstance(attempts, list) else []
+    if _contains_agent_credential_material(rows):
+        return False
+    expected = {
+        "admin_list": ("GET", "/api/admin/reports"),
+        "admin_detail": ("GET", "/api/admin/reports/{reportId}"),
+        "admin_status": ("PATCH", "/api/admin/reports/{reportId}/status"),
+        "admin_image": ("GET", "/api/admin/reports/{reportId}/images/{imageId}"),
+    }
+    if len(rows) != len(expected) or {item.get("probe") for item in rows} != set(expected):
+        return False
+    for item in rows:
+        route = expected.get(item.get("probe"))
+        if route is None or (item.get("method"), item.get("pathTemplate")) != route:
+            return False
+        if item.get("responseStatus") != 401 or item.get("errorCode") != "UNAUTHORIZED" \
+                or item.get("databaseRole") != "oid_observer" or item.get("transactionReadOnly") != "on" \
+                or type(item.get("reportRowsBefore")) is not int \
+                or type(item.get("reportRowsAfter")) is not int \
+                or item.get("reportRowsBefore") != item.get("reportRowsAfter") \
+                or type(item.get("uploadRowsBefore")) is not int \
+                or type(item.get("uploadRowsAfter")) is not int \
+                or item.get("uploadRowsBefore") != item.get("uploadRowsAfter") \
+                or not _same_state_projections(item):
+            return False
+        if item.get("transport") != "cookie_free_agent_bearer_http" \
+                or item.get("authorizationScheme") != "Bearer" or item.get("sessionCookiePresent") is not False \
+                or item.get("credentialIdSha256") != binding.get("credentialIdSha256") \
+                or item.get("grantIdSha256") != binding.get("grantIdSha256") \
+                or item.get("agentIdSha256") != binding.get("agentIdSha256") \
+                or item.get("ownerIdSha256") != binding.get("ownerIdSha256") \
+                or item.get("targetReportIdSha256") != report_hash or item.get("targetImageIdSha256") != image_hash:
+            return False
+    return True
 
 
 def _side_effects_unchanged(evidence: dict[str, Any]) -> bool:
@@ -712,7 +1003,7 @@ def _derive_negatives(scenario_id: str, evidence: dict[str, Any]) -> dict[str, b
             "forbidden_secret_fields": ({400}, {"INVALID_REPORT", "REPORT_CONTAINS_CREDENTIAL_MATERIAL"}),
             "oversized_payload": ({413}, {"REQUEST_BODY_TOO_LARGE"}),
             "html_text": ({200, 201}, None),
-            "report_flood": ({429}, {"REPORT_RATE_LIMITED"}),
+            "report_flood": ({429}, {"RATE_LIMITED"}),
             "response_loss": ({200}, None),
             "conflicting_retry": ({409}, {"IDEMPOTENCY_CONFLICT"}),
         },
@@ -729,7 +1020,7 @@ def _derive_negatives(scenario_id: str, evidence: dict[str, Any]) -> dict[str, b
         "BPC-SC-020": {
             "stale_revision": ({409}, {"REPORT_STATUS_CONFLICT", "REPORT_REVISION_CONFLICT"}),
             "foreign_owner_read": ({404}, {"REPORT_NOT_FOUND"}),
-            "agent_admin_attempt": ({401, 403}, {"UNAUTHORIZED", "ADMIN_REQUIRED"}),
+            "agent_admin_attempt": ({401}, {"UNAUTHORIZED"}),
             "unauthorized_status": ({403}, {"FORBIDDEN"}),
             "html_injection": ({200, 201}, None),
             "foreign_attachment_preview": ({404}, {"REPORT_IMAGE_NOT_FOUND"}),
@@ -766,6 +1057,10 @@ def _derive_negatives(scenario_id: str, evidence: dict[str, Any]) -> dict[str, b
     for name, (statuses, errors) in rules[scenario_id].items():
         if name == "foreign_run_or_action":
             result[name] = _foreign_run_and_action_rejected(evidence)
+        elif name == "report_flood":
+            result[name] = _report_flood_rejected(evidence)
+        elif name == "agent_admin_attempt":
+            result[name] = _agent_admin_attempt_rejected(evidence)
         elif name == "html_text" or name == "html_injection":
             result[name] = _html_is_text(evidence)
         elif name == "response_loss":

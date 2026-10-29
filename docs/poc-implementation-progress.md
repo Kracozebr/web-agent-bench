@@ -15,10 +15,10 @@ below identify the work slices, not live process names.
 
 | Owner | Slice | Observed progress | Verification |
 | --- | --- | --- | --- |
-| implement_bonus_codes (Luna/max) | Codes, atomic redemption, UI and BDD/E2E | Schema/migration/service/routes, admin and owner UI, browser producer and evidence writer added | Root replay verifies local browser issue/claim in capture 97e0f8c3. Separate source-aware shortfall probe returns 409 despite enough cash; root verifies unchanged bonus/cash, no charge/run. Current-lock release activation passes. Captures f519ab49 and a3387be8 now prove code-funded all-eight training and full12 completion, with root live PG/ledger/fence-file replay; native models and target gates remain open |
-| implement_reports (Luna/max) | Reports, images, triage, retention and BDD/E2E | HTTP/MCP routes, multipart upload, UI, private normalization/storage, closure state and browser/PG producer added | Browser capture 1cd16537 passes with stable 384-input inventory; root verifies all 11 report observations plus operations pause/resume. Lifecycle 3/3 and authenticated local MCP smoke pass with independent live PG/file replay. Corrected report-aware restore/expiry rehearsal 5d1e4d20 passes with root replay; four native clients and combined restore remain open |
+| implement_bonus_codes (Luna/max) | Codes, atomic redemption, UI and BDD/E2E | Schema/migration/service/routes, admin and owner UI, browser producer and evidence writer added | Final c75b3094 independently replays UI issue/claim and all requested mode/cap/balance/anonymous-agent denials; root live PG confirms both HTTP fixture intents cancelled and no denied run/financial effects. The separate direct-service beta-only cash-sufficient probe also passes. Current-lock release activation passes. Captures f519ab49 and a3387be8 now prove code-funded all-eight training and full12 completion, with root live PG/ledger/fence-file replay; native models and target gates remain open |
+| implement_reports (Luna/max) | Reports, images, triage, retention and BDD/E2E | HTTP/MCP routes, multipart upload, UI, private normalization/storage, closure state and browser/PG producer added | Final 50103cbf passes with stable 392-input inventory; root verifies all 11 owner/admin observations, all 13 SC018/020 negatives and live rate-counter/credential/file effects. Lifecycle 3/3 and authenticated local MCP smoke pass with independent live PG/file replay. Corrected report-aware restore/expiry rehearsal 5d1e4d20 passes with root replay; four native clients and combined restore remain open |
 | implement_beta_runtime (Luna/max) | Qualification/runtime, clients, queue and central integration | Beta coordinator/readiness, queue policy, MCP registry/parser, central report wiring, partial recovery library and operations pause added | Identity/web checks pass; real PG recovery and pause lock regressions pass. Current-lock feasibility verifies and all 20 fresh reference captures pass raw integrity verification. Candidate validation and isolated release activation pass; code-funded all-eight training and full12 worker completion now pass locally. Trusted production recovery authority remains missing |
-| Main agent | Coordination, source review, common BDD wiring and acceptance review | Approved 26 semantic contracts installed and mirrors generated; module ownership assigned | Semantic harness audit passes 26 contracts; reader/report tests 14/14; runtime mappers 26 skipped. Usage/support export regression independently passes 5/5 (task 8.2 complete). Bonus-only dump/restore matches all 83 tables. No mandatory beta gate accepted |
+| Main agent | Coordination, source review, common BDD wiring and acceptance review | Approved 26 semantic contracts installed and mirrors generated; module ownership assigned | Semantic harness audit passes 26 contracts; latest raw-verifier regressions pass 14/14 and Node guard/intent tests 4/4; official target runtime mappers remain blocked/skipped. Usage/support export regression independently passes 5/5 (task 8.2 complete). Bonus-only dump/restore matches all 83 tables. No mandatory beta gate accepted |
 
 ## Coordination rules in use
 
@@ -543,3 +543,69 @@ No complete PoC runtime acceptance or external deployment is claimed here.
   version snapshot, completion/eligibility event hashes, first-action marker and
   best-result pointer bind to the completed run. This verifies persisted
   internal/public-eligibility records; public HTTP/UI rendering remains unrun.
+
+## 29 October: requested local restriction checks closed
+
+Implementation checkpoint `b3c8549` committed the previous approved work. The
+three Luna/max continuations then implemented/reviewed report negatives, bonus
+restriction evidence and a [launch checklist](poc-beta-launch-checklist.md).
+The final runtime captures below share one unchanged 689-path R14 root inventory
+(SHA-256 `798da5fd63e32579fe9ccb934cb5e7350987e3c561fd6a1df57eb24e061439fa`);
+each producer also retained identical before/after 392-input inventories.
+
+- Reports: capture `50103cbf-ee58-446d-b460-79658d220bce` exited 0 with no
+  local failures. Root independently replays all eleven owner/admin positive
+  observations and all thirteen SC018/020 negative variants, including flood
+  and four cookie-free agent attempts against admin list/detail/status/image.
+  SC018 runtime SHA-256 is
+  `0496a7b5ee0dfb657dad2cb22cd9f056290bb7ceb0a07bfeb2cbd1c599bee187`.
+  Separate live observer reads confirm counter 12 -> 122: 108 invalid requests,
+  one threshold-crossing 429, then a valid-shaped 429; the intended limiter
+  counter changes while report/domain projections remain equal. Both private
+  WebP files match their two attached DB rows (24,786 bytes, mode 0600); final
+  counts are five reports, seven audits, two uploads and zero ledger entries.
+  The four malformed staging rows naturally disappeared before the foreign
+  upload baseline; the isolated aggregate failed-upload receipt count changed
+  0 -> 4. No per-upload receipt-ID binding is claimed.
+- Bonuses: capture `c75b3094-345f-4794-9a6b-5530af1b92fe` exited 0 with no
+  local failures. Its SC005 runtime SHA-256 is
+  `f0b7c6a3865a1e82afdbce0115d0d5dafd045fee282c16a8cac26e8c56be33cf`.
+  `python -B -m tools.replay_bpc_bonus_local` independently verifies UI
+  issue/claim/ledger lineage plus anonymous and preflighted-agent claim denials
+  (401), owner intent creation with training disabled (403), per-operation cap
+  denial (409) and zero-bonus admission without cash permission (409).
+  The permission negative is explicitly an authenticated browser HTTP probe;
+  actual intent creation/cancellation and code issuance/redemption use UI clicks.
+  Separate live PG readback confirms both denied-claim codes remain unused,
+  all denied operation IDs are absent, both HTTP fixture intents are cancelled
+  with exact training selections (S1 and canonical open8), and there are zero
+  runs, reservations, budget holds or reserve/debit entries.
+- The cash-sufficient `bonusOnly` proof remains a separate synthetic direct-service
+  boundary: a code-derived 250,000-unit bonus lot, 1,000,000-unit quote,
+  2,000,000 cash units and cash permission still produce
+  `BETA_BONUS_BALANCE_REQUIRED`, with unchanged source balances and no acceptance.
+  It is not a beta-manifest HTTP or model proof. Its fixture intent stays pending
+  in the stopped isolated instance; no executor environment or hold exists.
+- Focused regressions pass: four Node intent/secret-guard tests and fourteen
+  Python raw-verifier tests. Syntax checks, strict OpenSpec validation, 26/26
+  semantic harness audit and 26-scenario mirror validation pass. These structural
+  checks do not change mandatory environment gate states.
+
+The retained intermediate attempts explain the harness fixes: `f719b1d6` lacked
+the explicit local run policy; `0898a27b` exposed the nested API quote contract
+and left one pending fixture intent; `28fb5162` hit a secret-text false positive
+on an internal schema label whose suffix was exactly 43 characters; `33490f9e`
+captured the flows but its direct-service projection omitted ledger owner/actor
+columns, so offline replay failed. Those columns are now observed explicitly;
+the secret guard was not weakened. `dc66fa2f` passed before the final report
+fixture adjustment. Report attempt `e5c29241` failed while concurrent natural GC
+removed four malformed staging rows; exact failed attempt counters were not
+persisted, so the causal diagnosis is supported by receipt timing and source,
+not a recovered request snapshot. A bounded read-only wait now separates that
+known setup cleanup from authorization measurements. All failed/predecessor DBs
+and artifacts remain retained; no previous failure is relabelled passed.
+
+The requested local flood/admin/bonus checks are closed. Actual target Google,
+four native model/client families, trusted recovery integration, combined restore,
+load/queue/public-page acceptance and pilot/release remain open in the checklist.
+Official BPC manifests stay `blocked`; no sync/archive or beta release is claimed.

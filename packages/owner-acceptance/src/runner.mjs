@@ -56,6 +56,8 @@ const genuineWorkerTaskId = OPEN_TASK_IDS.find((id) => process.argv.includes("--
 const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || genuineWorkerTaskId !== undefined;
 const genuineTaskId = genuineWorkerTaskId ?? ["S1", "S2", "S4"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
+// AICODE-NOTE: Bonus run-admission negatives use the same guarded local policy as owner-run captures.
+const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn;
 const activeContract = JSON.parse(await readFile(resolve(repoRoot, "tests/bdd/changes/owner-identity-and-pilot-admission/harness-contracts.json"), "utf8"));
 const contractRows = activeContract.protected_scenarios;
 const REQUIRED = Object.fromEntries(Object.entries(contractRows).map(([scenarioId, row]) => [scenarioId, row.required_observations]));
@@ -284,7 +286,7 @@ async function startRuntime() {
     throw Object.assign(new Error("report_capture_base_requires_absolute_path_and_reports_opt_in"), { code: "BPC_REPORT_CAPTURE_BASE_INVALID" });
   }
   if (process.platform !== "linux") throw new Error("Run owner acceptance inside the pinned Linux Docker runtime");
-    if (genuineS1OptIn) {
+  if (localCoordinatorCaptureOptIn) {
     if (process.argv.length !== 3) throw Object.assign(new Error("genuine_s1_cli_shape_invalid"), { code: "GENUINE_S1_CLI_SHAPE_INVALID" });
     phase = "genuine_s1_private_coordinator_provisioning";
     await provisionGenuineS1CoordinatorConfig({ repositoryRoot: repoRoot, automaticWorkerEvaluation: genuineWorkerOptIn });
@@ -321,7 +323,7 @@ async function startRuntime() {
     OID_AGENT_CREDENTIAL_RATE_LIMIT_MAX: "120",
     // The private runtime coordinator is available only through an explicit
     // genuine owner-run CLI and its tmpfs override. Compose alone cannot opt in.
-    OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: genuineS1OptIn ? "true" : "false",
+    OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: localCoordinatorCaptureOptIn ? "true" : "false",
     OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG ?? ".local/owner-identity/bef-task-coordinator.json",
     OID_LOCAL_REPORT_ACCEPTANCE_ENABLED: reportsOptIn ? "true" : "false",
     NODE_ENV: "development",
@@ -974,7 +976,7 @@ async function main() {
           const reasonCode = typeof error?.code === "string" && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
             ? error.code : "bonus_only_cash_substitution_probe_failed";
           negativeProof = {
-            schemaVersion: "bpc-sc005-bonus-only-cash-substitution-negative/v1",
+            schemaVersion: "bpc-sc005-bonus-only-cash-substitution/v1",
             boundary: "local_isolated_direct_service_with_independent_read_only_postgres",
             status: "failed",
             reasonCode,
@@ -983,7 +985,7 @@ async function main() {
         }
         if (!negativeProof || typeof negativeProof !== "object" || Array.isArray(negativeProof)) {
           negativeProof = {
-            schemaVersion: "bpc-sc005-bonus-only-cash-substitution-negative/v1",
+            schemaVersion: "bpc-sc005-bonus-only-cash-substitution/v1",
             boundary: "local_isolated_direct_service_with_independent_read_only_postgres",
             status: "failed",
             reasonCode: "bonus_only_cash_substitution_invalid_result",

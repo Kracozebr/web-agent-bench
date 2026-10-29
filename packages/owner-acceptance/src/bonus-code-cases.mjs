@@ -1,12 +1,21 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { request as playwrightRequest } from "playwright";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { attachSafeBrowserCapture, waitForPath } from "./browser-support.mjs";
 import { browserCaptureApi, captureRows, capturedOperation, hasCodeError, sameRedemptionReceipt } from "./bonus-code-capture-contract.mjs";
+import { createCard as createAcceptanceAgentCard, issueThroughUi as issueAgentCredentialThroughUi } from "./credential-cases.mjs";
+import { validateCreatedRunIntent } from "./run-intent-contract.mjs";
+
+export { validateCreatedRunIntent } from "./run-intent-contract.mjs";
 
 const { Pool } = pg;
 const ADMIN_CODES = "/api/admin/bonus-codes";
 const OWNER_REDEEM = "/api/owner/bonus-codes/redeem";
 const CODE_VALUE = /^BPC-[A-Za-z0-9_-]{43}$/;
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const TRAINING_TASK_IDS = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -38,6 +47,12 @@ function projectCapture(capture) {
   const rows = captureRows(capture);
   const allowed = (path) => path.startsWith("/api/admin/bonus-codes")
     || path.startsWith("/api/owner/bonus-codes")
+    || path.startsWith("/api/owner/agents/")
+    || path === "/api/owner/agents"
+    || path === "/api/owner/runs/catalog"
+    || path.startsWith("/api/owner/runs/intents")
+    || path === "/api/agent/preflight"
+    || /^\/api\/agent\/run-intents\/[0-9a-f-]+\/accept$/i.test(path)
     || path === "/api/owner/billing"
     || path === "/api/admin/bonus-grants"
     || path === "/api/admin/invitations"
@@ -60,7 +75,8 @@ function projectCapture(capture) {
 }
 
 async function observerSnapshot(connectionString, {
-  codeIds = [], issueOperationIds = [], disableOperationIds = [], ownerIds = [], operationIds = [], grantOperationIds = [],
+  codeIds = [], issueOperationIds = [], disableOperationIds = [], ownerIds = [], operationIds = [],
+  grantOperationIds = [], grantProbeOperationIds = [],
 }) {
   const pool = new Pool({ connectionString, max: 1, application_name: "bpc-acceptance-readonly-observer" });
   const client = await pool.connect();
@@ -70,7 +86,9 @@ async function observerSnapshot(connectionString, {
       current_database() AS database,
       current_setting('transaction_read_only') AS transaction_read_only,
       current_setting('default_transaction_read_only') AS default_transaction_read_only`)).rows[0];
-    assert(identity?.role === "oid_observer" && identity.transaction_read_only === "on",
+    const expectedDatabase = databaseNameFromUrl(connectionString);
+    assert(identity?.role === "oid_observer" && identity.database === expectedDatabase
+      && identity.transaction_read_only === "on",
       "BPC durable outcome must be read independently through the read-only oid_observer role");
     const codes = await client.query(`SELECT id::text, issuer_owner_id::text, label, kind,
         amount_units::text, maximum_uses, used_count, issued_at, disabled_at,
@@ -88,26 +106,28 @@ async function observerSnapshot(connectionString, {
       FROM oid_bonus_code_claim_operation
       WHERE code_id::text = ANY($1::text[]) OR (owner_id::text = ANY($2::text[]) AND operation_id = ANY($3::text[]))
       ORDER BY created_at,owner_id,operation_id`, [codeIds, ownerIds, operationIds]);
-    const financialOperationIds = [...new Set([...grantOperationIds, ...redemptions.rows.map((row) => row.financial_operation_id)])];
+    const expectedGrantOperationIds = [...new Set([...grantOperationIds,
+      ...redemptions.rows.map((row) => row.financial_operation_id)])];
+    const queryOperationIds = [...new Set([...expectedGrantOperationIds, ...grantProbeOperationIds, ...operationIds])];
     const redGrantIds = redemptions.rows.map((row) => row.bonus_grant_id);
     const grants = await client.query(`SELECT id::text, owner_id::text, amount_units::text,
         issued_by_owner_id::text, reason, operation_id, created_at, expires_at
       FROM oid_bonus_grant WHERE id::text = ANY($1::text[]) OR operation_id = ANY($2::text[])
-      ORDER BY created_at,id`, [redGrantIds, financialOperationIds]);
+      ORDER BY created_at,id`, [redGrantIds, queryOperationIds]);
     const grantIds = [...new Set([...redGrantIds, ...grants.rows.map((row) => row.id)])];
     const entries = await client.query(`SELECT id::text, owner_id::text, actor_owner_id::text,
         bonus_grant_id::text, operation_id, entry_type, source_kind, amount_units::text,
         available_delta_units::text, reserved_delta_units::text, expired_delta_units::text, created_at
       FROM oid_ledger_entry WHERE bonus_grant_id::text = ANY($1::text[]) OR operation_id = ANY($2::text[])
-      ORDER BY created_at,id`, [grantIds, financialOperationIds]);
+      ORDER BY created_at,id`, [grantIds, queryOperationIds]);
     const operations = await client.query(`SELECT id::text, actor_owner_id::text, subject_owner_id::text,
         operation_id, action, created_at
       FROM oid_ledger_operation WHERE operation_id = ANY($1::text[]) OR operation_id = ANY($2::text[])
-      ORDER BY created_at,id`, [operationIds, financialOperationIds]);
+      ORDER BY created_at,id`, [operationIds, queryOperationIds]);
     const audits = await client.query(`SELECT id::text, event_type, operation_id, actor_owner_id::text,
         subject_owner_id::text, metadata, created_at
       FROM oid_ledger_audit WHERE operation_id = ANY($1::text[]) OR operation_id = ANY($2::text[])
-      ORDER BY created_at,id`, [operationIds, financialOperationIds]);
+      ORDER BY created_at,id`, [operationIds, queryOperationIds]);
     const balances = await client.query(`SELECT e.owner_id::text,
         SUM(CASE WHEN e.source_kind='cash_usdc' THEN e.available_delta_units
                  WHEN g.expires_at IS NOT NULL AND g.expires_at <= clock_timestamp() THEN 0
@@ -119,7 +139,7 @@ async function observerSnapshot(connectionString, {
       WHERE e.owner_id::text = ANY($1::text[]) AND e.source_kind='tester_bonus'
       GROUP BY e.owner_id ORDER BY e.owner_id`, [ownerIds]);
     const cashEffects = await client.query(`SELECT count(*)::integer AS count
-      FROM oid_ledger_entry WHERE operation_id = ANY($1::text[]) AND source_kind='cash_usdc'`, [financialOperationIds]);
+      FROM oid_ledger_entry WHERE operation_id = ANY($1::text[]) AND source_kind='cash_usdc'`, [queryOperationIds]);
     await client.query("COMMIT");
     return {
       schemaVersion: "bpc-independent-postgres-observation/v1",
@@ -132,7 +152,7 @@ async function observerSnapshot(connectionString, {
       operations: operations.rows,
       audits: audits.rows,
       ownerBalances: balances.rows,
-      grantOperationIds: financialOperationIds,
+      grantOperationIds: expectedGrantOperationIds,
       cashEffectCount: cashEffects.rows[0]?.count ?? null,
     };
   } catch (error) {
@@ -141,6 +161,539 @@ async function observerSnapshot(connectionString, {
   } finally {
     client.release();
     await pool.end();
+  }
+}
+
+function databaseNameFromUrl(connectionString) {
+  const pathname = new URL(connectionString).pathname;
+  if (!pathname || pathname === "/") throw new Error("BPC database URL must name an isolated acceptance database");
+  return decodeURIComponent(pathname.slice(1));
+}
+
+function requireAcceptanceDatabasePair(databaseUrl, observerDatabaseUrl) {
+  const appName = databaseNameFromUrl(databaseUrl);
+  const observerName = databaseNameFromUrl(observerDatabaseUrl);
+  assert(/^oid_acceptance_[a-f0-9]{32}$/i.test(appName) && observerName === appName,
+    "BPC transport negatives require matching isolated acceptance database URLs");
+  return appName;
+}
+
+async function verifyOwnerObserverDatabaseIdentity(databaseUrl, observerDatabaseUrl) {
+  const expectedDatabase = requireAcceptanceDatabasePair(databaseUrl, observerDatabaseUrl);
+  const ownerPool = new Pool({ connectionString: databaseUrl, max: 1, application_name: "bpc-owner-database-preflight" });
+  const observerPool = new Pool({ connectionString: observerDatabaseUrl, max: 1, application_name: "bpc-observer-database-preflight" });
+  try {
+    const owner = (await ownerPool.query(`SELECT current_user AS role,current_database() AS database`)).rows[0];
+    const client = await observerPool.connect();
+    let observer;
+    try {
+      await client.query("BEGIN READ ONLY");
+      observer = (await client.query(`SELECT current_user AS role,current_database() AS database,
+        current_setting('transaction_read_only') AS transaction_read_only,
+        current_setting('default_transaction_read_only') AS default_transaction_read_only`)).rows[0];
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+    assert(owner?.role === "oid_owner" && owner.database === expectedDatabase,
+      "BPC application preflight must resolve as oid_owner in the isolated acceptance database");
+    assert(observer?.role === "oid_observer" && observer.database === expectedDatabase
+      && observer.transaction_read_only === "on",
+    "BPC observer preflight must resolve read-only in the same isolated acceptance database");
+    return { expectedDatabase, owner, observer };
+  } finally {
+    await ownerPool.end();
+    await observerPool.end();
+  }
+}
+
+function usdcUnits(value) {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?$/.test(value)) {
+    throw new Error("Run release price must be a six-place USDC decimal string");
+  }
+  const [whole, fraction = ""] = value.split(".");
+  return BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+}
+
+function formatUsdc(units) {
+  return `${units / 1_000_000n}.${(units % 1_000_000n).toString().padStart(6, "0")}`;
+}
+
+function selectedTrainingQuote(release, taskIds) {
+  const weights = { S1: 1n, S2: 1n, S4: 1n, M1: 2n, M3: 2n, M4: 2n, H1: 3n, H2: 3n };
+  const selectedWeight = taskIds.reduce((sum, taskId) => sum + (weights[taskId] ?? 0n), 0n);
+  assert(selectedWeight > 0n && taskIds.every((taskId) => Object.hasOwn(weights, taskId)),
+    "Training launch selection is not in the approved open-task inventory");
+  const numerator = usdcUnits(release.trainingPrice) * selectedWeight;
+  return formatUsdc((numerator + 14n) / 15n);
+}
+
+async function runEffectsSnapshot(connectionString, { ownerId, agentId, intentId, operationIds = [] }) {
+  const pool = new Pool({ connectionString, max: 1, application_name: "bpc-run-negative-readonly-observer" });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    const identity = (await client.query(`SELECT current_user AS role,current_database() AS database,
+      current_setting('transaction_read_only') AS transaction_read_only,
+      current_setting('default_transaction_read_only') AS default_transaction_read_only`)).rows[0];
+    assert(identity?.role === "oid_observer" && identity.database === databaseNameFromUrl(connectionString)
+      && identity.transaction_read_only === "on",
+      "BPC run denial snapshot must use the exact isolated database and read-only observer role");
+    const intentRows = await client.query(`SELECT id::text,owner_id::text,agent_id::text,operation_id,mode,task_ids,
+        status,run_id::text,quote_price_units::text,cash_ceiling_units::text,owner_policy_revision,agent_policy_revision
+      FROM oid_run_launch_intent WHERE owner_id=$1::uuid AND id=$2::uuid`, [ownerId, intentId]);
+    const agentIntents = await client.query(`SELECT id::text,operation_id,mode,task_ids,status,run_id::text,
+        quote_price_units::text,cash_ceiling_units::text FROM oid_run_launch_intent
+      WHERE owner_id=$1::uuid AND agent_id=$2::uuid ORDER BY created_at,id`, [ownerId, agentId]);
+    const runs = await client.query(`SELECT id::text,intent_id::text,owner_id::text,agent_id::text,status,task_ids,
+        quote_price_units::text,cash_ceiling_units::text,started_at,finished_at
+      FROM oid_benchmark_run WHERE owner_id=$1::uuid AND agent_id=$2::uuid ORDER BY queued_at,id`, [ownerId, agentId]);
+    const reservations = await client.query(`SELECT r.run_id::text,r.source_kind,r.bonus_grant_id::text,r.cash_provenance,
+        r.amount_units::text,r.state FROM oid_run_reservation r JOIN oid_benchmark_run b ON b.id=r.run_id
+      WHERE b.owner_id=$1::uuid AND b.agent_id=$2::uuid ORDER BY r.run_id,r.source_kind,r.id`, [ownerId, agentId]);
+    const budgetHolds = await client.query(`SELECT run_id::text,owner_id::text,agent_id::text,mode,utc_day,
+        amount_units::text,state FROM oid_run_budget_hold WHERE owner_id=$1::uuid AND agent_id=$2::uuid ORDER BY run_id`, [ownerId, agentId]);
+    const tasks = await client.query(`SELECT t.run_id::text,t.task_index,t.task_id,t.status
+      FROM oid_run_task t JOIN oid_benchmark_run b ON b.id=t.run_id
+      WHERE b.owner_id=$1::uuid AND b.agent_id=$2::uuid ORDER BY t.run_id,t.task_index`, [ownerId, agentId]);
+    const ledgerEntries = await client.query(`SELECT id::text,owner_id::text,bonus_grant_id::text,operation_id,entry_type,
+        source_kind,amount_units::text,available_delta_units::text,reserved_delta_units::text,expired_delta_units::text,
+        cash_provenance,created_at::text
+      FROM oid_ledger_entry WHERE owner_id=$1::uuid ORDER BY created_at,id`, [ownerId]);
+    const ledgerOperations = await client.query(`SELECT id::text,operation_id,action,actor_owner_id::text,subject_owner_id::text
+      FROM oid_ledger_operation WHERE operation_id=ANY($1::text[]) ORDER BY operation_id,id`, [operationIds]);
+    const runOperations = await client.query(`SELECT id::text,operation_id,actor_kind,actor_agent_id::text,action,response_json
+      FROM oid_run_operation WHERE owner_id=$1::uuid AND (operation_id=ANY($2::text[]) OR actor_agent_id=$3::uuid)
+      ORDER BY operation_id,id`, [ownerId, operationIds, agentId]);
+    const ledgerAudits = await client.query(`SELECT id::text,event_type,operation_id,actor_owner_id::text,
+        subject_owner_id::text,metadata FROM oid_ledger_audit
+      WHERE operation_id=ANY($1::text[]) OR (actor_owner_id=$2::uuid AND event_type LIKE 'run_%') ORDER BY operation_id,id`,
+    [operationIds, ownerId]);
+    const agentPolicy = await client.query(`SELECT agent_id::text,training,ranked,revision
+      FROM oid_agent_policy WHERE agent_id=$1::uuid`, [agentId]);
+    const bonusGrants = await client.query(`SELECT id::text,owner_id::text,amount_units::text,issued_by_owner_id::text,
+        reason,operation_id,expires_at::text FROM oid_bonus_grant WHERE owner_id=$1::uuid ORDER BY created_at,id`, [ownerId]);
+    const bonusAvailable = await client.query(`SELECT COALESCE(SUM(CASE
+        WHEN g.expires_at IS NOT NULL AND g.expires_at<=clock_timestamp() THEN 0
+        ELSE e.available_delta_units END),0)::text AS available_units
+      FROM oid_ledger_entry e LEFT JOIN oid_bonus_grant g ON g.id=e.bonus_grant_id
+      WHERE e.owner_id=$1::uuid AND e.source_kind='tester_bonus'`, [ownerId]);
+    const financialPolicy = await client.query(`SELECT allow_cash_shortfall,operation_limit_units::text,
+        utc_day_limit_units::text,category_limits,revision
+      FROM oid_agent_financial_policy WHERE owner_id=$1::uuid AND agent_id=$2::uuid`, [ownerId, agentId]);
+    await client.query("COMMIT");
+    return {
+      schemaVersion: "bpc-independent-run-denial-observation/v1",
+      identity,
+      intent: intentRows.rows[0] ?? null,
+      agentIntents: agentIntents.rows,
+      runs: runs.rows,
+      reservations: reservations.rows,
+      budgetHolds: budgetHolds.rows,
+      tasks: tasks.rows,
+      ledgerEntries: ledgerEntries.rows,
+      ledgerOperations: ledgerOperations.rows,
+      runOperations: runOperations.rows,
+      ledgerAudits: ledgerAudits.rows,
+      agentPolicy: agentPolicy.rows[0] ?? null,
+      bonusGrants: bonusGrants.rows,
+      bonusAvailableUnits: bonusAvailable.rows[0]?.available_units ?? "0",
+      financialPolicy: financialPolicy.rows[0] ?? null,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
+
+function runEffectsUnchanged(before, after) {
+  if (!before || !after) return false;
+  const fields = ["intent", "agentIntents", "runs", "reservations", "budgetHolds", "tasks", "ledgerEntries", "ledgerOperations",
+    "runOperations", "ledgerAudits", "agentPolicy", "bonusGrants", "bonusAvailableUnits", "financialPolicy"];
+  return fields.every((field) => JSON.stringify(before[field]) === JSON.stringify(after[field]));
+}
+
+async function setAgentTrainingPermission(page, captureApi, agentId, enabled) {
+  const card = page.getByTestId(`agent-card-${agentId}`);
+  await card.waitFor({ state: "visible", timeout: 15000 });
+  const toggle = card.getByTestId("agent-permission-training");
+  if (await toggle.isChecked() !== enabled) await toggle.click();
+  const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/owner/agents/${agentId}/permissions`
+    && response.request().method() === "PUT", { timeout: 15000 });
+  captureApi.action("click", "agent-permissions-save");
+  await card.getByTestId("agent-permissions-save").click();
+  const response = await responsePromise;
+  const body = await response.json().catch(() => ({}));
+  const operation = response.request().postDataJSON()?.operationId;
+  assert(response.status() === 200 && body?.agent?.id === agentId && body.agent.permissions?.training === enabled,
+    "Training permission update was not confirmed through the owner UI");
+  return { status: response.status(), operationId: typeof operation === "string" ? operation : null,
+    permission: body.agent.permissions.training, policyRevision: body.agent.policyRevision };
+}
+
+async function setFinancialPolicyThroughUi(page, captureApi, agentId, { operationLimit, allowCashShortfall = false }) {
+  const endpoint = `/api/owner/agents/${agentId}/financial-policy`;
+  const currentResponse = await page.request.get(endpoint);
+  const current = await currentResponse.json().catch(() => ({}));
+  assert(currentResponse.status() === 200 && Number.isInteger(current.revision), "Agent financial policy could not be loaded");
+  const form = page.getByTestId(`financial-policy-form-${agentId}`);
+  await form.waitFor({ state: "visible", timeout: 15000 });
+  const cashToggle = form.getByTestId(`financial-policy-cash-${agentId}`);
+  if (await cashToggle.isChecked() !== allowCashShortfall) await cashToggle.click();
+  const capFields = [
+    ["operation", operationLimit],
+    ["utc-day", null],
+    ["benchmark", null],
+    ["forum", null],
+  ];
+  for (const [kind, limit] of capFields) {
+    const unlimited = form.getByTestId(`financial-policy-${kind}-unlimited-${agentId}`);
+    const input = form.getByTestId(`financial-policy-${kind}-limit-${agentId}`);
+    if (limit === null) {
+      if (!(await unlimited.isChecked())) await unlimited.click();
+    } else {
+      if (await unlimited.isChecked()) await unlimited.click();
+      await input.fill(limit);
+    }
+  }
+  const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === endpoint
+    && response.request().method() === "PUT", { timeout: 15000 });
+  captureApi.action("click", `financial-policy-save-${agentId}`);
+  await form.getByTestId(`financial-policy-save-${agentId}`).click();
+  const response = await responsePromise;
+  const body = await response.json().catch(() => ({}));
+  assert(response.status() === 200 && body.allowCashShortfall === allowCashShortfall
+    && body.operationLimit === operationLimit,
+  "Financial cap and cash permission were not confirmed through the owner UI");
+  return { status: response.status(), operationId: response.request().postDataJSON()?.operationId ?? null,
+    allowCashShortfall: body.allowCashShortfall, operationLimit: body.operationLimit,
+    utcDayLimit: body.utcDayLimit, categoryLimits: body.categoryLimits, revision: body.revision };
+}
+
+async function createLaunchIntentThroughUi(page, captureApi, publicOrigin, agentId, taskIds = ["S1"]) {
+  await page.goto(new URL(`/runs?agentId=${encodeURIComponent(agentId)}`, publicOrigin).toString(), { waitUntil: "domcontentloaded" });
+  await page.getByTestId("run-intent-form").waitFor({ state: "visible", timeout: 15000 });
+  const catalogResponse = await page.request.get("/api/owner/runs/catalog");
+  const catalog = await catalogResponse.json().catch(() => ({}));
+  const release = catalog?.activeRelease;
+  if (catalogResponse.status() !== 200 || !release || catalog.intentCreationReady !== true
+    || release.completeRankedRelease !== true || !Array.isArray(release.openTaskIds)
+    || release.openTaskIds.length !== TRAINING_TASK_IDS.length
+    || release.openTaskIds.some((taskId, index) => taskId !== TRAINING_TASK_IDS[index])) {
+    return { status: "not_run", reasonCode: "validated_local_run_release_unavailable" };
+  }
+  const quote = selectedTrainingQuote(release, taskIds);
+  const allowedTasks = new Set(release.openTaskIds);
+  assert(taskIds.length > 0 && taskIds.every((taskId) => allowedTasks.has(taskId)),
+    "Training intent selection must use the active release open-task inventory");
+  for (const taskId of release.openTaskIds) {
+    const checkbox = page.getByTestId(`run-task-checkbox-${taskId}`);
+    if (taskIds.includes(taskId)) await checkbox.check();
+    else await checkbox.uncheck();
+  }
+  const createButton = page.getByTestId("run-intent-create");
+  await createButton.waitFor({ state: "visible", timeout: 15000 });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="run-intent-create"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  }, null, { timeout: 15000 });
+  const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/owner/runs/intents"
+    && response.request().method() === "POST", { timeout: 15000 });
+  captureApi.action("click", "run-intent-create");
+  await createButton.click();
+  const response = await responsePromise;
+  const body = await response.json().catch(() => ({}));
+  const request = response.request().postDataJSON() ?? {};
+  return { ...validateCreatedRunIntent({ responseStatus: response.status(), body, request, agentId,
+    expectedQuote: quote, expectedTaskIds: taskIds }),
+    releaseIdentity: release.releaseIdentity, manifestHash: release.manifestHash };
+}
+
+async function postOwnerIntentFromBrowser(page, captureApi, publicOrigin, agentId, taskIds, release, operation = operationId()) {
+  const body = {
+    operationId: operation,
+    agentId,
+    mode: "training",
+    taskIds,
+    cashCeiling: "0.000000",
+    expectedReleaseIdentity: release.releaseIdentity,
+    expectedManifestHash: release.manifestHash,
+    expectedQuotePrice: selectedTrainingQuote(release, taskIds),
+  };
+  const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/owner/runs/intents"
+    && response.request().method() === "POST", { timeout: 15000 });
+  captureApi.action("http-probe", "run-intent-create-disabled-by-current-mode-permission");
+  const resultPromise = page.evaluate(async ({ requestBody }) => {
+    const response = await fetch("/api/owner/runs/intents", {
+      method: "POST", credentials: "same-origin",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(requestBody),
+    });
+    let responseBody = {};
+    try { responseBody = await response.json(); } catch {}
+    return { status: response.status, errorCode: responseBody?.error?.code ?? null };
+  }, { requestBody: body });
+  const [result, response] = await Promise.all([resultPromise, responsePromise]);
+  const responseRequest = response.request();
+  let responseOperationId = null;
+  try { responseOperationId = responseRequest.postDataJSON()?.operationId ?? null; } catch {}
+  const responseObservation = { method: responseRequest.method(), path: new URL(response.url()).pathname,
+    status: response.status(), operationId: responseOperationId };
+  assert(responseObservation.method === "POST" && responseObservation.path === "/api/owner/runs/intents"
+    && responseObservation.status === result.status && responseObservation.operationId === operation,
+  "Missing-mode owner HTTP probe response was not correlated to its request operation");
+  return { ...result, method: "POST", path: "/api/owner/runs/intents", operationId: operation,
+    quotePrice: body.expectedQuotePrice, taskIds, response: responseObservation };
+}
+
+async function cancelIntentThroughUi(page, captureApi, intentId) {
+  const button = page.getByTestId(`run-intent-cancel-${intentId}`);
+  await button.waitFor({ state: "visible", timeout: 15000 });
+  const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/owner/runs/intents/${intentId}/cancel`
+    && response.request().method() === "POST", { timeout: 15000 });
+  captureApi.action("click", `run-intent-cancel-${intentId}`);
+  await button.click();
+  const response = await responsePromise;
+  const body = await response.json().catch(() => ({}));
+  return { status: response.status(), statusAfterCleanup: body?.intent?.status ?? null,
+    operationId: response.request().postDataJSON()?.operationId ?? null };
+}
+
+async function createNoCookieClient(publicOrigin) {
+  return playwrightRequest.newContext({ baseURL: publicOrigin, extraHTTPHeaders: { origin: publicOrigin }, timeout: 15000 });
+}
+
+async function safeHttpResult(response) {
+  const body = await response.json().catch(() => ({}));
+  return { status: response.status(), errorCode: typeof body?.error?.code === "string" ? body.error.code : null };
+}
+
+async function postAgentAccept(client, publicOrigin, intentId, operationId, bearer) {
+  const response = await client.post(`/api/agent/run-intents/${intentId}/accept`, {
+    headers: { authorization: `Bearer ${bearer}`, origin: publicOrigin, "content-type": "application/json" },
+    data: { operationId },
+  });
+  return { ...(await safeHttpResult(response)), method: "POST", path: `/api/agent/run-intents/${intentId}/accept`, operationId };
+}
+
+function bonusDenialUnchanged(before, after, codeId) {
+  if (!before || !after) return false;
+  const fields = ["codes", "redemptions", "claimOperations", "grants", "entries", "operations", "audits",
+    "ownerBalances", "cashEffectCount"];
+  return fields.every((field) => JSON.stringify(before[field]) === JSON.stringify(after[field]))
+    && before.codes.filter((row) => row.id === codeId).length === 1
+    && before.codes.find((row) => row.id === codeId)?.used_count === 0
+    && !after.redemptions.some((row) => row.code_id === codeId)
+    && !after.claimOperations.some((row) => row.code_id === codeId)
+    && !after.grants.length
+    && after.cashEffectCount === 0;
+}
+
+async function rejectUnauthenticatedBonusClaim({ adminPage, adminCapture, observerDatabaseUrl,
+  publicOrigin, ownerId, agentId, agentBearer, agentPreflight, label, asAgent }) {
+  const issued = await issueThroughUi(adminPage, adminCapture, {
+    label, kind: "single_use", amount: "0.250001", maximumUses: 1,
+  });
+  const operation = operationId();
+  const grantOperation = bonusGrantOperationId(issued.code.id, ownerId);
+  const refs = { codeIds: [issued.code.id], issueOperationIds: [issued.operationId], ownerIds: [ownerId],
+    operationIds: [operation], grantProbeOperationIds: [grantOperation] };
+  const before = await observerSnapshot(observerDatabaseUrl, refs);
+  const client = await createNoCookieClient(publicOrigin);
+  try {
+    const cookiesBefore = (await client.storageState()).cookies.length;
+    const response = await client.post(OWNER_REDEEM, {
+      ...(asAgent ? { headers: { authorization: `Bearer ${agentBearer}` } } : {}),
+      data: { operationId: operation, code: issued.secret },
+    });
+    const outcome = await safeHttpResult(response);
+    const cookiesAfter = (await client.storageState()).cookies.length;
+    const after = await observerSnapshot(observerDatabaseUrl, refs);
+    return {
+      boundary: asAgent ? "valid_agent_bearer_without_owner_cookie" : "anonymous_without_owner_cookie",
+      outcome: { ...outcome, method: "POST", path: OWNER_REDEEM, operationId: operation },
+      preflight: asAgent ? agentPreflight : null,
+      cookieCountBefore: cookiesBefore,
+      cookieCountAfter: cookiesAfter,
+      codeId: issued.code.id,
+      claimOwnerId: ownerId,
+      agentId: asAgent ? agentId : null,
+      issueOperationId: issued.operationId,
+      before,
+      after,
+      durableStateUnchanged: bonusDenialUnchanged(before, after, issued.code.id),
+      verified: outcome.status === 401 && outcome.errorCode === "UNAUTHORIZED"
+        && cookiesBefore === 0 && cookiesAfter === 0 && bonusDenialUnchanged(before, after, issued.code.id),
+    };
+  } finally {
+    await client.dispose();
+    issued.secret = "";
+  }
+}
+
+async function runSc005TransportNegatives({ adminPage, ownerId, agentOwnerId, adminCapture,
+  agentOwnerPage, databaseUrl, observerDatabaseUrl, publicOrigin, releaseActivation }) {
+  const expectedDatabase = requireAcceptanceDatabasePair(databaseUrl, observerDatabaseUrl);
+  assert(releaseActivation?.status === "activated_in_isolated_acceptance_database",
+    "Pinned local run release was not validated and activated in this isolated acceptance database");
+
+  const agentPage = await agentOwnerPage.context().newPage();
+  const runPage = await agentOwnerPage.context().newPage();
+  const agentCapture = attachSafeBrowserCapture(agentPage, "BPC-SC-005");
+  const runCapture = attachSafeBrowserCapture(runPage, "BPC-SC-005");
+  let bearer = "";
+  let agentClient;
+  try {
+    await agentPage.goto(new URL("/agents", publicOrigin).toString(), { waitUntil: "domcontentloaded" });
+    await agentPage.getByTestId("agent-create-form").waitFor({ state: "visible", timeout: 15000 });
+    const card = await createAcceptanceAgentCard(agentPage,
+      `BPC SC005 transport agent ${randomUUID().slice(0, 8)}`, agentCapture);
+    const enabled = await setAgentTrainingPermission(agentPage, agentCapture, card.id, true);
+    const credential = await issueAgentCredentialThroughUi(agentPage, card.id, "issue", agentCapture);
+    bearer = credential.secret;
+    credential.secret = "";
+    agentClient = await createNoCookieClient(publicOrigin);
+    const resource = new URL("/api/agent", publicOrigin).toString();
+    const preflightResponse = await agentClient.get("/api/agent/preflight", {
+      headers: { authorization: `Bearer ${bearer}`, "x-agent-id": card.id, "x-agent-resource": resource },
+    });
+    const preflightBody = await preflightResponse.json().catch(() => ({}));
+    const preflight = { status: preflightResponse.status(), allowed: preflightBody?.allowed === true,
+      agentId: preflightBody?.agentId ?? null, resource: preflightBody?.resource ?? null,
+      cookieCount: (await agentClient.storageState()).cookies.length };
+    assert(preflight.status === 200 && preflight.allowed && preflight.agentId === card.id
+      && preflight.resource === resource && preflight.cookieCount === 0,
+    "BPC SC005 transport agent credential did not preflight without owner cookies");
+
+    const anonymousClaim = await rejectUnauthenticatedBonusClaim({ adminPage, adminCapture,
+      observerDatabaseUrl, publicOrigin, ownerId, agentId: card.id, agentBearer: bearer,
+      label: "BPC SC005 anonymous claim denial", asAgent: false });
+    const agentClaim = await rejectUnauthenticatedBonusClaim({ adminPage, adminCapture,
+      observerDatabaseUrl, publicOrigin, ownerId, agentId: card.id, agentBearer: bearer,
+      agentPreflight: preflight, label: "BPC SC005 agent claim denial", asAgent: true });
+
+    await setFinancialPolicyThroughUi(agentPage, agentCapture, card.id,
+      { operationLimit: null, allowCashShortfall: false });
+    const observedInitial = await runEffectsSnapshot(observerDatabaseUrl, {
+      ownerId: agentOwnerId, agentId: card.id, intentId: null, operationIds: [],
+    });
+    assert(observedInitial.identity.database === expectedDatabase && observedInitial.bonusAvailableUnits === "0",
+      "SC005 run-transport fixture owner must start with an independently observed zero bonus balance");
+
+    const catalogResponse = await agentPage.request.get("/api/owner/runs/catalog");
+    const catalog = await catalogResponse.json().catch(() => ({}));
+    const release = catalog?.activeRelease;
+    assert(catalogResponse.status() === 200 && release && catalog.intentCreationReady === true,
+      "Validated pinned release did not enable local owner launch-intent creation");
+    const runCases = {};
+    {
+      const quote = selectedTrainingQuote(release, ["S1"]);
+      const quoteUnits = usdcUnits(quote);
+      const cap = formatUsdc(quoteUnits > 0n ? quoteUnits - 1n : 0n);
+      const capPolicy = await setFinancialPolicyThroughUi(agentPage, agentCapture, card.id,
+        { operationLimit: cap, allowCashShortfall: false });
+
+      await setAgentTrainingPermission(agentPage, agentCapture, card.id, false);
+      await runPage.goto(new URL(`/runs?agentId=${encodeURIComponent(card.id)}`, publicOrigin).toString(),
+        { waitUntil: "domcontentloaded" });
+      await runPage.getByTestId("run-intent-form").waitFor({ state: "visible", timeout: 15000 });
+      const modeCreateOperation = operationId();
+      const modeBefore = await runEffectsSnapshot(observerDatabaseUrl, { ownerId: agentOwnerId, agentId: card.id,
+        intentId: null, operationIds: [modeCreateOperation] });
+      const modeOutcome = await postOwnerIntentFromBrowser(runPage, runCapture, publicOrigin, card.id,
+        ["S1"], release, modeCreateOperation);
+      const modeAfter = await runEffectsSnapshot(observerDatabaseUrl, { ownerId: agentOwnerId, agentId: card.id,
+        intentId: null, operationIds: [modeCreateOperation] });
+      const modeUnchanged = runEffectsUnchanged(modeBefore, modeAfter);
+      runCases.missingModePermission = {
+        boundary: "local_authenticated_owner_browser_http_intent_creation_with_training_permission_disabled",
+        ownerOperationId: modeCreateOperation, permissionBeforeDenial: modeBefore.agentPolicy?.training === false,
+        request: modeOutcome, before: modeBefore, after: modeAfter,
+        durableStateUnchanged: modeUnchanged,
+        verified: modeOutcome.status === 403 && modeOutcome.errorCode === "MODE_NOT_AUTHORIZED"
+          && modeBefore.agentPolicy?.training === false && modeUnchanged,
+      };
+      await setAgentTrainingPermission(agentPage, agentCapture, card.id, true);
+
+      const capIntent = await createLaunchIntentThroughUi(runPage, runCapture, publicOrigin, card.id, ["S1"]);
+      assert(capIntent.status === 201, "Nominal-cap fixture intent was not created through the owner UI");
+      const capAcceptId = operationId();
+      const capBefore = await runEffectsSnapshot(observerDatabaseUrl, { ownerId: agentOwnerId, agentId: card.id,
+        intentId: capIntent.intentId, operationIds: [capIntent.operationId, capAcceptId] });
+      const capOutcome = await postAgentAccept(agentClient, publicOrigin, capIntent.intentId, capAcceptId, bearer);
+      const capAfter = await runEffectsSnapshot(observerDatabaseUrl, { ownerId: agentOwnerId, agentId: card.id,
+        intentId: capIntent.intentId, operationIds: [capIntent.operationId, capAcceptId] });
+      const capUnchanged = runEffectsUnchanged(capBefore, capAfter);
+      const capCleanup = await cancelIntentThroughUi(runPage, runCapture, capIntent.intentId);
+      runCases.nominalCapExceeded = {
+        boundary: "local_authenticated_agent_accept_http_under_owner_per_operation_cap",
+        intent: capIntent, financialPolicy: capPolicy, operationQuoteUnits: quoteUnits.toString(),
+        operationLimitUnits: usdcUnits(cap).toString(), accept: capOutcome,
+        before: capBefore, after: capAfter, cleanup: capCleanup,
+        durableStateUnchanged: capUnchanged,
+        verified: quoteUnits > usdcUnits(cap) && capOutcome.status === 409
+          && capOutcome.errorCode === "AGENT_BUDGET_EXCEEDED" && capUnchanged
+          && capCleanup.status === 200 && capCleanup.statusAfterCleanup === "cancelled",
+      };
+
+      const unlimitedPolicy = await setFinancialPolicyThroughUi(agentPage, agentCapture, card.id,
+        { operationLimit: null, allowCashShortfall: false });
+      const fullSelection = [...release.openTaskIds];
+      const shortfallIntent = await createLaunchIntentThroughUi(runPage, runCapture, publicOrigin, card.id, fullSelection);
+      assert(shortfallIntent.status === 201, "Insufficient-bonus fixture intent was not created through the owner UI");
+      const shortfallAcceptId = operationId();
+      const shortfallBefore = await runEffectsSnapshot(observerDatabaseUrl, { ownerId: agentOwnerId, agentId: card.id,
+        intentId: shortfallIntent.intentId, operationIds: [shortfallIntent.operationId, shortfallAcceptId] });
+      const shortfallQuoteUnits = usdcUnits(shortfallIntent.quotePrice);
+      const shortfallUnits = shortfallQuoteUnits - BigInt(shortfallBefore.bonusAvailableUnits);
+      const shortfallOutcome = await postAgentAccept(agentClient, publicOrigin, shortfallIntent.intentId,
+        shortfallAcceptId, bearer);
+      const shortfallAfter = await runEffectsSnapshot(observerDatabaseUrl, { ownerId: agentOwnerId, agentId: card.id,
+        intentId: shortfallIntent.intentId, operationIds: [shortfallIntent.operationId, shortfallAcceptId] });
+      const shortfallUnchanged = runEffectsUnchanged(shortfallBefore, shortfallAfter);
+      const shortfallCleanup = await cancelIntentThroughUi(runPage, runCapture, shortfallIntent.intentId);
+      runCases.insufficientBonus = {
+        boundary: "local_authenticated_agent_accept_http_bonus_shortfall_without_cash_permission",
+        intent: shortfallIntent,
+        financialPolicy: unlimitedPolicy,
+        quoteUnits: shortfallQuoteUnits.toString(), bonusAvailableUnits: shortfallBefore.bonusAvailableUnits,
+        shortfallUnits: shortfallUnits.toString(), accept: shortfallOutcome,
+        before: shortfallBefore, after: shortfallAfter, cleanup: shortfallCleanup,
+        durableStateUnchanged: shortfallUnchanged,
+        verified: shortfallQuoteUnits > BigInt(shortfallBefore.bonusAvailableUnits) && shortfallUnits > 0n
+          && unlimitedPolicy.allowCashShortfall === false && unlimitedPolicy.operationLimit === null
+          && shortfallOutcome.status === 409 && shortfallOutcome.errorCode === "CASH_PERMISSION_REQUIRED"
+          && shortfallUnchanged && shortfallCleanup.status === 200
+          && shortfallCleanup.statusAfterCleanup === "cancelled",
+      };
+    }
+
+    return {
+      schemaVersion: "bpc-sc005-authenticated-transport-negatives/v1",
+      boundary: "local_isolated_acceptance_database_and_loopback_http",
+      localMode: "no_beta_manifest_or_beta_bonus_only_policy",
+      releaseActivation,
+      agent: { ownerId: agentOwnerId, agentId: card.id, creationOperationId: card.operationId,
+        trainingPermissionEnabledOperationId: enabled.operationId, credentialIssued: true,
+        preflight, credentialSource: "manual_agent_bearer", credentialValuePersisted: false },
+      browser: { agentManagement: projectCapture(agentCapture), runLaunch: projectCapture(runCapture) },
+      bonusClaimDenials: { anonymous: anonymousClaim, agent: agentClaim },
+      runDenials: runCases,
+      localBoundaryOnly: true,
+      externalTargetHost: false,
+      externalGoogle: false,
+      fullScenarioAcceptance: false,
+    };
+  } finally {
+    bearer = "";
+    if (agentClient) await agentClient.dispose();
+    await runPage.close().catch(() => undefined);
+    await agentPage.close().catch(() => undefined);
   }
 }
 
@@ -377,6 +930,15 @@ function scenarioData(scenarioId, localObservations, negativeVariants, browserDa
 
 export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newContext, publicOrigin,
   login, observerDatabaseUrl, databaseUrl, restartApi, rerunMigrations }) {
+  const databaseIdentity = await verifyOwnerObserverDatabaseIdentity(databaseUrl, observerDatabaseUrl);
+  const { validateAndActivatePinnedRelease } = await import("./genuine-s1-cases.mjs");
+  const activation = await validateAndActivatePinnedRelease({ repositoryRoot: REPOSITORY_ROOT, databaseUrl, observerDatabaseUrl });
+  assert(activation.status === "activated_in_isolated_acceptance_database",
+    "Pinned local run release was not validated and activated in this isolated acceptance database");
+  const localReleaseActivation = { status: activation.status, releaseIdentity: activation.releaseIdentity,
+    manifestHash: activation.manifestHash, trainingPriceUnits: activation.trainingPriceUnits,
+    sourceInputCount: activation.sourceInputCount,
+    boundary: "pinned_release_validation_and_activation_in_fresh_isolated_acceptance_database" };
   const adminBrowser = attachSafeBrowserCapture(adminPage, "BPC-SC-003");
   await adminPage.goto(new URL("/admin/bonus-codes", publicOrigin).toString(), { waitUntil: "domcontentloaded" });
   await adminPage.getByTestId("bonus-code-issue-form").waitFor({ state: "visible", timeout: 15000 });
@@ -537,6 +1099,9 @@ export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newCont
   });
   const sc005OwnerBrowser = attachSafeBrowserCapture(ownerPage, "BPC-SC-005");
   const sc005SecondOwnerBrowser = attachSafeBrowserCapture(secondOwnerPage, "BPC-SC-005");
+  const sc005TransportNegatives = await runSc005TransportNegatives({ adminPage, ownerId,
+    agentOwnerId: invited.owner.id, adminCapture: sc005AdminBrowser, agentOwnerPage: secondOwnerPage,
+    observerDatabaseUrl, databaseUrl, publicOrigin, releaseActivation: localReleaseActivation });
   const ownerBefore = await readBilling(ownerPage);
   const secondBefore = await readBilling(secondOwnerPage);
   const groupClaim = await redeemThroughUi(ownerPage, sc005OwnerBrowser, sc005Group.secret);
@@ -568,10 +1133,19 @@ export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newCont
   const ownerAfter = await readBilling(ownerPage, ownerExpectedBonusAfter);
   const secondAfter = await readBilling(secondOwnerPage, secondExpectedBonusAfter);
   const sc005InitialSnapshot = await observerSnapshot(observerDatabaseUrl, {
-    codeIds: [sc005Group.code.id, sc005Single.code.id, sc005DisabledCode.code.id], ownerIds: [ownerId, invited.owner.id],
+    codeIds: [sc005Group.code.id, sc005Single.code.id, sc005DisabledCode.code.id,
+      sc005TransportNegatives.bonusClaimDenials.anonymous.codeId, sc005TransportNegatives.bonusClaimDenials.agent.codeId],
+    issueOperationIds: [sc005Group.operationId, sc005Single.operationId, sc005DisabledCode.operationId,
+      sc005TransportNegatives.bonusClaimDenials.anonymous.issueOperationId,
+      sc005TransportNegatives.bonusClaimDenials.agent.issueOperationId],
+    ownerIds: [ownerId, invited.owner.id],
     operationIds: [sc005Group.operationId, sc005Single.operationId, sc005DisabledCode.operationId,
       groupClaim.operationId, singleClaim.operationId, invalidCodeClaim.operationId,
-      exhaustedCodeClaim.operationId, disabledCodeClaim.operationId].filter(Boolean),
+      exhaustedCodeClaim.operationId, disabledCodeClaim.operationId,
+      sc005TransportNegatives.bonusClaimDenials.anonymous.outcome.operationId,
+      sc005TransportNegatives.bonusClaimDenials.agent.outcome.operationId].filter(Boolean),
+    grantProbeOperationIds: [bonusGrantOperationId(sc005TransportNegatives.bonusClaimDenials.anonymous.codeId, ownerId),
+      bonusGrantOperationId(sc005TransportNegatives.bonusClaimDenials.agent.codeId, ownerId)],
   });
   const groupRedemption = sc005InitialSnapshot.redemptions.find((row) => row.code_id === sc005Group.code.id);
   const singleRedemption = sc005InitialSnapshot.redemptions.find((row) => row.code_id === sc005Single.code.id);
@@ -601,14 +1175,16 @@ export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newCont
     disabled_code: sc005DisableResponse.status() === 200 && disabledCodeClaim.outcome.status === 409
       && disabledCodeClaim.outcome.errorCode === "BONUS_CODE_DISABLED",
     exhausted_code: exhaustedCodeClaim.outcome.status === 409 && exhaustedCodeClaim.outcome.errorCode === "BONUS_CODE_EXHAUSTED",
-    insufficient_bonus: null,
-    missing_mode_permission: null,
-    nominal_cap_exceeded: null,
-    anonymous_or_agent_claim: null,
+    insufficient_bonus: sc005TransportNegatives.runDenials.insufficientBonus.verified === true,
+    missing_mode_permission: sc005TransportNegatives.runDenials.missingModePermission.verified === true,
+    nominal_cap_exceeded: sc005TransportNegatives.runDenials.nominalCapExceeded.verified === true,
+    anonymous_or_agent_claim: sc005TransportNegatives.bonusClaimDenials.anonymous.verified === true
+      && sc005TransportNegatives.bonusClaimDenials.agent.verified === true,
   }, {
     admin: projectCapture(sc005AdminBrowser.capture),
     owner: projectCapture(sc005OwnerBrowser.capture),
     secondOwner: projectCapture(sc005SecondOwnerBrowser.capture),
+    transportNegatives: sc005TransportNegatives,
     owners: [{ id: ownerId, admissionStatus: primaryOwner.admissionStatus }, { id: invited.owner.id, admissionStatus: invited.owner.admissionStatus }],
     outcomes: {
       groupIssue: { ...sc005Group.outcome, operationId: sc005Group.operationId },
@@ -625,9 +1201,14 @@ export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newCont
       secondBalanceBefore: { cash: secondBefore.cash, bonus: secondBefore.bonus },
       secondBalanceAfter: { cash: secondAfter.cash, bonus: secondAfter.bonus },
       independentBonusBalanceMatch: independentBalanceMatch,
+      anonymousBonusClaim: sc005TransportNegatives.bonusClaimDenials.anonymous.outcome,
+      agentBonusClaim: sc005TransportNegatives.bonusClaimDenials.agent.outcome,
+      modePermissionDenial: sc005TransportNegatives.runDenials.missingModePermission.request,
+      nominalCapDenial: sc005TransportNegatives.runDenials.nominalCapExceeded.accept,
+      insufficientBonusDenial: sc005TransportNegatives.runDenials.insufficientBonus.accept,
       bonusSpendBoundary: { status: "not_run", reasonCode: "local_run_executor_not_configured_for_bpc_capture" },
     },
-  }, sc005InitialSnapshot, "The local capture does not have an authorized training/full12 worker boundary.");
+  }, sc005InitialSnapshot, "This local capture does not claim the separate positive code-funded training/full12 worker boundary.");
 
   const adminSc004 = attachSafeBrowserCapture(adminPage, "BPC-SC-004");
   const ownerSc004 = attachSafeBrowserCapture(ownerPage, "BPC-SC-004");
@@ -994,11 +1575,18 @@ export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newCont
     exhaustedClaim: exhaustedCodeClaim.outcome,
   };
   const sc005Snapshot = await observerSnapshot(observerDatabaseUrl, {
-    codeIds: [sc005Group.code.id, sc005Single.code.id, sc005DisabledCode.code.id],
+    codeIds: [sc005Group.code.id, sc005Single.code.id, sc005DisabledCode.code.id,
+      sc005TransportNegatives.bonusClaimDenials.anonymous.codeId, sc005TransportNegatives.bonusClaimDenials.agent.codeId],
+    issueOperationIds: [sc005Group.operationId, sc005Single.operationId, sc005DisabledCode.operationId,
+      sc005TransportNegatives.bonusClaimDenials.anonymous.issueOperationId,
+      sc005TransportNegatives.bonusClaimDenials.agent.issueOperationId],
     ownerIds: [ownerId, invited.owner.id],
     operationIds: [sc005Group.operationId, sc005Single.operationId, groupClaim.operationId, singleClaim.operationId,
       sc005DisabledCode.operationId, invalidCodeClaim.operationId, exhaustedCodeClaim.operationId,
-      disabledCodeClaim.operationId].filter(Boolean),
+      disabledCodeClaim.operationId, sc005TransportNegatives.bonusClaimDenials.anonymous.outcome.operationId,
+      sc005TransportNegatives.bonusClaimDenials.agent.outcome.operationId].filter(Boolean),
+    grantProbeOperationIds: [bonusGrantOperationId(sc005TransportNegatives.bonusClaimDenials.anonymous.codeId, ownerId),
+      bonusGrantOperationId(sc005TransportNegatives.bonusClaimDenials.agent.codeId, ownerId)],
   });
   sc005Data.databaseData = sc005Snapshot;
 
@@ -1029,14 +1617,40 @@ export async function runBonusCodeCases({ adminPage, ownerPage, ownerId, newCont
     };
   }
 
+  let directBonusOnlyCashShortfall = { status: "not_run", reasonCode: "direct_service_shortfall_probe_not_started" };
+  try {
+    const { runBonusOnlyCashSubstitutionCase } = await import("./bonus-funding-cases.mjs");
+    directBonusOnlyCashShortfall = await runBonusOnlyCashSubstitutionCase({
+      databaseUrl, observerDatabaseUrl, captureId: randomUUID(),
+    });
+  } catch (error) {
+    directBonusOnlyCashShortfall = {
+      schemaVersion: "bpc-sc005-bonus-only-cash-substitution/v1",
+      boundary: "local_isolated_direct_service_with_independent_read_only_postgres",
+      status: "failed",
+      reasonCode: typeof error?.code === "string" && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
+        ? error.code : "direct_service_shortfall_probe_failed",
+      productBoundaryClaims: { browser: false, targetHost: false, externalModel: false, fullScenarioAcceptance: false },
+    };
+  }
+  sc005Data.supplementaryEvidence = {
+    syntheticDirectServiceBetaBonusOnlyCashSubstitution: directBonusOnlyCashShortfall,
+    boundary: "separate_from_local_authenticated_http_insufficient_bonus_denial",
+  };
+
   const actualLocalBoundary = {
     profile: "local_docker_google_oauth_fixture",
     publicOrigin,
+    databaseIdentity,
     externalGoogleUsed: false,
     externalTargetHost: false,
     browser: "Playwright Chromium through owner web UI and same-origin Fastify API",
     durableObserverRole: sc006Snapshot.observer.role,
     durableObserverReadOnly: sc006Snapshot.observer.transaction_read_only === "on",
+    validatedLocalRunRelease: sc005TransportNegatives.releaseActivation.status,
+    betaProfileActivated: false,
+    externalModelUsed: false,
+    fullScenarioAcceptance: false,
   };
   const result = {
     scenarioData: { "BPC-SC-003": sc003Data, "BPC-SC-004": sc004Data, "BPC-SC-005": sc005Data, "BPC-SC-006": sc006Data },

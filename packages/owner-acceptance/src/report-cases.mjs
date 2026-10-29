@@ -3,6 +3,7 @@ import { lstat, readFile, readdir, realpath, writeFile } from "node:fs/promises"
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import pg from "pg";
 import { attachSafeBrowserCapture } from "./browser-support.mjs";
+import { createCard, issueThroughUi } from "./credential-cases.mjs";
 import { runLocalOperationsCases } from "./operations-cases.mjs";
 
 const { Pool } = pg;
@@ -267,6 +268,42 @@ async function readSnapshot(pool, ownerIds, reportIds = []) {
   } finally { client.release(); }
 }
 
+async function readRateLimitSnapshot(pool, windowSeconds) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    const identity = (await client.query(`SELECT current_user AS role,current_database() AS database_name,
+      current_setting('transaction_read_only') AS transaction_read_only`)).rows[0];
+    assert(identity?.role === "oid_observer" && identity.transaction_read_only === "on",
+      "Rate-limit evidence requires an independent read-only oid_observer transaction");
+    const clock = (await client.query(`SELECT floor(extract(epoch FROM clock_timestamp()))::bigint AS epoch_seconds`)).rows[0];
+    const databaseClockEpochSeconds = Number(clock?.epoch_seconds);
+    assert(Number.isSafeInteger(databaseClockEpochSeconds) && databaseClockEpochSeconds > 0
+      && Number.isSafeInteger(windowSeconds) && windowSeconds > 0,
+    "The independent observer returned an invalid rate-limit database clock");
+    const bucketIndex = Math.floor(databaseClockEpochSeconds / windowSeconds);
+    const currentBucketRows = await client.query(`SELECT key_hash,bucket_start,request_count
+      FROM oid_rate_limit WHERE bucket_start=$1 ORDER BY key_hash`, [bucketIndex]);
+    const rows = currentBucketRows.rows.map((row) => ({
+      keyHashSha256: hash(row.key_hash),
+      bucketStart: Number(row.bucket_start),
+      requestCount: Number(row.request_count),
+    }));
+    await client.query("COMMIT");
+    return {
+      identity: { databaseRole: identity.role, databaseName: identity.database_name,
+        transactionReadOnly: identity.transaction_read_only },
+      databaseClockEpochSeconds,
+      bucketIndex,
+      bucketStartSeconds: bucketIndex * windowSeconds,
+      rows,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
+}
+
 async function privateImageSnapshot(privateDataDir, uploads) {
   const root = await realpath(resolve(privateDataDir));
   const directory = resolve(root, "reports", "images");
@@ -511,6 +548,83 @@ async function readOwnerCounts(pool, ownerId) {
   } finally { client.release(); }
 }
 
+async function readMalformedUploadHousekeepingState(pool, uploadIds) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    const identity = (await client.query(`SELECT current_user AS role,current_database() AS database_name,
+      current_setting('transaction_read_only') AS transaction_read_only`)).rows[0];
+    assert(identity?.role === "oid_observer" && identity.transaction_read_only === "on",
+      "Malformed-upload housekeeping evidence requires an independent read-only oid_observer transaction");
+    const uploads = await client.query(`SELECT id::text,status FROM oid_support_image_upload
+      WHERE id=ANY($1::uuid[]) ORDER BY id`, [uploadIds]);
+    const receiptCount = (await client.query(`SELECT count(*)::int AS count FROM oid_support_upload_gc_receipt
+      WHERE status='complete' AND reason='failed_upload'`)).rows[0];
+    await client.query("COMMIT");
+    return {
+      observerIdentity: { databaseRole: identity.role, databaseName: identity.database_name,
+        transactionReadOnly: identity.transaction_read_only },
+      uploads: uploads.rows,
+      completeFailedUploadGcReceiptCount: receiptCount.count,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
+}
+
+async function waitForMalformedUploadHousekeeping({ observerPool, uploadIds, baseline }) {
+  const timeoutMs = 15_000;
+  const pollIntervalMs = 350;
+  assert(uploadIds.length === 4 && new Set(uploadIds).size === 4,
+    "Malformed-upload housekeeping must observe the three corrupt and one SVG staging uploads");
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let pollCount = 0;
+  let state;
+  const observedStatuses = new Set();
+  do {
+    state = await readMalformedUploadHousekeepingState(observerPool, uploadIds);
+    pollCount++;
+    for (const upload of state.uploads) {
+      observedStatuses.add(upload.status);
+      assert(upload.status === "failed",
+        "A malformed screenshot upload was not in the failed state while awaiting natural housekeeping");
+    }
+    if (state.uploads.length === 0) break;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(pollIntervalMs, remainingMs)));
+  } while (Date.now() < deadline);
+
+  assert(state?.uploads.length === 0,
+    "Malformed screenshot uploads did not disappear through natural housekeeping within 15 seconds");
+  assert(state.observerIdentity.databaseRole === baseline.observerIdentity.databaseRole
+    && state.observerIdentity.databaseName === baseline.observerIdentity.databaseName
+    && state.observerIdentity.transactionReadOnly === baseline.observerIdentity.transactionReadOnly,
+  "Malformed-upload housekeeping observer identity changed during the isolated staging probe");
+  const receiptDelta = state.completeFailedUploadGcReceiptCount - baseline.completeFailedUploadGcReceiptCount;
+  assert(receiptDelta >= 0, "The isolated failed-upload GC receipt count moved backwards during staging cleanup");
+  return {
+    scope: "fresh_isolated_capture_malformed_staging_housekeeping",
+    separateFromAuthorizationEffects: true,
+    observerIdentity: state.observerIdentity,
+    baselineCapturedAt: "before_malformed_upload_staging",
+    namedStagedUploadIdSha256s: uploadIds.map((uploadId) => hash(uploadId)).sort(),
+    namedStagedUploadCount: uploadIds.length,
+    namedStagedUploadRowsRemaining: state.uploads.length,
+    observedStagingStatuses: [...observedStatuses].sort(),
+    pollCount,
+    pollIntervalMs,
+    elapsedMs: Date.now() - startedAt,
+    timeoutMs,
+    completeFailedUploadGcReceiptCountBeforeStaging: baseline.completeFailedUploadGcReceiptCount,
+    completeFailedUploadGcReceiptCountAfterSettlement: state.completeFailedUploadGcReceiptCount,
+    completeFailedUploadGcReceiptCountDelta: receiptDelta,
+    gcReceiptBinding: "aggregate_only_no_per_upload_id_binding",
+  };
+}
+
 async function observeOwnerPost({ page, observerPool, ownerId, publicOrigin, name, path, data, multipart, expectedStatuses }) {
   const before = await readOwnerCounts(observerPool, ownerId);
   const requestOptions = { headers: { origin: publicOrigin }, ...(multipart ? { multipart } : { data }) };
@@ -552,6 +666,27 @@ function domainSideEffectState(snapshot) {
   };
 }
 
+function reportDomainEffectEvidence(before, after) {
+  const reportStateBeforeJson = JSON.stringify(reportNegativeState(before));
+  const reportStateAfterJson = JSON.stringify(reportNegativeState(after));
+  const domainStateBeforeJson = JSON.stringify(domainSideEffectState(before));
+  const domainStateAfterJson = JSON.stringify(domainSideEffectState(after));
+  const noReportOrDomainEffects = reportStateBeforeJson === reportStateAfterJson
+    && domainStateBeforeJson === domainStateAfterJson;
+  return {
+    effectScope: "report_and_domain_rows_excluding_oid_rate_limit",
+    reportStateBeforeJson,
+    reportStateAfterJson,
+    domainStateBeforeJson,
+    domainStateAfterJson,
+    reportStateBeforeSha256: hash(reportStateBeforeJson),
+    reportStateAfterSha256: hash(reportStateAfterJson),
+    domainStateBeforeSha256: hash(domainStateBeforeJson),
+    domainStateAfterSha256: hash(domainStateAfterJson),
+    noReportOrDomainEffects,
+  };
+}
+
 async function observeReportHttpNegative({ page, observerPool, ownerId, observerOwnerIds = [ownerId], publicOrigin, name, method = "POST",
   path = REPORTS, data = undefined, expectedStatus, expectedErrorCode }) {
   const before = await readSnapshot(observerPool, observerOwnerIds);
@@ -585,12 +720,293 @@ async function observeReportHttpNegative({ page, observerPool, ownerId, observer
     reportRowsAfter: after.totalCounts.reports,
     uploadRowsBefore: before.totalCounts.uploads,
     uploadRowsAfter: after.totalCounts.uploads,
+    effectScope: "report_and_domain_rows_excluding_oid_rate_limit",
     reportStateBeforeSha256: reportStateBefore,
     reportStateAfterSha256: reportStateAfter,
     domainStateBeforeSha256: domainStateBefore,
     domainStateAfterSha256: domainStateAfter,
-    noDurableEffects: true,
   };
+}
+
+async function exerciseOwnerReportFlood({ page, observerPool, observerOwnerIds, publicOrigin }) {
+  const rateLimitMax = 120; // The pinned local acceptance API starts with OID_AUTH_RATE_LIMIT_MAX=120.
+  const windowSeconds = 60;
+  const attemptCap = rateLimitMax + 1;
+  const waitMs = windowSeconds * 1000 - (Date.now() % (windowSeconds * 1000));
+  if (waitMs < 15_000) await new Promise((resolveDelay) => setTimeout(resolveDelay, waitMs + 50));
+  const startedAt = Date.now();
+  const before = await readSnapshot(observerPool, observerOwnerIds);
+  const rateBefore = await readRateLimitSnapshot(observerPool, windowSeconds);
+  const bucketStartSeconds = rateBefore.bucketStartSeconds;
+  assert(Math.floor(Date.now() / 1000 / windowSeconds) * windowSeconds === bucketStartSeconds,
+    "The local API and independent database observer disagree on the rate-limit window");
+  const prefillAttempts = [];
+  for (let index = 0; index < attemptCap; index++) {
+    assert(Math.floor(Date.now() / 1000 / windowSeconds) * windowSeconds === bucketStartSeconds,
+      "The bounded report flood crossed the configured rate-limit window before receiving a denial");
+    const response = await page.request.post(new URL(REPORTS, publicOrigin).toString(), {
+      headers: { origin: publicOrigin },
+      data: { operationId: operationId(), title: "", body: "" },
+    });
+    const payload = await response.json().catch(() => ({}));
+    const rawCode = payload?.error?.code ?? payload?.code;
+    const errorCode = typeof rawCode === "string" && /^[A-Z0-9_]{2,80}$/.test(rawCode) ? rawCode : null;
+    prefillAttempts.push({ responseStatus: response.status(), errorCode });
+    if (response.status() === 429) break;
+    assert(response.status() === 400 && errorCode === "INVALID_REPORT",
+      "A bounded invalid report submission returned an unexpected response before the rate limit");
+    assert(Date.now() - startedAt < 55_000,
+      "The bounded report flood exceeded its single-window execution budget");
+  }
+  assert(prefillAttempts.at(-1)?.responseStatus === 429 && prefillAttempts.at(-1)?.errorCode === "RATE_LIMITED",
+    "The bounded report submission loop did not reach the production per-IP 429 limiter");
+  const rateBeforeValid = await readRateLimitSnapshot(observerPool, windowSeconds);
+  const beforeValidRemainingMs = windowSeconds * 1000 - (Date.now() % (windowSeconds * 1000));
+  assert(rateBeforeValid.bucketIndex === rateBefore.bucketIndex
+    && rateBeforeValid.identity.databaseName === rateBefore.identity.databaseName
+    && Math.floor(Date.now() / 1000 / windowSeconds) * windowSeconds === bucketStartSeconds
+    && beforeValidRemainingMs > 15_000 && Date.now() - startedAt < 45_000,
+  "The bounded prefill reached the limiter too close to a bucket rollover for a safe valid-payload denial");
+
+  const validPayload = { operationId: operationId(), title: "Rate-limit boundary probe", body: "Bounded synthetic report submission." };
+  const validPayloadShape = {
+    fieldNames: Object.keys(validPayload).sort(),
+    operationIdIsCanonical: /^[0-9a-f]{32}$/.test(validPayload.operationId),
+    titleLength: validPayload.title.length,
+    bodyLength: validPayload.body.length,
+  };
+  const finalResponse = await page.request.post(new URL(REPORTS, publicOrigin).toString(), {
+    headers: { origin: publicOrigin }, data: validPayload,
+  });
+  const finalPayload = await finalResponse.json().catch(() => ({}));
+  const rawFinalCode = finalPayload?.error?.code ?? finalPayload?.code;
+  const finalErrorCode = typeof rawFinalCode === "string" && /^[A-Z0-9_]{2,80}$/.test(rawFinalCode) ? rawFinalCode : null;
+  const rateAfter = await readRateLimitSnapshot(observerPool, windowSeconds);
+  const after = await readSnapshot(observerPool, observerOwnerIds);
+  const effects = reportDomainEffectEvidence(before, after);
+  const elapsedMs = Date.now() - startedAt;
+  assert(rateAfter.bucketIndex === rateBefore.bucketIndex && rateAfter.bucketStartSeconds === bucketStartSeconds
+    && rateBefore.identity.databaseName === rateAfter.identity.databaseName
+    && Math.floor(Date.now() / 1000 / windowSeconds) * windowSeconds === bucketStartSeconds && elapsedMs < 55_000,
+  "The rate-limit probe did not remain inside its database-observed window");
+  assert(finalResponse.status() === 429 && finalErrorCode === "RATE_LIMITED",
+    "A valid report payload was not rejected by the already-saturated production rate limiter");
+  assert(effects.noReportOrDomainEffects,
+    "The report flood changed report, image, audit, financial, run, task, action, or timer state");
+  const requestsMade = prefillAttempts.length + 1;
+  const beforeByKeyHash = new Map(rateBefore.rows.map((row) => [row.keyHashSha256, row]));
+  const candidates = rateAfter.rows.flatMap((row) => {
+    const prior = beforeByKeyHash.get(row.keyHashSha256);
+    const priorCount = prior?.bucketStart === rateBefore.bucketIndex ? prior.requestCount : 0;
+    const requestCountDelta = row.requestCount - priorCount;
+    return row.bucketStart === rateAfter.bucketIndex && priorCount < rateLimitMax && requestCountDelta === requestsMade
+      ? [{ keyHashSha256: row.keyHashSha256, priorCount, finalCount: row.requestCount, requestCountDelta }]
+      : [];
+  });
+  assert(candidates.length === 1,
+    "The independent rate-table snapshots did not identify one unique counter row for the bounded report flood");
+  const rateCounter = candidates[0];
+  assert(rateCounter.priorCount + prefillAttempts.length === rateLimitMax + 1
+    && rateCounter.finalCount === rateCounter.priorCount + requestsMade,
+  "Observed report flood responses do not align with the persisted rate-limit counter transition");
+  return {
+    name: "report_flood",
+    transport: "authenticated_http_request_from_browser_context",
+    method: "POST", path: REPORTS,
+    responseStatus: finalResponse.status(), errorCode: finalErrorCode,
+    databaseRole: after.identity.databaseRole, transactionReadOnly: after.identity.transactionReadOnly,
+    reportRowsBefore: before.totalCounts.reports, reportRowsAfter: after.totalCounts.reports,
+    uploadRowsBefore: before.totalCounts.uploads, uploadRowsAfter: after.totalCounts.uploads,
+    ...effects,
+    prefillAttempts, attemptCap, configuredRateLimitMax: rateLimitMax,
+    windowSeconds,
+    rateLimitObservation: {
+      table: "oid_rate_limit",
+      group: "support-report-owner-create",
+      maxPerWindow: rateLimitMax,
+      windowSeconds,
+      databaseRole: rateAfter.identity.databaseRole,
+      databaseName: rateAfter.identity.databaseName,
+      transactionReadOnly: rateAfter.identity.transactionReadOnly,
+      before: {
+        databaseRole: rateBefore.identity.databaseRole,
+        databaseName: rateBefore.identity.databaseName,
+        transactionReadOnly: rateBefore.identity.transactionReadOnly,
+        databaseClockEpochSeconds: rateBefore.databaseClockEpochSeconds,
+        bucketIndex: rateBefore.bucketIndex,
+        bucketStartSeconds: rateBefore.bucketStartSeconds,
+        rows: rateBefore.rows,
+      },
+      after: {
+        databaseRole: rateAfter.identity.databaseRole,
+        databaseName: rateAfter.identity.databaseName,
+        transactionReadOnly: rateAfter.identity.transactionReadOnly,
+        databaseClockEpochSeconds: rateAfter.databaseClockEpochSeconds,
+        bucketIndex: rateAfter.bucketIndex,
+        bucketStartSeconds: rateAfter.bucketStartSeconds,
+        rows: rateAfter.rows,
+      },
+      targetKeyHashSha256: rateCounter.keyHashSha256,
+      priorRequestCount: rateCounter.priorCount,
+      finalRequestCount: rateCounter.finalCount,
+      requestCountDelta: rateCounter.requestCountDelta,
+    },
+    elapsedMs,
+    validPayloadShape, validOperationIdSha256: hash(validPayload.operationId),
+  };
+}
+
+async function readIssuedAgentCredentialBinding(observerPool, { ownerId, agentId, credentialId, grantId, verifierHash }) {
+  const client = await observerPool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    const identity = (await client.query(`SELECT current_user AS role,
+      current_setting('transaction_read_only') AS transaction_read_only`)).rows[0];
+    assert(identity?.role === "oid_observer" && identity.transaction_read_only === "on",
+      "Issued agent credential verification requires the independent read-only observer");
+    const result = await client.query(`SELECT c.id::text AS credential_id,c.grant_id::text AS grant_id,
+        g.owner_id::text AS owner_id,g.agent_id::text AS agent_id,g.resource,g.role,g.source,g.revoked_at,g.expires_at,
+        clock_timestamp() AS observed_at
+      FROM oid_agent_manual_credential c JOIN oid_agent_access_grant g ON g.id=c.grant_id
+      WHERE c.id=$1::uuid AND c.grant_id=$2::uuid AND g.owner_id=$3::uuid AND g.agent_id=$4::uuid
+        AND c.verifier_hash=$5`, [credentialId, grantId, ownerId, agentId, verifierHash]);
+    const row = result.rows[0];
+    await client.query("COMMIT");
+    const iso = (value) => value instanceof Date ? value.toISOString() : value ? new Date(value).toISOString() : null;
+    return {
+      databaseRole: identity.role, transactionReadOnly: identity.transaction_read_only,
+      matchingCredentialGrantRows: result.rowCount,
+      credentialIdSha256: row ? hash(row.credential_id) : null,
+      grantIdSha256: row ? hash(row.grant_id) : null,
+      ownerIdSha256: row ? hash(row.owner_id) : null,
+      agentIdSha256: row ? hash(row.agent_id) : null,
+      grantSource: row?.source ?? null, grantRole: row?.role ?? null,
+      resourceSha256: row?.resource ? hash(row.resource) : null,
+      grantRevokedAt: iso(row?.revoked_at), grantExpiresAt: iso(row?.expires_at),
+      observedAt: iso(row?.observed_at),
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
+}
+
+async function exerciseAgentAdminAttempt({ ownerPage, observerPool, ownerId, observerOwnerIds, publicOrigin,
+  reportId, imageId, reportRevision }) {
+  const setupPage = await ownerPage.context().newPage();
+  let bearer = "";
+  let issuedCredential;
+  const credentialCapture = attachSafeBrowserCapture(setupPage, "BPC-SC-020");
+  const credentialTrace = trackBrowserRequests(setupPage);
+  try {
+    await setupPage.goto("/agents", { waitUntil: "domcontentloaded" });
+    await setupPage.getByTestId("agent-create-form").waitFor({ state: "visible" });
+    const agent = await createCard(setupPage, `Report admin probe ${randomUUID().slice(0, 8)}`, credentialCapture);
+    issuedCredential = await issueThroughUi(setupPage, agent.id, "issue", credentialCapture);
+    bearer = issuedCredential.secret;
+    assert(/^aap1_[A-Za-z0-9_-]{43}$/.test(bearer), "Owner UI credential issuance returned an unexpected bearer format");
+    const resource = new URL("/api/agent", publicOrigin).toString();
+    const preflightHeaders = {
+      origin: publicOrigin, authorization: `Bearer ${bearer}`,
+      "x-agent-id": agent.id, "x-agent-resource": resource,
+    };
+    const preflightResponse = await fetch(new URL("/api/agent/preflight", publicOrigin), {
+      headers: preflightHeaders, credentials: "omit",
+    });
+    const preflightPayload = await preflightResponse.json().catch(() => ({}));
+    assert(preflightResponse.status === 200 && preflightPayload?.allowed === true
+      && preflightPayload?.role === "agent" && preflightPayload?.agentId === agent.id
+      && preflightPayload?.resource === resource,
+    "The owner-issued bearer did not pass the production cookie-free agent preflight");
+    const credentialBinding = await readIssuedAgentCredentialBinding(observerPool, {
+      ownerId, agentId: agent.id, credentialId: issuedCredential.credential.id, grantId: issuedCredential.credential.grantId,
+      verifierHash: hash(bearer),
+    });
+    assert(credentialBinding.matchingCredentialGrantRows === 1 && credentialBinding.grantSource === "manual"
+      && credentialBinding.grantRole === "agent" && credentialBinding.grantRevokedAt === null
+      && credentialBinding.resourceSha256 === hash(resource)
+      && Date.parse(credentialBinding.grantExpiresAt) > Date.parse(credentialBinding.observedAt),
+      "The owner-issued agent bearer did not match its independently observed persisted verifier/grant binding");
+    await credentialTrace.flush();
+    const ownerUiIssuance = browserEvidence(credentialCapture, publicOrigin, credentialTrace);
+    ownerUiIssuance.issueResponseIdHashes = {
+      status: 201,
+      agentIdSha256: hash(agent.id),
+      credentialIdSha256: hash(issuedCredential.credential.id),
+      grantIdSha256: hash(issuedCredential.credential.grantId),
+    };
+    assert(ownerUiIssuance.actions.some((row) => row.action === "click" && row.controlId === "agent-create")
+      && ownerUiIssuance.actions.some((row) => row.action === "click" && row.controlId === `credential-issue-${agent.id}`)
+      && ownerUiIssuance.requests.some((row) => row.method === "POST" && row.path === "/api/owner/agents" && row.status === 201)
+      && ownerUiIssuance.requests.some((row) => row.method === "POST"
+        && row.path === `/api/owner/agents/${agent.id}/manual-credential` && row.status === 201),
+    "Owner credential evidence is missing the actual agent-create and one-time-issue UI actions");
+    const bearerProof = {
+      credentialSource: "owner_ui_issue_once",
+      fixtureType: "synthetic_local_agent_credential",
+      authorizationScheme: "Bearer",
+      sessionCookiePresent: false,
+      ownerUiIssuance,
+      credentialBinding,
+      preflight: {
+        method: "GET", path: "/api/agent/preflight", responseStatus: preflightResponse.status,
+        allowed: preflightPayload.allowed, role: preflightPayload.role,
+        authorizationScheme: "Bearer", sessionCookiePresent: false,
+        resourceMatches: preflightPayload.resource === resource,
+        agentIdSha256: hash(agent.id), resourceSha256: hash(resource),
+      },
+      targetReportIdSha256: hash(reportId), targetImageIdSha256: hash(imageId),
+    };
+    const probes = [
+      { probe: "admin_list", method: "GET", path: "/api/admin/reports", pathTemplate: "/api/admin/reports" },
+      { probe: "admin_detail", method: "GET", path: `/api/admin/reports/${reportId}`,
+        pathTemplate: "/api/admin/reports/{reportId}" },
+      { probe: "admin_status", method: "PATCH", path: `/api/admin/reports/${reportId}/status`,
+        pathTemplate: "/api/admin/reports/{reportId}/status",
+        body: { operationId: operationId(), expectedRevision: reportRevision, status: "in_progress" } },
+      { probe: "admin_image", method: "GET", path: `/api/admin/reports/${reportId}/images/${imageId}`,
+        pathTemplate: "/api/admin/reports/{reportId}/images/{imageId}" },
+    ];
+    const attempts = [];
+    for (const probe of probes) {
+      const before = await readSnapshot(observerPool, observerOwnerIds, [reportId]);
+      const headers = { authorization: `Bearer ${bearer}`, origin: publicOrigin };
+      const requestOptions = { method: probe.method, headers, credentials: "omit" };
+      if (probe.body) {
+        headers["content-type"] = "application/json";
+        requestOptions.body = JSON.stringify(probe.body);
+      }
+      let response;
+      try { response = await fetch(new URL(probe.path, publicOrigin), requestOptions); }
+      catch { throw new Error("Cookie-free authenticated agent admin-route probe failed at transport"); }
+      const payload = await response.json().catch(() => ({}));
+      const rawCode = payload?.error?.code ?? payload?.code;
+      const errorCode = typeof rawCode === "string" && /^[A-Z0-9_]{2,80}$/.test(rawCode) ? rawCode : null;
+      const after = await readSnapshot(observerPool, observerOwnerIds, [reportId]);
+      const effects = reportDomainEffectEvidence(before, after);
+      assert(response.status === 401 && errorCode === "UNAUTHORIZED",
+        `The valid agent bearer received HTTP ${response.status} on the ${probe.probe} admin route`);
+      assert(effects.noReportOrDomainEffects,
+        `The valid agent bearer ${probe.probe} denial changed report or domain state`);
+      attempts.push({
+        name: "agent_admin_attempt", probe: probe.probe, method: probe.method, pathTemplate: probe.pathTemplate,
+        transport: "cookie_free_agent_bearer_http", authorizationScheme: "Bearer", sessionCookiePresent: false,
+        responseStatus: response.status, errorCode,
+        databaseRole: after.identity.databaseRole, transactionReadOnly: after.identity.transactionReadOnly,
+        reportRowsBefore: before.totalCounts.reports, reportRowsAfter: after.totalCounts.reports,
+        uploadRowsBefore: before.totalCounts.uploads, uploadRowsAfter: after.totalCounts.uploads,
+        ...effects,
+        credentialIdSha256: credentialBinding.credentialIdSha256, grantIdSha256: credentialBinding.grantIdSha256,
+        ownerIdSha256: credentialBinding.ownerIdSha256, agentIdSha256: credentialBinding.agentIdSha256,
+        targetReportIdSha256: hash(reportId), targetImageIdSha256: hash(imageId),
+      });
+    }
+    return { proof: bearerProof, attempts };
+  } finally {
+    bearer = "";
+    if (issuedCredential) issuedCredential.secret = "";
+    await setupPage.close().catch(() => undefined);
+  }
 }
 
 async function createForeignRunActionFixture(databaseUrl, ownerId, foreignOwnerId) {
@@ -661,6 +1077,7 @@ async function exerciseImageBoundaryCases({ page, observerPool, ownerId, publicO
   const corruptImage = Buffer.from("not an image", "utf8");
   const svgImage = Buffer.from("<svg><script>window.__bad = true</script></svg>", "utf8");
   const staged = [];
+  const housekeepingBaseline = await readMalformedUploadHousekeepingState(observerPool, []);
   const beginOne = async (bytes) => {
     const payload = { operationId: operationId(), expectedBytes: bytes.length, sha256: hash(bytes), contentType: "image/png" };
     const response = await page.request.post(new URL("/api/owner/report-images/uploads", publicOrigin).toString(), {
@@ -709,6 +1126,9 @@ async function exerciseImageBoundaryCases({ page, observerPool, ownerId, publicO
       file: { name: "oversized.png", mimeType: "image/png", buffer: oversized },
     }, expectedStatuses: [413] }));
 
+  const housekeepingObservation = await waitForMalformedUploadHousekeeping({
+    observerPool, uploadIds: staged.map((upload) => upload.uploadId), baseline: housekeepingBaseline,
+  });
   const foreignUpload = await createForeignAgentUploadFixture(databaseUrl, ownerId);
   try {
     const foreignAttempt = await postOwnerReportAttempt({ page, observerPool, ownerId, publicOrigin,
@@ -719,6 +1139,7 @@ async function exerciseImageBoundaryCases({ page, observerPool, ownerId, publicO
       && foreignAttempt.reportRowsBefore === foreignAttempt.reportRowsAfter
       && foreignAttempt.uploadRowsBefore === foreignAttempt.uploadRowsAfter,
     "A foreign principal screenshot was not denied without durable report or upload changes");
+    foreignAttempt.fixturePreparation = housekeepingObservation;
     await foreignUpload.cleanup();
     attempts.push(foreignAttempt);
   } catch (error) {
@@ -969,6 +1390,8 @@ export async function runReportCases({
     const ownerReportNegativeAttempts = await exerciseOwnerReportBoundaryCases({ page: ownerPage,
       observerPool, ownerId, observerOwnerIds, publicOrigin, linked, runFixture, foreign: foreignRunFixture });
     const imageNegativeAttempts = await exerciseImageBoundaryCases({ page: ownerPage, observerPool, ownerId, publicOrigin, databaseUrl });
+    ownerReportNegativeAttempts.push(await exerciseOwnerReportFlood({ page: ownerPage, observerPool,
+      observerOwnerIds, publicOrigin }));
     const imagePreviewPromise = waitResponse(ownerPage, (response) =>
       new URL(response.url()).pathname.startsWith(`/api/owner/reports/${linked.reportId}/images/`));
     await ownerPage.locator("article.report-card").filter({ hasText: linkedTitle })
@@ -1048,6 +1471,12 @@ export async function runReportCases({
         storage: { images: storageImages }, negativeAttempts: ownerReportNegativeAttempts, responseLossRetries: [retryEvidence],
       },
     };
+
+    const linkedImageId = linkedPersisted?.imageIds[0];
+    assert(typeof linkedImageId === "string" && Number.isInteger(linkedPersisted?.revision),
+      "The authenticated agent admin probe requires the independently observed linked report and image");
+    const agentAdminProbe = await exerciseAgentAdminAttempt({ ownerPage, observerPool, ownerId, observerOwnerIds,
+      publicOrigin, reportId: linked.reportId, imageId: linkedImageId, reportRevision: linkedPersisted.revision });
 
     await adminPage.goto(new URL("/admin/reports", publicOrigin).toString(), { waitUntil: "domcontentloaded" });
     const statusFilter = adminPage.getByLabel("Status", { exact: true });
@@ -1216,6 +1645,7 @@ export async function runReportCases({
           reportIdSha256: hash(foreignOwnerReport.reportId), imageIdSha256: hash(foreignOwnerImageId),
           status: foreignAdminImageResponse.status(), sha256: foreignAdminImageHash }],
         textProbes: [{ ...textProbe, status: htmlOwnerRead?.status ?? null }, adminHtmlTextProbe] },
+        agentBearerProof: agentAdminProbe.proof,
         observer: { databaseRole: statusAfter.identity.databaseRole, databaseName: statusAfter.identity.databaseName, transactionReadOnly: statusAfter.identity.transactionReadOnly,
           before: { ...statusBefore, identity: undefined }, after: { ...statusAfter, identity: undefined } },
         negativeAttempts: [
@@ -1227,6 +1657,7 @@ export async function runReportCases({
             databaseRole: staleCountsAfter.databaseRole, transactionReadOnly: staleCountsAfter.transactionReadOnly,
             reportRowsBefore: staleCountsBefore.reportRows, reportRowsAfter: staleCountsAfter.reportRows,
             uploadRowsBefore: staleCountsBefore.uploadRows, uploadRowsAfter: staleCountsAfter.uploadRows },
+          ...agentAdminProbe.attempts,
           unauthorizedStatusAttempt,
           { ...foreignAttachmentAttempt, targetReportIdSha256: hash(foreignOwnerReport.reportId),
             targetImageIdSha256: hash(foreignOwnerImageId) },

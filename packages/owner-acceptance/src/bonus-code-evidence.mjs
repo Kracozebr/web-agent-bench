@@ -9,7 +9,7 @@ function digest(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function assertSecretFree(value, label) {
+export function assertSecretFree(value, label) {
   const secretKey = /^(?:secret|plaintextcode|codeverifiersecret|databaseurl|authorization|cookie|password)$/i;
   const secretText = /(?<![A-Za-z0-9_-])BPC-[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])|\bBearer\s+\S+|(?:[?&](?:code|state|access_token|refresh_token|id_token|client_secret)=)[^&#\s]+/i;
   const visit = (current, path) => {
@@ -94,6 +94,7 @@ export async function saveBonusCodeEvidence({ result, provenance, repositoryRoot
       testedBoundary: result.localBoundary,
       localObservations: scenario.localObservations,
       localNegativeResults: scenario.negativeVariants,
+      supplementaryEvidence: scenario.supplementaryEvidence ?? {},
       browser: scenario.browserData ?? {},
       database: scenario.databaseData ?? {},
       migrationPreservation: result.migrationPreservation ?? { status: "not_run" },
