@@ -612,7 +612,7 @@ export async function waitForRecoveryDeadline(pool, target, maxWaitMs, progressF
         typeof row.run_id === 'string' && row.run_id.toLowerCase() === target.runId.toLowerCase(),
       'recovery_exhaustion_record_identity_invalid');
     } else {
-      demand(!['completed', 'failed', 'cancelled'].includes(run.status),
+      demand(run.status === 'running',
         'recovery_exhaustion_run_terminal_without_record');
       if (now() >= nextProgress) {
         await progress(progressFn, { phase: 'platform_recovery_record_pending', runId: target.runId,
@@ -624,10 +624,27 @@ export async function waitForRecoveryDeadline(pool, target, maxWaitMs, progressF
       continue;
     }
     const timing = recoveryDeadlineObservationState(row, snapshot.identity.databaseNow);
-    if (['completed', 'failed', 'cancelled'].includes(run.status)) {
-      demand(run.status === 'failed' && run.terminal_reason === 'platform_failure_recovery_exhausted' &&
+    // AICODE-NOTE: Fencing can finish while the observer is still blocked. These
+    // states permit only the bounded wait; the post-unblock verifier still requires
+    // the exact final failure, source receipt, fence and single refund.
+    if (['cancellation_requested', 'cancelled', 'failed', 'unknown'].includes(run.status)) {
+      demand(timing.databaseNowMs >= timing.deadlineMs, 'recovery_exhaustion_run_terminal_pre_deadline');
+    }
+    if (run.status === 'cancellation_requested') {
+      demand(run.cancellation_reason === 'coordinator_platform_failure', 'recovery_exhaustion_run_terminal_invalid');
+    } else if (run.status === 'cancelled') {
+      demand(run.cancellation_reason === 'coordinator_platform_failure' &&
+        run.terminal_reason === 'coordinator_platform_failure' && SHA256.test(run.cancellation_evidence_hash ?? ''),
+      'recovery_exhaustion_run_terminal_invalid');
+    } else if (run.status === 'failed') {
+      demand(run.terminal_reason === 'platform_failure_recovery_exhausted' &&
         run.cancellation_reason === 'coordinator_platform_failure' && ['exhausted', 'refunded'].includes(row.status),
       'recovery_exhaustion_run_terminal_invalid');
+    } else if (run.status === 'unknown') {
+      demand(run.terminal_reason === 'platform_recovery_unresolved_operation' &&
+        run.cancellation_reason === 'coordinator_platform_failure', 'recovery_exhaustion_run_terminal_invalid');
+    } else if (run.status !== 'running') {
+      demand(false, 'recovery_exhaustion_run_terminal_invalid');
     }
     if (timing.deadlineReached) return { row, observedAtDatabase: snapshot.identity.databaseNow,
       wallWaitMs: now() - startedAt };

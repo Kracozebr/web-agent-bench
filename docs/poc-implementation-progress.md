@@ -730,3 +730,16 @@ owner-identity typecheck passes. Token/credential guards remain unchanged.
 Normal cancellation fenced the M3 preparation;
 the failed capture and database are retained and no M3 grade is claimed. The
 earlier all-eight/full12 captures remain historical proofs for their own builds.
+
+Capture `3529bb1e-1ef8-4797-a846-7b090f626cab` exercised the delayed recovery-row
+path successfully, then exposed another waiter race at the cutoff: the production
+coordinator had already fenced/cancelled the run for platform failure while the
+observer was still intentionally blocked. The waiter incorrectly rejected that
+intermediate `cancelled` state before allowing source reconciliation/refund.
+Independent readback confirms the original fence and platform cancellation, no
+grade and no claimed refund. The transition matrix now accepts only the expected
+platform `cancellation_requested`/fenced `cancelled`/unresolved `unknown`/final
+`failed` states after the persisted cutoff, still waits through the observation
+margin, and retains the separate final proof (19/19 tests). Owner/revocation,
+foreign, success and premature terminal states remain rejected. This attempt
+remains failed evidence rather than being relabelled successful.

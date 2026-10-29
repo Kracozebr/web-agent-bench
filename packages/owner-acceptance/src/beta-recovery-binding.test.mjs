@@ -108,10 +108,10 @@ const deadlineAt = '2030-01-01T00:03:00.000Z';
 
 function deadlineWaitSnapshot({ recovery = null, databaseNow = deadlineStartedAt, runStatus = 'running',
   runId = recoveryRunId, databaseName = deadlineWaitTarget.databaseName,
-  terminalReason = null, cancellationReason = null } = {}) {
+  terminalReason = null, cancellationReason = null, cancellationEvidenceHash = null } = {}) {
   return { identity: { role: 'oid_observer', transactionReadOnly: 'on', databaseName, databaseNow },
     result: { run: { id: runId, status: runStatus, terminal_reason: terminalReason,
-      cancellation_reason: cancellationReason }, recovery } };
+      cancellation_reason: cancellationReason, cancellation_evidence_hash: cancellationEvidenceHash }, recovery } };
 }
 
 function deadlineWaitRecovery(overrides = {}) {
@@ -164,13 +164,13 @@ test('deadline waiter rejects a foreign recovery row or terminal run without a r
   }), { code: 'recovery_exhaustion_run_terminal_without_record' });
 });
 
-test('deadline waiter accepts only the exact exhausted terminal state after the persisted cutoff', async () => {
+test('deadline waiter allows exact failed exhaustion at cutoff but waits through the one-second observation margin', async () => {
   let reads = 0;
   let wallNow = 0;
-  const snapshots = [deadlineWaitSnapshot({ recovery: deadlineWaitRecovery({ status: 'refunded' }),
-    databaseNow: deadlineAt, runStatus: 'failed', terminalReason: 'platform_failure_recovery_exhausted',
+  const snapshots = [deadlineWaitSnapshot({ recovery: deadlineWaitRecovery({ status: 'exhausted' }),
+    databaseNow: '2030-01-01T00:03:00.100Z', runStatus: 'failed', terminalReason: 'platform_failure_recovery_exhausted',
     cancellationReason: 'coordinator_platform_failure' }),
-  deadlineWaitSnapshot({ recovery: deadlineWaitRecovery({ status: 'refunded' }),
+  deadlineWaitSnapshot({ recovery: deadlineWaitRecovery({ status: 'exhausted' }),
     databaseNow: '2030-01-01T00:03:01.000Z', runStatus: 'failed',
     terminalReason: 'platform_failure_recovery_exhausted', cancellationReason: 'coordinator_platform_failure' })];
   const result = await waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
@@ -179,8 +179,87 @@ test('deadline waiter accepts only the exact exhausted terminal state after the 
     sleep: async (durationMs) => { wallNow += durationMs; },
   });
   assert.equal(reads, 2);
-  assert.equal(result.row.status, 'refunded');
+  assert.equal(result.row.status, 'exhausted');
   assert.equal(result.observedAtDatabase, '2030-01-01T00:03:01.000Z');
+});
+
+test('platform cancellation and request stages with unknown/exhausted rows respect the cutoff matrix', async () => {
+  const transitionSnapshot = (runStatus, status, databaseNow) => deadlineWaitSnapshot({
+    recovery: deadlineWaitRecovery({ status }), databaseNow, runStatus,
+    terminalReason: runStatus === 'cancelled' ? 'coordinator_platform_failure' :
+      runStatus === 'unknown' ? 'platform_recovery_unresolved_operation' : null,
+    cancellationReason: 'coordinator_platform_failure',
+    cancellationEvidenceHash: runStatus === 'cancelled' ? cancellationFenceHash : null,
+  });
+  for (const [runStatus, status, firstTime, expectedReads] of [
+    ['cancellation_requested', 'unknown', '2030-01-01T00:03:00.100Z', 3],
+    ['cancelled', 'unknown', '2030-01-01T00:03:00.100Z', 3],
+    ['unknown', 'unknown', '2030-01-01T00:03:00.100Z', 3],
+    ['cancelled', 'unknown', '2030-01-01T00:03:01.000Z', 1],
+    ['cancelled', 'exhausted', '2030-01-01T00:03:00.100Z', 3],
+    ['cancelled', 'exhausted', '2030-01-01T00:03:01.000Z', 1],
+  ]) {
+    let reads = 0;
+    let wallNow = 0;
+    const snapshots = [transitionSnapshot(runStatus, status, firstTime),
+      transitionSnapshot(runStatus, status, '2030-01-01T00:03:00.900Z'),
+      transitionSnapshot(runStatus, status, '2030-01-01T00:03:01.000Z')];
+    const result = await waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+      readSnapshot: async () => snapshots[Math.min(reads++, snapshots.length - 1)],
+      now: () => wallNow,
+      sleep: async (durationMs) => { wallNow += durationMs; },
+    });
+    assert.equal(reads, expectedReads, `${runStatus}/${status} first observed at ${firstTime}`);
+    assert.equal(result.row.status, status);
+    assert.equal(result.observedAtDatabase, '2030-01-01T00:03:01.000Z');
+  }
+
+  for (const [runStatus, status] of [['cancelled', 'unknown'], ['cancelled', 'exhausted'],
+    ['cancellation_requested', 'unknown'], ['unknown', 'unknown']]) {
+    await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+      readSnapshot: async () => transitionSnapshot(runStatus, status, '2030-01-01T00:02:59.999Z'),
+      now: () => 0,
+      sleep: async () => assert.fail('platform terminal/request state before deadline must be rejected'),
+    }), { code: runStatus === 'cancelled' && status === 'exhausted'
+      ? 'recovery_exhaustion_terminal_state_pre_deadline' : 'recovery_exhaustion_run_terminal_pre_deadline' });
+  }
+  await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+    readSnapshot: async () => transitionSnapshot('cancelled', 'exhausted', '2030-01-01T00:02:59.999Z'),
+    now: () => 0,
+    sleep: async () => assert.fail('premature exhaustion must be rejected'),
+  }), { code: 'recovery_exhaustion_terminal_state_pre_deadline' });
+});
+
+test('platform cancellation waiter rejects owner/revocation, success, and early failed terminal states', async () => {
+  for (const cancellationReason of ['owner_voluntary', 'owner_revoked']) {
+    await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+      readSnapshot: async () => deadlineWaitSnapshot({ recovery: deadlineWaitRecovery(),
+        databaseNow: '2030-01-01T00:03:01.000Z', runStatus: 'cancelled', cancellationReason }),
+      now: () => 0,
+      sleep: async () => assert.fail('non-platform cancellation must be rejected'),
+    }), { code: 'recovery_exhaustion_run_terminal_invalid' });
+  }
+  await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+    readSnapshot: async () => deadlineWaitSnapshot({ recovery: deadlineWaitRecovery(),
+      databaseNow: '2030-01-01T00:03:01.000Z', runStatus: 'cancelled',
+      terminalReason: 'owner_voluntary', cancellationReason: 'coordinator_platform_failure',
+      cancellationEvidenceHash: cancellationFenceHash }),
+    now: () => 0,
+    sleep: async () => assert.fail('foreign terminal reason must be rejected'),
+  }), { code: 'recovery_exhaustion_run_terminal_invalid' });
+  await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+    readSnapshot: async () => deadlineWaitSnapshot({ recovery: deadlineWaitRecovery(),
+      databaseNow: '2030-01-01T00:03:01.000Z', runStatus: 'completed' }),
+    now: () => 0,
+    sleep: async () => assert.fail('success terminal state must be rejected'),
+  }), { code: 'recovery_exhaustion_run_terminal_invalid' });
+  await assert.rejects(waitForRecoveryDeadline(null, deadlineWaitTarget, 5_000, undefined, {
+    readSnapshot: async () => deadlineWaitSnapshot({ recovery: deadlineWaitRecovery(),
+      databaseNow: '2030-01-01T00:03:00.100Z', runStatus: 'failed',
+      terminalReason: 'platform_failure_recovery_exhausted', cancellationReason: 'coordinator_platform_failure' }),
+    now: () => 0,
+    sleep: async () => assert.fail('failed run without exhausted recovery row must be rejected'),
+  }), { code: 'recovery_exhaustion_run_terminal_invalid' });
 });
 
 function exhaustionSnapshot({ finalized = false, refundCount = finalized ? 1 : 0, includeFenceEvent = true,
