@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { agentAcceptanceResponseSummary, combinedBlockerError, combinedBlockerFailureCode, combinedSourceRunIds,
   exactBonusRedemptionRequestCapture, exactKnownPassingEvaluation, pauseAuditActorsMatch, quoteUnits, runCombinedCallbackDiagnosticScope,
-  verifyPostRestoreSourceStability } from './beta-combined-restore-cases.mjs';
+  projectRestore, verifyPostRestoreSourceStability } from './beta-combined-restore-cases.mjs';
 
 const HASH = (character) => character.repeat(64);
 const sourceDatabase = 'oid_acceptance_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -157,6 +157,19 @@ test('post-restore source proof compares durable source tables, sequences, busin
 
   assert.equal(result.status, 'verified');
   assert.equal(Object.values(result.comparisons).every(Boolean), true);
+});
+
+test('restore result projects two database snapshots separately from its private-file receipt', () => {
+  const observations = { beforeRetention: sourceSnapshot(), afterRetention: sourceSnapshot(),
+    fileRestore: { status: 'restored', fileCount: 2, privateField: 'must-not-persist' } };
+  const restore = { observations, takeRuntimeSecrets() { throw new Error('must-not-call'); } };
+  const result = projectRestore(restore);
+  assert.equal(result.observations.beforeRetention.observerIdentity.databaseRole, 'oid_observer');
+  assert.equal(result.observations.afterRetention.databaseTotalsSha256, HASH('c'));
+  assert.deepEqual(result.observations.fileRestore, { status: 'restored', fileCount: 2 });
+  assert.equal('takeRuntimeSecrets' in result, false);
+  assert.throws(() => projectRestore({ ...restore, observations: { ...observations,
+    fileRestore: { status: 'restored', fileCount: -1 } } }), /combined_file_restore_projection_invalid/);
 });
 
 test('post-restore source proof rejects any changed table fingerprint even if aggregate hashes are copied', () => {

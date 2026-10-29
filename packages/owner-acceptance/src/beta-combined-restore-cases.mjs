@@ -864,7 +864,10 @@ async function retryOriginalOperations({ commonCapture, completedRun, reportRece
     reportOperationDisposition: retentionExpired ? 'expired_content_not_replayed' : 'same_receipts_replayed' };
 }
 
-function projectRestore(restore) {
+export function projectRestore(restore) {
+  const fileRestore = restore.observations?.fileRestore;
+  demand(fileRestore?.status === 'restored' && Number.isSafeInteger(fileRestore.fileCount) && fileRestore.fileCount >= 0,
+    'combined_file_restore_projection_invalid');
   return { schemaVersion: restore.schemaVersion, status: restore.status, boundary: restore.boundary,
     checkpointId: restore.checkpointId, sourceDatabase: restore.sourceDatabase,
     restoreDatabaseName: restore.restoreDatabaseName, checkpoint: restore.checkpoint,
@@ -876,8 +879,11 @@ function projectRestore(restore) {
     creationReceipt: restore.creationReceipt, restoreReceipt: restore.restoreReceipt,
     authoritativeClosure: restore.authoritativeClosure, originalIds: restore.originalIds,
     operationBindings: restore.operationBindings, retention: restore.retention,
-    observations: Object.fromEntries(Object.entries(restore.observations ?? {}).map(([key, value]) =>
-      [key, projectObserverSnapshot(value)])),
+    observations: {
+      beforeRetention: projectObserverSnapshot(restore.observations?.beforeRetention),
+      afterRetention: projectObserverSnapshot(restore.observations?.afterRetention),
+      fileRestore: { status: fileRestore.status, fileCount: fileRestore.fileCount },
+    },
     timing: restore.timing, writesMayBeEnabled: restore.writesMayBeEnabled,
     targetHostAcceptance: restore.targetHostAcceptance };
 }
