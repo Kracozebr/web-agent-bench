@@ -8,6 +8,7 @@ import { runLocalOperationsCases } from "./operations-cases.mjs";
 
 const { Pool } = pg;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REPORTS = "/api/owner/reports";
 function hash(value) {
   const digest = createHash("sha256");
@@ -1256,7 +1257,8 @@ async function waitResponse(page, predicate) {
   return page.waitForResponse(predicate, { timeout: 15000 });
 }
 
-async function captureOwnerReport({ page, capture, title, body, linkedRunId, imageBuffer, trace, captureRoot, browserErrors }) {
+async function captureOwnerReport({ page, capture, title, body, linkedRunId, imageBuffer, trace, captureRoot, browserErrors,
+  onAcceptedReport }) {
   await page.goto("/reports", { waitUntil: "domcontentloaded" });
   const requestOffset = capture.capture.requests.length;
   await page.getByLabel("Title", { exact: true }).fill(title);
@@ -1282,14 +1284,24 @@ async function captureOwnerReport({ page, capture, title, body, linkedRunId, ima
   }
   const operation = capture.capture.requests.slice(requestOffset).find((row) => row.method === "POST" && row.path === REPORTS && typeof row.operationId === "string")?.operationId;
   assert(typeof operation === "string", "The browser request trace did not record the report operation id");
+  let requestPayload;
+  try { requestPayload = response.request().postDataJSON(); } catch { requestPayload = null; }
+  assert(requestPayload && requestPayload.operationId === operation && requestPayload.title === title
+    && requestPayload.body === body && Array.isArray(requestPayload.imageUploadIds),
+  "The accepted report request body could not be correlated to the browser operation");
   const successNotice = page.getByRole("status").filter({ hasText: payload.replayed ? "Your report receipt was recovered." : "Your report was submitted." });
   await successNotice.waitFor({ state: "visible", timeout: 15000 });
+  if (typeof onAcceptedReport === "function") {
+    await onAcceptedReport({ reportId: payload.report.id, operationId: operation, payload: requestPayload,
+      responseStatus: response.status(), replayed: payload.replayed === true });
+  }
   return { reportId: payload.report.id, replayed: payload.replayed === true, operationId: operation, responseStatus: response.status(), payload };
 }
 
 export async function runReportCases({
   adminPage, ownerPage, ownerId, publicOrigin, databaseUrl, observerDatabaseUrl,
   captureIsolationRoot, privateDataDir, closureStatePath, isolatedAcceptance = false,
+  genuineRunContext = null, onAcceptedReport,
 }) {
   assert(isolatedAcceptance === true, "Report acceptance requires a unique isolated acceptance database");
   assert(typeof captureIsolationRoot === "string" && isAbsolute(captureIsolationRoot),
@@ -1336,7 +1348,11 @@ export async function runReportCases({
       "The unique acceptance database must contain no previous report or screenshot rows");
     assert(initial.retentionState?.betaEndedAt === null,
       "The unique acceptance database must not already be closed for retention");
-    const runFixture = await createLinkedRunFixture(databaseUrl, ownerId);
+    const runFixture = genuineRunContext === null ? await createLinkedRunFixture(databaseUrl, ownerId) : genuineRunContext;
+    assert(runFixture && typeof runFixture.runId === "string" && UUID_RE.test(runFixture.runId)
+      && (!genuineRunContext || (typeof runFixture.actionId === "string" && UUID_RE.test(runFixture.actionId)
+        && typeof runFixture.taskId === "string" && runFixture.taskId.length > 0)),
+    "The genuine report context must bind a completed run, task, and actual action");
     await adminPage.goto("/reports", { waitUntil: "domcontentloaded" });
     await adminPage.locator("#report-title").waitFor();
     const foreignOwnerScreenshot = await adminPage.screenshot({ type: "png", animations: "disabled" });
@@ -1377,7 +1393,8 @@ export async function runReportCases({
     const linkedTitle = "Report with owned run context";
     const linked = await captureOwnerReport({ page: ownerPage, capture: ownerCapture, title: linkedTitle,
       body: "The test reports a non-secret local fixture observation.", linkedRunId: runFixture.runId, imageBuffer: image,
-      trace: ownerTrace, captureRoot, browserErrors: ownerPageErrors });
+      trace: ownerTrace, captureRoot, browserErrors: ownerPageErrors,
+      onAcceptedReport: genuineRunContext ? onAcceptedReport : undefined });
     const unlinked = await captureOwnerReport({ page: ownerPage, capture: ownerCapture, title: "Report without run context",
       body: "This connection report has no run reference.", imageBuffer: null,
       trace: ownerTrace, captureRoot, browserErrors: ownerPageErrors });
@@ -1410,7 +1427,8 @@ export async function runReportCases({
     const ownerReportRowsCreated = ownerReportRowsAfter - ownerReportRowsBefore;
     assert(ownerReportRowsCreated === 4 && after.totalCounts.reports - before.totalCounts.reports === 4,
       "The owner UI flow did not create exactly four owner reports above the retained second-owner fixture baseline");
-    assert(linkedPersisted?.runId === runFixture.runId && unlinkedPersisted?.runId === null,
+    assert(linkedPersisted?.runId === runFixture.runId && linkedPersisted?.taskId === (runFixture.taskId ?? null)
+      && linkedPersisted?.actionId === (runFixture.actionId ?? null) && unlinkedPersisted?.runId === null,
       "Independent PostgreSQL observer did not find the two UI-created linked/unlinked reports");
     assert(storageImages.some((row) => row.imageId === linkedPersisted.imageIds[0] && row.sha256FromDisk === screenshotHash),
       "The browser image preview did not match the linked upload and private file recorded independently");

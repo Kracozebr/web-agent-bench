@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const KINDS = new Set(['database', 'evidence', 'screenshot']);
+const KINDS = new Set(['database', 'evidence', 'screenshot', 'sealed_bundle']);
 const DAY = 86_400_000;
 
 function fail(reason) { throw new Error(`beta_backup_${reason}`); }
@@ -53,7 +53,8 @@ export async function inspectBackupFile(root, path, kind) {
 }
 
 export function validateBackupInventory(value) {
-  if (!value || value.schemaVersion !== 'beta-backup-inventory/v1' ||
+  const sealed = value?.schemaVersion === 'beta-backup-inventory/v2';
+  if (!value || (!sealed && value.schemaVersion !== 'beta-backup-inventory/v1') ||
       !UUID.test(value.checkpointId ?? '') ||
       !['daily', 'pre_migration', 'retention_sanitized'].includes(value.kind) ||
       value.failureDomain !== 'same_host' || !HASH.test(value.sourceBuildSha256 ?? '') ||
@@ -62,6 +63,7 @@ export function validateBackupInventory(value) {
   if (!HASH.test(value.reconciliationEvidenceSha256 ?? '') || !HASH.test(value.databaseTotalsSha256 ?? '')) fail('missing_reconciliation_binding');
   const paths = new Set();
   let databases = 0;
+  let sealedBundles = 0;
   for (const row of value.files) {
     safeRelative(row.path);
     const collisionKey = row.path.toLowerCase();
@@ -69,8 +71,23 @@ export function validateBackupInventory(value) {
     paths.add(collisionKey);
     if (!KINDS.has(row.kind) || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || !HASH.test(row.sha256 ?? '')) fail('invalid_file');
     if (row.kind === 'database') { databases++; if (row.bytes === 0) fail('empty_database'); }
+    if (row.kind === 'sealed_bundle') { sealedBundles++; if (row.bytes === 0 || row.path !== 'checkpoint.bundle.enc') fail('sealed_bundle_invalid'); }
   }
-  if (databases !== 1) fail('database_count');
+  if (sealed ? (sealedBundles !== 1 || databases !== 0 || value.files.length !== 1 || !value.payloadSummary ||
+      !Number.isSafeInteger(value.payloadSummary.reportCount) || value.payloadSummary.reportCount < 0 ||
+      !Number.isSafeInteger(value.payloadSummary.uploadCount) || value.payloadSummary.uploadCount < 0 ||
+      !Number.isSafeInteger(value.payloadSummary.screenshotCount) || value.payloadSummary.screenshotCount < 0 ||
+      !HASH.test(value.payloadManifestSha256 ?? '') || !value.checkpointSource ||
+      !HASH.test(value.recoveryEnvelopeSha256 ?? '') ||
+      value.checkpointSource.boundary !== 'admission_frozen_database_quiescent' ||
+      !HASH.test(value.operationBindings?.bonusGrantOperationsSha256 ?? '') ||
+      !HASH.test(value.operationBindings?.runOperationReceiptsSha256 ?? '') ||
+      !HASH.test(value.operationBindings?.runGenerationReceiptsSha256 ?? '') ||
+      !HASH.test(value.operationBindings?.reportOperationReceiptsSha256 ?? '') ||
+      !Number.isSafeInteger(value.operationBindings?.bonusGrantOperationCount) ||
+      !Number.isSafeInteger(value.operationBindings?.runOperationReceiptCount) ||
+      !Number.isSafeInteger(value.operationBindings?.runGenerationReceiptCount) ||
+      !Number.isSafeInteger(value.operationBindings?.reportOperationReceiptCount)) : databases !== 1) fail('database_count');
   const ids = new Set();
   for (const receipt of value.reportDeletionReceipts) {
     if (!receipt || !UUID.test(receipt.reportId ?? '') || ids.has(receipt.reportId) ||
@@ -79,15 +96,29 @@ export function validateBackupInventory(value) {
   }
   if (value.betaEndedAt !== null) {
     const expiry = timestamp(value.betaEndedAt) + 30 * DAY;
-    if (capturedAt >= expiry && (value.kind !== 'retention_sanitized' ||
-        value.files.some((file) => file.kind === 'screenshot') ||
+    const containsSupportContent = sealed ? value.payloadSummary.reportCount > 0 || value.payloadSummary.uploadCount > 0 ||
+      value.payloadSummary.screenshotCount > 0 : value.files.some((file) => file.kind === 'screenshot');
+    if (capturedAt >= expiry && (value.kind !== 'retention_sanitized' || containsSupportContent ||
         value.reportDeletionReceipts.some((receipt) => receipt.status !== 'complete') ||
         !HASH.test(value.sanitizationEvidenceSha256 ?? ''))) fail('expired_content_checkpoint');
   }
   return value;
 }
 
-/** Integrity only: this never establishes DB consistency, correct totals, or safe operation retries. */
+/** File bytes only: this never establishes DB consistency, correct totals, retention safety, or safe operation retries. */
+export async function verifyBackupIntegrity(root, inventory) {
+  validateBackupInventory(inventory);
+  for (const row of inventory.files) {
+    const observed = await inspectBackupFile(root, row.path, row.kind);
+    if (observed.sha256 !== row.sha256 || observed.bytes !== row.bytes) fail('file_integrity');
+  }
+  return {
+    schemaVersion: 'beta-backup-file-integrity/v1', checkpointId: inventory.checkpointId,
+    fileCount: inventory.files.length, integrity: 'passed', writesMayBeEnabled: false,
+  };
+}
+
+/** Integrity plus current retention eligibility; neither result authorizes restored writes. */
 export async function verifyBackupFiles(root, inventory, { now = new Date().toISOString(), authoritativeBetaEndedAt } = {}) {
   validateBackupInventory(inventory);
   const current = timestamp(now);
@@ -98,19 +129,19 @@ export async function verifyBackupFiles(root, inventory, { now = new Date().toIS
   // A newer operator closure/tombstone survives restore from an older pre-closure dump.
   // Missing external closure state must be resolved before enabling any restored access.
   const expired = expiry !== null && current >= expiry;
-  if (expired && (inventory.kind !== 'retention_sanitized' || inventory.files.some((file) => file.kind === 'screenshot') ||
+  const containsSupportContent = inventory.schemaVersion === 'beta-backup-inventory/v2'
+    ? inventory.payloadSummary.reportCount > 0 || inventory.payloadSummary.uploadCount > 0 || inventory.payloadSummary.screenshotCount > 0
+    : inventory.files.some((file) => file.kind === 'screenshot');
+  if (expired && (inventory.kind !== 'retention_sanitized' || containsSupportContent ||
       inventory.reportDeletionReceipts.some((receipt) => receipt.status !== 'complete') || !HASH.test(inventory.sanitizationEvidenceSha256 ?? ''))) {
     fail('restore_requires_report_purge');
   }
-  for (const row of inventory.files) {
-    const observed = await inspectBackupFile(root, row.path, row.kind);
-    if (observed.sha256 !== row.sha256 || observed.bytes !== row.bytes) fail('file_integrity');
-  }
+  const integrity = await verifyBackupIntegrity(root, inventory);
   return {
     schemaVersion: 'beta-backup-file-verification/v1', checkpointId: inventory.checkpointId,
     verifiedAt: now, fileCount: inventory.files.length, checkpointAgeSeconds: (current - source) / 1000,
     reportRetentionExpired: expired, failureDomain: 'same_host', integrity: 'passed',
-    restoreAcceptance: 'not_run', writesMayBeEnabled: false,
+    restoreAcceptance: 'not_run', writesMayBeEnabled: integrity.writesMayBeEnabled,
   };
 }
 
@@ -123,7 +154,10 @@ export function planBackupRotation(inventories, { now = new Date().toISOString()
   const eligible = ordered.filter((item) => {
     const closures = [item.betaEndedAt, authoritativeBetaEndedAt].filter((value) => value !== null && value !== undefined).map(timestamp);
     const expired = closures.length > 0 && current >= Math.min(...closures) + 30 * DAY;
-    return !expired || (item.kind === 'retention_sanitized' && !item.files.some((file) => file.kind === 'screenshot') &&
+    const containsSupportContent = item.schemaVersion === 'beta-backup-inventory/v2'
+      ? item.payloadSummary.reportCount > 0 || item.payloadSummary.uploadCount > 0 || item.payloadSummary.screenshotCount > 0
+      : item.files.some((file) => file.kind === 'screenshot');
+    return !expired || (item.kind === 'retention_sanitized' && !containsSupportContent &&
       item.reportDeletionReceipts.every((receipt) => receipt.status === 'complete') && HASH.test(item.sanitizationEvidenceSha256 ?? ''));
   });
   const keep = new Set(eligible.filter((item) => item.kind === 'daily' || item.kind === 'retention_sanitized').slice(0, 7).map((item) => item.checkpointId));

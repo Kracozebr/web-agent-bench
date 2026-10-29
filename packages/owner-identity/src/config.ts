@@ -213,8 +213,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
   let localReportCaptureRoot: string | undefined;
   if (localReportAcceptanceEnabled) {
     const publicUrl = new URL(origin(env));
+    // AICODE-NOTE: A restored local fixture can serve only its own named clone
+    // with the executor disabled. Production still requires its Beta manifest.
+    const restoreRoot = localReportCaptureRootRaw && /^oid_restore_[0-9a-f]{32}$/i.test(basename(localReportCaptureRootRaw));
+    const restoreIdentityValid = Boolean(restoreRoot && !localBefTaskCoordinatorEnabled &&
+      new URL(databaseUrl).pathname === `/${basename(localReportCaptureRootRaw!)}`);
     const captureRootValid = Boolean(localReportCaptureRootRaw && isAbsolute(localReportCaptureRootRaw) &&
-      /^oid_acceptance_[0-9a-f]{32}$/i.test(basename(localReportCaptureRootRaw)));
+      (/^oid_acceptance_[0-9a-f]{32}$/i.test(basename(localReportCaptureRootRaw)) || restoreIdentityValid));
     if (captureRootValid) localReportCaptureRoot = resolve(localReportCaptureRootRaw!);
     if (betaManifest || !rawPrivateDataDir ||
         !betaReportClosureStateFile || !isAbsolute(betaReportClosureStateFile) ||

@@ -959,7 +959,7 @@ const RESPONSE_FIELDS = [
 const SECRET_FIELD = /^(?:authorization|bearer|privateKey|secret|seed|mnemonic|signature|runToken)$/i;
 
 export function safeMeasurementProjection(
-  body: Record<string, unknown> | null, runToken: string, includeVerifiedPurchasedContent = false,
+  body: Record<string, unknown> | null, runToken?: string, includeVerifiedPurchasedContent = false,
 ): Record<string, unknown> | undefined {
   if (!body) return undefined;
   const copy = (value: unknown, depth: number): unknown => {
@@ -971,7 +971,7 @@ export function safeMeasurementProjection(
     }
     if (typeof value === 'string') {
       if (value.length > MAX_RESPONSE_BYTES) throw new Error('participant_measurement_string_too_large');
-      return value.replaceAll(runToken, '[redacted]');
+      return runToken ? value.replaceAll(runToken, '[redacted]') : value;
     }
     if (Array.isArray(value)) {
       if (value.length > 4096) throw new Error('participant_measurement_array_too_large');

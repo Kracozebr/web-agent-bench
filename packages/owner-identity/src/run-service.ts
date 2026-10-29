@@ -1164,11 +1164,12 @@ export async function requestRunCancellation(
   return { run: runView(result.run), replayed: result.replayed };
 }
 
-/** Internal cancellation causes used only by the disabled-by-default local coordinator. */
+/** Internal cancellation causes used by the guarded local/Beta coordinator. */
 export type LocalCoordinatorCancellationReason =
   | "coordinator_preparation_failed"
   | "coordinator_interrupted_preparation"
-  | "coordinator_executor_session_lost";
+  | "coordinator_executor_session_lost"
+  | "coordinator_platform_failure";
 
 /**
  * Request cancellation from the local coordinator without impersonating an
@@ -1181,7 +1182,7 @@ export async function requestRunCancellationFromCoordinator(
   input: { runId: string; reason: LocalCoordinatorCancellationReason },
 ): Promise<RunStatus | null> {
   const runId = parseUuid(input.runId, "runId");
-  if (!["coordinator_preparation_failed", "coordinator_interrupted_preparation", "coordinator_executor_session_lost"]
+  if (!["coordinator_preparation_failed", "coordinator_interrupted_preparation", "coordinator_executor_session_lost", "coordinator_platform_failure"]
     .includes(input.reason)) {
     throw new HttpError(400, "INVALID_COORDINATOR_CANCELLATION", "The coordinator cancellation reason is not allowlisted");
   }
@@ -1191,6 +1192,13 @@ export async function requestRunCancellationFromCoordinator(
   return db.transaction(async (tx) => {
     await lockOwner(tx, ownerId);
     const now = await databaseNow(tx);
+    if (input.reason === "coordinator_platform_failure") {
+      const recovery = await tx.execute(sql`SELECT action_id FROM oid_run_platform_recovery
+        WHERE run_id=${runId} AND owner_id=${ownerId} AND status IN ('recovering','unknown','exhausted')
+          AND deadline_at<=${now.toISOString()} AND deadline_at=started_at+interval '180 seconds'
+        LIMIT 1`) as unknown as Array<{ action_id: string }>;
+      if (!recovery.length) throw new HttpError(409, "PLATFORM_RECOVERY_NOT_EXHAUSTED", "Platform cancellation requires the original exhausted server recovery");
+    }
     const run = await requestRunCancellationInTransaction(tx, {
       ownerId, runId, reason: input.reason, now, actor: "coordinator",
     });

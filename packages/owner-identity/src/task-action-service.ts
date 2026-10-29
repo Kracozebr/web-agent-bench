@@ -269,6 +269,15 @@ async function currentModeAllowed(tx: Transaction, principal: AgentPrincipal, ru
   if (fences[0]?.fenced) throw new HttpError(403, 'RUN_MODE_FENCED', 'This run mode has been fenced by an owner policy change');
 }
 
+async function assertRunNotInPlatformRecovery(tx: Transaction, runId: string): Promise<void> {
+  const rows = await query<{ recovering: boolean }>(tx, sql`SELECT EXISTS(
+    SELECT 1 FROM oid_run_platform_recovery
+    WHERE run_id=${runId} AND status IN ('recovering','unknown','exhausted')) AS recovering`);
+  if (rows[0]?.recovering) {
+    throw new HttpError(503, 'PLATFORM_RECOVERY_IN_PROGRESS', 'The task is paused while its original platform operation is being reconciled');
+  }
+}
+
 async function databaseNow(tx: Transaction): Promise<Date> {
   const values = await query<{ now: Date | string }>(tx, sql`SELECT clock_timestamp() AS now`);
   const now = date(values[0]?.now ?? null);
@@ -408,6 +417,7 @@ export async function admitTaskAction(
       }
       return { kind: 'admitted' as const, row, replayed: true };
     }
+    await assertRunNotInPlatformRecovery(tx, run.id);
     const unresolved = await query<{ exists: boolean }>(tx, sql`SELECT EXISTS(
       SELECT 1 FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
       WHERE a.run_id=${run.id} AND a.task_index=${input.taskIndex} AND r.receipt_status='unknown'
@@ -519,6 +529,7 @@ export async function finishTask(
       if (task.closure_reason !== 'agent_finish' && answer !== undefined) throw new HttpError(409, 'TASK_CLOSED', 'A deadline cutoff cannot accept a late answer');
       return finishView(task, true);
     }
+    await assertRunNotInPlatformRecovery(tx, run.id);
     if (run.status !== 'running' || task.status !== 'active') throw new HttpError(409, 'TASK_NOT_ACTIVE', 'Only the current active task can be finished');
     const active = await query<{ task_index: number }>(tx, sql`SELECT task_index FROM oid_run_task WHERE run_id=${run.id} AND status='active' FOR UPDATE`);
     if (active.length !== 1 || active[0]!.task_index !== input.taskIndex) throw new HttpError(409, 'TASK_NOT_ACTIVE', 'Only the current active task can be finished');
@@ -562,6 +573,8 @@ export async function closeExpiredTaskActions(
       FROM oid_benchmark_run r JOIN oid_run_task t ON t.run_id=r.id
       WHERE r.status='running' AND t.status='active' AND t.closure_status='open'
         AND t.deadline_at IS NOT NULL AND r.overall_deadline IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM oid_run_platform_recovery recovery
+          WHERE recovery.run_id=r.id AND recovery.status IN ('recovering','unknown','exhausted'))
         AND LEAST(t.deadline_at,r.overall_deadline)<=clock_timestamp()
       ORDER BY LEAST(t.deadline_at,r.overall_deadline),r.owner_id,r.id,t.task_index LIMIT ${limit}`) as unknown as Array<{
     run_id: string; owner_id: string; agent_id: string; task_index: number;
@@ -585,6 +598,10 @@ export async function closeExpiredTaskActions(
         WHERE run_id=${run.id} AND task_index=${candidate.task_index} FOR UPDATE`);
       const task = tasks[0];
       if (!task || task.status !== 'active' || task.closure_status !== 'open') return null;
+      const recoveryRows = await query<{ recovering: boolean }>(tx, sql`SELECT EXISTS(
+        SELECT 1 FROM oid_run_platform_recovery recovery
+        WHERE recovery.run_id=${run.id} AND recovery.status IN ('recovering','unknown','exhausted')) AS recovering`);
+      if (recoveryRows[0]?.recovering) return null;
       const now = await databaseNow(tx);
       const runDeadline = date(run.overall_deadline);
       const taskDeadline = date(task.deadline_at);

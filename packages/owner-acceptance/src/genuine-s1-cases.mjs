@@ -27,10 +27,10 @@ const evidenceRootForTask = (taskId = 'S1') => {
 const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
 const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
 const PIN = Object.freeze({
-  validation: { path: 'artifacts/runs/bts-difficulty-v2-release-validation/a8755b14-6868-42d4-977b-39314c067cd4/validation.json', sha256: 'e63308ed99100555f1f29b51b37269fdb3ead580a34367431d17adc177aa6bea' },
+  validation: { path: 'artifacts/runs/bts-difficulty-v2-release-validation/368c4bf6-defb-4205-87d7-a242576732c0/validation.json', sha256: '36fd0bb7154f4639a25acd4daf5a4384b557cb22466f27be622fd47c43558594' },
   cases: { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json', sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b' },
   release: { path: 'artifacts/runs/bts-difficulty-v2-release-candidates/9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979/candidate-release.json', sha256: '32e71ec759ccd0d3b612e5d87db969ad13e1d9d5213ab77f9a8eadc9e4f6a67f' },
-  minimum: { path: 'artifacts/runs/bts-v2-minimum-action-review/763f6ca9-dc4f-4d56-a7e5-bb193d9cdc7a/review.json', sha256: 'd89e33a02ce9100e6993638c4fb3224d2e09d81136a49078e83ee916966faae0' },
+  minimum: { path: 'artifacts/runs/bts-v2-minimum-action-review/40c1a8d1-5697-490f-93d9-3d57442a0688/review.json', sha256: '8fcf1bbfdd7b7f4e8a9bc146a20484c683e207a5ea523863669edec520a20cb0' },
   references: { path: 'artifacts/runs/bts-v2-reference-verification/6be1a286-111c-40bf-a320-1fd8e4b99426/verification.json', sha256: 'f77ef62de268c41295f6b23665cbb4a4f9b41083eaba78826de06a091dac981b' },
 });
 const HEX_HASH = /^[0-9a-f]{64}$/i;
@@ -608,12 +608,27 @@ async function waitForActiveTask({ publicOrigin, bearer, runId, observerPool, ta
   throw error;
 }
 
-async function waitForActionResolution({ publicOrigin, bearer, runId, actionId, observerPool, timeoutMs = 180_000 }) {
+async function waitForActionResolution({ publicOrigin, bearer, runId, actionId, observerPool, timeoutMs = 180_000,
+  waitForPlatformRecovery = false, onInitialUnknown = undefined, finishWhenUnknown = undefined }) {
+  demand(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1_000 && timeoutMs <= 240_000,
+    'action_resolution_timeout_invalid');
   const end = Date.now() + timeoutMs;
+  let initialUnknown = null;
+  let initialUnknownNotified = false;
   while (Date.now() < end) {
-    const api = await agentRequest({ publicOrigin, path: '/api/agent/runs/' + runId + '/actions/' + actionId, bearer });
+    let api;
+    try {
+      api = await agentRequest({ publicOrigin, path: '/api/agent/runs/' + runId + '/actions/' + actionId, bearer });
+    } catch (error) {
+      if (!waitForPlatformRecovery) throw error;
+      api = { status: 0, payload: { error: { code: safeErrorCode(error) } } };
+    }
     const snapshot = await readRunSnapshot(observerPool, { runId });
     const action = snapshot.actions.find((row) => row.actionId === actionId);
+    if (waitForPlatformRecovery && initialUnknown && action && typeof finishWhenUnknown === 'function' &&
+        await finishWhenUnknown({ apiStatus: api.status, apiPayload: api.payload, action, snapshot })) {
+      return { apiStatus: api.status, apiPayload: api.payload, action, snapshot, initialUnknown, finalTerminal: true };
+    }
     if (action && ['observed', 'rejected_before_execution', 'unknown'].includes(action.receiptStatus)) {
       // The GET can precede the receipt commit seen by the independent observer.
       // Poll reads until both surfaces agree; never resend the participant action.
@@ -622,14 +637,22 @@ async function waitForActionResolution({ publicOrigin, bearer, runId, actionId, 
         api.payload?.receiptRevision === action.receiptRevision &&
         (api.payload?.toolResponse == null ? action.toolResponseHash === null
           : eventPayloadHash(api.payload.toolResponse) === action.toolResponseHash);
-      if (action.receiptStatus === 'unknown' || apiMatches) {
-        return { apiStatus: api.status, apiPayload: api.payload, action, snapshot };
+      if (action.receiptStatus === 'unknown') {
+        initialUnknown ??= { apiStatus: api.status, action, snapshot };
+        if (!initialUnknownNotified && typeof onInitialUnknown === 'function') {
+          initialUnknownNotified = true;
+          await onInitialUnknown(initialUnknown);
+        }
+        if (!waitForPlatformRecovery) return { apiStatus: api.status, apiPayload: api.payload, action, snapshot };
+      } else if (apiMatches) {
+        return { apiStatus: api.status, apiPayload: api.payload, action, snapshot, initialUnknown };
       }
     }
     await delay(750);
   }
   const snapshot = await readRunSnapshot(observerPool, { runId });
-  return { apiStatus: null, action: snapshot.actions.find((row) => row.actionId === actionId) ?? null, snapshot, timedOut: true };
+  return { apiStatus: null, action: snapshot.actions.find((row) => row.actionId === actionId) ?? null,
+    snapshot, initialUnknown, timedOut: true };
 }
 
 async function waitForClosedTask(pool, runId, taskIndex = 0, timeoutMs = 90_000) {
@@ -1917,6 +1940,14 @@ function verifyRankedHandoffState({ output, state, run, expected, completed, pay
 async function submitLinkedTrainingAction(context, command, expectsTransaction) {
   const { input, output, record, observerPool, bearer, runId, taskIndex, taskId } = context;
   const operationId = randomUUID();
+  const recoveryFault = input.platformRecoveryFault;
+  if (recoveryFault && !output.platformRecovery?.faultArmOperationId) {
+    demand(typeof recoveryFault.beforeFirstAction === 'function', 'platform_recovery_fault_arm_callback_required');
+    await recoveryFault.beforeFirstAction({ runId, taskIndex, taskId, operationId, command });
+    output.platformRecovery ??= { schemaVersion: 'bpc-platform-recovery-worker-hook/v1',
+      boundary: 'local_real_bef_response_drop_fault_injection', firstActionOperationId: operationId,
+      faultArmOperationId: operationId };
+  }
   let admitted;
   let transportUnknown = false;
   try {
@@ -1938,16 +1969,55 @@ async function submitLinkedTrainingAction(context, command, expectsTransaction) 
   }
   demand(UUID.test(actionId), 'linked_action_admission_unknown_do_not_retry');
   fact.actionId = actionId;
-  const resolved = await waitForActionResolution({ publicOrigin: input.publicOrigin, bearer, runId, actionId, observerPool });
+  const recoveryWaitMs = recoveryFault?.waitTimeoutMs ?? 180_000;
+  const resolved = await waitForActionResolution({ publicOrigin: input.publicOrigin, bearer, runId, actionId, observerPool,
+    timeoutMs: recoveryFault ? recoveryWaitMs : 180_000, waitForPlatformRecovery: Boolean(recoveryFault),
+    onInitialUnknown: recoveryFault?.onInitialUnknown ? async ({ apiStatus, action, snapshot }) => {
+      output.platformRecovery.initialUnknown = { actionId, runId, ownerOperationId: operationId,
+        receiptStatus: action?.receiptStatus ?? 'unknown', apiStatus, observedActionCount: snapshot.actions.filter((row) =>
+          row.operationId === operationId).length, retrySubmitted: false };
+      await recoveryFault.onInitialUnknown({ runId, actionId, ownerOperationId: operationId,
+        taskIndex, taskId, apiStatus, action, snapshot });
+    } : undefined,
+    finishWhenUnknown: recoveryFault?.finishWhenUnknown ? async ({ apiStatus, apiPayload, action, snapshot }) =>
+      recoveryFault.finishWhenUnknown({ runId, actionId, ownerOperationId: operationId, taskIndex, taskId,
+        apiStatus, apiPayload, action, snapshot }) : undefined });
   fact.receiptStatus = resolved.action?.receiptStatus ?? 'unknown';
   fact.transactionHash = resolved.action?.transactionHash ?? null;
   fact.evidence = resolved.action?.evidencePath && resolved.action?.evidenceHash
     ? { path: resolved.action.evidencePath, sha256: resolved.action.evidenceHash } : null;
-  demand(resolved.action?.receiptStatus === 'observed', resolved.action?.receiptStatus === 'unknown'
-    ? 'linked_action_effect_unknown_do_not_retry' : 'linked_action_not_observed');
+  const exhaustedTerminal = recoveryFault?.terminalAfterRecovery === true && resolved.finalTerminal === true;
+  const exhaustedUnknown = exhaustedTerminal &&
+    resolved.action.receiptStatus === 'unknown';
+  demand(resolved.action?.receiptStatus === 'observed' || exhaustedUnknown,
+    resolved.action?.receiptStatus === 'unknown' ? 'linked_action_effect_unknown_do_not_retry' : 'linked_action_not_observed');
   demand(resolved.action.kind === command.kind && eventPayloadHash(resolved.action.command) === eventPayloadHash(command) &&
-    (expectsTransaction ? /^0x[0-9a-f]{64}$/i.test(resolved.action.transactionHash ?? '') : resolved.action.transactionHash === null),
+    (exhaustedUnknown ? resolved.action.transactionHash === null :
+      expectsTransaction ? /^0x[0-9a-f]{64}$/i.test(resolved.action.transactionHash ?? '') : resolved.action.transactionHash === null),
   'linked_action_receipt_binding_mismatch');
+  if (recoveryFault && resolved.initialUnknown) {
+    const originalOnly = resolved.snapshot.actions.filter((row) => row.operationId === operationId);
+    demand(originalOnly.length === 1 && (resolved.action.receiptStatus === 'observed' || exhaustedUnknown),
+      'platform_recovery_original_operation_not_reconciled');
+    output.platformRecovery.reconciledOriginalAction = { actionId, runId, ownerOperationId: operationId,
+      initialReceiptStatus: 'unknown', finalReceiptStatus: resolved.action.receiptStatus, actionRowCount: originalOnly.length,
+      resubmissionCount: 0, evidence: resolved.action.evidence ?? null };
+    if (recoveryFault.terminalAfterRecovery === true) {
+      demand(typeof recoveryFault.afterOriginalActionReconciled === 'function',
+        'platform_recovery_terminal_verifier_required');
+      const terminal = await recoveryFault.afterOriginalActionReconciled({ runId, actionId, ownerOperationId: operationId,
+        taskIndex, taskId, action: resolved.action, snapshot: resolved.snapshot, originalReceiptRemainsUnknown: exhaustedUnknown });
+      demand(terminal?.verified === true && terminal.terminalReason === 'platform_failure_recovery_exhausted' &&
+        terminal.cashRefundedUnits === '0' && typeof terminal.bonusRefundedUnits === 'string' &&
+        /^\d+$/.test(terminal.bonusRefundedUnits) && terminal.refundEntryCount >= 1 &&
+        terminal.fenceVerified === true && terminal.runStatus === 'failed' &&
+        ['unknown', 'observed'].includes(terminal.originalReceiptStatus),
+      'platform_recovery_exhaustion_terminal_not_verified');
+      output.platformRecovery.exhaustion = terminal;
+      output.platformRecovery.terminalCapturedWithoutGrade = true;
+      throw fail('beta_platform_recovery_terminal_captured');
+    }
+  }
   record('linked_participant_action_and_durable_receipt', 'observed', { taskIndex, taskId, kind: command.kind,
     actionId, transactionHash: fact.transactionHash, evidence: fact.evidence });
   return resolved;
@@ -1956,7 +2026,7 @@ async function submitLinkedTrainingAction(context, command, expectsTransaction) 
 async function captureAndEvaluateTrainingTask(context) {
   const { input, output, record, observerPool, bearer, runId, taskIndex, taskId, intentId,
     createIntentOperationId, acceptOperationId, selectedTaskIds, agentId, created, taskReleaseSource,
-    evidenceSource, sequenceMode, beforeAction, mode = 'training' } = context;
+    evidenceSource, sequenceMode, beforeAction, mode = 'training', intentCreatePayload } = context;
   const task = await waitForActiveTask({ publicOrigin: input.publicOrigin, bearer, runId, observerPool, taskId, taskIndex, mode });
   const activeSnapshot = await readRunSnapshot(observerPool, { runId });
   demand(activeSnapshot.run.length === 1 && activeSnapshot.run[0].status === 'running' && activeSnapshot.run[0].overall_deadline,
@@ -1969,6 +2039,20 @@ async function captureAndEvaluateTrainingTask(context) {
     output.dispatchIdentity = { runId, claimId: initial.claims[0].claim_id, slotRunId: initial.slots[0].run_id,
       slotAgentId: initial.slots[0].agent_id, slotClaimId: initial.slots[0].claim_id };
     output.automaticInitialMoneySha256 = initial.moneySha256;
+  }
+  if (taskIndex === 0 && typeof input.onGenuineFirstTaskActive === 'function' &&
+      output.genuineFirstTaskActiveCallbackInvoked !== true) {
+    // The callback is an acceptance orchestration seam, not part of the task result.
+    // Its bearer and browser handles remain in memory and never enter output.
+    await input.onGenuineFirstTaskActive({ runId, ownerId: input.ownerId, agentId, mode,
+      taskIds: [...selectedTaskIds], task, agentBearer: bearer, ownerPage: input.ownerPage,
+      publicOrigin: input.publicOrigin, databaseUrl: input.databaseUrl,
+      observerDatabaseUrl: input.observerDatabaseUrl, release: output.release, intentId,
+      createIntentOperationId, acceptOperationId,
+      // These exact owner-create bytes are exposed only to the synchronous in-memory
+      // acceptance callback so a restored clone can retry the original operation.
+      intentCreatePayload: intentCreatePayload ? structuredClone(intentCreatePayload) : null });
+    output.genuineFirstTaskActiveCallbackInvoked = true;
   }
   if (beforeAction) await beforeAction(task);
   const { answer } = await performGenuineActorActions({ ...context, mode }, task);
@@ -2865,6 +2949,8 @@ async function runGenuineOwnerRunCase(input) {
       && response.request().method() === 'POST', { timeout: 20_000 });
     await input.ownerPage.getByTestId('run-intent-create').click();
     const intentHttp = await intentPromise;
+    // Retained only in this function's RAM for optional same-operation restore probes.
+    const intentCreatePayload = intentHttp.request().postDataJSON();
     let intentBody = {};
     try { intentBody = await intentHttp.json(); } catch { /* Reconcile from independent PostgreSQL if the body is absent. */ }
     const intentId = intentBody?.intent?.id;
@@ -2884,6 +2970,10 @@ async function runGenuineOwnerRunCase(input) {
         Number(intentSnapshot[0].successor_preparation_timeout_seconds) === 180
         : true),
     'owner_intent_database_binding_mismatch');
+    demand(intentCreatePayload && intentCreatePayload.operationId === intentSnapshot[0].operation_id &&
+      intentCreatePayload.agentId === agentId && intentCreatePayload.mode === mode &&
+      JSON.stringify(intentCreatePayload.taskIds) === JSON.stringify(taskIds),
+    'owner_intent_request_body_database_binding_mismatch');
     output.launchIntent = { intentId, operationId: intentSnapshot[0].operation_id, browserHttpStatus: intentHttp.status(),
       selectedTasks: taskIds, mode, cashCeilingUnits: '0', quoteDisplay: quoteText, quotePriceUnits: quoteUnits.toString(),
       successorPreparationPolicyVersion: intentSnapshot[0].successor_preparation_policy_version,
@@ -3028,7 +3118,7 @@ async function runGenuineOwnerRunCase(input) {
       let successorActivation = null;
       const captured = await captureAndEvaluateTrainingTask({ input, output, record, observerPool, bearer: actorCredential,
         runId, taskIndex, taskId: currentTaskId, intentId, createIntentOperationId, acceptOperationId,
-        selectedTaskIds: taskIds, agentId, created, taskReleaseSource, evidenceSource, sequenceMode, mode,
+        selectedTaskIds: taskIds, agentId, created, taskReleaseSource, evidenceSource, sequenceMode, mode, intentCreatePayload,
         beforeAction: rankedMode && taskIndex > 0 ? async (task) => {
           successorActivation = await verifyRankedSuccessorActivation({ input, record, observerPool, runId, task,
             release: output.release, predecessorTerminalization: output.predecessorTerminalizations?.[taskIndex - 1],
@@ -3103,15 +3193,37 @@ async function runGenuineOwnerRunCase(input) {
       record('codex_local_profile_compatibility_and_revocation', 'verified');
       record('primary_native_client_profile_boundary', 'verified', {negativeMatrixAcceptance: false});
     }
+    if (output.trainingRunCompletion?.status === 'verified' && typeof input.onGenuineRunCompleted === 'function') {
+      // The credential is deliberately passed only through this in-memory callback.
+      // It is never copied into output, an artifact, or a log.
+      await input.onGenuineRunCompleted({ runId, ownerId: input.ownerId, agentId: output.agent?.agentId,
+        mode, taskIds: [...taskIds], agentBearer: actorCredential, intentId,
+        createIntentOperationId, acceptOperationId,
+        intentCreatePayload: structuredClone(intentCreatePayload),
+        releaseIdentity: output.release.releaseIdentity, manifestHash: output.release.manifestHash });
+      output.postCompletionCallbackInvoked = true;
+    }
   } catch (error) {
-    output.status = 'blocked';
-    output.blocker = { stage: output.stages.at(-1)?.name ?? 'genuine_s1_setup', reasonCode: safeErrorCode(error) };
-    if (error?.safeDiagnostic && typeof error.safeDiagnostic === 'object') output.safeDiagnostic = error.safeDiagnostic;
-    record(output.blocker.stage, 'blocked', { reasonCode: output.blocker.reasonCode });
+    if (safeErrorCode(error) === 'beta_platform_recovery_terminal_captured' &&
+        output.platformRecovery?.terminalCapturedWithoutGrade === true && output.platformRecovery?.exhaustion?.verified === true) {
+      output.status = 'captured_platform_recovery_exhausted_without_grade';
+      record('platform_recovery_exhaustion_terminal', 'observed', {
+        runId, actionId: output.platformRecovery.reconciledOriginalAction?.actionId,
+        runStatus: output.platformRecovery.exhaustion.runStatus,
+        terminalReason: output.platformRecovery.exhaustion.terminalReason,
+        gradeRecorded: false,
+      });
+    } else {
+      output.status = 'blocked';
+      output.blocker = { stage: output.stages.at(-1)?.name ?? 'genuine_s1_setup', reasonCode: safeErrorCode(error) };
+      if (error?.safeDiagnostic && typeof error.safeDiagnostic === 'object') output.safeDiagnostic = error.safeDiagnostic;
+      record(output.blocker.stage, 'blocked', { reasonCode: output.blocker.reasonCode });
+    }
   } finally {
     actorCredential = '';
     if (bddContext?.extraAgents) for (const agent of bddContext.extraAgents) agent.bearer = '';
-    if (runId && observerPool && output.runCompletion?.status !== 'verified') {
+    if (runId && observerPool && output.runCompletion?.status !== 'verified' &&
+        output.platformRecovery?.terminalCapturedWithoutGrade !== true) {
       await requestOwnerCancellation({ ownerPage: input.ownerPage, runId, observerPool, output });
     }
     if (ownerDbClient) await ownerDbClient.end({ timeout: 5 }).catch(() => undefined);
@@ -3245,10 +3357,43 @@ export async function writeGenuineRankedStartupBlock({ repositoryRoot, captureId
     taskGradePublished: false, stages: [{ name: phase, status: 'blocked', reasonCode }], participantActions: [],
   }, provenance: { startupFailure: true, sourceStableDuringRun: false } });
 }
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+function normalizedLoopbackHost(hostname) {
+  return String(hostname).replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+}
+
+export function validateGenuineRecoveryProxySettings({ apiBaseUrl = undefined, observerDatabase = undefined,
+  automaticWorkerEvaluation = false } = {}) {
+  if (apiBaseUrl === undefined && observerDatabase === undefined) return null;
+  demand(automaticWorkerEvaluation === true, 'platform_recovery_proxy_requires_server_worker');
+  let participantApiOrigin;
+  if (apiBaseUrl !== undefined) {
+    let parsed;
+    try { parsed = new URL(apiBaseUrl); } catch { throw fail('platform_recovery_proxy_api_origin_invalid'); }
+    demand(parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(normalizedLoopbackHost(parsed.hostname)) &&
+      parsed.username === '' && parsed.password === '' && parsed.pathname === '/' && parsed.search === '' && parsed.hash === '' &&
+      /^\d{1,5}$/.test(parsed.port) && Number(parsed.port) >= 1 && Number(parsed.port) <= 65535,
+    'platform_recovery_proxy_api_origin_must_be_loopback');
+    participantApiOrigin = parsed.origin;
+  }
+  let observer = undefined;
+  if (observerDatabase !== undefined) {
+    demand(observerDatabase && typeof observerDatabase === 'object' &&
+      LOOPBACK_HOSTS.has(normalizedLoopbackHost(observerDatabase.host)) &&
+      Number.isSafeInteger(observerDatabase.port) && observerDatabase.port >= 1 && observerDatabase.port <= 65535,
+    'platform_recovery_observer_proxy_must_be_loopback');
+    observer = { host: normalizedLoopbackHost(observerDatabase.host), port: observerDatabase.port, database: 'bef' };
+  }
+  return { ...(participantApiOrigin ? { participantApiOrigin } : {}), ...(observer ? { observerDatabase: observer } : {}) };
+}
+
 /** Provision coordinator credentials only inside the compose tmpfs mount. */
-export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, automaticWorkerEvaluation = false }) {
+export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, automaticWorkerEvaluation = false,
+  apiBaseUrl = undefined, observerDatabase = undefined }) {
   demand(process.platform === 'linux' && repositoryRoot === ROOT, 'genuine_s1_requires_pinned_docker_runtime');
   demand(process.env.OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED === 'true', 'explicit_private_coordinator_override_required');
+  const recoveryProxySettings = validateGenuineRecoveryProxySettings({ apiBaseUrl, observerDatabase, automaticWorkerEvaluation });
   const configPath = process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG || '.local/owner-identity/bef-task-coordinator.json';
   demand(configPath === '.local/owner-identity/bef-task-coordinator.json', 'coordinator_config_path_not_pinned');
   const manifestBytes = await safeBytes(repositoryRoot, 'infrastructure/benchmark-environment/manifest.json');
@@ -3297,16 +3442,18 @@ export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, auto
     sourceRpcUrl: 'http://host.docker.internal:' + sourcePort,
     ...(automaticWorkerEvaluation ? { observationPipeline: {
       schemaVersion: 'local-bef-training-observation/v1',
-      database: { host: 'host.docker.internal', port: Number(process.env.BEF_DATABASE_HOST_PORT || '55432'), database: 'bef' },
+      database: recoveryProxySettings?.observerDatabase ?? { host: 'host.docker.internal', port: Number(process.env.BEF_DATABASE_HOST_PORT || '55432'), database: 'bef' },
       passwordFile: '/run/secrets/bef_database_observer_password',
     } } : {}),
-    environments: [{ envId: 'bef-env-a', apiBaseUrl: 'http://host.docker.internal:' + apiPort,
+    environments: [{ envId: 'bef-env-a', apiBaseUrl: recoveryProxySettings?.participantApiOrigin ?? 'http://host.docker.internal:' + apiPort,
       observerRpcUrl: 'http://host.docker.internal:' + rpcPort, x402Policy }] };
   const configAbsolute = resolve(repositoryRoot, configPath);
   await writeFile(configAbsolute, JSON.stringify(config) + '\n', { flag: 'wx', mode: 0o600 });
   await chmod(configAbsolute, 0o600);
   process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG = configPath;
-  return { configPath, environmentId: 'bef-env-a', manifestSha256: manifestBytes.sha256, secretMaterialRetained: false };
+  return { configPath, environmentId: 'bef-env-a', manifestSha256: manifestBytes.sha256, secretMaterialRetained: false,
+    ...(recoveryProxySettings ? { platformRecoveryFaultProxy: true,
+      observerDatabaseProxy: Boolean(recoveryProxySettings.observerDatabase) } : {}) };
 }
 
 export { offerTermsMatch as matchGenuinePublicOffer, selectCatalogOffer as selectGenuinePublicCatalogOffer,

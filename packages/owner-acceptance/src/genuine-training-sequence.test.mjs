@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OPEN_TASK_IDS, normalizeTrainingSequenceTaskIds, quoteTrainingSelectionUnits, trainingSequenceGrantAmountUnits,
   trainingCleanupLeasePrefixIsFenced, trainingSequenceTransitionBasis, trainingSequenceTransitions,
-  trainingSuccessorActivationChainMatches, trainingSuccessorActivationResult } from './genuine-s1-cases.mjs';
+  trainingSuccessorActivationChainMatches, trainingSuccessorActivationResult,
+  validateGenuineRecoveryProxySettings } from './genuine-s1-cases.mjs';
 
 test('all-open training selection is canonical and contains seven adjacent transitions', () => {
   assert.deepEqual(OPEN_TASK_IDS, ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2']);
@@ -21,6 +22,24 @@ test('training capture helper rejects empty, duplicate, closed, unknown and unsu
     ['S1', 'S2', 'S4'], ['S2', 'S1', 'S4'], [...OPEN_TASK_IDS].reverse()]) {
     assert.throws(() => normalizeTrainingSequenceTaskIds(selection), { code: 'unsupported_genuine_task_selection' });
   }
+});
+
+test('recovery proxy settings require explicit automatic worker and strict loopback endpoints', () => {
+  assert.equal(validateGenuineRecoveryProxySettings(), null);
+  assert.throws(() => validateGenuineRecoveryProxySettings({ apiBaseUrl: 'http://127.0.0.1:32123' }),
+    { code: 'platform_recovery_proxy_requires_server_worker' });
+  assert.deepEqual(validateGenuineRecoveryProxySettings({ automaticWorkerEvaluation: true,
+    apiBaseUrl: 'http://127.0.0.1:32123', observerDatabase: { host: '127.0.0.1', port: 32124 } }), {
+    participantApiOrigin: 'http://127.0.0.1:32123', observerDatabase: { host: '127.0.0.1', port: 32124, database: 'bef' },
+  });
+  for (const apiBaseUrl of ['https://127.0.0.1:32123', 'http://host.docker.internal:32123',
+    'http://127.0.0.1:32123/path', 'http://user@127.0.0.1:32123', 'http://127.0.0.1']) {
+    assert.throws(() => validateGenuineRecoveryProxySettings({ automaticWorkerEvaluation: true, apiBaseUrl }),
+      { code: 'platform_recovery_proxy_api_origin_must_be_loopback' });
+  }
+  assert.throws(() => validateGenuineRecoveryProxySettings({ automaticWorkerEvaluation: true,
+    observerDatabase: { host: 'host.docker.internal', port: 32124 } }),
+  { code: 'platform_recovery_observer_proxy_must_be_loopback' });
 });
 
 test('training quote rounds the selected weight once and keeps the established S1/S2 grant floor', () => {

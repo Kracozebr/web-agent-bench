@@ -15,8 +15,8 @@ const CASES = { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005
   sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b' };
 const RELEASE = { path: 'artifacts/runs/bts-difficulty-v2-release-candidates/9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979/candidate-release.json',
   sha256: '32e71ec759ccd0d3b612e5d87db969ad13e1d9d5213ab77f9a8eadc9e4f6a67f' };
-const MINIMA = { path: 'artifacts/runs/bts-v2-minimum-action-review/763f6ca9-dc4f-4d56-a7e5-bb193d9cdc7a/review.json',
-  sha256: 'd89e33a02ce9100e6993638c4fb3224d2e09d81136a49078e83ee916966faae0' };
+const MINIMA = { path: 'artifacts/runs/bts-v2-minimum-action-review/40c1a8d1-5697-490f-93d9-3d57442a0688/review.json',
+  sha256: '8fcf1bbfdd7b7f4e8a9bc146a20484c683e207a5ea523863669edec520a20cb0' };
 const REFERENCES = { path: 'artifacts/runs/bts-v2-reference-verification/6be1a286-111c-40bf-a320-1fd8e4b99426/verification.json',
   sha256: 'f77ef62de268c41295f6b23665cbb4a4f9b41083eaba78826de06a091dac981b' };
 const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';

@@ -8,6 +8,8 @@ import { keccak256 } from 'viem';
 import type { OwnerDatabase } from './db.js';
 import type { TaskObservationBundleCandidate } from './task-observation-store.js';
 import { collectBefS1TaskObservationCandidate, type BefS1ObservationCollectorDependencies, type BefS1RunObservationPacket } from './bef-s1-observation-collector.js';
+import { safeMeasurementProjection } from './bef-task-executor.js';
+import { makeRecoverySourceEvidence } from './beta-platform-recovery-source-evidence.js';
 import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase } from './task-release.js';
 
 const HASH_A = 'a'.repeat(64);
@@ -61,6 +63,9 @@ async function createZeroActionFixture(options: {
   writableObserver?: boolean; extraTransfer?: boolean; admittedAction?: boolean; bareCommandHash?: boolean;
   selectedActionToken?: unknown; selectedActionApiToken?: unknown; measurementToken?: unknown;
   operationResponseHash?: string | null;
+  recoveredAction?: boolean;
+  recoveryVariant?: 'valid' | 'source-proof-mismatch' | 'owner-binding-mismatch' | 'observed-event-missing' | 'http-claim-present';
+  omitHttpResponseEvidence?: boolean;
 } = {}) {
   const repositoryRoot = await mkdtemp(join(tmpdir(), 'bef-s1-zero-action-'));
   const evidenceDirectory = join(repositoryRoot, 'artifacts', 'runs', 'owner-identity-bef-task-coordinator', 'preparation');
@@ -285,21 +290,56 @@ async function createZeroActionFixture(options: {
   const actionPayloadHash = sha256CanonicalTaskJson({ runId: RUN_ID, taskIndex: 0, command: extraCommand });
   const actionSelected = { ...selectedAction, token: options.selectedActionToken ?? TOKEN,
     ...(options.selectedActionApiToken === undefined ? {} : { apiToken: options.selectedActionApiToken }) };
-  const actionEvidenceBytes = Buffer.from(JSON.stringify({
+  const recoveredToolResponse = options.recoveredAction
+    ? safeMeasurementProjection({ ...measurement, operationId: extraOperation.operation_id, outcome: 'success' }) : undefined;
+  if (options.recoveredAction && !recoveredToolResponse) throw new Error('synthetic recovery response projection failed');
+  const recoveredSourceProof = options.recoveredAction ? makeRecoverySourceEvidence({
+    operationId: extraOperation.operation_id,
+    environmentId: ENVIRONMENT_ID,
+    generationId: GENERATION_ID,
+    participantId: PARTICIPANT_ID,
+    idempotencyKeySha256: extraOperation.idempotency_key_sha256,
+    requestSha256,
+    operationKind: 'transfer',
+    status: 'settled',
+    transactionHash: EXTRA_TX_HASH,
+    receiptStatus: 'success',
+    responseSha256: extraOperation.response_sha256,
+    generationManifestSha256: environmentManifestHash,
+    environmentManifestSha256: environmentManifestHash,
+    selectedActionKind: 'transfer',
+    selectedActionEventCount: 1,
+    selectedActionEventKind: 'transfer',
+    selectedActionEventRequestSha256: requestSha256,
+    selectedActionEventSha256: sha256CanonicalTaskJson(extraEvents[0]!.event_json),
+    selectedOutcome: 'success',
+    selectedTransactionHash: EXTRA_TX_HASH,
+    selectedMeasurementSha256: sha256CanonicalTaskJson(measurement),
+  }) : undefined;
+  if (options.recoveredAction && !recoveredSourceProof) throw new Error('synthetic recovery source proof failed');
+  const actionEvidenceDocument = {
     schema: 'bef-task-action-observation-v1', actionId, runId: RUN_ID, taskIndex: 0, actionSequence: '1',
     ownerOperationId, actionKind: 'transfer', commandSha256: options.bareCommandHash ? sha256CanonicalTaskJson(extraCommand) : actionPayloadHash,
     environmentId: ENVIRONMENT_ID, generationId: GENERATION_ID, manifestSha256: environmentManifestHash,
     applicationSourceSha256: applicationSourceHash, idempotencyKey: `task-action-${actionId}`, status: 'observed',
-    requestStartedAt: createdAt, requestFinishedAt: createdAt, httpStatus: 200,
+    ...(options.recoveredAction ? { reasonCode: 'platform_recovery_original_operation_terminal' } : {}),
+    ...(!options.recoveredAction && !options.omitHttpResponseEvidence
+      ? { requestStartedAt: createdAt, requestFinishedAt: createdAt, httpStatus: 200 } : {}),
     befOperationId: extraOperation.operation_id, transactionHash: EXTRA_TX_HASH, outcome: 'success', receiptStatus: 'success',
-    rawResponseSha256: '7'.repeat(64), receiptGasUsed: '21000', receiptEffectiveGasPriceWei: '100',
-    participantToolResponse: {
+    ...(!options.recoveredAction && !options.omitHttpResponseEvidence ? { rawResponseSha256: '7'.repeat(64) } : {}),
+    receiptGasUsed: '21000', receiptEffectiveGasPriceWei: '100',
+    participantToolResponse: options.recoveredAction ? recoveredToolResponse : {
       operationId: extraOperation.operation_id, outcome: 'success',
       selectedAction: actionSelected,
       transaction: { hash: EXTRA_TX_HASH, from: PARTICIPANT, to: TOKEN, input: extraTransferInput },
       receipt: { transactionHash: EXTRA_TX_HASH, status: 'success', gasUsed: '21000', effectiveGasPrice: '100' },
     },
-  }));
+    ...(options.recoveredAction ? { recoverySource: options.recoveryVariant === 'source-proof-mismatch'
+      ? { ...recoveredSourceProof, sourceSnapshotSha256: '0'.repeat(64) } : recoveredSourceProof } : {}),
+    ...(options.recoveredAction && options.recoveryVariant === 'http-claim-present'
+      ? { httpStatus: 200, rawResponseSha256: '7'.repeat(64) } : {}),
+  };
+  const actionEvidenceBytes = Buffer.from(JSON.stringify(actionEvidenceDocument));
   if (options.admittedAction) await writeFile(join(actionEvidenceDirectory, `${actionId}.json`), actionEvidenceBytes);
   const admittedActionRow = options.admittedAction ? {
     id: actionId, run_id: RUN_ID, task_index: 0, owner_id: OWNER_ID, agent_id: AGENT_ID, task_id: 'S1',
@@ -310,6 +350,19 @@ async function createZeroActionFixture(options: {
     evidence_path: actionEvidencePath, transaction_hash: EXTRA_TX_HASH, history_revision: 1, history_status: 'observed',
     history_evidence_hash: createHash('sha256').update(actionEvidenceBytes).digest('hex'), history_evidence_path: actionEvidencePath,
     history_transaction_hash: EXTRA_TX_HASH,
+    ...(options.recoveredAction ? {
+      recovery_action_id: options.recoveryVariant === 'owner-binding-mismatch' ? '20000000-0000-4000-8000-000000000099' : actionId,
+      recovery_run_id: RUN_ID, recovery_owner_id: OWNER_ID, recovery_agent_id: AGENT_ID, recovery_task_index: 0,
+      recovery_environment_id: ENVIRONMENT_ID, recovery_operation_id: ownerOperationId,
+      recovery_payload_hash: options.bareCommandHash ? sha256CanonicalTaskJson(extraCommand) : actionPayloadHash,
+      recovery_incident_evidence_hash: HASH_A, recovery_started_at: createdAt,
+      recovery_deadline_at: '2026-10-27T12:03:00.000Z', recovery_clock_excluded_ms: 1000,
+      recovery_status: 'recovered', recovery_latest_evidence_hash: createHash('sha256').update(actionEvidenceBytes).digest('hex'),
+      recovery_observation_count: 1, recovery_observation_clock_excluded_ms: '1000',
+      recovery_matching_observation_at: '2026-10-27T12:01:00.000Z', recovery_observed_evidence_matches: true,
+      recovery_started_event_matches: true,
+      recovery_observed_event_matches: options.recoveryVariant !== 'observed-event-missing',
+    } : {}),
   } : null;
   const ownerResults: unknown[][] = [
     [{ owner_id: OWNER_ID, agent_id: AGENT_ID }], [], [], [runRow], [closureRow], [prep], [executionRow], [],
@@ -414,6 +467,7 @@ async function createZeroActionFixture(options: {
     dependencies,
     close: () => rm(repositoryRoot, { recursive: true, force: true }),
     getPacket: () => savedPacket,
+    getActionEvidenceDocument: () => actionEvidenceDocument,
     tamperEvent: (eventKind: string, update: (eventJson: Record<string, unknown>) => void) => {
       const event = selectedEvents.find((row) => row.event_kind === eventKind);
       if (!event || typeof event.event_json !== 'object' || event.event_json === null || Array.isArray(event.event_json)) {
@@ -502,6 +556,52 @@ test('synthetic S1 joins an admitted owner action to a distinct BEF operation an
     const selectedEvent = fixture.getPacket()?.bef.before.selectedEvents.find((event) => event.event_kind === 'selected_action_bound');
     assert.ok(selectedEvent && typeof selectedEvent.event_json_sha256 === 'string');
     assert.equal(Object.hasOwn(selectedEvent, 'event_json'), false);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('synthetic S1 accepts a source-backed recovered operation without claiming an HTTP response', async () => {
+  const fixture = await createZeroActionFixture({ extraTransfer: true, admittedAction: true, recoveredAction: true });
+  try {
+    const result = await collectBefS1TaskObservationCandidate(fixture.dependencies, { runId: RUN_ID, taskIndex: 0 });
+    assert.equal(result.status, 'candidate', JSON.stringify(result));
+    assert.equal(fixture.getActionEvidenceDocument().reasonCode, 'platform_recovery_original_operation_terminal');
+    assert.equal(Object.hasOwn(fixture.getActionEvidenceDocument(), 'httpStatus'), false);
+    assert.equal(Object.hasOwn(fixture.getActionEvidenceDocument(), 'rawResponseSha256'), false);
+    assert.equal(fixture.getActionEvidenceDocument().recoverySource !== undefined, true);
+    assert.equal(fixture.getPacket()?.ownerActions[0]?.receiptStatus, 'observed');
+    assert.equal(fixture.getPacket()?.bef.before.operations[0]?.response_sha256, null);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('synthetic S1 rejects recovered evidence with mismatched source proof or owner recovery lineage', async () => {
+  for (const variant of [
+    { recoveryVariant: 'source-proof-mismatch' as const, reasonCode: 'rpc_mapping_incomplete' },
+    { recoveryVariant: 'owner-binding-mismatch' as const, reasonCode: 'action_evidence_unavailable' },
+    { recoveryVariant: 'observed-event-missing' as const, reasonCode: 'action_evidence_unavailable' },
+    { recoveryVariant: 'http-claim-present' as const, reasonCode: 'action_evidence_unavailable' },
+  ]) {
+    const fixture = await createZeroActionFixture({ extraTransfer: true, admittedAction: true, recoveredAction: true,
+      recoveryVariant: variant.recoveryVariant });
+    try {
+      const result = await collectBefS1TaskObservationCandidate(fixture.dependencies, { runId: RUN_ID, taskIndex: 0 });
+      assert.deepEqual(result, { status: 'unavailable', reasonCode: variant.reasonCode });
+      assert.equal(fixture.getPacket(), null);
+    } finally {
+      await fixture.close();
+    }
+  }
+});
+
+test('synthetic S1 keeps ordinary observed actions strict about HTTP response evidence', async () => {
+  const fixture = await createZeroActionFixture({ extraTransfer: true, admittedAction: true, omitHttpResponseEvidence: true });
+  try {
+    const result = await collectBefS1TaskObservationCandidate(fixture.dependencies, { runId: RUN_ID, taskIndex: 0 });
+    assert.deepEqual(result, { status: 'unavailable', reasonCode: 'action_evidence_unavailable' });
+    assert.equal(fixture.getPacket(), null);
   } finally {
     await fixture.close();
   }

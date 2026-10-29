@@ -182,12 +182,12 @@ export function originalBonusRefundDeltas(expiresAt: Date | string | null, refun
 export function platformRefundEligible(input: {
   runStarted: boolean; cancellationReason: string | null; fenceEvidenceHash: string | null;
   fenceEventMatches: boolean; runHasLiveLease: boolean; windowExpired: boolean; recoveryStatus: string; originalReceiptStatus: string;
-  everyRunActionResolved: boolean;
+  noPendingRunActions: boolean;
 }): boolean {
   return input.runStarted && input.cancellationReason === 'coordinator_platform_failure' &&
     validHash(input.fenceEvidenceHash) && input.fenceEventMatches && !input.runHasLiveLease && input.windowExpired &&
     ['recovering', 'unknown', 'exhausted', 'recovered'].includes(input.recoveryStatus) &&
-    ['observed', 'rejected_before_execution'].includes(input.originalReceiptStatus) && input.everyRunActionResolved;
+    ['observed', 'rejected_before_execution', 'unknown'].includes(input.originalReceiptStatus) && input.noPendingRunActions;
 }
 
 export async function beginBetaPlatformRecovery(
@@ -238,13 +238,15 @@ export async function beginBetaPlatformRecovery(
         WHERE run_id=${action.run_id} AND event_type='run.platform_recovery_started'
           AND payload_json->>'actionId'=${action.action_id} AND payload_json->>'operationId'=${action.operation_id}
           AND payload_json->>'incidentEvidenceHash'=${row.incident_evidence_hash} LIMIT 1`);
-      if (!startedEvent.length || deadlineAt.getTime() < startedAt.getTime() || row.latest_evidence_hash !== null && !validHash(row.latest_evidence_hash)) {
+      if (!startedEvent.length || deadlineAt.getTime() !== startedAt.getTime() + RECOVERY_WINDOW_MS ||
+          !Number.isSafeInteger(row.clock_excluded_ms) || row.clock_excluded_ms < 0 || row.clock_excluded_ms > MAX_CLOCK_EXCLUSION_MS ||
+          row.latest_evidence_hash !== null && !validHash(row.latest_evidence_hash)) {
         throw new HttpError(409, 'PLATFORM_RECOVERY_LINEAGE_MISMATCH', 'The persisted recovery is missing its original event or valid bounds');
       }
       return { actionId: row.action_id, status: row.status as 'recovering' | 'recovered' | 'unknown' | 'exhausted' | 'refunded',
         startedAt: startedAt.toISOString(), deadlineAt: deadlineAt.toISOString(), replayed: true };
     }
-    if (action.run_status !== 'running' || action.receipt_status !== 'unknown' || action.outbox_status !== 'delivered') {
+    if (action.run_status !== 'running' || !['pending', 'unknown'].includes(action.receipt_status) || action.outbox_status !== 'delivered') {
       throw new HttpError(409, 'PLATFORM_RECOVERY_NOT_ELIGIBLE', 'Recovery requires this run’s delivered, unresolved original action');
     }
     const now = await databaseNow(tx);
@@ -281,13 +283,13 @@ export async function recordBetaPlatformRecoveryObservation(
     throw new HttpError(400, 'PLATFORM_OPERATION_EVIDENCE_INVALID', 'The original transaction identity is malformed or conflicts with a pre-execution rejection');
   }
 
-  const binding = await deps.db.execute(sql`SELECT action.owner_id,action.run_id,action.environment_id,action.operation_id,
+  const binding = await deps.db.execute(sql`SELECT action.owner_id,action.run_id,action.task_index,action.environment_id,action.operation_id,
       action.payload_hash,run.status AS run_status,recovery.status AS recovery_status
     FROM oid_run_task_action action JOIN oid_benchmark_run run ON run.id=action.run_id
       AND run.owner_id=action.owner_id AND run.agent_id=action.agent_id
     JOIN oid_run_platform_recovery recovery ON recovery.action_id=action.id
     WHERE action.id=${input.actionId}`) as unknown as Array<{
-      owner_id: string; run_id: string; environment_id: string; operation_id: string; payload_hash: string;
+      owner_id: string; run_id: string; task_index: number; environment_id: string; operation_id: string; payload_hash: string;
       run_status: string; recovery_status: string;
     }>;
   const action = binding[0];
@@ -305,8 +307,56 @@ export async function recordBetaPlatformRecoveryObservation(
       AND payload_hash=${action.payload_hash} AND environment_id=${action.environment_id}`) as unknown as Array<{ action_id: string }>;
   if (!recoveryBinding.length) throw new HttpError(409, 'PLATFORM_RECOVERY_NOT_FOUND', 'The exact original action has no active platform recovery record');
 
+  const observationState = await deps.db.transaction(async (tx) => {
+    await lockOwner(tx, action.owner_id);
+    const runRows = await query<{ status: string; overall_deadline: Date | string | null }>(tx, sql`SELECT status,overall_deadline
+      FROM oid_benchmark_run WHERE id=${action.run_id} AND owner_id=${action.owner_id} FOR UPDATE`);
+    const taskRows = await query<{ status: string; deadline_at: Date | string | null; closure_status: string }>(tx, sql`SELECT status,deadline_at,closure_status
+      FROM oid_run_task WHERE run_id=${action.run_id} AND task_index=${action.task_index} FOR UPDATE`);
+    const recoveryRows = await query<RecoveryRow>(tx, sql`SELECT * FROM oid_run_platform_recovery
+      WHERE action_id=${input.actionId} AND run_id=${action.run_id} FOR UPDATE`);
+    const recovery = recoveryRows[0];
+    if (!recovery || recovery.operation_id !== attested.operationId || recovery.payload_hash !== attested.payloadHash ||
+        recovery.environment_id !== attested.environmentId) {
+      throw new HttpError(409, 'PLATFORM_RECOVERY_NOT_FOUND', 'The exact original action has no active platform recovery record');
+    }
+    const existing = await query<{ evidence_hash: string; receipt_status: string }>(tx, sql`SELECT evidence_hash,receipt_status
+      FROM oid_run_platform_recovery_observation WHERE action_id=${input.actionId} AND evidence_hash=${attested.evidenceHash}`);
+    if (existing[0]) {
+      if (existing[0].receipt_status !== attested.status) throw new HttpError(409, 'PLATFORM_RECOVERY_OBSERVATION_CONFLICT', 'The same evidence hash has conflicting status');
+      return { replayed: true as const };
+    }
+    const now = await databaseNow(tx);
+    const excluded = recovery.clock_excluded_ms + attested.clockExcludedMs;
+    if (excluded > MAX_CLOCK_EXCLUSION_MS) throw new HttpError(409, 'PLATFORM_RECOVERY_CLOCK_BOUND_EXCEEDED', 'Verified recovery clock exclusion exceeds its bound');
+    if (attested.clockExcludedMs > 0 && runRows[0]?.status === 'running' && taskRows[0]?.status === 'active' &&
+        taskRows[0]?.closure_status === 'open') {
+      if (runRows[0].overall_deadline === null || taskRows[0].deadline_at === null) {
+        throw new HttpError(409, 'PLATFORM_RECOVERY_CLOCK_DEADLINE_MISSING', 'Active task and run deadlines are required for verified clock exclusion');
+      }
+      await tx.execute(sql`UPDATE oid_benchmark_run SET overall_deadline=overall_deadline+(${attested.clockExcludedMs} * interval '1 millisecond')
+        WHERE id=${action.run_id} AND owner_id=${action.owner_id} AND status='running' AND overall_deadline IS NOT NULL`);
+      await tx.execute(sql`UPDATE oid_run_task SET deadline_at=deadline_at+(${attested.clockExcludedMs} * interval '1 millisecond')
+        WHERE run_id=${action.run_id} AND task_index=${action.task_index}
+          AND status='active' AND closure_status='open' AND deadline_at IS NOT NULL`);
+      await appendEvent(tx, action.run_id, 'run.platform_recovery_clock_excluded', {
+        actionId: input.actionId, operationId: attested.operationId, evidenceHash: attested.evidenceHash,
+        clockExcludedMs: attested.clockExcludedMs,
+      }, now);
+    }
+    await tx.execute(sql`INSERT INTO oid_run_platform_recovery_observation(action_id,evidence_hash,receipt_status,clock_excluded_ms,observed_at)
+      VALUES (${input.actionId},${attested.evidenceHash},${attested.status},${attested.clockExcludedMs},${now.toISOString()})`);
+    const updated = await query<{ action_id: string }>(tx, sql`UPDATE oid_run_platform_recovery SET clock_excluded_ms=${excluded},
+      deadline_at=started_at + interval '180 seconds',
+      updated_at=${now.toISOString()}
+      WHERE action_id=${input.actionId} RETURNING action_id`);
+    if (updated.length !== 1) throw new Error('Platform recovery record disappeared during observation');
+    return { replayed: false as const };
+  });
+
   // This existing internal boundary only updates the receipt for the original action ID;
-  // it never resubmits its command or invents a replacement operation.
+  // it never resubmits its command or invents a replacement operation. Deadline exclusions
+  // are committed first while active-recovery guards prevent finish/deadline races.
   const receipt = await recordTaskActionReceipt({ db: deps.db }, {
     actionId: input.actionId, status: attested.status, evidenceHash: attested.evidenceHash,
     evidencePath: attested.evidencePath,
@@ -323,34 +373,22 @@ export async function recordBetaPlatformRecoveryObservation(
         recovery.environment_id !== attested.environmentId) {
       throw new HttpError(409, 'PLATFORM_RECOVERY_NOT_FOUND', 'The exact original action has no active platform recovery record');
     }
-    const existing = await query<{ evidence_hash: string; receipt_status: string }>(tx, sql`SELECT evidence_hash,receipt_status
-      FROM oid_run_platform_recovery_observation WHERE action_id=${input.actionId} AND evidence_hash=${attested.evidenceHash}`);
-    if (existing[0]) {
-      if (existing[0].receipt_status !== attested.status) throw new HttpError(409, 'PLATFORM_RECOVERY_OBSERVATION_CONFLICT', 'The same evidence hash has conflicting status');
-      return { actionId: input.actionId, status: recovery.status as 'recovering' | 'recovered' | 'unknown' | 'exhausted',
-        receiptStatus: receipt.receiptStatus, replayed: true };
-    }
     const now = await databaseNow(tx);
-    const oldDeadline = recovery.deadline_at instanceof Date ? recovery.deadline_at : new Date(recovery.deadline_at);
-    if (attested.clockExcludedMs > 0 && platformRecoveryWindowExpired(now, oldDeadline)) {
-      throw new HttpError(409, 'PLATFORM_RECOVERY_WINDOW_CLOSED', 'Clock exclusions must be attested and recorded before the recovery window closes');
+    const deadline = persistedTimestamp(recovery.deadline_at);
+    if (deadline.getTime() !== persistedTimestamp(recovery.started_at).getTime() + RECOVERY_WINDOW_MS) {
+      throw new HttpError(409, 'PLATFORM_RECOVERY_LINEAGE_MISMATCH', 'The persisted recovery deadline is outside the fixed recovery bound');
     }
-    const excluded = recovery.clock_excluded_ms + attested.clockExcludedMs;
-    if (excluded > MAX_CLOCK_EXCLUSION_MS) throw new HttpError(409, 'PLATFORM_RECOVERY_CLOCK_BOUND_EXCEEDED', 'Verified recovery clock exclusion exceeds its bound');
-    await tx.execute(sql`INSERT INTO oid_run_platform_recovery_observation(action_id,evidence_hash,receipt_status,clock_excluded_ms,observed_at)
-      VALUES (${input.actionId},${attested.evidenceHash},${attested.status},${attested.clockExcludedMs},${now.toISOString()})`);
-    const windowExpired = platformRecoveryWindowExpired(now, oldDeadline);
-    const status = attested.status === 'unknown' ? 'unknown' : windowExpired ? 'exhausted' : 'recovered';
-    const updated = await query<{ action_id: string }>(tx, sql`UPDATE oid_run_platform_recovery SET clock_excluded_ms=${excluded},
-      deadline_at=started_at + interval '180 seconds' + (${excluded} * interval '1 millisecond'),
-      status=${status},latest_evidence_hash=${attested.evidenceHash},updated_at=${now.toISOString()}
+    const windowExpired = platformRecoveryWindowExpired(now, deadline);
+    const status = windowExpired ? 'exhausted' : attested.status === 'unknown' ? 'unknown' : 'recovered';
+    const updated = await query<{ action_id: string }>(tx, sql`UPDATE oid_run_platform_recovery SET status=${status},
+      latest_evidence_hash=${attested.evidenceHash},updated_at=${now.toISOString()}
       WHERE action_id=${input.actionId} RETURNING action_id`);
     if (updated.length !== 1) throw new Error('Platform recovery record disappeared during observation');
     await appendEvent(tx, action.run_id, 'run.platform_recovery_observed', {
       actionId: input.actionId, operationId: attested.operationId, receiptStatus: attested.status,
       evidenceHash: attested.evidenceHash, clockExcludedMs: attested.clockExcludedMs,
     }, now);
-    return { actionId: input.actionId, status, receiptStatus: receipt.receiptStatus, replayed: false };
+    return { actionId: input.actionId, status, receiptStatus: receipt.receiptStatus, replayed: observationState.replayed };
   });
 }
 
@@ -401,9 +439,11 @@ export async function finalizeExhaustedBetaPlatformFailure(
       WHERE action.id=${input.actionId} AND action.run_id=${run.id} AND action.operation_id=${attested.operationId} AND action.payload_hash=${attested.payloadHash}
         AND action.environment_id=${attested.environmentId} FOR UPDATE OF action,receipt`);
     const originalStatus = actionRows[0]?.receipt_status ?? 'missing';
-    const unresolvedRows = await query<{ unresolved: boolean }>(tx, sql`SELECT EXISTS(
-      SELECT 1 FROM oid_run_task_action action JOIN oid_run_task_action_receipt receipt ON receipt.action_id=action.id
-      WHERE action.run_id=${run.id} AND receipt.receipt_status IN ('pending','unknown')) AS unresolved`);
+    const pendingRows = await query<{ pending: boolean; unknown_count: number }>(tx, sql`SELECT EXISTS(
+      SELECT 1 FROM oid_run_task_action action LEFT JOIN oid_run_task_action_receipt receipt ON receipt.action_id=action.id
+      WHERE action.run_id=${run.id} AND (receipt.action_id IS NULL OR receipt.receipt_status='pending')) AS pending,
+      (SELECT COUNT(*)::int FROM oid_run_task_action action JOIN oid_run_task_action_receipt receipt ON receipt.action_id=action.id
+        WHERE action.run_id=${run.id} AND receipt.receipt_status='unknown') AS unknown_count`);
     const leaseRows = await query<{ live: boolean }>(tx, sql`SELECT EXISTS(
       SELECT 1 FROM oid_task_environment_lease lease JOIN oid_task_preparation_intent intent
         ON intent.preparation_id=lease.preparation_id WHERE intent.run_id=${run.id} AND lease.state='leased') AS live`);
@@ -427,8 +467,8 @@ export async function finalizeExhaustedBetaPlatformFailure(
         throw new HttpError(409, 'PLATFORM_REFUND_CONFLICT', 'This run already has a refund bound to different evidence or operation');
       }
       if (run.status !== 'failed' || run.terminal_reason !== 'platform_failure_recovery_exhausted' || recovery.status !== 'refunded' ||
-          recovery.latest_evidence_hash !== attested.evidenceHash || !['observed', 'rejected_before_execution'].includes(originalStatus) ||
-          unresolvedRows[0]?.unresolved !== false || leaseRows[0]?.live !== false || fenceRows[0]?.matches !== true) {
+          recovery.latest_evidence_hash !== attested.evidenceHash || !['observed', 'rejected_before_execution', 'unknown'].includes(originalStatus) ||
+          pendingRows[0]?.pending !== false || leaseRows[0]?.live !== false || fenceRows[0]?.matches !== true) {
         throw new HttpError(409, 'PLATFORM_REFUND_LINEAGE_MISMATCH', 'The settled refund is missing its original run, action, fence or recovery state');
       }
 
@@ -509,7 +549,7 @@ export async function finalizeExhaustedBetaPlatformFailure(
       cancellationReason: run.cancellation_reason, fenceEvidenceHash: run.cancellation_evidence_hash,
       fenceEventMatches: fenceRows[0]?.matches === true, runHasLiveLease: leaseRows[0]?.live === true,
       windowExpired: true, recoveryStatus: recovery.status, originalReceiptStatus: originalStatus,
-      everyRunActionResolved: unresolvedRows[0]?.unresolved !== true });
+      noPendingRunActions: pendingRows[0]?.pending === false });
 
     if (leaseRows[0]?.live === true) {
       throw new HttpError(409, 'PLATFORM_FAILURE_FENCE_INCOMPLETE', 'A live task environment lease still prevents failure settlement');
@@ -524,7 +564,8 @@ export async function finalizeExhaustedBetaPlatformFailure(
       }
       await appendEvent(tx, run.id, 'run.platform_recovery_unknown', {
         actionId: input.actionId, operationId: attested.operationId, evidenceHash: attested.evidenceHash,
-        originalReceiptStatus: originalStatus, unresolvedActionExists: unresolvedRows[0]?.unresolved === true,
+        originalReceiptStatus: originalStatus, pendingActionExists: pendingRows[0]?.pending === true,
+        unknownActionCount: pendingRows[0]?.unknown_count ?? null,
         liveTaskLeaseExists: Boolean(leaseRows[0]?.live), fenceEventMatches: fenceRows[0]?.matches === true,
       }, now);
       return { runId: run.id, status: 'unknown', bonusRefundedUnits: '0', replayed: false };

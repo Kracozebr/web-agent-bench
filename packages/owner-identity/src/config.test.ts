@@ -60,6 +60,21 @@ test('local report acceptance is default-off and needs per-capture loopback stor
   }), /named per-capture loopback runtime/);
 });
 
+test('isolated restored report fixture binds its database identity and cannot enable an executor', () => {
+  const databaseName = `oid_restore_${'b'.repeat(32)}`;
+  const root = join(process.cwd(), '.local', 'acceptance', databaseName);
+  const env: NodeJS.ProcessEnv = { ...baseEnv, NODE_ENV: 'test',
+    OID_DATABASE_URL: `postgres://test.invalid/${databaseName}`,
+    OID_PUBLIC_ORIGIN: 'http://127.0.0.1:3000', OID_API_HOST: '127.0.0.1',
+    OID_LOCAL_REPORT_ACCEPTANCE_ENABLED: 'true', OID_LOCAL_REPORT_CAPTURE_ROOT: root,
+    OID_PRIVATE_DATA_DIR: join(root, 'private-data'),
+    OID_BETA_REPORT_CLOSURE_STATE_FILE: join(root, 'operator', 'closure.json') };
+  assert.equal(loadConfig(env).localReportCaptureRoot, root);
+  assert.throws(() => loadConfig({ ...env, OID_DATABASE_URL: baseEnv.OID_DATABASE_URL }), /named per-capture/);
+  assert.throws(() => loadConfig({ ...env, OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: 'true',
+    OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: '.local/owner-identity/worker.json' }), /named per-capture/);
+});
+
 test('local BEF coordinator is disabled by default and requires an explicit private local config', () => {
   const defaults = loadConfig({ ...baseEnv });
   assert.equal(defaults.localBefTaskCoordinatorEnabled, false);

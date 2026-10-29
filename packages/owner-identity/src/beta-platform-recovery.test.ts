@@ -53,7 +53,7 @@ test('refund restores only the original bonus lot and respects its expiry at the
   assert.deepEqual(originalBonusRefundDeltas(new Date(at.getTime() - 1), at), { creditTo: 'expired' });
 });
 
-test('platform refund requires a post-start platform cancellation, exact fence, exhausted window and fully resolved operations', () => {
+test('platform refund requires a post-start cancellation, exact fence, exhausted window, and no pending operations', () => {
   const eligible = {
     runStarted: true,
     cancellationReason: 'coordinator_platform_failure',
@@ -63,7 +63,7 @@ test('platform refund requires a post-start platform cancellation, exact fence, 
     windowExpired: true,
     recoveryStatus: 'exhausted',
     originalReceiptStatus: 'observed',
-    everyRunActionResolved: true,
+    noPendingRunActions: true,
   };
   assert.equal(platformRefundEligible(eligible), true);
   assert.equal(platformRefundEligible({ ...eligible, cancellationReason: 'owner_voluntary' }), false);
@@ -73,8 +73,10 @@ test('platform refund requires a post-start platform cancellation, exact fence, 
   assert.equal(platformRefundEligible({ ...eligible, runHasLiveLease: true }), false);
   assert.equal(platformRefundEligible({ ...eligible, windowExpired: false }), false);
   assert.equal(platformRefundEligible({ ...eligible, recoveryStatus: 'refunded' }), false);
-  assert.equal(platformRefundEligible({ ...eligible, originalReceiptStatus: 'unknown' }), false);
-  assert.equal(platformRefundEligible({ ...eligible, everyRunActionResolved: false }), false);
+  assert.equal(platformRefundEligible({ ...eligible, originalReceiptStatus: 'unknown' }), true);
+  assert.equal(platformRefundEligible({ ...eligible, originalReceiptStatus: 'pending' }), false);
+  assert.equal(platformRefundEligible({ ...eligible, originalReceiptStatus: 'missing' }), false);
+  assert.equal(platformRefundEligible({ ...eligible, noPendingRunActions: false }), false);
 });
 
 test('starting platform recovery replays the original record after the action receipt becomes observed', async () => {
@@ -114,7 +116,7 @@ test('exhausted platform refund replays after run finalization and verifies pers
       started_at: startedAt, deadline_at: deadlineAt, clock_excluded_ms: 0, status: 'refunded', latest_evidence_hash: EXHAUSTION_HASH }],
     [{ now: refundedAt }],
     [{ receipt_status: 'observed' }],
-    [{ unresolved: false }],
+    [{ pending: false, unknown_count: 0 }],
     [{ live: false }],
     [{ matches: true }],
     [{ id: 'recovery-start-event' }],

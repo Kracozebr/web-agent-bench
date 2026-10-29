@@ -6,6 +6,11 @@ import { TASK_IDS } from './task-catalog.js';
 export const hash = (label: string) => createHash('sha256').update(label).digest('hex');
 export const evidence = (label: string) => ({ path: `synthetic-completion/${label}.json`, sha256: hash(label),
   boundary: 'actual_tool_http_x402_local_evm_application_store' as const });
+function jsonParam(client: ReturnType<typeof postgres>, value: unknown) {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error('Synthetic fixture JSON values must be serializable');
+  return client`${serialized}::text::jsonb`;
+}
 const OPEN_TRAINING_IDS = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'] as const;
 
 function hashRunServicePayload(value: unknown): string {
@@ -24,6 +29,8 @@ export type FixtureOptions = {
   known?: boolean;
   fence?: boolean;
   openCutoff?: boolean;
+  /** Create an admitted running task with a ready environment but no closure, for action-path fixtures. */
+  actionOpen?: boolean;
   cancellationHistory?: boolean;
   failedOutcome?: boolean;
   overallDeadlinePast?: boolean;
@@ -83,7 +90,7 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
   const captureEvidence = evidence(`${runId}-capture`);
   const fixtureEvidence = evidence(`${runId}-fixture`), baselineEvidence = evidence(`${runId}-baseline`);
   const fenceEvidence = evidence(`${runId}-fence`);
-  const cutoff = options.openCutoff ? 'closing' : 'closed';
+  const cutoff = options.actionOpen ? 'open' : options.openCutoff ? 'closing' : 'closed';
   const actionCutoff = 0;
   const startedAt = new Date(Date.now() - 60_000).toISOString();
   const deadlineOffsetSeconds = options.overallDeadlineSecondsFromNow ?? 60;
@@ -128,14 +135,16 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
     await client`INSERT INTO oid_run_task(run_id,task_index,task_id,status)
       VALUES(${runId},${index},${taskIds[index]!},${taskStatus})`;
   }
-  await client`INSERT INTO oid_run_task_closure(id,run_id,task_index,operation_id,payload_hash,reason,action_cutoff_sequence,
-      actor_kind,owner_id,agent_id)
-    VALUES(${closureId},${runId},0,NULL,${closurePayloadHash},'agent_finish',${actionCutoff},'coordinator',${ownerId},${agentId})`;
-  await client`UPDATE oid_run_task SET closure_id=${closureId},closure_status=${cutoff},action_cutoff_sequence=${actionCutoff},
-      closure_reason='agent_finish',closure_payload_hash=${closurePayloadHash},closed_at=${options.openCutoff ? null : new Date().toISOString()}
-    WHERE run_id=${runId} AND task_index=0`;
+  if (!options.actionOpen) {
+    await client`INSERT INTO oid_run_task_closure(id,run_id,task_index,operation_id,payload_hash,reason,action_cutoff_sequence,
+        actor_kind,owner_id,agent_id)
+      VALUES(${closureId},${runId},0,NULL,${closurePayloadHash},'agent_finish',${actionCutoff},'coordinator',${ownerId},${agentId})`;
+    await client`UPDATE oid_run_task SET closure_id=${closureId},closure_status=${cutoff},action_cutoff_sequence=${actionCutoff},
+        closure_reason='agent_finish',closure_payload_hash=${closurePayloadHash},closed_at=${options.openCutoff ? null : new Date().toISOString()}
+      WHERE run_id=${runId} AND task_index=0`;
+  }
 
-  if (!options.openCutoff) {
+  if (!options.openCutoff || options.actionOpen) {
     await client`INSERT INTO oid_task_preparation_intent(preparation_id,run_id,task_index,claim_id,lease_id,environment_id,
         release_identity,manifest_hash,task_id,case_id,case_hash,initial_state_sha256,execution_identity_hash,
         environment_manifest_sha256,application_source_hash)
@@ -148,7 +157,7 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
     await client`INSERT INTO oid_task_preparation_observation(preparation_id,revision,status,generation_id,participant_id,payer_address,
         baseline_state_sha256,fixture_evidence,baseline_evidence)
       VALUES(${preparationId},2,'ready',${generationId},'synthetic-participant','0x1111111111111111111111111111111111111111',
-        ${initialStateHash},${JSON.stringify(fixtureEvidence)}::jsonb,${JSON.stringify(baselineEvidence)}::jsonb)`;
+        ${initialStateHash},${jsonParam(client, fixtureEvidence)},${jsonParam(client, baselineEvidence)})`;
     await client`INSERT INTO oid_task_execution_binding(run_id,task_index,env_id,generation_id,manifest_hash,application_source_hash,
         participant_id,payer_address)
       VALUES(${runId},0,${environmentId},${generationId},${environmentManifestHash},${applicationSourceHash},
@@ -166,7 +175,7 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
       overallDeadline, environmentId, readinessEvidenceHash,
     };
     await client`INSERT INTO oid_run_event(id,run_id,sequence,source,event_type,payload_hash,payload_json)
-      VALUES(${randomUUID()},${runId},1,'coordinator','run.started',${hashRunServicePayload(startEvent)},${JSON.stringify(startEvent)}::jsonb)`;
+      VALUES(${randomUUID()},${runId},1,'coordinator','run.started',${hashRunServicePayload(startEvent)},${jsonParam(client, startEvent)})`;
 
     const hasVerifiedViolation = options.verifiedNativeReserveViolation === true;
     const isUnknown = options.known === false;
@@ -193,22 +202,22 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
         executionIdentityHash, initialStateSha256: initialStateHash },
       cutoff: { observationSequence: 1, status: 'authoritative', evidence: captureEvidence }, observations };
     const bundleHash = sha256CanonicalTaskJson(bundle);
-    await client`INSERT INTO oid_run_task_observation_bundle(run_id,task_index,owner_id,agent_id,closure_id,closure_operation_id,
+    if (!options.actionOpen) await client`INSERT INTO oid_run_task_observation_bundle(run_id,task_index,owner_id,agent_id,closure_id,closure_operation_id,
         closure_payload_hash,closure_reason,task_id,release_identity,release_manifest_hash,case_id,case_hash,rubric_hash,environment_id,
         preparation_id,lease_id,generation_id,environment_manifest_hash,application_source_hash,execution_identity_hash,initial_state_sha256,
         action_cutoff_sequence,reconciled_action_sequence,observation_cutoff_sequence,cutoff_evidence,bundle_hash,bundle_json)
       VALUES(${runId},0,${ownerId},${agentId},${closureId},NULL,${closurePayloadHash},'agent_finish','S1',${releaseIdentity},${manifestHash},
         ${taskCase.caseId},${caseHash},${rubricHash},${environmentId},${preparationId},${leaseId},${generationId},
         ${environmentManifestHash},${applicationSourceHash},${executionIdentityHash},${initialStateHash},0,0,1,
-        ${JSON.stringify(captureEvidence)}::jsonb,${bundleHash},${JSON.stringify(bundle)}::jsonb)`;
+        ${jsonParam(client, captureEvidence)},${bundleHash},${jsonParam(client, bundle)})`;
     if (options.fence !== false) {
       const fence = { confirmed: true, preparationId, leaseId, environmentId, generationId, evidence: fenceEvidence };
-      await client`UPDATE oid_task_environment_lease SET state='fenced',fence_evidence=${JSON.stringify(fence)}::jsonb,
+      await client`UPDATE oid_task_environment_lease SET state='fenced',fence_evidence=${jsonParam(client, fence)},
         fenced_at=clock_timestamp() WHERE lease_id=${leaseId}`;
       await client`INSERT INTO oid_task_preparation_observation(preparation_id,revision,status,generation_id,participant_id,payer_address,
           baseline_state_sha256,fixture_evidence,baseline_evidence)
         VALUES(${preparationId},3,'fenced',${generationId},'synthetic-participant','0x1111111111111111111111111111111111111111',
-          ${initialStateHash},${JSON.stringify(fixtureEvidence)}::jsonb,${JSON.stringify(baselineEvidence)}::jsonb)`;
+          ${initialStateHash},${jsonParam(client, fixtureEvidence)},${jsonParam(client, baselineEvidence)})`;
     }
     const runInput = { ...binding, acceptedActionCutoffSequence: 0, reconciledThroughActionSequence: 0,
       observationCutoffSequence: 1, cutoffStatus: 'authoritative', cutoffEvidence: captureEvidence };
@@ -223,19 +232,20 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
         ? { ...(result as Record<string, unknown>), outcome: 'partial', credit: { numerator: '1', denominator: '2' } }
         : { ...(result as Record<string, unknown>), outcome: 'passed', credit: { numerator: '1', denominator: '1' } };
     }
-    if (options.includeEvaluation !== false) {
+    if (options.includeEvaluation !== false && !options.actionOpen) {
       const inputHash = sha256CanonicalTaskJson(evaluationInput), resultHash = sha256CanonicalTaskJson(result), evaluatorSourceHash = hash('synthetic-evaluator');
       const evalPayload = { taskIndex: 0, taskId: 'S1', closureId, releaseIdentity, manifestHash, inputHash, resultHash, evaluatorSourceHash };
       const evidenceReferences = [captureEvidence, evaluationInput.run.cutoffEvidence,
         ...observations.transfers.map((item) => item.evidence), ...observations.finalStates.map((item) => item.evidence)];
       const uniqueEvidenceReferences = [...new Map(evidenceReferences.map((reference) => [JSON.stringify(reference), reference])).values()];
+      const evaluationEvidenceManifest = { schemaVersion: 'bts-evaluation-evidence-manifest/v1', references: uniqueEvidenceReferences };
       await client`INSERT INTO oid_run_task_evaluation(run_id,task_index,closure_id,task_id,release_identity,manifest_hash,case_hash,rubric_hash,
           input_hash,result_hash,evaluator_source_hash,observation_evidence,result_json,input_json)
         VALUES(${runId},0,${closureId},'S1',${releaseIdentity},${manifestHash},${caseHash},${rubricHash},${inputHash},${resultHash},
-          ${evaluatorSourceHash},${JSON.stringify({ schemaVersion: 'bts-evaluation-evidence-manifest/v1', references: uniqueEvidenceReferences })}::jsonb,
-          ${JSON.stringify(result)}::jsonb,${JSON.stringify(evaluationInput)}::jsonb)`;
+          ${evaluatorSourceHash},${jsonParam(client, evaluationEvidenceManifest)},
+          ${jsonParam(client, result)},${jsonParam(client, evaluationInput)})`;
       await client`INSERT INTO oid_run_event(id,run_id,sequence,source,event_type,payload_hash,payload_json)
-        VALUES(${randomUUID()},${runId},2,'coordinator','task.evaluated',${sha256CanonicalTaskJson(evalPayload)},${JSON.stringify(evalPayload)}::jsonb)`;
+        VALUES(${randomUUID()},${runId},2,'coordinator','task.evaluated',${sha256CanonicalTaskJson(evalPayload)},${jsonParam(client, evalPayload)})`;
     }
     if (options.cancellationHistory) {
       await client`INSERT INTO oid_run_mode_cancellation_outbox(event_id,owner_id,agent_id,mode,policy_revision)

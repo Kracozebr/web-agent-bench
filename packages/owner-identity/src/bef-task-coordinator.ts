@@ -32,6 +32,7 @@ import { createPreparedSuccessorTaskStartPort, createPreparedTaskStartPort, crea
 import { TaskSealedEvidenceSource } from './task-sealed-evidence-source.js';
 import { createBefObservationPorts, type BefObservationPorts, type BefObserverDatabaseConfig } from './bef-observation-ports.js';
 import { processClosedTrainingTask } from './task-training-observation-lifecycle.js';
+import { createBetaPlatformRecoveryMonitor, type BetaPlatformRecoveryMonitor } from './beta-platform-recovery-monitor.js';
 
 /**
  * AICODE-NOTE: This disabled-by-default local coordinator advances only from an already evaluated,
@@ -915,7 +916,8 @@ function buildEnvironmentSelector(input: {
 export async function createLocalBefTaskCoordinator(input: {
   db: OwnerDatabase;
   databaseUrl: string;
-  config: Pick<OwnerIdentityConfig, 'localBefTaskCoordinatorConfigPath' | 'localBefTaskCoordinatorBatchSize' | 'localBefTaskCoordinatorTickMs'>;
+  config: Pick<OwnerIdentityConfig, 'localBefTaskCoordinatorConfigPath' | 'localBefTaskCoordinatorBatchSize' | 'localBefTaskCoordinatorTickMs'> &
+    Partial<Pick<OwnerIdentityConfig, 'localReportAcceptanceEnabled' | 'privateDataDir'>>;
   projectRoot?: string;
   releaseSource: TaskReleaseQuerySource;
   fetch?: typeof fetch;
@@ -930,7 +932,9 @@ export async function createLocalBefTaskCoordinator(input: {
   const batchSize = input.config.localBefTaskCoordinatorBatchSize;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 20) throw new Error('local_bef_coordinator_batch_size_invalid');
   return createBefTaskCoordinatorCore({ db: input.db, databaseUrl: input.databaseUrl, projectRoot,
-    releaseSource: input.releaseSource, ...(input.fetch ? { fetch: input.fetch } : {}), fileConfig, batchSize, profile: 'local' });
+    releaseSource: input.releaseSource, ...(input.fetch ? { fetch: input.fetch } : {}), fileConfig, batchSize, profile: 'local',
+    ...(input.config.localReportAcceptanceEnabled && input.config.privateDataDir
+      ? { operationsPrivateDataDir: input.config.privateDataDir } : {}) });
 }
 
 export async function createBetaBefTaskCoordinator(input: {
@@ -947,6 +951,7 @@ export async function createBetaBefTaskCoordinator(input: {
   const configPath = input.config.betaBefTaskCoordinatorConfigPath;
   if (!manifest || !privateDataDir || !configPath) throw new Error('beta_bef_coordinator_profile_missing');
   const fileConfig = await loadBetaBefTaskCoordinatorConfig(configPath, privateDataDir);
+  if (!fileConfig.observationDatabase) throw new Error('beta_bef_recovery_observer_required');
   const repositoryRoot = input.projectRoot ?? PROJECT_ROOT;
   const build = await observeBetaBuildIdentity({ repositoryRoot, evaluatorSourceSha256: await getTaskEvaluatorBuildHash(),
     expected: manifest.source });
@@ -973,6 +978,7 @@ async function createBefTaskCoordinatorCore(input: {
   betaManifest?: BetaDeploymentManifest;
   evidenceDirectory?: string;
   readinessProvider?: BetaBefReadinessProvider;
+  operationsPrivateDataDir?: string;
 }): Promise<LocalBefTaskCoordinator> {
   const projectRoot = input.projectRoot;
   const fileConfig = input.fileConfig;
@@ -1059,11 +1065,11 @@ async function createBefTaskCoordinatorCore(input: {
   );
   const runServiceDependencies: RunServiceDependencies = {
     db: input.db,
-    betaOperationsEnabled: input.profile === 'beta',
+    betaOperationsEnabled: input.profile === 'beta' || Boolean(input.operationsPrivateDataDir),
     bonusOnly: input.profile === 'beta',
     ...(input.profile === 'beta' && input.betaManifest
       ? { privateDataDir: input.betaManifest.storage.privateDataDir }
-      : {}),
+      : input.operationsPrivateDataDir ? { privateDataDir: input.operationsPrivateDataDir } : {}),
     admissionReleaseProvider: input.betaManifest
       ? pinBetaRunReleaseProvider(createPostgresTaskReleaseProvider(input.db), input.betaManifest)
       : createPostgresTaskReleaseProvider(input.db),
@@ -1123,7 +1129,7 @@ async function createBefTaskCoordinatorCore(input: {
     }
   }
 
-  async function cancelRunningBindingsWithoutRam(): Promise<void> {
+  async function cancelRunningBindingsWithoutRam(recoveringRunIds: ReadonlySet<string> = new Set()): Promise<void> {
     await lease.assertHeld();
     const rows = await input.db.execute(sql`SELECT r.id AS run_id,r.owner_id,r.agent_id,r.mode AS run_mode,r.status AS run_status,
         r.release_identity,r.manifest_hash AS release_manifest_hash,
@@ -1190,7 +1196,7 @@ async function createBefTaskCoordinatorCore(input: {
       // small gap, the task remains active but is not a live executor session. Require the full
       // closed-cutoff, immutable-bundle, known-evaluation, event, and task-scoped fence chain;
       // mismatches still follow ordinary lost-RAM cancellation.
-      if (!activeTaskNeedsCancellationAfterRecovery(row.run_id, row.task_index, attached, row)) continue;
+      if (recoveringRunIds.has(row.run_id) || !activeTaskNeedsCancellationAfterRecovery(row.run_id, row.task_index, attached, row)) continue;
       await requestCancellation(row.run_id, 'coordinator_executor_session_lost');
     }
   }
@@ -1425,14 +1431,14 @@ async function createBefTaskCoordinatorCore(input: {
     return true;
   }
 
-  async function dispatchAttachedSessions(): Promise<void> {
+  async function dispatchAttachedSessions(recoveringRunIds: ReadonlySet<string> = new Set()): Promise<void> {
     await lease.assertHeld();
     const rows = (await input.db.execute(sql`SELECT r.id AS run_id,t.task_index FROM oid_benchmark_run r
       JOIN oid_run_task t ON t.run_id=r.id
       WHERE r.status='running' AND t.status='active' ORDER BY r.started_at,r.id,t.task_index LIMIT ${batchSize}`)) as unknown as Array<{ run_id: string; task_index: number }>;
     await lease.assertHeld();
     for (const row of rows) {
-      if (row.task_index < 0 || row.task_index > 11 || !attached.has(sessionKey(row.run_id, row.task_index))) continue;
+      if (recoveringRunIds.has(row.run_id) || row.task_index < 0 || row.task_index > 11 || !attached.has(sessionKey(row.run_id, row.task_index))) continue;
       await lease.assertHeld();
       const result: ExecuteTaskActionResult = await executor.executeNext(row.run_id, row.task_index);
       await lease.assertHeld();
@@ -1455,7 +1461,7 @@ async function createBefTaskCoordinatorCore(input: {
     return result.ready && typeof result.environmentId === 'string' && HASH.test(result.evidenceHash ?? '');
   }
 
-  async function processClosedTrainingTasks(): Promise<void> {
+  async function processClosedTrainingTasks(recoveringRunIds: ReadonlySet<string> = new Set()): Promise<void> {
     if (!observationPorts) return;
     await lease.assertHeld();
     const rows = await input.db.execute(sql`SELECT r.id AS run_id,t.task_index
@@ -1469,6 +1475,7 @@ async function createBefTaskCoordinatorCore(input: {
     await lease.assertHeld();
     for (const row of rows) {
       await lease.assertHeld();
+      if (recoveringRunIds.has(row.run_id)) continue;
       const outcome = await processClosedTrainingTask({ db: input.db, taskReleaseSource: input.releaseSource,
         repositoryRoot: projectRoot, evidenceSource, observerPorts: observationPorts,
         preparationAdapter: guardedPreparationAdapter, assertLeaseHeld: () => lease.assertHeld() },
@@ -1496,10 +1503,22 @@ async function createBefTaskCoordinatorCore(input: {
     await lease.assertHeld();
     await drainCancellations();
     await cancelOldPreparationIntents();
+    const recovery = await platformRecovery?.tick();
+    await lease.assertHeld();
+    const recoveringRunIds = new Set(recovery?.recoveringRunIds ?? []);
+    // Recovery precedes grading and lost-session handling. Only the server-owned
+    // monitor can defer these exact runs; participant reports cannot pause clocks.
+    for (const runId of recovery?.exhaustedRunIds ?? []) {
+      await lease.assertHeld();
+      await requestCancellation(runId, 'coordinator_platform_failure');
+    }
+    await drainCancellations();
+    await platformRecovery?.finalizeFencedRuns(recovery?.exhaustedRunIds ?? []);
+    await lease.assertHeld();
     // AICODE-NOTE: Resume closed tasks from retained observations before lost-RAM
     // handling; grading/fencing never restores or resends an actor session.
-    await processClosedTrainingTasks();
-    await cancelRunningBindingsWithoutRam();
+    await processClosedTrainingTasks(recoveringRunIds);
+    await cancelRunningBindingsWithoutRam(recoveringRunIds);
     await drainCancellations();
     await discardFencedSessions();
     const runtimeHealthy = await betaRuntimeHealthy();
@@ -1527,15 +1546,18 @@ async function createBefTaskCoordinatorCore(input: {
       if (await betaEnvironmentCapacityAvailable()) await advanceKnownSuccessors();
     }
     await discardFencedSessions();
-    if (runtimeHealthy) await dispatchAttachedSessions();
+    if (runtimeHealthy) await dispatchAttachedSessions(recoveringRunIds);
   }
 
   let observationPorts: BefObservationPorts | null = null;
+  let platformRecovery: BetaPlatformRecoveryMonitor | null = null;
   try {
     if (fileConfig.observationDatabase) {
       observationPorts = await createBefObservationPorts({ repositoryRoot: projectRoot,
         database: fileConfig.observationDatabase, environments: fileConfig.environments,
         fetchImpl });
+      platformRecovery = createBetaPlatformRecoveryMonitor({ db: input.db, observationPorts, actionEvidenceSink,
+        assertLeaseHeld: () => lease.assertHeld() });
     }
   } catch {
     adapter.clearCredentials();

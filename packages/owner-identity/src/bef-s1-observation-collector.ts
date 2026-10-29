@@ -2,19 +2,20 @@
  * Private run-bound S1 observation collection. This module returns an unsealed
  * candidate only; it does not grade, publish, reset, or invoke participant tools.
  *
- * AICODE-NOTE: SafeTaskActionEvidence is a locator and owner-action binding, not
- * chain proof. S1 coverage is complete only after an independently scoped BEF
- * census and read-only RPC state, transaction, receipt, nonce, and log checks.
+ * AICODE-NOTE: Owner action evidence binds an admitted action but is not chain
+ * proof. S1 coverage requires an independently scoped BEF census and read-only
+ * RPC state, transaction, receipt, nonce, and log checks, including recovered actions.
  */
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { keccak256 } from 'viem';
+import { safeMeasurementProjection as safeParticipantToolResponseProjection } from './bef-task-executor.js';
 import { TaskActionCommandSchema } from './task-action-service.js';
 import type { TaskActionCommand } from './task-action-service.js';
-import type { SafeTaskActionEvidence } from './bef-task-executor.js';
 import type { OwnerDatabase } from './db.js';
+import { makeRecoverySourceEvidence, type RecoveryActionEvidence } from './beta-platform-recovery-source-evidence.js';
 import type {
   PersistedTaskObservations,
   TaskEvidenceBinding,
@@ -268,13 +269,22 @@ type ActionRow = {
   evidence_hash: string | null; evidence_path: string | null; transaction_hash: string | null;
   history_revision: number | null; history_status: string | null; history_evidence_hash: string | null;
   history_evidence_path: string | null; history_transaction_hash: string | null;
+  recovery_action_id?: string | null; recovery_run_id?: string | null; recovery_owner_id?: string | null;
+  recovery_agent_id?: string | null; recovery_task_index?: number | null; recovery_environment_id?: string | null;
+  recovery_operation_id?: string | null; recovery_payload_hash?: string | null; recovery_incident_evidence_hash?: string | null;
+  recovery_started_at?: Date | string | null; recovery_deadline_at?: Date | string | null;
+  recovery_clock_excluded_ms?: number | null; recovery_status?: string | null; recovery_latest_evidence_hash?: string | null;
+  recovery_observation_count?: number | null; recovery_observation_clock_excluded_ms?: string | null;
+  recovery_matching_observation_at?: Date | string | null;
+  recovery_observed_evidence_matches?: boolean | null; recovery_started_event_matches?: boolean | null;
+  recovery_observed_event_matches?: boolean | null;
 };
 
 type LoadedAction = {
   row: ActionRow;
   sequence: number;
   command: Extract<TaskActionCommand, { kind: 'transfer' }>;
-  evidence: SafeTaskActionEvidence;
+  evidence: RecoveryActionEvidence;
   evidenceReference: EvidenceReference;
 };
 
@@ -526,8 +536,43 @@ function exactActionEvidenceKeys(value: JsonRecord): boolean {
     'environmentId', 'generationId', 'manifestSha256', 'applicationSourceSha256', 'idempotencyKey', 'status', 'reasonCode',
     'requestStartedAt', 'requestFinishedAt', 'httpStatus', 'befOperationId', 'transactionHash', 'outcome', 'receiptStatus',
     'rawResponseSha256', 'participantToolResponse', 'receiptGasUsed', 'receiptEffectiveGasPriceWei', 'paymentProtocol', 'environmentHealth',
+    'recoverySource',
   ]);
   return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function recoverySourceShape(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).sort().join(',') !==
+      'schema,selectedMeasurementSha256,sourceResponseSha256,sourceSnapshotSha256') return false;
+  return value.schema === 'bef-recovery-source/v1' && HASH.test(String(value.sourceSnapshotSha256 ?? '')) &&
+    HASH.test(String(value.selectedMeasurementSha256 ?? '')) &&
+    (value.sourceResponseSha256 === null || HASH.test(String(value.sourceResponseSha256 ?? '')));
+}
+
+function hasExactRecoveredOwnerLineage(row: ActionRow, run: RunTaskRow, runId: string, document: JsonRecord): boolean {
+  const startedAt = row.recovery_started_at instanceof Date ? row.recovery_started_at.getTime()
+    : typeof row.recovery_started_at === 'string' ? Date.parse(row.recovery_started_at) : Number.NaN;
+  const deadlineAt = row.recovery_deadline_at instanceof Date ? row.recovery_deadline_at.getTime()
+    : typeof row.recovery_deadline_at === 'string' ? Date.parse(row.recovery_deadline_at) : Number.NaN;
+  const observationAt = row.recovery_matching_observation_at instanceof Date ? row.recovery_matching_observation_at.getTime()
+    : typeof row.recovery_matching_observation_at === 'string' ? Date.parse(row.recovery_matching_observation_at) : Number.NaN;
+  const observationCount = row.recovery_observation_count;
+  const clockExcluded = row.recovery_clock_excluded_ms;
+  let observationClockExcluded = Number.NaN;
+  try { observationClockExcluded = Number(row.recovery_observation_clock_excluded_ms); } catch { /* fail below */ }
+  return row.recovery_action_id === row.id && row.recovery_run_id === runId && row.recovery_owner_id === run.owner_id &&
+    row.recovery_agent_id === run.agent_id && row.recovery_task_index === row.task_index &&
+    row.recovery_environment_id === row.environment_id && row.recovery_operation_id === row.operation_id &&
+    row.recovery_payload_hash === row.payload_hash && HASH.test(row.recovery_incident_evidence_hash ?? '') &&
+    row.recovery_status === 'recovered' && row.recovery_latest_evidence_hash === row.evidence_hash &&
+    HASH.test(row.recovery_latest_evidence_hash ?? '') && Number.isSafeInteger(observationCount) && Number(observationCount) > 0 &&
+    Number.isSafeInteger(clockExcluded) && Number(clockExcluded) >= 0 && Number(clockExcluded) <= 180_000 &&
+    Number.isSafeInteger(observationClockExcluded) && observationClockExcluded === Number(clockExcluded) &&
+    row.recovery_observed_evidence_matches === true && row.recovery_started_event_matches === true &&
+    row.recovery_observed_event_matches === true && Number.isFinite(startedAt) && Number.isFinite(deadlineAt) &&
+    deadlineAt === startedAt + 180_000 && Number.isFinite(observationAt) && observationAt < deadlineAt &&
+    document.reasonCode === 'platform_recovery_original_operation_terminal' &&
+    recoverySourceShape(document.recoverySource);
 }
 
 async function loadActions(
@@ -577,22 +622,32 @@ async function loadActions(
         (typeof document.rawResponseSha256 === 'string' && !HASH.test(document.rawResponseSha256))) {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
+    if (document.recoverySource !== undefined && !hasExactRecoveredOwnerLineage(row, run, runId, document)) {
+      throw new CollectionUnavailable('action_evidence_unavailable');
+    }
     if (row.receipt_status === 'observed') {
       const txHash = normalizeHash(row.transaction_hash);
+      const recoverySourceBacked = document.recoverySource !== undefined;
+      const wireResponseBacked = !recoverySourceBacked && document.httpStatus === 200 &&
+        typeof document.rawResponseSha256 === 'string' && HASH.test(document.rawResponseSha256);
       const safeResponse = document.participantToolResponse;
       const safeReceipt = isRecord(safeResponse) && isRecord(safeResponse.receipt) ? safeResponse.receipt : null;
       const safeTransaction = isRecord(safeResponse) && isRecord(safeResponse.transaction) ? safeResponse.transaction : null;
       const safeSelected = isRecord(safeResponse) && isRecord(safeResponse.selectedAction) ? safeResponse.selectedAction : null;
-      if (!txHash || document.transactionHash !== txHash ||
+      if ((!wireResponseBacked && !recoverySourceBacked) ||
+          (recoverySourceBacked && (document.reasonCode !== 'platform_recovery_original_operation_terminal' ||
+            Object.hasOwn(document, 'httpStatus') || Object.hasOwn(document, 'rawResponseSha256') || !recoverySourceShape(document.recoverySource))) ||
+          !txHash || document.transactionHash !== txHash ||
           !UUID.test(String(document.befOperationId ?? '')) ||
           !['success', 'reverted'].includes(String(document.receiptStatus)) ||
-          document.outcome !== document.receiptStatus || document.httpStatus !== 200 ||
-          typeof document.rawResponseSha256 !== 'string' || !HASH.test(document.rawResponseSha256) ||
+          document.outcome !== document.receiptStatus ||
           !isRecord(safeResponse) || safeResponse.operationId !== document.befOperationId ||
           safeResponse.outcome !== document.outcome || !safeReceipt || !safeTransaction ||
           !safeSelected || safeSelected.kind !== 'transfer' || !normalizeAddress(safeSelected.token) ||
           normalizeHash(safeReceipt.transactionHash) !== txHash || normalizeHash(safeTransaction.hash) !== txHash ||
-          safeReceipt.status !== document.receiptStatus || String(safeReceipt.gasUsed) !== String(document.receiptGasUsed) ||
+          safeReceipt.status !== document.receiptStatus || !UINT.test(String(document.receiptGasUsed ?? '')) ||
+          !UINT.test(String(document.receiptEffectiveGasPriceWei ?? '')) ||
+          String(safeReceipt.gasUsed) !== String(document.receiptGasUsed) ||
           String(safeReceipt.effectiveGasPrice) !== String(document.receiptEffectiveGasPriceWei)) {
         throw new CollectionUnavailable('action_evidence_unavailable');
       }
@@ -600,7 +655,7 @@ async function loadActions(
         !Number.isSafeInteger(document.httpStatus) && typeof document.reasonCode !== 'string') {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
-    loaded.push({ row, sequence: actionSequence, command: parsedCommand.data, evidence: document as unknown as SafeTaskActionEvidence,
+    loaded.push({ row, sequence: actionSequence, command: parsedCommand.data, evidence: document as unknown as RecoveryActionEvidence,
       evidenceReference: evidenceReferenceValue });
   }
   return loaded;
@@ -920,7 +975,8 @@ async function captureBefCensus(
   port: BefS1ReadOnlyPostgresPort,
   environmentId: string,
   generationId: string,
-): Promise<{ session: BefS1RunObservationPacket['bef']['session']; census: BefS1CensusProjection }> {
+): Promise<{ session: BefS1RunObservationPacket['bef']['session']; census: BefS1CensusProjection;
+  selectedMeasurementsByOperation: Map<string, JsonRecord> }> {
   if (port.environmentId !== environmentId) throw new CollectionUnavailable('source_not_configured');
   try {
     return await port.withRepeatableRead(async (query) => {
@@ -997,6 +1053,21 @@ async function captureBefCensus(
         throw new CollectionUnavailable('observer_census_unavailable');
       }
       const safeRows = (list: QueryRows, project: (row: QueryRows[number]) => JsonRecord) => list.map(project);
+      const selectedMeasurementsByOperation = new Map<string, JsonRecord>();
+      for (const row of executionRows) {
+        const operationId = String(row.operation_id).toLowerCase();
+        let measurement: unknown = row.measurement_json;
+        if (typeof measurement === 'string') {
+          try { measurement = JSON.parse(measurement) as unknown; }
+          catch { throw new CollectionUnavailable('observer_census_unavailable'); }
+        }
+        if (measurement !== null && measurement !== undefined) {
+          if (!UUID.test(operationId) || !isRecord(measurement) || selectedMeasurementsByOperation.has(operationId)) {
+            throw new CollectionUnavailable('observer_census_unavailable');
+          }
+          selectedMeasurementsByOperation.set(operationId, measurement);
+        }
+      }
       const census: BefS1CensusProjection = {
         generation: safeProjection(generationRows[0]) as JsonRecord,
         operations: safeRows(operationRows, (row) => safeProjection(row) as JsonRecord),
@@ -1017,7 +1088,7 @@ async function captureBefCensus(
       if (hasSecretKey(census) || Buffer.byteLength(canonicalTaskJson(census), 'utf8') > MAX_CAPTURE_BYTES) {
         throw new CollectionUnavailable('observer_census_unavailable');
       }
-      return { session, census };
+      return { session, census, selectedMeasurementsByOperation };
     });
   } catch (error) {
     if (error instanceof CollectionUnavailable) throw error;
@@ -1337,9 +1408,48 @@ function participantCostRowsMatchReceipts(
   return seen.size === receipts.length;
 }
 
+function sourceRecoveryProofForCensus(
+  census: BefS1CensusProjection,
+  operation: JsonRecord,
+  selected: JsonRecord,
+): ReturnType<typeof makeRecoverySourceEvidence> {
+  const operationId = typeof operation.operation_id === 'string' ? operation.operation_id.toLowerCase() : '';
+  const selectedMeasurement = isRecord(selected.measurement) ? selected.measurement : null;
+  const selectedEvents = census.selectedEvents.filter((event) => event.operation_id === operationId &&
+    event.event_kind === 'selected_action_bound');
+  const event = selectedEvents[0];
+  const payload = event && isRecord(event.event_payload) ? event.event_payload : null;
+  const generation = census.generation;
+  if (!selectedMeasurement || !event || !payload) return null;
+  return makeRecoverySourceEvidence({
+    operationId,
+    environmentId: String(operation.env_id ?? ''),
+    generationId: String(operation.generation_id ?? ''),
+    participantId: String(operation.participant_id ?? ''),
+    idempotencyKeySha256: String(operation.idempotency_key_sha256 ?? '').trim(),
+    requestSha256: String(operation.request_sha256 ?? '').trim(),
+    operationKind: String(operation.operation_kind ?? ''),
+    status: String(operation.status ?? ''),
+    transactionHash: normalizeHash(operation.transaction_hash),
+    receiptStatus: String(operation.receipt_status ?? ''),
+    responseSha256: operation.response_sha256 === null ? null : String(operation.response_sha256 ?? '').trim().toLowerCase(),
+    generationManifestSha256: String(generation.manifest_sha256 ?? '').trim(),
+    environmentManifestSha256: String(generation.environment_manifest_sha256 ?? '').trim(),
+    selectedActionKind: String(selected.action_kind ?? ''),
+    selectedActionEventCount: selectedEvents.length,
+    selectedActionEventKind: String(payload.actionKind ?? ''),
+    selectedActionEventRequestSha256: String(payload.requestSha256 ?? ''),
+    selectedActionEventSha256: String(event.event_json_sha256 ?? ''),
+    selectedOutcome: String(selected.outcome ?? ''),
+    selectedTransactionHash: normalizeHash(selected.transaction_hash),
+    selectedMeasurementSha256: String(selectedMeasurement.measurement_sha256 ?? ''),
+  });
+}
+
 function bindOperationsToActions(
   census: BefS1CensusProjection,
   actions: LoadedAction[],
+  selectedMeasurementsByOperation: ReadonlyMap<string, JsonRecord>,
   environmentId: string,
   generationId: string,
   participantId: string,
@@ -1411,6 +1521,21 @@ function bindOperationsToActions(
       const responseSelected = isRecord(response) && isRecord(response.selectedAction) ? response.selectedAction : null;
       if (!responseSelected || normalizeAddress(responseSelected.token) !== pinnedUsdcAddress) {
         throw new CollectionUnavailable('rpc_mapping_incomplete');
+      }
+      if (action.evidence.recoverySource) {
+        const expectedSourceProof = sourceRecoveryProofForCensus(census, operation, selected);
+        const sourceMeasurement = selectedMeasurementsByOperation.get(operationId);
+        const expectedResponse = sourceMeasurement
+          ? safeParticipantToolResponseProjection({ ...sourceMeasurement, operationId, outcome: selected.outcome }) : undefined;
+        const sourceReceipt = sourceMeasurement && isRecord(sourceMeasurement.receipt) ? sourceMeasurement.receipt : null;
+        if (!expectedSourceProof || canonicalTaskJson(expectedSourceProof) !== canonicalTaskJson(action.evidence.recoverySource) ||
+            action.evidence.recoverySource.sourceResponseSha256 !== (operation.response_sha256 === null
+              ? null : String(operation.response_sha256 ?? '').trim().toLowerCase()) ||
+            !expectedResponse || canonicalTaskJson(expectedResponse) !== canonicalTaskJson(response) ||
+            !sourceReceipt || String(action.evidence.receiptGasUsed) !== String(sourceReceipt.gasUsed) ||
+            String(action.evidence.receiptEffectiveGasPriceWei) !== String(sourceReceipt.effectiveGasPrice)) {
+          throw new CollectionUnavailable('rpc_mapping_incomplete');
+        }
       }
     }
     if (operation.status === 'settled' || operation.status === 'reverted') {
@@ -1829,8 +1954,36 @@ async function collectLocked(
       a.environment_id,a.action_sequence::text,a.operation_id,a.payload_hash,a.action_kind,a.command_json,
       r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
       h.revision AS history_revision,h.receipt_status AS history_status,h.evidence_hash AS history_evidence_hash,
-      h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash
+      h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash,
+      recovery.action_id::text AS recovery_action_id,recovery.run_id::text AS recovery_run_id,
+      recovery.owner_id::text AS recovery_owner_id,recovery.agent_id::text AS recovery_agent_id,
+      recovery.task_index AS recovery_task_index,recovery.environment_id AS recovery_environment_id,
+      recovery.operation_id AS recovery_operation_id,recovery.payload_hash AS recovery_payload_hash,
+      recovery.incident_evidence_hash AS recovery_incident_evidence_hash,
+      recovery.started_at::text AS recovery_started_at,recovery.deadline_at::text AS recovery_deadline_at,
+      recovery.clock_excluded_ms AS recovery_clock_excluded_ms,recovery.status AS recovery_status,
+      recovery.latest_evidence_hash AS recovery_latest_evidence_hash,
+      (SELECT COUNT(*)::int FROM oid_run_platform_recovery_observation observation
+        WHERE observation.action_id=a.id) AS recovery_observation_count,
+      (SELECT COALESCE(SUM(observation.clock_excluded_ms),0)::text FROM oid_run_platform_recovery_observation observation
+        WHERE observation.action_id=a.id) AS recovery_observation_clock_excluded_ms,
+      (SELECT MAX(observation.observed_at)::text FROM oid_run_platform_recovery_observation observation
+        WHERE observation.action_id=a.id AND observation.evidence_hash=recovery.latest_evidence_hash
+          AND observation.receipt_status='observed') AS recovery_matching_observation_at,
+      EXISTS(SELECT 1 FROM oid_run_platform_recovery_observation observation
+        WHERE observation.action_id=a.id AND observation.evidence_hash=recovery.latest_evidence_hash
+          AND observation.receipt_status='observed') AS recovery_observed_evidence_matches,
+      EXISTS(SELECT 1 FROM oid_run_event event
+        WHERE event.run_id=a.run_id AND event.event_type='run.platform_recovery_started'
+          AND event.payload_json->>'actionId'=a.id::text AND event.payload_json->>'operationId'=a.operation_id
+          AND event.payload_json->>'incidentEvidenceHash'=recovery.incident_evidence_hash) AS recovery_started_event_matches,
+      EXISTS(SELECT 1 FROM oid_run_event event
+        WHERE event.run_id=a.run_id AND event.event_type='run.platform_recovery_observed'
+          AND event.payload_json->>'actionId'=a.id::text AND event.payload_json->>'operationId'=a.operation_id
+          AND event.payload_json->>'receiptStatus'='observed'
+          AND event.payload_json->>'evidenceHash'=recovery.latest_evidence_hash) AS recovery_observed_event_matches
     FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+    LEFT JOIN oid_run_platform_recovery recovery ON recovery.action_id=a.id AND recovery.run_id=a.run_id
     LEFT JOIN LATERAL (SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash
       FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
     WHERE a.run_id=${target.runId} AND a.task_index=${target.taskIndex} ORDER BY a.action_sequence FOR UPDATE OF a,r`);
@@ -1862,7 +2015,7 @@ async function collectLocked(
     return unavailable('rpc_mapping_incomplete');
   }
   let operationMap: Map<string, S1ExpectedTransfer>;
-  try { operationMap = bindOperationsToActions(censusBefore.census, actions, preparation.environment_id,
+  try { operationMap = bindOperationsToActions(censusBefore.census, actions, censusBefore.selectedMeasurementsByOperation, preparation.environment_id,
     preparation.generation_id, preparation.participant_id, usdc.token); }
   catch (error) { if (error instanceof CollectionUnavailable) return unavailable(error.reasonCode); throw error; }
 
