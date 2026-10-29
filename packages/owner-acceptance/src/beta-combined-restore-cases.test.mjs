@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { combinedSourceRunIds, quoteUnits, verifyPostRestoreSourceStability } from './beta-combined-restore-cases.mjs';
+import { combinedBlockerFailureCode, combinedSourceRunIds, exactBonusRedemptionRequestCapture,
+  pauseAuditActorsMatch, quoteUnits, verifyPostRestoreSourceStability } from './beta-combined-restore-cases.mjs';
 
 const HASH = (character) => character.repeat(64);
 const sourceDatabase = 'oid_acceptance_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -8,6 +9,40 @@ const requiredTables = ['oid_benchmark_run', 'oid_run_operation', 'oid_ledger_op
   'oid_bonus_code_claim_operation', 'oid_task_preparation_generation', 'oid_support_report',
   'oid_support_report_audit', 'oid_support_image_upload', 'oid_support_report_deletion_receipt',
   'oid_support_upload_gc_receipt', 'oid_support_report_rate'];
+
+test('combined blocker diagnostics preserve only the genuine runner safe stage and reason code', () => {
+  assert.equal(combinedBlockerFailureCode({ status: 'captured_s1_training_run_completed_by_server_worker' }), null);
+  assert.equal(combinedBlockerFailureCode({ status: 'blocked', blocker: {
+    stage: 'genuine_s1_setup', reasonCode: 'combined_pause_durable_audit_mismatch' } }),
+  'combined_active_blocker_genuine_s1_setup_combined_pause_durable_audit_mismatch');
+  assert.equal(combinedBlockerFailureCode({ status: 'blocked', blocker: {
+    stage: 'message with secret', reasonCode: 'bad reason' } }),
+  'combined_active_blocker_unknown_stage_unknown_reason');
+});
+
+test('combined pause audit requires the distinct authenticated admin actor identity', () => {
+  const adminOwnerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const participantOwnerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const control = { changed_by_owner_id: adminOwnerId };
+  const event = { actor_owner_id: adminOwnerId };
+  assert.equal(pauseAuditActorsMatch({ adminOwnerId, control, event }), true);
+  assert.equal(pauseAuditActorsMatch({ adminOwnerId: participantOwnerId, control, event }), false);
+  assert.equal(pauseAuditActorsMatch({ adminOwnerId: null, control, event }), false);
+});
+
+test('combined redemption capture accepts the exact production UUID request and rejects malformed variants', () => {
+  const payload = { code: `BPC-${'a'.repeat(43)}`,
+    operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' };
+  assert.equal(exactBonusRedemptionRequestCapture({ listenerError: null, requestCount: 1, payload }), true);
+  assert.equal(exactBonusRedemptionRequestCapture({ listenerError: null, requestCount: 1,
+    payload: { ...payload, operationId: 'a'.repeat(32) } }), false);
+  assert.equal(exactBonusRedemptionRequestCapture({ listenerError: null, requestCount: 1,
+    payload: { ...payload, unexpected: true } }), false);
+  assert.equal(exactBonusRedemptionRequestCapture({ listenerError: 'bonus_redemption_request_body_invalid',
+    requestCount: 1, payload }), false);
+  assert.equal(exactBonusRedemptionRequestCapture({ listenerError: null, requestCount: 2, payload }), false);
+});
+
 function sourceSnapshot(overrides = {}) {
   return {
     schemaVersion: 'beta-combined-source-observation/v1',

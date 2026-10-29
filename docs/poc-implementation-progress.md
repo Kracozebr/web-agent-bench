@@ -4,6 +4,35 @@ Checkpoint: 29 October 2026, Europe/Moscow. Approved planning baseline:
 `2db5f5f`, pushed to `origin/dev`. This document reports implementation and
 verification separately; agent reports are not accepted as runtime proof.
 
+## 29 October: recovery and combined-restore continuation
+
+The R28 capture (`64b720a6-a3ca-4901-9305-4a6f966ff94f`, frozen code
+`78c38c8`) completed S1 lost-response recovery, the real 180-second observer
+outage with API restart and exactly one source-linked refund, and passing S4
+and M3 recovery without resubmitting the original action. The full recovery
+stage is preserved at
+`artifacts/runs/beta-platform-recovery-complete-stage/64b720a6-a3ca-4901-9305-4a6f966ff94f/capture.json`
+(SHA-256 `b1e43aba2757825c38c689d284f96f098eb8072854300e189888e2f210cfe60e`).
+The linked owner report with its real run/task/action context also completed.
+The combined attempt then stopped before checkpoint creation; its failed
+wrapper and isolated database remain available for inspection.
+
+Two acceptance-helper assumptions were corrected: redemption operation IDs
+come from the actual UI as dashed UUIDs, and the pause audit actor must match
+the authenticated administrator rather than the participant. Genuine worker
+failure classification is now checked before secondary request-capture checks.
+The raw recovery reader now accepts the normal deletion of a completed run's
+slot only with exact generation-fence evidence and released same-run claims;
+it rejects active or foreign slot/claim state. A restart can finish before the
+restarted monitor persists its incident row (24 ms earlier in R28); response
+loss, process/health evidence and the fixed deadline remain required.
+
+Focused Node acceptance-helper checks pass 13/13. The recovery and combined
+restore raw-reader regressions pass 37/37. These corrections require a fresh
+source-frozen combined capture; R28 is not relabelled as a successful backup,
+and no target-host gate is promoted. Earlier tables below are historical
+checkpoints, not a current process or completion inventory.
+
 ## Active work
 
 The first three implementation processes stopped with a usage-limit error. On

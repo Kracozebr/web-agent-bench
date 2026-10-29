@@ -26,6 +26,30 @@ function demand(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { code });
 }
 
+const SAFE_BLOCKER_CODE = /^[a-z0-9_]{1,80}$/;
+const EXPECTED_BLOCKER_STATUS = 'captured_s1_training_run_completed_by_server_worker';
+
+export function combinedBlockerFailureCode(output) {
+  if (output?.status === EXPECTED_BLOCKER_STATUS) return null;
+  const stage = typeof output?.blocker?.stage === 'string' && SAFE_BLOCKER_CODE.test(output.blocker.stage)
+    ? output.blocker.stage : 'unknown_stage';
+  const reason = typeof output?.blocker?.reasonCode === 'string' && SAFE_BLOCKER_CODE.test(output.blocker.reasonCode)
+    ? output.blocker.reasonCode : 'unknown_reason';
+  return `combined_active_blocker_${stage}_${reason}`;
+}
+
+export function pauseAuditActorsMatch({ adminOwnerId, control, event }) {
+  return UUID.test(adminOwnerId ?? '') && control?.changed_by_owner_id === adminOwnerId &&
+    event?.actor_owner_id === adminOwnerId;
+}
+
+export function exactBonusRedemptionRequestCapture({ listenerError, requestCount, payload }) {
+  return !listenerError && requestCount === 1 && payload &&
+    Object.keys(payload).sort().join(',') === 'code,operationId' &&
+    typeof payload.code === 'string' && /^BPC-[A-Za-z0-9_-]{43}$/.test(payload.code) &&
+    typeof payload.operationId === 'string' && UUID.test(payload.operationId);
+}
+
 export function quoteUnits(value) {
   demand(typeof value === 'string', 'combined_quote_display_missing');
   const match = /(?:^|\s)([0-9]+(?:\.[0-9]{1,6})?)\s+USDC\.?(?:\s|$)/i.exec(value);
@@ -168,7 +192,8 @@ async function createAndAcceptQueuedS1({ commonCapture, agentId, bearer, ownerPa
 }
 
 async function pauseAdmissionsFromAdminUi({ commonCapture, observerPool }) {
-  const { adminPage, publicOrigin, databaseIsolation, ownerId } = commonCapture;
+  const { adminPage, adminOwnerId, publicOrigin, databaseIsolation } = commonCapture;
+  demand(UUID.test(adminOwnerId ?? ''), 'combined_pause_admin_actor_context_missing');
   const before = await readOperationsControl(observerPool, databaseIsolation.databaseName);
   demand(before.value.control?.mode === 'active', 'combined_pause_precondition_not_active');
   await adminPage.goto(new URL('/admin/operations', publicOrigin).toString(), { waitUntil: 'domcontentloaded' });
@@ -190,8 +215,8 @@ async function pauseAdmissionsFromAdminUi({ commonCapture, observerPool }) {
   const after = await readOperationsControl(observerPool, databaseIsolation.databaseName, request.operationId);
   const event = after.value.events[0];
   demand(after.value.control?.mode === 'paused' && Number(after.value.control.revision) === Number(before.value.control.revision) + 1 &&
-    after.value.control.changed_by_owner_id === ownerId && after.value.control.operation_id === request.operationId &&
-    event?.operation_id === request.operationId && event.actor_owner_id === ownerId && event.previous_mode === 'active' &&
+    pauseAuditActorsMatch({ adminOwnerId, control: after.value.control, event }) &&
+    after.value.control.operation_id === request.operationId && event?.operation_id === request.operationId && event.previous_mode === 'active' &&
     event.next_mode === 'paused' && event.reason_code === 'maintenance' && HASH.test(event.payload_hash ?? ''),
   'combined_pause_durable_audit_mismatch');
   return { before: before.value, after: after.value, ui: { method: response.request().method(),
@@ -279,10 +304,10 @@ async function runActiveBlockerWithQueuedPausedRun({ commonCapture, observerPool
   } finally {
     ownerPage.off('request', requestListener);
   }
-  demand(!redemptionListenerError && redemptionRequestCount === 1 && redemptionPayload &&
-    Object.keys(redemptionPayload).sort().join(',') === 'code,operationId' &&
-    typeof redemptionPayload.code === 'string' && /^BPC-[A-Za-z0-9_-]{43}$/.test(redemptionPayload.code) &&
-    typeof redemptionPayload.operationId === 'string' && /^[0-9a-f]{32}$/i.test(redemptionPayload.operationId),
+  const blockerFailure = combinedBlockerFailureCode(blockerOutput);
+  demand(!blockerFailure, blockerFailure ?? 'combined_active_blocker_worker_completion_invalid');
+  demand(exactBonusRedemptionRequestCapture({ listenerError: redemptionListenerError,
+    requestCount: redemptionRequestCount, payload: redemptionPayload }),
   'combined_bonus_redemption_ram_capture_invalid');
   demand(blockerOutput?.status === 'captured_s1_training_run_completed_by_server_worker' && blockerOutput.trainingRunCompletion?.status === 'verified' &&
     blockerOutput.taskGradePublished === false && blockerOutput.bonusFunding?.redemption?.status === 200 &&

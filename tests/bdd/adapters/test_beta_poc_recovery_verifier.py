@@ -11,6 +11,7 @@ import pytest
 from tests.bdd.adapters.beta_poc_recovery_verifier import (
     NEGATIVE_NAMES,
     OBSERVATION_NAMES,
+    _verify_recovered_case,
     derive_observations,
     verify_local_recovery_capture,
 )
@@ -202,6 +203,7 @@ def _make_result(root: Path) -> dict:
     success_action["evidence"] = _write_json(root, "evidence/success-action.json",
                                                _evidence_packet(success_binding, success_action, "observed", success_source))
     success_fence = _write_json(root, "evidence/success-fence.json", _fence_packet(success_binding))
+    success_claim_id = str(uuid4())
     success_started = NOW
     success_deadline = DEADLINE
     success = {
@@ -224,8 +226,10 @@ def _make_result(root: Path) -> dict:
         "observer": {"identity": {"role": "oid_observer", "databaseName": DATABASE, "transactionReadOnly": "on"},
                      "evaluations": [{"taskId": "S1", "resultHash": "6" * 64, "evaluatorSourceHash": "7" * 64}],
                      "slots": [{"run_id": success_binding["runId"], "agent_id": success_binding["agentId"],
-                                "released_at": DEADLINE}],
-                     "claims": [{"released_at": DEADLINE}], "fenceEvidence": success_fence},
+                                "claim_id": success_claim_id, "state": "running", "released_at": DEADLINE}],
+                     "claims": [{"run_id": success_binding["runId"], "claim_id": success_claim_id,
+                                 "status": "released", "released_at": DEADLINE}],
+                     "fenceEvidence": success_fence},
     }
 
     exhausted_binding, exhausted_action = _case_ids()
@@ -349,6 +353,58 @@ def test_local_sc017_facts_are_derived_from_exact_original_operation_and_postgre
     assert facts["duplicate_terminal"] is False
     assert facts["stale_callback"] is False
     assert facts["forged_failure_report"] is False
+
+
+def test_completed_recovery_accepts_deleted_slot_only_with_exact_fence_and_released_claim(tmp_path: Path) -> None:
+    result = _make_result(tmp_path)
+    case = result["cases"]["committedActionRecovery"]
+    case["observer"]["slots"] = []
+
+    facts = _verify_recovered_case(case, DATABASE, tmp_path)
+    assert facts["own_slots_fenced"] is True
+
+    fence_path = tmp_path / case["observer"]["fenceEvidence"]["path"]
+    fence_packet = json.loads(fence_path.read_text(encoding="utf-8"))
+    fence_packet["evidence"]["fenceConfirmed"] = False
+    case["observer"]["fenceEvidence"] = _write_json(tmp_path, "evidence/unconfirmed-fence.json", fence_packet)
+    with pytest.raises(AssertionError, match="does not prove the exact preparation/generation fence"):
+        _verify_recovered_case(case, DATABASE, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["active_slot", "foreign_slot_run", "foreign_slot_agent", "foreign_slot_claim", "multiple_slots",
+     "foreign_claim", "missing_claim", "missing_claim_after_slot_deletion", "claimed_claim", "null_claim_release"],
+)
+def test_completed_recovery_rejects_unreleased_or_foreign_slot_and_claim_rows(
+    tmp_path: Path, mutation: str,
+) -> None:
+    result = _make_result(tmp_path)
+    observer = result["cases"]["committedActionRecovery"]["observer"]
+    if mutation == "active_slot":
+        observer["slots"][0]["released_at"] = None
+    elif mutation == "foreign_slot_run":
+        observer["slots"][0]["run_id"] = str(uuid4())
+    elif mutation == "foreign_slot_agent":
+        observer["slots"][0]["agent_id"] = str(uuid4())
+    elif mutation == "foreign_slot_claim":
+        observer["slots"][0]["claim_id"] = str(uuid4())
+    elif mutation == "multiple_slots":
+        observer["slots"].append(copy.deepcopy(observer["slots"][0]))
+    elif mutation == "foreign_claim":
+        observer["claims"][0]["run_id"] = str(uuid4())
+    elif mutation == "missing_claim":
+        observer["claims"] = []
+    elif mutation == "missing_claim_after_slot_deletion":
+        observer["claims"] = []
+        observer["slots"] = []
+    elif mutation == "claimed_claim":
+        observer["claims"][0]["status"] = "claimed"
+    elif mutation == "null_claim_release":
+        observer["claims"][0]["released_at"] = None
+
+    facts = _verify_recovered_case(result["cases"]["committedActionRecovery"], DATABASE, tmp_path)
+    assert facts["own_slots_fenced"] is False
 
 
 def test_producer_claim_booleans_cannot_promote_missing_race_negative(tmp_path: Path) -> None:
@@ -495,15 +551,31 @@ def test_restart_time_is_part_of_the_full_outage_not_repeated_by_the_callback_wa
 @pytest.mark.parametrize("started,finished,expected", [
     ("2026-10-29T09:59:59.500Z", "2026-10-29T10:00:01.000Z", True),
     ("2026-10-29T09:59:58.000Z", "2026-10-29T10:00:01.000Z", False),
-    ("2026-10-29T09:59:59.100Z", "2026-10-29T09:59:59.500Z", False),
+    ("2026-10-29T09:59:59.100Z", "2026-10-29T09:59:59.500Z", True),
     ("2026-10-29T10:02:59.000Z", "2026-10-29T10:03:01.000Z", False),
 ])
-def test_restart_must_follow_response_loss_and_overlap_recovery_window(
+def test_restart_must_follow_response_loss_and_finish_before_recovery_deadline(
         tmp_path: Path, started: str, finished: str, expected: bool) -> None:
     result = _make_result(tmp_path)
     receipt = result["cases"]["recoveryDeadlineExhaustion"]["recovery"]["restartReceipt"]
     receipt.update(startedAt=started, finishedAt=finished)
     assert derive_observations("BPC-SC-017", result, repository_root=tmp_path)["restart"] is expected
+
+
+def test_restart_can_finish_just_before_monitor_persists_recovery_row(tmp_path: Path) -> None:
+    result = _make_result(tmp_path)
+    case = result["cases"]["recoveryDeadlineExhaustion"]
+    recovery = case["recovery"]
+    recovery["row"].update(started_at="2026-10-29T10:00:03.024Z",
+                           deadline_at="2026-10-29T10:03:03.024Z")
+    recovery["deadlineObservation"]["row"]["deadline_at"] = "2026-10-29T10:03:03.024Z"
+    recovery["deadlineObservation"]["observedAtDatabase"] = "2026-10-29T10:03:04.024Z"
+    recovery["restartReceipt"].update(startedAt="2026-10-29T10:00:01.000Z",
+                                      finishedAt="2026-10-29T10:00:03.000Z")
+    case["observerFault"]["intervals"][0]["endedAt"] = "2026-10-29T10:03:04.024Z"
+
+    facts = derive_observations("BPC-SC-017", result, repository_root=tmp_path)
+    assert facts["restart"] is True
 
 
 def test_standalone_wrapper_verifies_provenance_and_never_promotes_target_gate(tmp_path: Path) -> None:

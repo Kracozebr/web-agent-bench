@@ -378,9 +378,29 @@ def _verify_recovered_case(case: Any, database_name: str, repository_root: Path,
     fence = _obj(observer.get("fenceEvidence"), "committedActionRecovery.observer.fenceEvidence")
     _fence_evidence(fence, repository_root=repository_root, binding=binding,
                     name="committedActionRecovery.fenceEvidence")
-    fenced = len(slots) == 1 and all(row.get("run_id") == binding["runId"] and row.get("agent_id") == binding["agentId"]
-                                     and row.get("released_at") is not None for row in slots) \
-        and len(claims) >= 1 and all(row.get("released_at") is not None for row in claims)
+    released_claim_ids: set[str] = set()
+    claims_released = bool(claims)
+    for claim in claims:
+        claim_id = claim.get("claim_id")
+        if claim.get("run_id") != binding["runId"] or claim.get("status") != "released" \
+                or claim.get("released_at") is None or not _uuid(claim_id) or claim_id in released_claim_ids:
+            claims_released = False
+            break
+        released_claim_ids.add(claim_id)
+    # Normal run completion removes the slot row. A retained row must still be the exact
+    # run/agent slot and link to one of the independently verified released claims above.
+    slot_disposition_safe = not slots
+    if len(slots) == 1:
+        slot = slots[0]
+        slot_disposition_safe = (
+            slot.get("run_id") == binding["runId"]
+            and slot.get("agent_id") == binding["agentId"]
+            and slot.get("state") in {"preparing", "running"}
+            and slot.get("released_at") is not None
+            and _uuid(slot.get("claim_id"))
+            and slot.get("claim_id") in released_claim_ids
+        )
+    fenced = claims_released and slot_disposition_safe
     return {
         "original_action_reconciled": source_operation["status"] == "settled" and action_row["finalReceiptStatus"] == "observed"
         and proxy_ok and extra_resubmissions == 0,
@@ -547,8 +567,7 @@ def _verify_exhausted_case(case: Any, database_name: str, repository_root: Path)
         and type(restart.get("previousPid")) is int and type(restart.get("currentPid")) is int \
         and restart["previousPid"] != restart["currentPid"] \
         and restart.get("healthHttpStatus") == 200 \
-        and fault_observed <= restart_started <= restart_finished <= deadline_ms \
-        and start_ms <= restart_finished
+        and fault_observed <= restart_started <= restart_finished <= deadline_ms
     # Do not require a late original source receipt to remain unknown: observing it later must not reopen the run.
     unknown_retained = run["status"] == "failed" and run["terminal_reason"] == "platform_failure_recovery_exhausted" and not evaluations
     return {

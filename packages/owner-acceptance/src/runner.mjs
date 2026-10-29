@@ -849,6 +849,7 @@ async function main() {
         sourceBuildSha256: sha256(Buffer.from(JSON.stringify(sourceHashesBefore))),
         databaseUrl: process.env.OID_DATABASE_URL, observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL,
         publicOrigin, apiOrigin, adminPage: admin.page, adminCapture: admin.captureApi,
+        adminOwnerId: admin.owner.owner.id,
         ownerPage: ownerLogin.page, ownerCapture: ownerLogin.captureApi, ownerId,
         newContext, login: (context, scenarioId, subject) => googleLogin(context, scenarioId, subject),
         restartApi: async () => {
