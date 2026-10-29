@@ -28,6 +28,69 @@ function demand(condition, code) {
 
 const SAFE_BLOCKER_CODE = /^[a-z0-9_]{1,80}$/;
 const EXPECTED_BLOCKER_STATUS = 'captured_s1_training_run_completed_by_server_worker';
+const SAFE_CALLBACK_STAGE = /^[a-z][a-z0-9_]{0,63}$/;
+const SAFE_CALLBACK_METADATA = /^[A-Za-z0-9_]{1,96}$/;
+const SAFE_CALLBACK_FRAME = /^\/workspace\/[A-Za-z0-9._/-]{1,320}:\d+:\d+$/;
+
+function callbackStackFrames(stack) {
+  if (typeof stack !== 'string') return [];
+  const frames = [];
+  for (const line of stack.split(/\r?\n/).slice(1, 80)) {
+    const match = /(?:file:\/\/)?(\/workspace\/[A-Za-z0-9._/-]{1,320}:\d+:\d+)/.exec(line);
+    if (match && SAFE_CALLBACK_FRAME.test(match[1])) frames.push(match[1]);
+    if (frames.length === 5) break;
+  }
+  return frames;
+}
+
+export function wrapCombinedCallbackError(error, stage) {
+  demand(SAFE_CALLBACK_STAGE.test(stage ?? ''), 'combined_callback_stage_invalid');
+  const rawName = typeof error?.name === 'string' ? error.name
+    : typeof error?.constructor?.name === 'string' ? error.constructor.name : 'Error';
+  const errorName = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(rawName) ? rawName : 'Error';
+  const rawCode = error?.code === undefined || error?.code === null ? '' : String(error.code);
+  const errorCode = SAFE_CALLBACK_METADATA.test(rawCode) ? rawCode : 'callback_stage_failed';
+  const safeDiagnostic = { schemaVersion: 'beta-combined-callback-diagnostic/v1', stage, errorName,
+    errorCode: rawCode && SAFE_CALLBACK_METADATA.test(rawCode) ? rawCode : null,
+    topStackFrames: callbackStackFrames(error?.stack) };
+  const wrapped = new Error(errorCode);
+  wrapped.code = errorCode;
+  wrapped.safeDiagnostic = safeDiagnostic;
+  return wrapped;
+}
+
+export async function runCombinedCallbackDiagnosticScope(callback) {
+  let stage = 'callback_start';
+  try {
+    return await callback((nextStage) => {
+      demand(SAFE_CALLBACK_STAGE.test(nextStage ?? ''), 'combined_callback_stage_invalid');
+      stage = nextStage;
+    });
+  } catch (error) {
+    throw wrapCombinedCallbackError(error, stage);
+  }
+}
+
+function validatedCallbackDiagnostic(value) {
+  if (!value || value.schemaVersion !== 'beta-combined-callback-diagnostic/v1' ||
+      !SAFE_CALLBACK_STAGE.test(value.stage ?? '') ||
+      !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.errorName ?? '') ||
+      !(value.errorCode === null || SAFE_CALLBACK_METADATA.test(value.errorCode ?? '')) ||
+      !Array.isArray(value.topStackFrames) || value.topStackFrames.length > 5 ||
+      value.topStackFrames.some((frame) => !SAFE_CALLBACK_FRAME.test(frame))) return null;
+  return { schemaVersion: value.schemaVersion, stage: value.stage, errorName: value.errorName,
+    errorCode: value.errorCode, topStackFrames: [...value.topStackFrames] };
+}
+
+export function combinedBlockerError(output) {
+  const code = combinedBlockerFailureCode(output);
+  if (!code) return null;
+  const error = new Error(code);
+  error.code = code;
+  const diagnostic = validatedCallbackDiagnostic(output?.safeDiagnostic);
+  if (diagnostic) error.safeDiagnostic = diagnostic;
+  return error;
+}
 
 export function combinedBlockerFailureCode(output) {
   if (output?.status === EXPECTED_BLOCKER_STATUS) return null;
@@ -36,6 +99,19 @@ export function combinedBlockerFailureCode(output) {
   const reason = typeof output?.blocker?.reasonCode === 'string' && SAFE_BLOCKER_CODE.test(output.blocker.reasonCode)
     ? output.blocker.reasonCode : 'unknown_reason';
   return `combined_active_blocker_${stage}_${reason}`;
+}
+
+export function agentAcceptanceResponseSummary({ response, intentId, operationId, replayed }) {
+  demand(typeof response?.status === 'function' && UUID.test(intentId ?? '') && UUID.test(operationId ?? ''),
+    'combined_agent_acceptance_response_shape_invalid');
+  return { method: 'POST', path: `/api/agent/run-intents/${intentId}/accept`, status: response.status(),
+    operationId, replayed: replayed === true };
+}
+
+export function exactKnownPassingEvaluation(value) {
+  return value?.outcomeStatus === 'known' && value?.outcome === 'passed' &&
+    value?.credit?.numerator === '1' && value?.credit?.denominator === '1' &&
+    value?.mandatoryViolationPresent === false;
 }
 
 export function pauseAuditActorsMatch({ adminOwnerId, control, event }) {
@@ -186,8 +262,8 @@ async function createAndAcceptQueuedS1({ commonCapture, agentId, bearer, ownerPa
     intentCreatePayload: structuredClone(intentRequest),
     ownerUi: { createIntentMethod: intentResponse.request().method(), createIntentPath: new URL(intentResponse.url()).pathname,
       createIntentStatus: intentResponse.status(), createIntentOperationId: intentRequest.operationId },
-    agentAcceptance: { method: acceptResponse.request().method(), path: `/api/agent/run-intents/${intentId}/accept`,
-      status: acceptResponse.status(), operationId: acceptOperationId, replayed: acceptBody.replayed === true },
+    agentAcceptance: agentAcceptanceResponseSummary({ response: acceptResponse, intentId,
+      operationId: acceptOperationId, replayed: acceptBody.replayed === true }),
     acceptedBeforePause: accepted };
 }
 
@@ -272,40 +348,50 @@ async function runActiveBlockerWithQueuedPausedRun({ commonCapture, observerPool
       captureId: randomUUID(), mode: 'training', taskId: 'S1', automaticWorkerEvaluation: true,
       bonusCodeFunding: true, bddProbes: false, primaryClientOnly: false,
       onGenuineFirstTaskActive: async (active) => {
-        demand(!queue && !paused && UUID.test(active.runId ?? '') && active.ownerId === commonCapture.ownerId &&
-          UUID.test(active.agentId ?? '') && typeof active.agentBearer === 'string' && active.agentBearer.length >= 32 &&
-          UUID.test(active.intentId ?? '') && typeof active.createIntentOperationId === 'string' &&
-          typeof active.acceptOperationId === 'string' && active.intentCreatePayload?.operationId === active.createIntentOperationId,
-        'combined_active_blocker_callback_invalid');
-        activeBeforeDrain = await readQueueSnapshot(observerPool, commonCapture.databaseIsolation.databaseName, active.runId);
-        demand(activeBeforeDrain.value.run?.owner_id === commonCapture.ownerId &&
-          activeBeforeDrain.value.run?.agent_id === active.agentId && activeBeforeDrain.value.run?.status === 'running' &&
-          activeBeforeDrain.value.run?.started_at !== null && activeBeforeDrain.value.tasks.length === 1 &&
-          activeBeforeDrain.value.tasks[0].status === 'active' && activeBeforeDrain.value.slots.length === 1 &&
-          activeBeforeDrain.value.slots[0].state === 'running' && activeBeforeDrain.value.claims.length === 1 &&
-          activeBeforeDrain.value.claims[0].status === 'claimed',
-        'combined_pause_blocker_not_holding_live_slot');
-        await progressFn?.({ component: 'beta_combined_restore', phase: 'queue_accept_while_blocker_active', runId: active.runId });
-        queue = await createAndAcceptQueuedS1({ commonCapture, agentId: active.agentId,
-          bearer: active.agentBearer, ownerPage, observerPool });
-        demand(queue.agentId === active.agentId && queue.acceptedBeforePause.value.run?.status === 'queued' &&
-          queue.acceptedBeforePause.value.slots.length === 0 && queue.acceptedBeforePause.value.claims.length === 0,
-        'combined_second_same_agent_run_not_queued_behind_active_blocker');
-        paused = await pauseAdmissionsFromAdminUi({ commonCapture, observerPool });
-        demand(paused.after.control.mode === 'paused', 'combined_operations_pause_not_persisted');
-        retryMaterial = { blocker: { runId: active.runId, agentId: active.agentId, agentBearer: active.agentBearer,
-          intentId: active.intentId, createIntentOperationId: active.createIntentOperationId,
-          acceptOperationId: active.acceptOperationId,
-          intentCreatePayload: structuredClone(active.intentCreatePayload) },
-          queue: { runId: queue.runId, intentId: queue.intentId, createIntentOperationId: queue.createOperationId,
-            acceptOperationId: queue.acceptOperationId, intentCreatePayload: structuredClone(queue.intentCreatePayload) } };
+        await runCombinedCallbackDiagnosticScope(async (setStage) => {
+          setStage('active_callback_preconditions');
+          demand(!queue && !paused && UUID.test(active.runId ?? '') && active.ownerId === commonCapture.ownerId &&
+            UUID.test(active.agentId ?? '') && typeof active.agentBearer === 'string' && active.agentBearer.length >= 32 &&
+            UUID.test(active.intentId ?? '') && typeof active.createIntentOperationId === 'string' &&
+            typeof active.acceptOperationId === 'string' && active.intentCreatePayload?.operationId === active.createIntentOperationId,
+          'combined_active_blocker_callback_invalid');
+          setStage('active_blocker_observer_snapshot');
+          activeBeforeDrain = await readQueueSnapshot(observerPool, commonCapture.databaseIsolation.databaseName, active.runId);
+          setStage('active_blocker_snapshot_validation');
+          demand(activeBeforeDrain.value.run?.owner_id === commonCapture.ownerId &&
+            activeBeforeDrain.value.run?.agent_id === active.agentId && activeBeforeDrain.value.run?.status === 'running' &&
+            activeBeforeDrain.value.run?.started_at !== null && activeBeforeDrain.value.tasks.length === 1 &&
+            activeBeforeDrain.value.tasks[0].status === 'active' && activeBeforeDrain.value.slots.length === 1 &&
+            activeBeforeDrain.value.slots[0].state === 'running' && activeBeforeDrain.value.claims.length === 1 &&
+            activeBeforeDrain.value.claims[0].status === 'claimed',
+          'combined_pause_blocker_not_holding_live_slot');
+          setStage('queue_create_accept_and_observer_snapshot');
+          await progressFn?.({ component: 'beta_combined_restore', phase: 'queue_accept_while_blocker_active', runId: active.runId });
+          queue = await createAndAcceptQueuedS1({ commonCapture, agentId: active.agentId,
+            bearer: active.agentBearer, ownerPage, observerPool });
+          setStage('queue_pre_pause_durable_validation');
+          demand(queue.agentId === active.agentId && queue.acceptedBeforePause.value.run?.status === 'queued' &&
+            queue.acceptedBeforePause.value.slots.length === 0 && queue.acceptedBeforePause.value.claims.length === 0,
+          'combined_second_same_agent_run_not_queued_behind_active_blocker');
+          setStage('admin_pause_ui_and_durable_audit');
+          paused = await pauseAdmissionsFromAdminUi({ commonCapture, observerPool });
+          setStage('admin_pause_result_validation');
+          demand(paused.after.control.mode === 'paused', 'combined_operations_pause_not_persisted');
+          setStage('retry_material_capture');
+          retryMaterial = { blocker: { runId: active.runId, agentId: active.agentId, agentBearer: active.agentBearer,
+            intentId: active.intentId, createIntentOperationId: active.createIntentOperationId,
+            acceptOperationId: active.acceptOperationId,
+            intentCreatePayload: structuredClone(active.intentCreatePayload) },
+            queue: { runId: queue.runId, intentId: queue.intentId, createIntentOperationId: queue.createOperationId,
+              acceptOperationId: queue.acceptOperationId, intentCreatePayload: structuredClone(queue.intentCreatePayload) } };
+        });
       },
     });
   } finally {
     ownerPage.off('request', requestListener);
   }
-  const blockerFailure = combinedBlockerFailureCode(blockerOutput);
-  demand(!blockerFailure, blockerFailure ?? 'combined_active_blocker_worker_completion_invalid');
+  const blockerError = combinedBlockerError(blockerOutput);
+  if (blockerError) throw blockerError;
   demand(exactBonusRedemptionRequestCapture({ listenerError: redemptionListenerError,
     requestCount: redemptionRequestCount, payload: redemptionPayload }),
   'combined_bonus_redemption_ram_capture_invalid');
@@ -318,8 +404,7 @@ async function runActiveBlockerWithQueuedPausedRun({ commonCapture, observerPool
   'combined_active_blocker_worker_completion_invalid');
   const workerRun = await runBetaRecoveryCasesCompletedRunState(observerPool, commonCapture, blockerOutput.run.runId);
   demand(workerRun.status === 'completed' && workerRun.evaluations.length === 1 &&
-    workerRun.evaluations[0].outcomeStatus === 'known' && workerRun.evaluations[0].outcome === 'passed' &&
-    workerRun.evaluations[0].credit === 1,
+    exactKnownPassingEvaluation(workerRun.evaluations[0]),
   'combined_active_worker_run_did_not_drain_under_pause');
   const pausedQueue = await verifyQueuedRunStayedPaused(observerPool, commonCapture, queue.runId, paused.after.control.operation_id);
   const bonus = blockerOutput.bonusFunding;
@@ -878,6 +963,31 @@ export function verifyPostRestoreSourceStability({ checkpointSourceAfter, afterR
   };
 }
 
+export async function runBetaQueuePreparationCases({ commonCapture, progress: progressFn }) {
+  const expectedDatabase = commonCapture?.databaseIsolation?.databaseName;
+  demand(/^oid_acceptance_[a-f0-9]{32}$/.test(expectedDatabase ?? '') &&
+    typeof commonCapture?.observerDatabaseUrl === 'string' && typeof commonCapture?.publicOrigin === 'string' &&
+    commonCapture.ownerPage && commonCapture.adminPage && UUID.test(commonCapture.ownerId ?? '') &&
+    UUID.test(commonCapture.adminOwnerId ?? '') && commonCapture.genuineCaptureInput,
+  'combined_queue_capture_prerequisites_missing');
+  const observerPool = new Pool({ connectionString: commonCapture.observerDatabaseUrl, max: 2,
+    application_name: 'bpc-combined-queue-observer' });
+  try {
+    const initialControl = await readOperationsControl(observerPool, expectedDatabase);
+    demand(initialControl.identity?.role === 'oid_observer' && initialControl.identity.transactionReadOnly === 'on' &&
+      initialControl.identity.databaseName === expectedDatabase && initialControl.value.control?.mode === 'active',
+    'combined_queue_initial_observer_or_control_invalid');
+    await progressFn?.({ component: 'beta_combined_queue', phase: 'active_blocker_and_queue_begin' });
+    const result = await runActiveBlockerWithQueuedPausedRun({ commonCapture, observerPool, progressFn });
+    // AICODE-NOTE: This focused queue probe persists durable admission evidence only; bearer credentials and the one-time bonus code stay in RAM for the combined restore path.
+    const output = { schemaVersion: 'beta-combined-queue/v1', status: 'verified', capture: result.capture };
+    assertSecretFree(output, 'beta-combined-queue');
+    return output;
+  } finally {
+    await observerPool.end();
+  }
+}
+
 export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress: progressFn }) {
   const expectedDatabase = commonCapture?.databaseIsolation?.databaseName;
   demand(/^oid_acceptance_[a-f0-9]{32}$/.test(expectedDatabase ?? '') &&
@@ -1243,7 +1353,9 @@ async function runBetaRecoveryCasesCompletedRunState(pool, commonCapture, runId)
       if (typeof result === 'string') { try { result = JSON.parse(result); } catch { result = null; } }
       return { taskIndex: row.task_index, taskId: row.task_id, resultHash: row.result_hash,
         evaluatorSourceHash: row.evaluator_source_hash, outcomeStatus: result?.status ?? null,
-        outcome: result?.outcome ?? null, credit: result?.credit ?? null };
+        outcome: result?.outcome ?? null, credit: result?.credit ?? null,
+        mandatoryViolationPresent: result && Object.hasOwn(result, 'mandatoryViolation')
+          ? result.mandatoryViolation !== null : null };
     });
     return { run: run[0] ?? null, evaluations };
   });

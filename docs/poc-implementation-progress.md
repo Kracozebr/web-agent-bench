@@ -6,6 +6,34 @@ verification separately; agent reports are not accepted as runtime proof.
 
 ## 29 October: recovery and combined-restore continuation
 
+R29 (`1d76707d-0ac7-4145-8dd4-2b6bdd0e45fd`, frozen `b333558`)
+independently replays all five core recovery observations and lost-response,
+exhaustion and restart evidence. Both S4 and M3 collector cases pass. The full
+recovery stage SHA-256 is
+`1fe4a30edf913dce9767fda566c4a82d6a12cf1ee95a85f6eb2d830915df672d`.
+Root also compared all twelve M3 packet event hashes with raw BEF events using
+the actual read-only `bef_observer` role; all matched.
+
+The combined attempt still stopped before backup. Its exact cause was an
+acceptance-producer TypeError: a Playwright `APIResponse` from
+`page.request.post` has no `request()` method. The queue acceptance had already
+committed before the producer tried that method. The receipt now records the
+actual initiating POST, with a regression using the correct response shape.
+The next drain assertion was also corrected to compare the persisted rational
+credit `{numerator: '1', denominator: '1'}` and absent mandatory violations.
+Focused Node helper/report checks pass 16/16. A separate
+`--combined-queue-only` diagnostic exercises the same real active-run, queue and
+admin-pause path; it does not replace the full combined recovery/restore run.
+Sanitized callback stage/class/code/location diagnostics preserve the next
+failure without persisting raw request bodies or credentials.
+
+R29's abandoned pre-start run was cancelled through the normal service and
+coordinator. Its exact preparation was fenced, its uncharged holds released,
+and its null generation/execution binding preserved; the disabled foreign
+report fixture and original recovery artifacts remained unchanged. No database
+reset or direct SQL mutation was used. Root retained the guard/readback receipt
+under `.tmp/r29-cleanup-after.json`.
+
 The R28 capture (`64b720a6-a3ca-4901-9305-4a6f966ff94f`, frozen code
 `78c38c8`) completed S1 lost-response recovery, the real 180-second observer
 outage with API restart and exactly one source-linked refund, and passing S4

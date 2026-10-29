@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { combinedBlockerFailureCode, combinedSourceRunIds, exactBonusRedemptionRequestCapture,
-  pauseAuditActorsMatch, quoteUnits, verifyPostRestoreSourceStability } from './beta-combined-restore-cases.mjs';
+import { agentAcceptanceResponseSummary, combinedBlockerError, combinedBlockerFailureCode, combinedSourceRunIds,
+  exactBonusRedemptionRequestCapture, exactKnownPassingEvaluation, pauseAuditActorsMatch, quoteUnits, runCombinedCallbackDiagnosticScope,
+  verifyPostRestoreSourceStability } from './beta-combined-restore-cases.mjs';
 
 const HASH = (character) => character.repeat(64);
 const sourceDatabase = 'oid_acceptance_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -18,6 +19,55 @@ test('combined blocker diagnostics preserve only the genuine runner safe stage a
   assert.equal(combinedBlockerFailureCode({ status: 'blocked', blocker: {
     stage: 'message with secret', reasonCode: 'bad reason' } }),
   'combined_active_blocker_unknown_stage_unknown_reason');
+});
+
+test('queue acceptance receipt uses the initiating API method without assuming APIResponse.request exists', () => {
+  const intentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const operationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const response = { status: () => 201, json: async () => ({ run: { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' } }) };
+  const receipt = agentAcceptanceResponseSummary({ response, intentId, operationId, replayed: false });
+
+  assert.equal('request' in response, false);
+  assert.deepEqual(receipt, { method: 'POST', path: `/api/agent/run-intents/${intentId}/accept`,
+    status: 201, operationId, replayed: false });
+});
+
+test('paused queue drain accepts the persisted exact rational grade shape and rejects absent violation proof', () => {
+  const observed = { outcomeStatus: 'known', outcome: 'passed', credit: { numerator: '1', denominator: '1' },
+    mandatoryViolationPresent: false };
+  assert.equal(exactKnownPassingEvaluation(observed), true);
+  assert.equal(exactKnownPassingEvaluation({ ...observed, credit: 1 }), false);
+  assert.equal(exactKnownPassingEvaluation({ ...observed, mandatoryViolationPresent: null }), false);
+  assert.equal(exactKnownPassingEvaluation({ ...observed, mandatoryViolationPresent: true }), false);
+  assert.equal(exactKnownPassingEvaluation({ ...observed, outcome: 'failed' }), false);
+});
+
+test('callback failure diagnostics retain safe class, code, stage and workspace locations only', async () => {
+  const credential = 'BPC-secret-credential-that-must-not-be-written';
+  const error = new Error(`request failed with Bearer ${credential}`);
+  error.name = 'TimeoutError';
+  error.code = 'ETIMEDOUT';
+  error.stack = `TimeoutError: Bearer ${credential}\n` +
+    '    at createQueuedRun (file:///workspace/packages/owner-acceptance/src/beta-combined-restore-cases.mjs:173:28)\n' +
+    '    at browserCall (C:\\Users\\example\\private-token.mjs:9:2)\n' +
+    '    at /tmp/private-key.mjs:20:1';
+  const wrapped = await runCombinedCallbackDiagnosticScope(async (setStage) => {
+    setStage('queue_create_accept_and_observer_snapshot');
+    throw error;
+  }).catch((failure) => failure);
+  const blockerError = combinedBlockerError({ status: 'blocked', blocker: {
+    stage: 'genuine_s1_setup', reasonCode: wrapped.code }, safeDiagnostic: wrapped.safeDiagnostic });
+
+  assert.equal(wrapped.code, 'ETIMEDOUT');
+  assert.deepEqual(wrapped.safeDiagnostic, { schemaVersion: 'beta-combined-callback-diagnostic/v1',
+    stage: 'queue_create_accept_and_observer_snapshot', errorName: 'TimeoutError', errorCode: 'ETIMEDOUT',
+    topStackFrames: ['/workspace/packages/owner-acceptance/src/beta-combined-restore-cases.mjs:173:28'] });
+  assert.equal(blockerError.code, combinedBlockerFailureCode({ status: 'blocked', blocker: {
+    stage: 'genuine_s1_setup', reasonCode: 'ETIMEDOUT' } }));
+  assert.deepEqual(blockerError.safeDiagnostic, wrapped.safeDiagnostic);
+  assert.equal(JSON.stringify(blockerError.safeDiagnostic).includes(credential), false);
+  assert.equal(JSON.stringify(blockerError.safeDiagnostic).includes('private-token'), false);
+  assert.equal(JSON.stringify(blockerError.safeDiagnostic).includes('Bearer'), false);
 });
 
 test('combined pause audit requires the distinct authenticated admin actor identity', () => {

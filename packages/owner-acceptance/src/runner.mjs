@@ -47,7 +47,10 @@ const runId = randomUUID();
 const bonusCodesOptIn = process.argv.includes("--bonus-codes-only");
 const reportsOptIn = process.argv.includes("--reports-only");
 const platformRecoveryOptIn = process.argv.includes("--platform-recovery-only");
-const combinedRestoreOptIn = process.argv.includes("--combined-restore-only");
+// AICODE-NOTE: This diagnostic isolates the real queue/pause preparation; it never
+// substitutes for a complete recovery/checkpoint/restore capture or a BPC gate.
+const combinedQueueOptIn = process.argv.includes("--combined-queue-only");
+const combinedRestoreOptIn = process.argv.includes("--combined-restore-only") || combinedQueueOptIn;
 const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn;
 const bonusFundedTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-sequence-worker-owner-run");
 const bonusFundedRankedOptIn = process.argv.includes("--genuine-bonus-funded-ranked-worker-owner-run");
@@ -924,8 +927,11 @@ async function main() {
           backupRoot: "/local-report-captures/beta-backups", restoreRoot: "/local-report-captures/beta-restores",
           checkpointId: runId, kind });
       };
-      phase = platformRecoveryOptIn ? "platform_recovery_runtime" : "combined_backup_restore_runtime";
-      const result = platformRecoveryOptIn
+      phase = combinedQueueOptIn ? "combined_queue_preparation_runtime"
+        : platformRecoveryOptIn ? "platform_recovery_runtime" : "combined_backup_restore_runtime";
+      const result = combinedQueueOptIn
+        ? await (await import("./beta-combined-restore-cases.mjs")).runBetaQueuePreparationCases({ commonCapture, progress })
+        : platformRecoveryOptIn
         ? await (await import("./beta-recovery-cases.mjs")).runBetaRecoveryCases({
           commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress })
         : await (await import("./beta-combined-restore-cases.mjs")).runBetaCombinedRestoreCases({
@@ -937,7 +943,8 @@ async function main() {
       const inputHashesAfter = sourceHashMap(sourceHashesAfter);
       const provenance = { databaseIsolation, inputHashesBefore, inputHashesAfter,
         sourceStableDuringRun: JSON.stringify(inputHashesBefore) === JSON.stringify(inputHashesAfter) };
-      const artifactRoot = platformRecoveryOptIn ? "beta-platform-recovery" : "beta-combined-restore";
+      const artifactRoot = combinedQueueOptIn ? "beta-combined-queue"
+        : platformRecoveryOptIn ? "beta-platform-recovery" : "beta-combined-restore";
       await mkdir(resolve(repoRoot, "artifacts/runs", artifactRoot), { recursive: true, mode: 0o700 });
       const directory = resolve(repoRoot, "artifacts/runs", artifactRoot, runId);
       await mkdir(directory, { recursive: false, mode: 0o700 });
@@ -1504,7 +1511,8 @@ async function main() {
 
 main().catch(async (error) => {
   if ((platformRecoveryOptIn || combinedRestoreOptIn) && !betaOperationsArtifactWritten) {
-    const artifactRoot = platformRecoveryOptIn ? "beta-platform-recovery" : "beta-combined-restore";
+    const artifactRoot = combinedQueueOptIn ? "beta-combined-queue"
+      : platformRecoveryOptIn ? "beta-platform-recovery" : "beta-combined-restore";
     const reasonCode = typeof error?.code === "string" && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
       ? error.code : "beta_operations_startup_or_runtime_failed";
     try {
