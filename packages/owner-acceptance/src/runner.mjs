@@ -910,6 +910,28 @@ async function main() {
             "isolated restored API without executor", process.execPath);
           await waitHttp(new URL("/healthz", apiOrigin), (response) => response.ok, "isolated restored owner API");
         },
+        authenticateRestoredOwners: async () => {
+          // AICODE-NOTE: Each clone has its own restored session store. A session
+          // refreshed in another clone is not proof of identity in this one.
+          await commonCapture.ownerPage.close();
+          await commonCapture.adminPage.close();
+          const restoredOwner = await googleLogin(await newContext(), "BPC-SC-022", ownerSubject);
+          const restoredAdmin = await googleLogin(await newContext(), "BPC-SC-022", adminSubject);
+          if (restoredOwner.owner.status !== 200 || restoredOwner.owner.owner?.id !== ownerId ||
+              restoredOwner.owner.owner?.admissionStatus !== "admitted" ||
+              restoredAdmin.owner.status !== 200 || restoredAdmin.owner.owner?.id !== commonCapture.adminOwnerId ||
+              restoredAdmin.owner.owner?.isAdmin !== true) {
+            throw Object.assign(new Error("combined_restored_identity_mismatch"), { code: "combined_restored_identity_mismatch" });
+          }
+          commonCapture.ownerPage = restoredOwner.page;
+          commonCapture.ownerCapture = restoredOwner.captureApi;
+          commonCapture.adminPage = restoredAdmin.page;
+          commonCapture.adminCapture = restoredAdmin.captureApi;
+          return { schemaVersion: "beta-restored-browser-authentication/v1",
+            boundary: "fresh_google_fixture_browser_sign_in_and_owner_api_in_each_clone",
+            owner: { httpStatus: restoredOwner.owner.status, ownerId },
+            admin: { httpStatus: restoredAdmin.owner.status, ownerId: commonCapture.adminOwnerId, isAdmin: true } };
+        },
       };
       const progress = (value) => {
         assertSecretFree(value, "beta operations progress");

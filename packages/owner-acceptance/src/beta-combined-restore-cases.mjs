@@ -1188,6 +1188,7 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
       recoveredSecrets: restoredSecrets });
     restoredApiStarted = true;
     for (const key of Object.keys(restoredSecrets)) restoredSecrets[key] = '';
+    const restoredAuthentication = await commonCapture.authenticateRestoredOwners();
     const restoredObserverUrl = withDatabase(commonCapture.observerDatabaseUrl, restoreResult.restoreDatabaseName);
     const restoredPool = new Pool({ connectionString: restoredObserverUrl, max: 2,
       application_name: 'bpc-combined-restore-independent-observer' });
@@ -1200,6 +1201,7 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
       restoredReads = await restoredUiReads({ commonCapture, completedRun: {
         runId: blockerResult.capture.blockerRun.runId, agentId: blockerResult.capture.blockerRun.agentId },
         queuedRun: queue, reportReceipt, restoreResult, observerPool: restoredPool });
+      restoredReads.authentication = restoredAuthentication;
       const restoredBaseline = restoreResult.observations?.afterRetention;
       demand(restoredBaseline?.observerIdentity?.databaseName === restoreResult.restoreDatabaseName &&
         restoredBaseline.observerIdentity.databaseRole === 'oid_observer' && restoredBaseline.observerIdentity.transactionReadOnly === 'on',
@@ -1259,6 +1261,7 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
       recoveredSecrets: expiredSecrets });
     restoredApiStarted = true;
     for (const key of Object.keys(expiredSecrets)) expiredSecrets[key] = '';
+    const expiredAuthentication = await commonCapture.authenticateRestoredOwners();
     const sourceClosureBytesAfterCloneRestore = await readFile(sourceClosurePath);
     demand(sourceClosureBytesBefore.equals(sourceClosureBytesAfterCloneRestore), 'combined_source_authoritative_closure_changed');
     const expiredObserverPool = new Pool({ connectionString: withDatabase(commonCapture.observerDatabaseUrl,
@@ -1270,6 +1273,7 @@ export async function runBetaCombinedRestoreCases({ commonCapture, recoveryFault
     let expiredAfterRetryProjection;
     try {
       expiredAccess = await verifyExpiredReportAccess({ commonCapture, reportReceipt });
+      expiredAccess.authentication = expiredAuthentication;
       const beforeExpiredRetries = await provider.restoreAdapters.observeReadOnly({ databaseName: expiredRestoreResult.restoreDatabaseName,
         privateDataDir: expiredRestoreResult.privateDataDir, closureStatePath: expiredRestoreResult.closureStatePath });
       const retryProofForExpired = await retryOriginalOperations({ commonCapture, completedRun: {

@@ -19,8 +19,17 @@ The second, synthetic 31-day-expired clone restored and purged report data,
 but its browser check stopped at the expected alert locator. The original
 capture did not retain the list response status or DOM diagnostic; the cause
 is not established. R33 remains a blocked combined capture, not a successful
-end-to-end restore. A short isolated UI probe is being prepared before another
-full run. The source database and both failed-run clones remain retained.
+end-to-end restore. The source database and both failed-run clones remain retained.
+
+The bounded R33 clone probe then demonstrated that a session newly created in
+the normal clone redirects to sign-in in the separate expired clone. Fresh
+fixture Google sign-in on the expired clone returns owner HTTP 200 and report
+HTTP 410 `REPORT_RETENTION_EXPIRED`, with one visible error alert. No duplicate
+Next announcer alert or product retention UI defect was reproduced. The full
+runner now performs fresh browser sign-in in each clone and verifies the
+original owner/admin identities before its reads/retries. Probe diagnostics are
+retained at `.tmp/r33-expiry-ui-probe.json`; only clone authentication/session
+and report-rate operational writes were possible, with no source modification.
 
 Review also found that raw official evidence was authenticated inside the
 sealed archive but not retained in each served clone after staging cleanup.
@@ -28,7 +37,11 @@ The restore provider now materializes the verified evidence tree, a copied
 manifest and an operator receipt in both clones. The combined producer and
 independent raw reader bind these to checkpoint, build, database, roles and
 hashes. Focused checks pass: 13 provider/filesystem, 17 combined/report helpers,
-and 50 recovery/combined raw-reader tests. Physical clone-file verification
+and 50 recovery/combined raw-reader tests. Additional checkpoint boundary tests
+bring the combined Node check to 33/33. The checkpoint writer now rejects
+unrestorable count/byte limits and empty evidence, and verifies supplied source
+hashes before sealing. A missing returned source-observation reference in the
+final producer result is also fixed. Physical clone-file verification
 and the final complete same-source runtime remain pending.
 
 The focused queue rerun R31 (`8da8a907-14d7-4595-b3e2-48e5c6e76ca4`,
