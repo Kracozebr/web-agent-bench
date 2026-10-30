@@ -7,6 +7,7 @@ import test from 'node:test';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { sql } from 'drizzle-orm';
+import { getAddress } from 'viem';
 import type { OwnerDatabase } from './db.js';
 import type { EvidenceReference, TaskCase, TaskReleaseQuerySource } from './task-release.js';
 import { canonicalTaskJson, sha256CanonicalTaskJson } from './task-release.js';
@@ -1142,11 +1143,13 @@ test('sealed H2 rejected transfer binds durable receipt, recovery child, and neu
   const ownerOperationId = 'rejected-chain-owner-operation';
   const befOperationId = '89000000-0000-4000-8000-000000000008';
   const recipient = '0x1111111111111111111111111111111111111111';
-  const token = '0x2222222222222222222222222222222222222222';
+  const token = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd';
+  const checksumToken = getAddress(token);
+  assert.notEqual(checksumToken, token);
   const command = { kind: 'transfer' as const, amountUnits: '1250', recipient, gasLimit: '80000' };
   const commandSha256 = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command });
   const requestSha256 = sha256CanonicalTaskJson({ method: 'POST', path: '/tools/transfer', action: {
-    kind: 'transfer', token, amountUnits: command.amountUnits, recipient, gasLimit: command.gasLimit,
+    kind: 'transfer', token: checksumToken, amountUnits: command.amountUnits, recipient, gasLimit: command.gasLimit,
   } });
   const selectedAction = { kind: 'transfer', amountUnits: command.amountUnits, recipient, gasLimit: command.gasLimit };
   const actionEvidence: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/rejected-transfer.json`,
@@ -1180,7 +1183,7 @@ test('sealed H2 rejected transfer binds durable receipt, recovery child, and neu
   const packet = { taskId: 'H2', ownerActions: [], externalActions: [], rejectedChainActions: [rejected],
     bef: { session: { currentUser: 'bef_observer', sessionUser: 'bef_observer', databaseName: 'bef_test', transactionReadOnly: 'on',
       transactionIsolation: 'repeatable read', superuser: false, bypassRls: false }, before: census, after: structuredClone(census) },
-    rpc: { assets: [{ assetId: 'USDC', address: token }],
+    rpc: { assets: [{ assetId: 'USDC', address: token.toLowerCase() }],
       baseline: { balances: [{ account: 'participant', assetId: 'USDC', amountUnits: '10000' }], allowances: [], participantTransactionCount: '5' },
       final: { balances: [{ account: 'participant', assetId: 'USDC', amountUnits: '10000' }], allowances: [], participantTransactionCount: '5' },
       transactions: [], transferLogs: [], approvalLogs: [], swapLogs: [], wethLogs: [] } };
@@ -1217,7 +1220,11 @@ test('sealed H2 rejected transfer binds durable receipt, recovery child, and neu
   await assert.rejects(invoke(changedCommand),
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
   const changedRequest = structuredClone(packet);
-  changedRequest.bef.after.rejectedChainOperations[0]!.operation.requestSha256 = HASH('different-rejected-request');
+  const lowercaseRequestSha256 = sha256CanonicalTaskJson({ method: 'POST', path: '/tools/transfer', action: {
+    kind: 'transfer', token: token.toLowerCase(), amountUnits: command.amountUnits, recipient, gasLimit: command.gasLimit,
+  } });
+  changedRequest.bef.before.rejectedChainOperations[0]!.operation.requestSha256 = lowercaseRequestSha256;
+  changedRequest.bef.after.rejectedChainOperations[0]!.operation.requestSha256 = lowercaseRequestSha256;
   await assert.rejects(invoke(changedRequest),
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
   const changedEvents = structuredClone(packet);

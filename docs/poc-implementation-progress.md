@@ -46,9 +46,13 @@ The private, privacy-filtered snapshot is
 No mandatory beta acceptance gate is promoted by this incomplete run.
 
 The model submitted an actual agent support report and read its receipt.
-The owner report with an S1 screenshot is still an unsent draft: Chrome blocks
-automated file selection, and the correct attachment and admin view are not yet
-proven. The unrelated earlier screenshot selection was never submitted.
+The owner subsequently clicked Submit report in Chrome: report
+`9db7c8a8-5953-4d57-b9aa-881060c6c1f2` is durable, source `owner`, status `new`,
+revision 1, with the S1 run/task context and one creation audit event. The
+independent observer found zero attached image rows, despite the reported local
+preview. Screenshot upload and its admin image view therefore remain unproven;
+the text report must not be presented as image-upload acceptance. The unrelated
+earlier screenshot selection was never submitted.
 
 Focused collector/packet/sealed-source regression at `39070ce`: 115 passed,
 zero failed, one PostgreSQL-only test skipped; typecheck passed. These checks
@@ -66,7 +70,18 @@ Combined regression: 124 passed, zero failed, one PostgreSQL-only test skipped;
 typecheck and the 34-scenario semantic BDD audit passed. These are not a completed
 full12 E2E or runtime BDD acceptance.
 
-Remaining local work is deploying the H2 fix, a complete full12 retry, and the
+After deploying the rejection fix, the actual H2 collector passed but sealing
+still rejected its request hash: the producer checksums the USDC address, while
+the sealer lowercased it. The source verifier now uses the same `viem.getAddress`
+reconstruction. The actual captured packet and read-only durable row pass; a
+lowercase-address request-hash variant still fails. Focused tests: 27 passed,
+one PostgreSQL-only test skipped; typecheck passed. This is diagnostic source
+verification, not a persisted H2 grade. During the normal restart the original
+ranked run was cancelled with `coordinator_executor_session_lost`; nine existing
+evaluations remain, H2 has no evaluation and H3/U1 never started. The earlier
+blocked snapshot is retained unchanged.
+
+Remaining local work is deploying the checksum fix, a complete full12 retry, and the
 owner screenshot/admin report journey. Target deployment, the other three client
 families and the participant pilot remain separate release prerequisites.
 

@@ -3,6 +3,7 @@ import { open, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sql } from 'drizzle-orm';
+import { getAddress } from 'viem';
 import type { OwnerDatabase } from './db.js';
 import { HttpError } from './http-error.js';
 import type { PersistedTaskObservations, TaskEvidenceBinding, TrustedTaskRun } from './task-evaluator.js';
@@ -1069,9 +1070,12 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
             operationProofs.filter((candidate) => plainObject(candidate.operation) &&
               String(candidate.operation.operationId).toLowerCase() === String(rejected.befOperationId).toLowerCase()).length !== 1 ||
             !source || !operation || !selected || !sourceEvents || sourceEvents.length !== 2 || !generation || !usdc || typeof usdc.address !== 'string') failAction();
+        let usdcChecksumAddress: string;
+        try { usdcChecksumAddress = getAddress(usdc.address); }
+        catch { failAction(); }
         const selectedAction = { kind: 'transfer', amountUnits: rejectedCommand.data.amountUnits,
           recipient: rejectedCommand.data.recipient.toLowerCase(), gasLimit: rejectedCommand.data.gasLimit };
-        const sourceRequestAction = { kind: 'transfer', token: usdc.address.toLowerCase(), amountUnits: rejectedCommand.data.amountUnits,
+        const sourceRequestAction = { kind: 'transfer', token: usdcChecksumAddress, amountUnits: rejectedCommand.data.amountUnits,
           recipient: rejectedCommand.data.recipient.toLowerCase(), gasLimit: rejectedCommand.data.gasLimit };
         const requestSha256 = createHash('sha256').update(canonicalTaskJson({ method: 'POST', path: '/tools/transfer', action: sourceRequestAction })).digest('hex');
         const idempotencyKeySha256 = createHash('sha256').update(`task-action-${rejected.actionId}`).digest('hex');
