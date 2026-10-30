@@ -195,7 +195,14 @@ Pre-deadline predecessors retain the approved bounded preparation-time exclusion
 No task, deadline, grade, bonus grant, refund or fee policy changes. A read-only
 dry run of the actual selector found exactly the original stalled run. Focused
 tests: seventeen passed, two existing PostgreSQL tests skipped; typecheck passed.
-Runtime cancellation and resource release still require post-deployment readback.
+After normal deployment of `4657270`, independent readback confirmed
+`cancelled / coordinator_run_deadline`, a released dispatch claim, no execution
+slot row and zero active agent slots. All four original preparations retain
+confirmed identity-bound fenced observations and hash-valid evidence. The four
+evaluations and seventeen evidence files are unchanged, and M1-U1 have zero new
+preparations/actions/bindings. Fee and bonus balances are unchanged. Snapshot:
+`.local/owner-identity/google-local/full12-03-cleanup-verification.json`.
+This closes the observed late-known-predecessor cleanup gap, not full12 acceptance.
 
 ### Measured task durations in genuine local attempts
 

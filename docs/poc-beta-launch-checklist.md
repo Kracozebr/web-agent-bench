@@ -5,8 +5,11 @@ Status: readiness checklist. Current local evidence: R37 runtime commit `e0b5932
 30 October local update: real Google sign-in/admin access and one genuine native
 Codex S1 run now have browser-to-PostgreSQL proof (`passed`, 1/1). One genuine
 full12 attempt retained nine evaluations before cancellation at H2. After the
-H2 evidence fixes, the latest retry passed S1 but cancelled during preparation
-of S2. Full12 acceptance remains incomplete. Owner/agent text reports were opened
+H2 evidence fixes, a retry cancelled during preparation of S2. The latest attempt
+reached S4; its four evaluations are S1 1/1, S2 7/10, S3 0/1 and recovered S4 1/1.
+The S4 owner-key validator and late-known-task cleanup defects are fixed; normal
+deadline cancellation, fenced preparations and released claim/slot were verified.
+Full12 acceptance remains incomplete. Owner/agent text reports were opened
 in the admin UI; neither has an attached image, so screenshot acceptance remains
 incomplete. See the dated
 [qualification record](poc-implementation-progress.md#30-october-real-google-and-native-codex-local-qualification).
