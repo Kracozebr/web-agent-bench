@@ -1005,6 +1005,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
         const handle = body && plainObject(body.readHandle) ? body.readHandle : null;
         const expectedHandleKind = expected.actionKind === 'inspect_catalog' ? 'catalog' : 'offer';
         if (!parsedInspection.success || (parsedInspection.data.kind !== 'inspect_catalog' && parsedInspection.data.kind !== 'inspect_offer') ||
+            canonicalTaskJson(parsedInspection.data) !== canonicalTaskJson(command) ||
             parsedInspection.data.kind !== expected.actionKind || expectedStatus !== 'observed' || transactionHash !== null ||
             typeof inspection !== 'string' || !HASH.test(inspection) || evidence.rawResponseSha256 !== inspection || !body || !handle ||
             !exactKeys(handle, ['kind', 'operationId']) || handle.kind !== expectedHandleKind ||
@@ -1507,8 +1508,10 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           sequence !== action.actionSequence || durable.action_kind !== action.actionKind ||
           String(durable.payload_hash).toLowerCase() !== String(action.commandSha256).toLowerCase() || !HASH.test(String(durable.payload_hash)) ||
           durable.evidence_path !== reference.path || String(durable.evidence_hash).toLowerCase() !== reference.sha256.toLowerCase() ||
-          durable.receipt_status !== 'observed' || durable.transaction_hash !== null ||
-          action.transactionHash !== null || durable.history_revision !== durable.receipt_revision ||
+          durable.receipt_status !== 'observed' ||
+          (typeof durable.transaction_hash === 'string' ? durable.transaction_hash.toLowerCase() : null) !==
+            (typeof action.transactionHash === 'string' ? action.transactionHash.toLowerCase() : null) ||
+          durable.history_revision !== durable.receipt_revision ||
           durable.history_status !== durable.receipt_status || durable.history_evidence_hash !== durable.evidence_hash ||
           durable.history_evidence_path !== durable.evidence_path || durable.history_transaction_hash !== durable.transaction_hash ||
           !parsedCommand.success || parsedCommand.data.kind !== action.actionKind ||
@@ -1525,7 +1528,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       const readKind = command.kind === 'inspect_catalog' ? 'catalog' : 'offer';
       const request = command.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
         { method: 'GET', path: '/offer', resourceId: command.resourceId };
-      if (!operation || operation.operation_kind !== readKind || operation.status !== 'accepted' ||
+      if (!operation || durable.transaction_hash !== null || action.transactionHash !== null ||
+          operation.operation_kind !== readKind || operation.status !== 'accepted' ||
           operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null || operation.env_id !== row.environment_id ||
           operation.generation_id !== row.generation_id || operation.participant_id !== generation.participant_id ||
           String(operation.idempotency_key_sha256).toLowerCase() !== createHash('sha256').update(`task-action-${action.actionId}`).digest('hex') ||

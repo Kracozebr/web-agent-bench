@@ -9,7 +9,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
 import type { EvidenceReference, TaskCase, TaskReleaseQuerySource } from './task-release.js';
-import { sha256CanonicalTaskJson } from './task-release.js';
+import { canonicalTaskJson, sha256CanonicalTaskJson } from './task-release.js';
 import type { M1CaptureAction } from './task-m1-capture-packet.js';
 import { createS3CapturePacketFixture } from './task-s3-capture-packet.fixture.js';
 import { TaskSealedEvidenceSource } from './task-sealed-evidence-source.js';
@@ -428,6 +428,166 @@ test('S1 sealed capture retains a neutral catalog prefix and rejects effectful r
     await assert.rejects(readPacket.readS1CapturePacketChildren(Buffer.from(JSON.stringify(effectful)), bundle, tx, row),
       (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
   });
+});
+
+test('S4 sealed source retains a catalog prefix before a mutable approval', async () => {
+  const participantId = '90000000-0000-4000-8000-000000000009';
+  const fixtureOperationId = '90000000-0000-4000-8000-000000000010';
+  const readOperationId = '90000000-0000-4000-8000-000000000011';
+  const approveOperationId = '90000000-0000-4000-8000-000000000012';
+  const readActionId = '90000000-0000-4000-8000-000000000013';
+  const approveActionId = '90000000-0000-4000-8000-000000000014';
+  const readOwnerOperationId = '90000000-0000-4000-8000-000000000015';
+  const approveOwnerOperationId = '90000000-0000-4000-8000-000000000016';
+  const fixtureTx = `0x${'1'.repeat(64)}`;
+  const approveTx = `0x${'2'.repeat(64)}`;
+  const fixtureBlock = `0x${'3'.repeat(64)}`;
+  const baselineBlock = `0x${'4'.repeat(64)}`;
+  const approveBlock = `0x${'5'.repeat(64)}`;
+  const fixtureParent = `0x${'6'.repeat(64)}`;
+  const payer = S2_RECIPIENT;
+  const token = S2_ASSET;
+  const router = '0x0000000000000000000000000000000000000003';
+  const approveAmount = '50';
+  const requestHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const approveCommand = { kind: 'approve' as const, tokenAssetId: 'USDC', amountUnits: approveAmount, gasLimit: '100000' };
+  const readCommand = { kind: 'inspect_catalog' as const };
+  const readCommandSha = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command: readCommand });
+  const approveCommandSha = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command: approveCommand });
+  const readEvidence: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/s4-catalog-read.json`,
+    sha256: HASH('s4-catalog-evidence'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+  const approveEvidence: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/s4-approve.json`,
+    sha256: HASH('s4-approve-evidence'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+  const readResponseHash = HASH('s4-catalog-response');
+  const mutableSelected = { kind: 'approve', tokenAssetId: 'USDC', spender: router, amountUnits: approveAmount, gasLimit: '100000' };
+  const fixtureSelected = { kind: 'approve', tokenAssetId: 'USDC', spender: router, amountUnits: '25', gasLimit: '100000' };
+  const prestate = { balances: [], allowances: [] };
+  const intent = (tx: string, block: string, blockNumber: string, nonce: string) => ({ hash: tx, type: 'eip1559', chainId: 8453,
+    blockHash: block, blockNumber, transactionIndex: '0', from: payer, to: token, nonce, input: '0x095ea7b3', valueWei: '0',
+    gasLimit: '100000', maxFeePerGasWei: '3', maxPriorityFeePerGasWei: '1' });
+  const fixtureIntent = intent(fixtureTx, fixtureBlock, '9', '4');
+  const approveIntent = intent(approveTx, approveBlock, '11', '7');
+  const event = (operationId: string, kind: string, sequence: number, transactionHash: string | null, eventPayload: unknown) => ({
+    eventId: `90000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`, eventSequence: String(sequence), operationId,
+    eventKind: kind, transactionHash, eventJsonSha256: HASH(`s4-event-${sequence}`), eventPayload,
+  });
+  const operation = (operationId: string, idempotencyKey: string, requestSha: string, kind: string, tx: string,
+    startedAt: string, completedAt: string) => ({ operation_id: operationId, env_id: ENVIRONMENT, generation_id: GENERATION,
+    participant_id: participantId, idempotency_key_sha256: HASH(idempotencyKey), request_sha256: requestSha, operation_kind: kind,
+    status: 'settled', receipt_status: 'success', transaction_hash: tx, response_sha256: null, started_at: startedAt, completed_at: completedAt });
+  const fixtureOperation = operation(fixtureOperationId, 'fixture-operation', HASH('fixture-request'), 'approve', fixtureTx,
+    '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z');
+  const readOperation = { operation_id: readOperationId, env_id: ENVIRONMENT, generation_id: GENERATION, participant_id: participantId,
+    idempotency_key_sha256: HASH(`task-action-${readActionId}`), request_sha256: requestHash({ method: 'GET', path: '/catalog' }),
+    operation_kind: 'catalog', status: 'accepted', receipt_status: 'not_submitted', transaction_hash: null,
+    response_sha256: readResponseHash, started_at: '2026-01-01T00:00:02.000Z', completed_at: '2026-01-01T00:00:03.000Z' };
+  const approveOperation = operation(approveOperationId, `task-action-${approveActionId}`,
+    requestHash({ method: 'POST', path: '/approve', command: approveCommand }), 'approve', approveTx,
+    '2026-01-01T00:00:04.000Z', '2026-01-01T00:00:05.000Z');
+  const mutableCost = (operationId: string, tx: string, blockNumber: string, blockHash: string, parentHash: string,
+    price: string, createdAt: string) => ({ operation_id: operationId, env_id: ENVIRONMENT, generation_id: GENERATION,
+    transaction_hash: tx, payer_address: payer, payer_role: 'participant', receipt_status: 'success', transaction_from: payer,
+    receipt_from: payer, receipt_block_number: blockNumber, receipt_block_hash: blockHash, receipt_block_parent_hash: parentHash,
+    gas_used: '10', effective_gas_price_wei: price, gas_cost_wei: String(BigInt(10) * BigInt(price)), modeled_gas_fee_usdc_units: '0',
+    manifest_sha256: ENV_MANIFEST_HASH, selected_principal_asset: null, selected_principal_units: null,
+    observed_principal_units: null, created_at: createdAt });
+  const fixtureCost = mutableCost(fixtureOperationId, fixtureTx, '9', fixtureBlock, fixtureParent, '2', '2026-01-01T00:00:01.000Z');
+  const approveCost = mutableCost(approveOperationId, approveTx, '11', approveBlock, baselineBlock, '3', '2026-01-01T00:00:05.000Z');
+  const fixtureExec = { operation_id: fixtureOperationId, env_id: ENVIRONMENT, generation_id: GENERATION, action_kind: 'approve',
+    selected_action: fixtureSelected, prestate, transaction_intent: fixtureIntent, measurement: { measurementSha256: HASH('fixture-measurement') },
+    transaction_hash: fixtureTx, outcome: 'success', reason_code: null, completed_at: '2026-01-01T00:00:01.000Z' };
+  const approveExec = { operation_id: approveOperationId, env_id: ENVIRONMENT, generation_id: GENERATION, action_kind: 'approve',
+    selected_action: mutableSelected, prestate, transaction_intent: approveIntent, measurement: { measurementSha256: HASH('approve-measurement') },
+    transaction_hash: approveTx, outcome: 'success', reason_code: null, completed_at: '2026-01-01T00:00:05.000Z' };
+  const events = [
+    event(fixtureOperationId, 'selected_action_bound', 1, null, { actionKind: 'approve', requestSha256: fixtureOperation.request_sha256, selectedAction: fixtureSelected }),
+    event(fixtureOperationId, 'prestate_observed', 2, null, { prestate }),
+    event(fixtureOperationId, 'original_tx_hash_bound', 3, fixtureTx, { requestSha256: fixtureOperation.request_sha256, transactionHash: fixtureTx, transactionIntent: fixtureIntent }),
+    event(fixtureOperationId, 'receipt_finalized', 4, fixtureTx, { outcome: 'success', measurementSha256: HASH('fixture-measurement') }),
+    event(approveOperationId, 'selected_action_bound', 5, null, { actionKind: 'approve', requestSha256: approveOperation.request_sha256, selectedAction: mutableSelected }),
+    event(approveOperationId, 'prestate_observed', 6, null, { prestate }),
+    event(approveOperationId, 'original_tx_hash_bound', 7, approveTx, { requestSha256: approveOperation.request_sha256, transactionHash: approveTx, transactionIntent: approveIntent }),
+    event(approveOperationId, 'receipt_finalized', 8, approveTx, { outcome: 'success', measurementSha256: HASH('approve-measurement') }),
+  ];
+  const generation = { generation_id: GENERATION, env_id: ENVIRONMENT, participant_id: participantId, payer_address: payer,
+    manifest_sha256: ENV_MANIFEST_HASH, status: 'active', chain_id: '8453', environment_manifest_sha256: ENV_MANIFEST_HASH };
+  const census = { generation, operations: [fixtureOperation, readOperation, approveOperation],
+    selectedExecutions: [fixtureExec, approveExec], selectedEvents: events, costs: [fixtureCost, approveCost],
+    paymentsCount: '0', deliveriesCount: '0', counts: { operations: '3', selectedExecutions: '2', selectedEvents: '8', costs: '2' } };
+  const binding = { ownerId: OWNER, agentId: AGENT, runId: RUN, environmentId: ENVIRONMENT, releaseIdentity: RELEASE_ID,
+    manifestHash: MANIFEST_HASH, caseId: 's4-sealed-case', caseHash: HASH('s4-case'), rubricHash: HASH('s4-rubric'), taskId: 'S4' };
+  const closure = { closureId: CLOSURE, operationId: null, payloadHash: HASH('s4-closure'), reason: 'agent_finish',
+    actionCutoffSequence: 2, reconciledActionSequence: 2 };
+  const execution = { preparationId: PREPARATION, leaseId: LEASE, generationId: GENERATION, environmentManifestHash: ENV_MANIFEST_HASH,
+    applicationSourceHash: SOURCE_HASH, executionIdentityHash: EXECUTION_HASH, initialStateSha256: INITIAL_STATE_HASH };
+  const preparation = { fixtureEvidence: { path: `${COORDINATOR_EVIDENCE_ROOT}preparation/s4-fixture.json`, sha256: HASH('fixture-evidence'), boundary: 'actual_tool_http_x402_local_evm_application_store' },
+    baselineEvidence: { path: `${COORDINATOR_EVIDENCE_ROOT}preparation/s4-baseline.json`, sha256: HASH('baseline-evidence'), boundary: 'actual_tool_http_x402_local_evm_application_store' },
+    baselineBlockNumber: '10', baselineBlockHash: baselineBlock, fixtureOperationId, fixtureTransactionHash: fixtureTx,
+    fixtureBlockNumber: '9', fixtureBlockHash: fixtureBlock, fixtureProofSha256: HASH('fixture-proof') };
+  const baselineBalances = [{ account: 'participant', assetId: 'ETH', amountUnits: '1000000' }, { account: 'participant', assetId: 'USDC', amountUnits: '1000' }];
+  const finalBalances = [{ account: 'participant', assetId: 'ETH', amountUnits: '999970' }, { account: 'participant', assetId: 'USDC', amountUnits: '1000' }];
+  const baselineAllowances = [{ owner: 'participant', tokenAssetId: 'USDC', spender: router, amountUnits: '0' }];
+  const finalAllowances = [{ owner: 'participant', tokenAssetId: 'USDC', spender: router, amountUnits: approveAmount }];
+  const rpc = { localChainId: '8453', baseline: { blockNumber: '10', blockHash: baselineBlock, parentHash: fixtureParent,
+      balances: baselineBalances, allowances: baselineAllowances, participantTransactionCount: '7' },
+    final: { blockNumber: '11', blockHash: approveBlock, parentHash: baselineBlock, balances: finalBalances,
+      allowances: finalAllowances, participantTransactionCount: '8' },
+    intervalBlocks: [{ number: '11', hash: approveBlock, parentHash: baselineBlock, transactionCount: 1,
+      participantTransactions: [{ hash: approveTx, from: payer, to: token, nonce: '7', input: '0x095ea7b3', valueWei: '0', gasLimit: '100000',
+        blockNumber: '11', blockHash: approveBlock, transactionIndex: '0', chainId: '8453' }] }],
+    approvals: [{ tokenAddress: token, owner: payer, spender: router, amountUnits: approveAmount, transactionHash: approveTx,
+      blockNumber: '11', blockHash: approveBlock, transactionIndex: '0', logIndex: '0' }], transfers: [],
+    receipts: [{ transactionHash: approveTx, from: payer, to: token, blockNumber: '11', blockHash: approveBlock, transactionIndex: '0',
+      status: 'success', gasUsed: '10', effectiveGasPriceWei: '3', gasCostWei: '30', logsSha256: HASH('approve-logs') }], responseHashes: [] };
+  const packet = { schemaVersion: 'bts-s4-run-observation-capture/v1', classification: 'run_bound_observations_candidate_not_grade',
+    binding, closure: { closureId: CLOSURE, actionCutoffSequence: 2, reconciledActionSequence: 2 },
+    execution: { ...execution, environmentId: ENVIRONMENT }, preparation,
+    ownerActions: [
+      { actionId: readActionId, actionSequence: 1, ownerOperationId: readOwnerOperationId, actionKind: 'inspect_catalog',
+        commandSha256: readCommandSha, actionEvidence: readEvidence, befOperationId: readOperationId, transactionHash: null },
+      { actionId: approveActionId, actionSequence: 2, ownerOperationId: approveOwnerOperationId, actionKind: 'approve',
+        commandSha256: approveCommandSha, actionEvidence: approveEvidence, befOperationId: approveOperationId, transactionHash: approveTx },
+    ], bef: { session: { currentUser: 'bef_observer', sessionUser: 'bef_observer', transactionReadOnly: 'on',
+        transactionIsolation: 'repeatable read', superuser: false, bypassRls: false }, before: census, after: structuredClone(census),
+      censusSha256: createHash('sha256').update(canonicalTaskJson(census)).digest('hex') }, rpc };
+  const packetBytes = Buffer.from(canonicalTaskJson(packet));
+  const captureEvidence = { path: `${COORDINATOR_EVIDENCE_ROOT}observation/s4-sealed-packet.json`,
+    sha256: createHash('sha256').update(packetBytes).digest('hex'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+  const meta = (sequence: number, actionSequence: number, observationId: string) => ({ observationId, sequence, actionSequence,
+    source: 'persisted_observer', binding, evidence: captureEvidence });
+  const observations = { schemaVersion: 'bts-task-observations/v1', binding, coveredThroughSequence: 3, captureEvidence,
+    coverage: { transfers: 'complete', payments: 'complete', stateMutations: 'complete', balances: 'complete', allowances: 'complete',
+      answers: 'complete', selections: 'complete', deliveries: 'complete', trades: 'complete', conversions: 'complete', expenses: 'complete' },
+    transfers: [], payments: [], stateMutations: [],
+    finalStates: [{ kind: 'final_state', ...meta(3, 2, 's4-final'), balances: finalBalances, allowances: finalAllowances }],
+    allowanceChanges: [{ kind: 'allowance_change', ...meta(1, 2, 's4-allowance'), owner: 'participant', tokenAssetId: 'USDC',
+      spender: router, amountBeforeUnits: '0', amountAfterUnits: approveAmount, transactionHash: approveTx }],
+    allowanceUses: [], answers: [], selections: [], deliveries: [], trades: [], conversions: [],
+    expenses: [{ kind: 'expense', ...meta(2, 2, 's4-gas'), component: 'participant_gas', sourceEffectId: `bef-operation:${approveOperationId}`,
+      gasUsed: '10', effectiveGasPriceWei: '3', receiptStatus: 'success', transactionHash: approveTx }] };
+  const bundle = { binding, closure, execution, observations };
+  const actionRows = [
+    { id: readActionId, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'S4', environment_id: ENVIRONMENT,
+      action_sequence: '1', operation_id: readOwnerOperationId, payload_hash: readCommandSha, action_kind: 'inspect_catalog', command_json: readCommand,
+      receipt_revision: 1, receipt_status: 'observed', evidence_hash: readEvidence.sha256, evidence_path: readEvidence.path, transaction_hash: null,
+      history_revision: 1, history_status: 'observed', history_evidence_hash: readEvidence.sha256, history_evidence_path: readEvidence.path,
+      history_transaction_hash: null },
+    { id: approveActionId, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'S4', environment_id: ENVIRONMENT,
+      action_sequence: '2', operation_id: approveOwnerOperationId, payload_hash: approveCommandSha, action_kind: 'approve', command_json: approveCommand,
+      receipt_revision: 1, receipt_status: 'observed', evidence_hash: approveEvidence.sha256, evidence_path: approveEvidence.path, transaction_hash: approveTx,
+      history_revision: 1, history_status: 'observed', history_evidence_hash: approveEvidence.sha256, history_evidence_path: approveEvidence.path,
+      history_transaction_hash: approveTx },
+  ];
+  const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+    async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
+  }, evidenceRoot: process.cwd() });
+  const tx = { async execute() { return actionRows; } };
+  const parseS4 = source as unknown as { readS4CapturePacketChildren(bytes: Buffer, bundle: unknown, tx: unknown, row: unknown): Promise<unknown> };
+  const parsed = await parseS4.readS4CapturePacketChildren(packetBytes, bundle, tx, { run_id: RUN, task_index: 0, owner_id: OWNER,
+    agent_id: AGENT, task_id: 'S4', environment_id: ENVIRONMENT, generation_id: GENERATION,
+    environment_manifest_hash: ENV_MANIFEST_HASH, application_source_hash: SOURCE_HASH, action_cutoff_sequence: '2' });
+  assert.equal((parsed as { actions: Array<{ action: { actionKind: string } }> }).actions.length, 1);
+  assert.equal((parsed as { actions: Array<{ action: { actionKind: string } }> }).actions[0]?.action.actionKind, 'inspect_catalog');
 });
 
 test('sealed source rejects changed raw bytes even when the DB bundle hash is valid', async () => {
@@ -882,6 +1042,54 @@ test('S3 sealed replay binds catalog and offer reads to durable owner receipts a
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
   }
 });
+
+test('sealed chain read binds the complete packet offer command to the durable owner command', async () => {
+  const actionId = '85000000-0000-4000-8000-000000000008';
+  const ownerOperationId = '86000000-0000-4000-8000-000000000008';
+  const befOperationId = '87000000-0000-4000-8000-000000000008';
+  const durableCommand = { kind: 'inspect_offer' as const, resourceId: 'resource-market-snapshot', offerId: 'premium' };
+  const packetCommand = { ...durableCommand, offerId: 'standard' };
+  const commandSha256 = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command: durableCommand });
+  const rawResponseSha256 = HASH('chain-owner-read-response');
+  const payment = { scheme: 'exact', network: 'eip155:8453', asset: S2_ASSET, amount: '125000',
+    payTo: S2_RECIPIENT, transferMethod: 'eip3009' };
+  const response = { operationId: befOperationId, readHandle: { kind: 'offer', operationId: befOperationId },
+    freeInspection: true, deliveryState: 'not_delivered', resourceId: durableCommand.resourceId, resourceSha256: HASH('resource'),
+    contentType: 'application/json', payment, offers: [{ id: 'standard', payment }, { id: 'premium', payment }] };
+  const actionEvidence: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/chain-owner-read.json`,
+    sha256: HASH('chain-owner-read-evidence'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+  const packetAction = { actionId, actionSequence: 1, ownerOperationId, actionKind: 'inspect_offer', commandSha256,
+    receiptStatus: 'observed', actionEvidence, befOperationId, transactionHash: null,
+    inspection: { command: packetCommand, rawResponseSha256 } };
+  const evidenceValue = { schema: 'bef-task-action-observation-v1', actionId, runId: RUN, taskIndex: 0, actionSequence: '1',
+    ownerOperationId, actionKind: 'inspect_offer', commandSha256, environmentId: ENVIRONMENT, generationId: GENERATION,
+    manifestSha256: ENV_MANIFEST_HASH, applicationSourceSha256: SOURCE_HASH, idempotencyKey: `task-action-${actionId}`,
+    status: 'observed', befOperationId, rawResponseSha256, participantToolResponse: response };
+  const row: Record<string, unknown> = { run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'M3',
+    environment_id: ENVIRONMENT, generation_id: GENERATION, environment_manifest_hash: ENV_MANIFEST_HASH,
+    application_source_hash: SOURCE_HASH, action_cutoff_sequence: '1' };
+  const dbAction = { id: actionId, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'M3', environment_id: ENVIRONMENT,
+    action_sequence: '1', operation_id: ownerOperationId, payload_hash: commandSha256, action_kind: 'inspect_offer', command_json: durableCommand,
+    receipt_revision: 1, receipt_status: 'observed', evidence_hash: actionEvidence.sha256, evidence_path: actionEvidence.path,
+    transaction_hash: null, tool_response_json: response, tool_response_hash: sha256CanonicalTaskJson(response), history_revision: 1,
+    history_status: 'observed', history_evidence_hash: actionEvidence.sha256, history_evidence_path: actionEvidence.path,
+    history_transaction_hash: null, history_tool_response_json: response, history_tool_response_hash: sha256CanonicalTaskJson(response) };
+  const packet = { ownerActions: [], externalActions: [packetAction] };
+  const invoke = async (candidatePacket: unknown) => {
+    const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+      async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
+    }, evidenceRoot: process.cwd() });
+    const tx = { async execute() { return [dbAction]; } };
+    await (source as unknown as { verifyChainOwnerActions(tx: unknown, row: unknown, packet: unknown,
+      chainEvidence: ReadonlyMap<string, Record<string, unknown>>, paidEvidence: ReadonlyMap<string, Record<string, unknown>>): Promise<void> })
+      .verifyChainOwnerActions(tx, row, candidatePacket, new Map([[actionEvidence.path, evidenceValue]]), new Map());
+  };
+
+  await assert.rejects(invoke(packet), (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await invoke({ ownerActions: [], externalActions: [{ ...packetAction,
+    inspection: { ...packetAction.inspection, command: durableCommand } }] });
+});
+
 const pgEnabled = process.env.OID_TASK_SEALED_EVIDENCE_SOURCE_PG_TEST === '1';
 
 test('isolated PostgreSQL source reads original S1 evidence from a fenced generation without nesting transactions', { skip: !pgEnabled }, async () => {
