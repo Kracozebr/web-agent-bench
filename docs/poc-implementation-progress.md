@@ -121,6 +121,25 @@ and test are outside all four currently activated frozen source inventories.
 This instrumentation does not establish the cancelled run's historical cause
 or close the preparation runtime gate.
 
+The instrumentation runtime became ready at 11:33 MSK. Two separate nonspending
+diagnostic preparations used fresh synthetic identities and env A only, with
+read-only owner access and no admitted owner run. The first setup returned 201,
+but its wrapper omitted a legitimate observer RPC method, so its adapter result
+remains unknown; official fencing completed and that limitation is retained.
+The corrected second probe reached prepared state and was officially fenced:
+one prepare/PUT, zero reconcile/resends, one fence and thirteen read-only RPC
+calls. Independent observers confirmed the exact new preparation/generation
+fenced, no active env A generation, no diagnostic owner run, unchanged financial
+counts and 33,332 available units. The probe records equal before/after hashes
+for twelve owner tables; independent current counts match, while independent
+current nonempty-table fingerprint recomputation remains unverified.
+The successful diagnostic JSON is
+`.local/preparation-diagnostic-496f2664-7904-4869-a0b9-118afed14eeb.json`, SHA-256
+`74a1e0fc57f56415a9f2cbaaee529bfde484e68f6be2b3dd927c9474f7bbab2f`.
+Neither diagnostic reproduces or retrospectively identifies the earlier failure,
+and neither is a model benchmark, grade, or beta-gate acceptance. Further full12
+admission is waiting for the user's decision on additional test bonus and caps.
+
 Both the native agent report and the owner S1 text report were opened through
 the actual admin UI and independently matched to PostgreSQL. The owner report
 retains its S1 training context. Both explicitly show zero screenshots, so image
