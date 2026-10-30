@@ -19,9 +19,9 @@ const release: RunAdmissionRelease = {
   benchmarkHash: hash('restore-replay-benchmark'),
   policyHash: hash('restore-replay-policy'),
   mode: 'training',
-  taskIds: ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'],
-  weights: [1, 1, 1, 2, 2, 2, 3, 3],
-  priceUnits: '1000000',
+  taskIds: ['S1', 'M1', 'H1'],
+  weights: [1, 2, 3],
+  priceUnits: '500000',
   precision: 6,
 };
 
@@ -111,6 +111,8 @@ test('restored run service replays existing intent and acceptance without live a
         maxPendingIntentsGlobal: 20,
         maxAcceptedRunsPerOwner: 4,
         maxAcceptedRunsGlobal: 20,
+        successorPreparationPolicyVersion: "local-bef-successor-preparation/v1",
+        successorPreparationTimeoutSeconds: 180,
       } satisfies RunServiceDependencies;
       // This models the restored API profile: report/read/replay services are available, while
       // executor coordination is disabled and admission policy/provider wiring is intentionally absent.
@@ -120,14 +122,33 @@ test('restored run service replays existing intent and acceptance without live a
       const createInput = {
         ownerId, agentId, mode: 'training' as const, taskIds: ['S1'], cashCeiling: '0',
         expectedReleaseIdentity: release.releaseIdentity, expectedManifestHash: release.manifestHash,
-        expectedQuotePrice: '0.066667', operationId: newOperation('restore_create'),
+        expectedQuotePrice: '0.083334', operationId: newOperation('restore_create'),
       };
+      const beforeInvalid = await ownerEffects(client, ownerId);
+      for (const id of ['S2','S3','S4','M2','M3','M4','H2','H3','U1']) {
+        for (const taskIds of [[id], ['S1',id]]) {
+          await assert.rejects(createLaunchIntent(configuredDeps, {...createInput, taskIds,
+            operationId:newOperation('invalid_training')}), errorCode('INVALID_TASK_SELECTION'));
+        }
+      }
+      await assert.rejects(createLaunchIntent(configuredDeps, {...createInput,taskIds:['S1','S1'],
+        operationId:newOperation('duplicate_training')}),errorCode('INVALID_TASK_SELECTION'));
+      await assert.rejects(createLaunchIntent(configuredDeps, {...createInput,expectedQuotePrice:'0.033334',
+        operationId:newOperation('stale_training')}),errorCode('STALE_RUN_INTENT'));
+      assert.deepEqual(await ownerEffects(client,ownerId),beforeInvalid,
+        'excluded mixed duplicate and stale requests create no intent, run, reservation, budget hold or ledger effect');
       const created = await createLaunchIntent(configuredDeps, createInput);
       assert.equal(created.replayed, false);
       const acceptInput = {
         intentId: created.intent.id, ownerId, agentId, accessGeneration: 1,
         operationId: newOperation('restore_accept'),
       };
+      const beforeStaleAcceptance=await ownerEffects(client,ownerId);
+      release.priceUnits='600000';
+      await assert.rejects(acceptLaunchIntent(configuredDeps,acceptInput),errorCode('STALE_RUN_INTENT'));
+      assert.deepEqual(await ownerEffects(client,ownerId),beforeStaleAcceptance,
+        'a changed tariff cannot create reservations or holds during acceptance');
+      release.priceUnits='500000';
       const accepted = await acceptLaunchIntent(configuredDeps, acceptInput);
       assert.equal(accepted.replayed, false);
 
@@ -177,6 +198,12 @@ test('restored run service replays existing intent and acceptance without live a
       assert.deepEqual(pendingState[0], { status: 'pending', run_id: null },
         'a rejected fresh acceptance leaves its launch intent pending');
 
+      const fullIntent=await createLaunchIntent(configuredDeps,{...createInput,
+        taskIds:['H1','M1','S1'],expectedQuotePrice:'0.500000',operationId:newOperation('full_training')});
+      assert.deepEqual(fullIntent.intent.taskIds,['S1','M1','H1']);
+      const fullRun=await acceptLaunchIntent(configuredDeps,{...acceptInput,intentId:fullIntent.intent.id,operationId:newOperation('full_accept')});
+      assert.deepEqual(fullRun.run.taskIds,['S1','M1','H1']);
+      assert.equal(fullRun.run.quotePrice,'0.500000');
       await client`UPDATE oid_agent SET access_revoked_at=clock_timestamp() WHERE id=${agentId}`;
       const beforeRevokedRetry = await ownerEffects(client, ownerId);
       await assert.rejects(acceptLaunchIntent(restoredDeps, acceptInput), errorCode('AGENT_ACCESS_REVOKED'),

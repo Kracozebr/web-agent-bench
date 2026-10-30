@@ -55,6 +55,15 @@ const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platfo
 const bonusFundedTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-sequence-worker-owner-run");
 const bonusFundedRankedOptIn = process.argv.includes("--genuine-bonus-funded-ranked-worker-owner-run");
 const genuineAllOpenTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-all-open-worker-owner-run");
+const retiredTrainingTaskFlags = ["--genuine-s2-owner-run", "--genuine-s2-worker-owner-run",
+  "--genuine-s4-owner-run", "--genuine-s4-worker-owner-run"];
+const retiredTrainingTaskFlag = retiredTrainingTaskFlags.find((flag) => process.argv.includes(flag));
+if (retiredTrainingTaskFlag) {
+  const taskId = retiredTrainingTaskFlag.includes("s2") ? "S2" : "S4";
+  process.stderr.write(`${JSON.stringify({ status: "not_run_current_release",
+    reasonCode: "training_task_not_open_in_current_release", taskId })}\n`);
+  process.exit(2);
+}
 const bonusFundedOptIn = bonusFundedTrainingOptIn || bonusFundedRankedOptIn || genuineAllOpenTrainingOptIn;
 const genuineRankedOptIn = process.argv.includes("--genuine-ranked-worker-owner-run") || bonusFundedRankedOptIn;
 const genuineWorkerSequenceOptIn = process.argv.includes("--genuine-training-sequence-worker-owner-run") ||
@@ -62,7 +71,7 @@ const genuineWorkerSequenceOptIn = process.argv.includes("--genuine-training-seq
 const genuineSequenceOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || process.argv.includes("--genuine-training-sequence-owner-run");
 const genuineWorkerTaskId = OPEN_TASK_IDS.find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
 const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || genuineWorkerTaskId !== undefined;
-const genuineTaskId = genuineWorkerTaskId ?? ["S1", "S2", "S4"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
+const genuineTaskId = genuineWorkerTaskId ?? ["S1"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
 // AICODE-NOTE: Bonus run-admission negatives use the same guarded local policy as owner-run captures.
 const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn || combinedRestoreOptIn || platformRecoveryOptIn;

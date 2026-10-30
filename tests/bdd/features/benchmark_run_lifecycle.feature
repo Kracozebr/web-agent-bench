@@ -10,12 +10,12 @@ Feature: Benchmark run lifecycle approved scenarios
   Scenario: Queue admission preserves the quoted price and run identity
     Given the approved environment setup for "BRL-SC-001"
     When an authorized agent queues ranked and training requests against the active catalog and an administrator later changes prices including zero to paid or activates a new benchmark version before queued start or same-request retry
-    Then each admitted run SHALL retain its original price selection exposure open-weight denominator pinned benchmark/environment declared version policy and UTC reservation identity without queued charging or execution time; new training quotes SHALL use only open IDs and denominator 15 while activation alone neither cancels nor retargets admitted work and identical authorized retries recover original snapshots
+    Then each admitted run SHALL retain its original price selection exposure Training eligibility denominator pinned benchmark/environment declared version policy and UTC reservation identity without queued charging or execution time; current Training quotes SHALL use only S1/M1/H1 weights 1/2/3 and denominator 6 with whole-request integer rounding and activation alone neither cancels nor retargets admitted work and identical authorized retries recover original snapshots
 
   @req_brl_req_001 @scn_brl_sc_002 @gate_environment @mandatory
   Scenario: Admission rejects an unauthorized agent or invalid task selection
     Given the approved environment setup for "BRL-SC-002"
-    When a caller uses missing foreign or insufficient-scope credentials requests an invalid selection including any closed training ID alone or mixed with open IDs or requests a new nonactive-version run while admission races activation
+    When a caller uses missing foreign or insufficient-scope credentials requests an invalid selection including any version-ineligible Training ID alone or mixed with eligible IDs or requests a new nonactive-version run while admission races activation
     Then admission SHALL reject the request without creating a run, reservation or readable foreign run data
 
   @req_brl_req_002 @scn_brl_sc_003 @gate_environment @mandatory

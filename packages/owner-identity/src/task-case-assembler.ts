@@ -23,13 +23,13 @@ import {
   type CapturePin,
   type TaskReferenceCaptureSource,
   type TaskReferenceInventoryResult,
-  type TrainingTaskId,
+  type CapturedTrainingTaskId,
   type VerifiedRawArtifact,
 } from './task-reference-inventory.js';
-import type { TaskId } from './task-catalog.js';
+import { CURRENT_TRAINING_TASK_IDS, type OpenTrainingTaskId, type TaskId } from './task-catalog.js';
 
 const TASK_ORDER = ['S1', 'S2', 'S3', 'S4', 'M1', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3', 'U1'] as const satisfies readonly TaskId[];
-const TRAINING_TASK_ORDER = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'] as const satisfies readonly TrainingTaskId[];
+const CURRENT_TRAINING_TASK_ORDER = CURRENT_TRAINING_TASK_IDS;
 const COMPOSITE_BOUNDARY = 'actual_tool_http_x402_local_evm_application_store' as const;
 const DEFAULT_INPUT_INDEX = 'artifacts/runs/bts-reference-input-index/2026-10-27-local-7330b249.json';
 const DEFAULT_TRAINING_INPUT_INDEX = 'artifacts/runs/bts-reference-input-index/2026-10-27-local-7330b249-training.json';
@@ -181,7 +181,7 @@ export type TrainingTaskCaseCandidateAssembly = {
   applicationSchemaLineage: TaskCaseEvidenceEnvelope['applicationSchemaLineage'] | null;
   cases: TaskCase[];
   evidenceFiles: TaskCaseEvidenceFile[];
-  taskResults: Array<{ taskId: TrainingTaskId; status: 'assembled' | 'blocked'; caseHash?: string; blockers: string[] }>;
+  taskResults: Array<{ taskId: OpenTrainingTaskId; status: 'assembled' | 'blocked'; caseHash?: string; blockers: string[] }>;
   blockers: string[];
   claims: {
     taskAcceptance: false;
@@ -1314,7 +1314,7 @@ async function buildTask(context: LoadedContext, taskId: TaskId): Promise<TaskBu
   return { taskCase: parsed.data, evidenceFiles: [files.baselineFile, files.referenceFile] };
 }
 
-function trainingRowForTask(context: LoadedContext, taskId: TrainingTaskId): { row: JsonRecord; capture: JsonRecord } {
+function trainingRowForTask(context: LoadedContext, taskId: CapturedTrainingTaskId): { row: JsonRecord; capture: JsonRecord } {
   const probe = context.probes.get('training_reference');
   if (!probe) throw new Error('training_reference_probe_missing');
   const profile = objectAt(probe, 'capture');
@@ -1324,7 +1324,7 @@ function trainingRowForTask(context: LoadedContext, taskId: TrainingTaskId): { r
   return { row, capture: objectAt(row, 'capture') };
 }
 
-async function trainingRawReferencesForTask(context: LoadedContext, taskId: TrainingTaskId): Promise<EvidenceRef[]> {
+async function trainingRawReferencesForTask(context: LoadedContext, taskId: CapturedTrainingTaskId): Promise<EvidenceRef[]> {
   const capture = context.inventory.captures.find((item) => item.kind === 'training_reference');
   const primitive = capture?.primitives.find((item) => item.taskId === taskId);
   if (!capture || capture.status !== 'verified_primitives' || !primitive || primitive.status !== 'raw_verified_primitive') {
@@ -1361,7 +1361,7 @@ async function trainingObservedTokenBalance(context: LoadedContext, observationI
   return BigInt(result).toString();
 }
 
-function trainingDeadlineSeconds(context: LoadedContext, profile: unknown, taskId: TrainingTaskId): number {
+function trainingDeadlineSeconds(context: LoadedContext, profile: unknown, taskId: CapturedTrainingTaskId): number {
   if (profile === null || profile === undefined) return context.policy.taskDeadlineSeconds;
   const deadline = record(profile, `${taskId}.deadlineProfile`);
   const seconds = Number(deadline.deadlineSeconds);
@@ -1376,7 +1376,7 @@ function assertObservedBudget(candidate: JsonRecord, expectedBudget: string, tas
   if (stringAt(reported, 'budgetUsdcUnits') !== expectedBudget) throw new Error(`training_${taskId.toLowerCase()}_budget_profile_mismatch`);
 }
 
-async function buildTrainingTask(context: LoadedContext, taskId: TrainingTaskId): Promise<TaskBuild> {
+async function buildTrainingTask(context: LoadedContext, taskId: CapturedTrainingTaskId): Promise<TaskBuild> {
   const { capture: taskCapture } = trainingRowForTask(context, taskId);
   const caseId = `bts-training-${taskId.toLowerCase()}-local-v1`;
   let objective: JsonRecord;
@@ -1633,7 +1633,7 @@ export async function assembleTrainingTaskCaseCandidates(options: AssembleTraini
   const cases: TaskCase[] = [];
   const evidenceFiles: TaskCaseEvidenceFile[] = [];
   const taskResults: TrainingTaskCaseCandidateAssembly['taskResults'] = [];
-  for (const taskId of TRAINING_TASK_ORDER) {
+  for (const taskId of CURRENT_TRAINING_TASK_ORDER) {
     try {
       const built = await buildTrainingTask(context, taskId);
       cases.push(built.taskCase);
@@ -1644,7 +1644,7 @@ export async function assembleTrainingTaskCaseCandidates(options: AssembleTraini
     }
   }
   const blockers = [
-    ...(cases.length === TRAINING_TASK_ORDER.length ? [] : ['training_task_case_set_incomplete']),
+    ...(cases.length === CURRENT_TRAINING_TASK_ORDER.length ? [] : ['training_task_case_set_incomplete']),
     'same_tool_reference_path_verification_not_run',
     'independent_database_migration_state_not_observed',
     'feasibility_verification_not_run',
@@ -1655,7 +1655,7 @@ export async function assembleTrainingTaskCaseCandidates(options: AssembleTraini
   return {
     schemaVersion: 'bts-training-task-case-candidate-assembly/v1',
     classification: 'local_training_task_case_candidates_unactivated',
-    status: cases.length === TRAINING_TASK_ORDER.length ? 'candidates_only' : 'blocked',
+    status: cases.length === CURRENT_TRAINING_TASK_ORDER.length ? 'candidates_only' : 'blocked',
     profile: {
       profileId: context.policy.profileId,
       policyPath: relative(context.repositoryRoot, context.policyPath).replace(/\\/g, '/'),

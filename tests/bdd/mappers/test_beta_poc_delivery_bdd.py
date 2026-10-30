@@ -55,7 +55,7 @@ def test_bpc_sc_012():
 def test_bpc_sc_013():
     """Named mapper for BPC-SC-013."""
 
-@scenario("../features/beta_poc_delivery.feature", "All eight training tasks preserve selection price and evidence")
+@scenario("../features/beta_poc_delivery.feature", "Current Training preserves selection price and evidence")
 def test_bpc_sc_014():
     """Named mapper for BPC-SC-014."""
 

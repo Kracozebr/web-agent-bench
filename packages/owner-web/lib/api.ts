@@ -97,6 +97,8 @@ export interface RunCatalogRelease {
   policyHash: string;
   taskIds: string[];
   openTaskIds: string[];
+  openTaskWeights: number[];
+  openWeightSum: number;
   completeRankedRelease: boolean;
   rankedPrice: string;
   trainingPrice: string;
@@ -316,4 +318,41 @@ export function errorText(error: unknown): string {
 
 export function newOperationId(): string {
   return crypto.randomUUID();
+}
+
+/** Treat missing or contradictory catalog weights as unavailable, never a free quote. */
+export function trainingCatalogWeights(release: RunCatalogRelease): Map<string, bigint> | null {
+  if (release.precision !== 6 || !Array.isArray(release.taskIds) || !Array.isArray(release.openTaskIds) || !release.openTaskIds.length ||
+      !Array.isArray(release.openTaskWeights) || release.openTaskIds.length !== release.openTaskWeights.length ||
+      new Set(release.openTaskIds).size !== release.openTaskIds.length ||
+      !Number.isSafeInteger(release.openWeightSum) || release.openWeightSum <= 0 ||
+      release.openTaskIds.some((id) => typeof id !== "string" || !id || !release.taskIds.includes(id)) ||
+      release.openTaskWeights.some((weight) => !Number.isSafeInteger(weight) || weight <= 0) ||
+      release.openTaskWeights.reduce((sum, weight) => sum + weight, 0) !== release.openWeightSum) return null;
+  return new Map(release.openTaskIds.map((id, index) => [id, BigInt(release.openTaskWeights[index]!)]));
+}
+
+export function selectedRunQuote(release: RunCatalogRelease, mode: RunMode, taskIds: string[]): string | null {
+  const weights = trainingCatalogWeights(release);
+  if (!weights || !taskIds.length || new Set(taskIds).size !== taskIds.length) return null;
+  const price = mode === "ranked" ? release.rankedPrice : release.trainingPrice;
+  if (typeof price !== "string") return null;
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/.exec(price);
+  if (!match) return null;
+  const scale = BigInt(1000000);
+  const full = BigInt(match[1]!) * scale + BigInt((match[2] ?? "").padEnd(6, "0") || "0");
+  let quote = full;
+  if (mode === "training") {
+    if (taskIds.some((id) => !weights.has(id))) return null;
+    const selected = taskIds.reduce((sum, id) => sum + weights.get(id)!, BigInt(0));
+    const total = BigInt(release.openWeightSum);
+    quote = (full * selected + total - BigInt(1)) / total;
+  } else if (taskIds.length !== release.taskIds.length || taskIds.some((id, index) => id !== release.taskIds[index])) return null;
+  return `${quote / scale}.${(quote % scale).toString().padStart(6, "0")}`;
+}
+
+export function trainingQuoteDescription(release: RunCatalogRelease): string {
+  return trainingCatalogWeights(release) && selectedRunQuote(release, "training", release.openTaskIds) !== null
+    ? `${release.trainingPrice} USDC; selected weight is quoted over denominator ${release.openWeightSum}`
+    : "Training quote unavailable";
 }

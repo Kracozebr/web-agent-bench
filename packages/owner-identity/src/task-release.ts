@@ -448,11 +448,13 @@ export const TaskReleaseManifestSchema = z.object({
     ]),
     rankedWeightSum: z.literal(26),
     openTrainingTaskIds: z.tuple([
-      z.literal('S1'), z.literal('S2'), z.literal('S4'), z.literal('M1'),
-      z.literal('M3'), z.literal('M4'), z.literal('H1'), z.literal('H2'),
+      z.literal('S1'), z.literal('M1'), z.literal('H1'),
     ]),
-    openTrainingWeightSum: z.literal(15),
-    closedRankedOnlyTaskIds: z.tuple([z.literal('S3'), z.literal('M2'), z.literal('H3'), z.literal('U1')]),
+    openTrainingWeightSum: z.literal(6),
+    closedRankedOnlyTaskIds: z.tuple([
+      z.literal('S2'), z.literal('S3'), z.literal('S4'), z.literal('M2'), z.literal('M3'),
+      z.literal('M4'), z.literal('H2'), z.literal('H3'), z.literal('U1'),
+    ]),
   }).strict(),
   pricing: z.object({
     precision: z.literal(6),
@@ -472,7 +474,7 @@ export const TaskReleaseManifestSchema = z.object({
   feasibilityEvidence: EvidenceReferenceSchema,
   difficultyReviewEvidence: EvidenceReferenceSchema,
   cases: z.object({
-    training: z.array(TaskCaseSchema).length(8),
+    training: z.array(TaskCaseSchema).length(3),
     ranked: z.array(TaskCaseSchema).length(12),
   }).strict(),
 }).strict();
@@ -1100,7 +1102,7 @@ export function createTaskReleaseProvider(source: TaskReleaseQuerySource): TaskR
     async getValidatedRelease(releaseIdentity, manifestHash, mode, tx) {
       const release = await source.getValidatedReleaseRecord(releaseIdentity, manifestHash, tx);
       if (!release || release.releaseIdentity !== releaseIdentity || release.manifestHash !== manifestHash ||
-          release.manifest.manifestHash !== manifestHash || release.manifest.cases.ranked.length !== 12 || release.manifest.cases.training.length !== 8) return null;
+          release.manifest.manifestHash !== manifestHash || release.manifest.cases.ranked.length !== 12 || release.manifest.cases.training.length !== 3) return null;
       return validatedModeProjection(release, mode);
     },
     getPublicCatalog: () => PUBLIC_TASK_CATALOG,

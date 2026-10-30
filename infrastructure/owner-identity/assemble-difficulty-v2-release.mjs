@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { TaskReleaseManifestSchema, TaskCaseSchema, sha256CanonicalTaskJson,
   taskPolicyHash, taskBenchmarkHash, validateTaskReleaseCandidate } from '../../packages/owner-identity/src/task-release.ts';
-import { TASK_IDS, PUBLIC_TASK_CATALOG } from '../../packages/owner-identity/src/task-catalog.ts';
+import { CURRENT_TRAINING_TASK_IDS, TASK_IDS, PUBLIC_TASK_CATALOG } from '../../packages/owner-identity/src/task-catalog.ts';
 import { verifyRetainedTaskFeasibility } from '../../packages/owner-identity/src/task-feasibility-evidence.ts';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -28,9 +28,18 @@ async function main() {
   must(candidate.schemaVersion === 'bts-difficulty-v2-case-candidates/v1'
     && ['typed_partial_case_candidates_not_validated_release', 'typed_case_candidates_not_validated_release'].includes(candidate.classification)
     && candidate.sourceUnchanged === true && candidate.claims.releaseValidated === false
-    && candidate.claims.releaseActivated === false && candidate.cases.length === 20, 'complete_candidate_inventory_required');
+    && candidate.claims.releaseActivated === false
+    && Array.isArray(candidate.cases)
+    && candidate.cases.length === TASK_IDS.length + CURRENT_TRAINING_TASK_IDS.length, 'complete_candidate_inventory_required');
   const cases = candidate.cases.map((value) => TaskCaseSchema.parse(value));
-  const openIds = PUBLIC_TASK_CATALOG.filter((task) => task.trainingAvailable).map((task) => task.taskId);
+  const openIds = [...CURRENT_TRAINING_TASK_IDS];
+  const expectedKeys = [
+    ...TASK_IDS.map((taskId) => `${taskId}:ranked`),
+    ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`),
+  ].sort();
+  const actualKeys = cases.map((taskCase) => `${taskCase.taskId}:${taskCase.mode}`).sort();
+  must(new Set(actualKeys).size === expectedKeys.length
+    && actualKeys.every((key, index) => key === expectedKeys[index]), 'current_fifteen_case_inventory_required');
   const collect = (mode, ids) => ids.map((taskId) => {
     const matches = cases.filter((taskCase) => taskCase.taskId === taskId && taskCase.mode === mode);
     must(matches.length === 1, 'mode_inventory_mismatch'); return matches[0];
@@ -71,10 +80,10 @@ async function main() {
     difficultyApproval: false, releaseActivation: false };
   const reviewBytes = Buffer.from(`${JSON.stringify(review, null, 2)}\n`);
   const manifest = {
-    schemaVersion: 'bts-task-release/v1', releaseIdentity: `${policy.profileId}-difficulty-v2-candidate`, benchmarkVersion: 'bts-local-v2',
+    schemaVersion: 'bts-task-release/v1', releaseIdentity: `${policy.profileId}-current-${captureId}`, benchmarkVersion: 'bts-local-v2',
     manifestHash: '0'.repeat(64), benchmarkHash: '0'.repeat(64), policyHash: '0'.repeat(64),
     inventory: { orderedTaskIds: [...TASK_IDS], rankedWeightSum: 26, openTrainingTaskIds: openIds,
-      openTrainingWeightSum: 15, closedRankedOnlyTaskIds: PUBLIC_TASK_CATALOG.filter((task) => !task.trainingAvailable).map((task) => task.taskId) },
+      openTrainingWeightSum: 6, closedRankedOnlyTaskIds: TASK_IDS.filter((taskId) => !openIds.includes(taskId)) },
     // Existing local candidate pricing; unrelated to task operating expense budgets.
     pricing: { precision: 6, openTrainingPriceUnits: '500000', rankedPriceUnits: '1000000', trainingRounding: 'ceil_once_per_request' },
     deadlines: { taskTimeoutSeconds: policy.taskDeadlineSeconds, trainingRunTimeoutSeconds: policy.trainingRunTimeoutSeconds,

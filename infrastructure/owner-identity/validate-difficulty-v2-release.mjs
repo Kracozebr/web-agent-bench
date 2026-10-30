@@ -3,23 +3,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, realpath, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { PUBLIC_TASK_CATALOG, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
+import { CURRENT_TRAINING_TASK_IDS, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
 import { verifyRetainedTaskFeasibility } from '../../packages/owner-identity/src/task-feasibility-evidence.ts';
 import { verifyDifficultyEvidenceV2 } from '../../packages/owner-identity/src/task-difficulty-evidence-v2.ts';
 import { verifyTaskReferenceEvidenceV2 } from '../../packages/owner-identity/src/task-reference-evidence-v2.ts';
 import { TaskCaseSchema, TaskReleaseManifestSchema, canonicalTaskJson, sha256CanonicalTaskJson,
   taskBenchmarkHash, taskPolicyHash, validateTaskReleaseCandidate } from '../../packages/owner-identity/src/task-release.ts';
+import { CURRENT_TASK_RELEASE_INPUTS_PATH, loadCurrentTaskReleaseInputPins }
+  from './current-task-release-pins.mjs';
 
 const root = '/workspace';
-const CASES = { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json',
-  sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b' };
-const RELEASE = { path: 'artifacts/runs/bts-difficulty-v2-release-candidates/9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979/candidate-release.json',
-  sha256: '32e71ec759ccd0d3b612e5d87db969ad13e1d9d5213ab77f9a8eadc9e4f6a67f' };
-const MINIMA = { path: 'artifacts/runs/bts-v2-minimum-action-review/40c1a8d1-5697-490f-93d9-3d57442a0688/review.json',
-  sha256: '8fcf1bbfdd7b7f4e8a9bc146a20484c683e207a5ea523863669edec520a20cb0' };
-const REFERENCES = { path: 'artifacts/runs/bts-v2-reference-verification/6be1a286-111c-40bf-a320-1fd8e4b99426/verification.json',
-  sha256: 'f77ef62de268c41295f6b23665cbb4a4f9b41083eaba78826de06a091dac981b' };
 const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
+const FROZEN_CANDIDATE = { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json',
+  sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b' };
 const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
 const HASH = /^[0-9a-f]{64}$/;
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -74,32 +70,52 @@ async function snapshot(paths) {
   return Promise.all(sorted.map(async (path) => ({ path, sha256: (await safeBytes(path)).sha256 })));
 }
 
-function caseInventory(candidateCases, manifest) {
+function currentCaseKeys() {
+  return [...TASK_IDS.map((taskId) => `${taskId}:ranked`),
+    ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`)].sort(compare);
+}
+
+function caseInventory(candidateCases, manifest, frozenCandidate) {
   demand(candidateCases.schemaVersion === 'bts-difficulty-v2-case-candidates/v1'
     && candidateCases.participantToolProtocol === 'separate_payment_delivery_v2'
     && Array.isArray(candidateCases.cases), 'case_candidate_contract_invalid');
   const parsedCases = candidateCases.cases.map((value) => TaskCaseSchema.parse(value));
   const keys = parsedCases.map((taskCase) => `${taskCase.taskId}:${taskCase.mode}`);
-  demand(keys.length === 20 && new Set(keys).size === 20, 'case_candidate_inventory_invalid');
-  const expectedKeys = PUBLIC_TASK_CATALOG.flatMap((item) => [`${item.taskId}:ranked`,
-    ...(item.trainingAvailable ? [`${item.taskId}:training`] : [])]).sort(compare);
+  const expectedKeys = currentCaseKeys();
+  demand(keys.length === expectedKeys.length && new Set(keys).size === expectedKeys.length,
+    'current_fifteen_case_inventory_invalid');
   demand(canonicalTaskJson([...keys].sort(compare)) === canonicalTaskJson(expectedKeys), 'case_candidate_inventory_mismatch');
+  const frozenByKey = new Map(frozenCandidate.cases.map((taskCase) => [`${taskCase.taskId}:${taskCase.mode}`, taskCase]));
+  demand(candidateCases.frozenCandidateBaseline?.path === FROZEN_CANDIDATE.path
+    && candidateCases.frozenCandidateBaseline?.sha256 === FROZEN_CANDIDATE.sha256
+    && candidateCases.frozenCandidateBaseline?.caseCount === frozenCandidate.cases.length
+    && candidateCases.frozenCandidateBaseline?.rankedCaseCount === frozenCandidate.cases.filter((taskCase) => taskCase.mode === 'ranked').length
+    && candidateCases.frozenCandidateBaseline?.trainingCaseCount === frozenCandidate.cases.filter((taskCase) => taskCase.mode === 'training').length
+    && candidateCases.preservedFrozenCases?.allCurrentCasesDeepEqualFrozenBaseline === true,
+  'frozen_candidate_preservation_claim_missing');
+  demand(parsedCases.every((taskCase) => {
+    const frozen = frozenByKey.get(`${taskCase.taskId}:${taskCase.mode}`);
+    return frozen !== undefined && canonicalTaskJson(taskCase) === canonicalTaskJson(frozen);
+  }), 'current_cases_differ_from_frozen_baseline');
+  const candidateSourcePins = readPinRows(candidateCases.sourceInputs, 'case_candidate_source_inventory_invalid');
+  demand(candidateSourcePins.some((row) => row.path === FROZEN_CANDIDATE.path && row.sha256 === FROZEN_CANDIDATE.sha256),
+    'frozen_candidate_source_pin_missing');
   const manifestCases = [...manifest.cases.training, ...manifest.cases.ranked];
   const keyOf = (taskCase) => `${taskCase.taskId}:${taskCase.mode}`;
   const byKey = new Map(parsedCases.map((taskCase) => [keyOf(taskCase), taskCase]));
-  demand(byKey.size === 20 && manifestCases.length === 20 && manifestCases.every((taskCase) => {
+  demand(byKey.size === expectedKeys.length && manifestCases.length === expectedKeys.length && manifestCases.every((taskCase) => {
     const candidate = byKey.get(keyOf(taskCase));
     return candidate && canonicalTaskJson(candidate) === canonicalTaskJson(taskCase);
   }), 'release_case_set_differs_from_pinned_case_candidate');
   return parsedCases;
 }
 
-function referenceArtifactIndex(document) {
+function referenceArtifactIndex(document, casesPin) {
   demand(document.schemaVersion === 'bts-v2-reference-verification/v1'
     && document.status === 'verified_references' && document.contextOnly === false
-    && document.candidate?.path === CASES.path && document.candidate?.sha256 === CASES.sha256
+    && document.candidate?.path === casesPin.path && document.candidate?.sha256 === casesPin.sha256
     && HASH.test(String(document.executionIdentityHash)) && Array.isArray(document.results)
-    && document.results.length === 20, 'semantic_reference_artifact_contract_invalid');
+    && document.results.length === currentCaseKeys().length, 'semantic_reference_artifact_contract_invalid');
   const index = new Map();
   for (const row of document.results) {
     const key = `${row.taskId}:${row.mode}`;
@@ -109,7 +125,7 @@ function referenceArtifactIndex(document) {
     'semantic_reference_artifact_result_invalid');
     index.set(key, row);
   }
-  demand(index.size === 20, 'semantic_reference_artifact_inventory_invalid');
+  demand(index.size === currentCaseKeys().length, 'semantic_reference_artifact_inventory_invalid');
   return index;
 }
 
@@ -125,29 +141,45 @@ function bindMinimumReview(manifest, minimumEvidence) {
 
 async function main() {
   demand(process.platform === 'linux' && process.cwd() === root && process.argv.length === 2, 'usage');
+  const pins = await loadCurrentTaskReleaseInputPins(root);
+  const { cases: CASES, release: RELEASE, minimum: MINIMA, references: REFERENCES } = pins;
   const caseBytes = (await safeBytes(CASES.path, CASES.sha256)).bytes;
+  const frozenCaseBytes = (await safeBytes(FROZEN_CANDIDATE.path, FROZEN_CANDIDATE.sha256)).bytes;
   const releaseBytes = (await safeBytes(RELEASE.path, RELEASE.sha256)).bytes;
   const minimumBytes = (await safeBytes(MINIMA.path, MINIMA.sha256)).bytes;
   const referenceBytes = (await safeBytes(REFERENCES.path, REFERENCES.sha256)).bytes;
   const casesCandidate = JSON.parse(caseBytes.toString('utf8'));
+  const frozenCaseCandidate = JSON.parse(frozenCaseBytes.toString('utf8'));
   const capturedCandidate = JSON.parse(releaseBytes.toString('utf8'));
   const minimumReview = JSON.parse(minimumBytes.toString('utf8'));
   const referenceReview = JSON.parse(referenceBytes.toString('utf8'));
+  demand(frozenCaseCandidate.schemaVersion === 'bts-difficulty-v2-case-candidates/v1'
+    && frozenCaseCandidate.captureId === FROZEN_CANDIDATE.path.split('/')[3]
+    && Array.isArray(frozenCaseCandidate.cases) && frozenCaseCandidate.cases.length === 20,
+  'frozen_candidate_baseline_invalid');
+  frozenCaseCandidate.cases = frozenCaseCandidate.cases.map((value) => TaskCaseSchema.parse(value));
   demand(capturedCandidate.schemaVersion === 'bts-task-release-candidate-capture/v2'
-    && capturedCandidate.captureId === '9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979'
+    && capturedCandidate.captureId === RELEASE.path.split('/')[3]
     && capturedCandidate.classification === 'full_inventory_candidate_not_validated_or_activated_release',
   'release_candidate_capture_contract_invalid');
+  demand(casesCandidate.captureId === CASES.path.split('/')[3]
+    && minimumReview.captureId === MINIMA.path.split('/')[3]
+    && referenceReview.captureId === REFERENCES.path.split('/')[3], 'release_artifact_capture_identity_mismatch');
+  const caseSourceRows = readPinRows(casesCandidate.sourceInputs, 'case_candidate_source_inventory_invalid');
   const sourceRows = readPinRows(capturedCandidate.sourceInputs, 'release_candidate_source_inventory_invalid');
   const minimumSourceRows = readPinRows(minimumReview.sourceInputs, 'minimum_review_source_inventory_invalid');
   const referenceSourceRows = readPinRows(referenceReview.sourceInputs, 'semantic_review_source_inventory_invalid');
-  const referenceIndex = referenceArtifactIndex(referenceReview);
+  const releaseSourceIndex = new Map(sourceRows.map((row) => [row.path, row.sha256]));
+  demand(caseSourceRows.every((row) => releaseSourceIndex.get(row.path) === row.sha256),
+    'release_candidate_omits_case_candidate_source_pins');
+  const referenceIndex = referenceArtifactIndex(referenceReview, CASES);
   const originalManifest = TaskReleaseManifestSchema.parse(capturedCandidate.manifest);
   const { manifestHash: _omitted, ...originalUnhashed } = originalManifest;
   demand(sha256CanonicalTaskJson(originalUnhashed) === originalManifest.manifestHash
     && taskPolicyHash(originalManifest) === originalManifest.policyHash
     && taskBenchmarkHash(originalManifest) === originalManifest.benchmarkHash,
   'original_release_manifest_hash_mismatch');
-  const parsedCases = caseInventory(casesCandidate, originalManifest);
+  const parsedCases = caseInventory(casesCandidate, originalManifest, frozenCaseCandidate);
   demand(minimumReview.candidate?.path === CASES.path && minimumReview.candidate?.sha256 === CASES.sha256
     && minimumReview.executionIdentityHash === originalManifest.executionIdentityHash,
   'minimum_review_candidate_or_identity_mismatch');
@@ -166,23 +198,29 @@ async function main() {
   }
 
   const allPins = new Map();
-  for (const row of [...sourceRows, ...minimumSourceRows, ...referenceSourceRows]) {
+  for (const row of [...caseSourceRows, ...sourceRows, ...minimumSourceRows, ...referenceSourceRows]) {
     const previous = allPins.get(row.path);
     demand(previous === undefined || previous === row.sha256, 'release_source_pin_conflict');
     allPins.set(row.path, row.sha256);
   }
-  for (const [path, sha256] of [[CASES.path, CASES.sha256], [RELEASE.path, RELEASE.sha256],
-    [MINIMA.path, MINIMA.sha256], [REFERENCES.path, REFERENCES.sha256]]) {
+  for (const pin of [CASES, RELEASE, MINIMA, REFERENCES, FROZEN_CANDIDATE]) {
+    const { path, sha256 } = pin;
     const previous = allPins.get(path);
     demand(previous === undefined || previous === sha256, 'release_artifact_pin_conflict');
     allPins.set(path, sha256);
   }
+  const previousInputsConfigHash = allPins.get(pins.inputsConfig.path);
+  demand(previousInputsConfigHash === undefined || previousInputsConfigHash === pins.inputsConfig.sha256,
+    'release_inputs_config_pin_conflict');
+  allPins.set(pins.inputsConfig.path, pins.inputsConfig.sha256);
   const localSources = [
     'pnpm-lock.yaml', POLICY_PATH, 'infrastructure/owner-identity/validate-difficulty-v2-release.mjs',
+    'infrastructure/owner-identity/current-task-release-pins.mjs', CURRENT_TASK_RELEASE_INPUTS_PATH,
     'infrastructure/owner-identity/review-difficulty-v2-minima.mjs',
     'infrastructure/owner-identity/verify-difficulty-v2-references.mjs',
     'infrastructure/owner-identity/assemble-difficulty-v2-release.mjs',
     'packages/owner-identity/src/task-release.ts', 'packages/owner-identity/src/task-catalog.ts',
+    'packages/owner-identity/src/task-case-assembler.ts', 'packages/owner-identity/src/task-reference-inventory.ts',
     'packages/owner-identity/src/task-feasibility-evidence.ts',
     'packages/owner-identity/src/task-reference-evidence-v2.ts',
     'packages/owner-identity/src/task-reference-evidence-v2-types.ts',
@@ -225,7 +263,7 @@ async function main() {
   demand(sourceUnchanged, 'release_validation_source_changed');
 
   const actualReferenceIndex = new Map(verifiedReferences.map((row) => [`${row.taskCase.taskId}:${row.taskCase.mode}`, row]));
-  const wrapperMatches = actualReferenceIndex.size === 20 && parsedCases.every((taskCase) => {
+  const wrapperMatches = actualReferenceIndex.size === currentCaseKeys().length && parsedCases.every((taskCase) => {
     const actual = actualReferenceIndex.get(`${taskCase.taskId}:${taskCase.mode}`);
     const recorded = referenceIndex.get(`${taskCase.taskId}:${taskCase.mode}`);
     return actual && recorded && actual.taskCase.caseHash === taskCase.caseHash

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { evaluateTaskRubric, type EvaluateTaskInput } from './task-evaluator.js';
 import { sha256CanonicalTaskJson, type TaskReleaseQuerySource } from './task-release.js';
-import { TASK_IDS } from './task-catalog.js';
+import { CURRENT_TRAINING_TASK_IDS, TASK_IDS } from './task-catalog.js';
 export const hash = (label: string) => createHash('sha256').update(label).digest('hex');
 export const evidence = (label: string) => ({ path: `synthetic-completion/${label}.json`, sha256: hash(label),
   boundary: 'actual_tool_http_x402_local_evm_application_store' as const });
@@ -11,8 +11,6 @@ function jsonParam(client: ReturnType<typeof postgres>, value: unknown) {
   if (serialized === undefined) throw new Error('Synthetic fixture JSON values must be serializable');
   return client`${serialized}::text::jsonb`;
 }
-const OPEN_TRAINING_IDS = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'] as const;
-
 function hashRunServicePayload(value: unknown): string {
   const canonical = (item: unknown): unknown => {
     if (Array.isArray(item)) return item.map(canonical);
@@ -62,7 +60,7 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
     objective: { tokenAssetId: 'USDC', sender: 'participant', recipient, exactPrincipalUnits: '1', nativeReserveWei: '1',
       unrelatedEffectBaselineSha256: hash(`${runId}:unrelated-baseline`) }, taskDeadlineSeconds: 120,
   };
-  const taskIds = options.unterminalPredecessor ? ['S1', 'S2', 'S4'] : options.multiTask ? ['S1', 'S2'] : ['S1'];
+  const taskIds = options.unterminalPredecessor ? ['S1', 'M1', 'H1'] : options.multiTask ? ['S1', 'M1'] : ['S1'];
   const additionalCases = taskIds.slice(1).map((taskId) => ({
     mode: 'training' as const, taskId, caseId: `${releaseIdentity}-${taskId}`, caseHash: hash(`${runId}:${taskId}:case`),
     rubricHash: hash(`${runId}:${taskId}:rubric`), executionIdentityHash,
@@ -82,7 +80,7 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
     manifest: { releaseIdentity, manifestHash, executionIdentityHash,
       executionIdentity: { environmentManifestSha256: environmentManifestHash,
       x402ServiceSha256: applicationSourceHash }, costPolicy: {}, deadlines: { taskTimeoutSeconds: 180 },
-      cases: { training: OPEN_TRAINING_IDS.map((taskId) => syntheticCase(taskId, 'training')),
+      cases: { training: CURRENT_TRAINING_TASK_IDS.map((taskId) => syntheticCase(taskId, 'training')),
         ranked: TASK_IDS.map((taskId) => syntheticCase(taskId, 'ranked')) } },
   };
   const binding = { ownerId, agentId, runId, environmentId, releaseIdentity, manifestHash,

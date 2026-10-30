@@ -11,7 +11,7 @@ import type {
   ValidatedTaskRelease,
   TaskExecutionReadinessProvider
 } from "./task-release.js";
-import type { PublicTaskMetadata } from "./task-catalog.js";
+import { CURRENT_TRAINING_TASK_IDS, CURRENT_TRAINING_TASK_WEIGHTS, CURRENT_TRAINING_WEIGHT_SUM, type PublicTaskMetadata } from "./task-catalog.js";
 import { insertTaskExecutionBindingInTransaction } from "./task-execution-binding.js";
 import type { PreparedTaskStartPort, TaskPreparationRecord, TaskPreparationTarget } from "./task-preparation.js";
 
@@ -55,6 +55,8 @@ export interface RunCatalogView {
   releaseIdentity: string;
   taskIds: string[];
   openTaskIds: string[];
+  openTaskWeights: number[];
+  openWeightSum: number;
   completeRankedRelease: boolean;
   precision: 6;
   rankedPrice: string;
@@ -217,7 +219,7 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const operationIdPattern = /^[A-Za-z0-9_-]{12,128}$/;
 const amountPattern = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/;
 const rankedTaskIds = ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"];
-const openTrainingTaskIds = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
+const openTrainingTaskIds: readonly string[] = CURRENT_TRAINING_TASK_IDS;
 
 function configuredSuccessorPreparationPolicy(deps: RunServiceDependencies, required: boolean): SuccessorPreparationPolicySnapshot | null {
   const version = deps.successorPreparationPolicyVersion ?? null;
@@ -400,10 +402,10 @@ function validateMode(value: unknown): RunMode {
 
 function normalizeSelection(release: RunAdmissionRelease, requested: unknown): string[] {
   const expectedIds = release.mode === "training" ? openTrainingTaskIds : rankedTaskIds;
-  const expectedWeights = release.mode === "training" ? [1, 1, 1, 2, 2, 2, 3, 3] : [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 5];
+  const expectedWeights = release.mode === "training" ? CURRENT_TRAINING_TASK_WEIGHTS : [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 5];
   if (release.precision !== 6 || !Array.isArray(release.taskIds) || release.taskIds.length !== expectedIds.length ||
     release.taskIds.some((id, index) => id !== expectedIds[index]) ||
-    release.taskIds.length !== release.weights.length || new Set(release.taskIds).size !== release.taskIds.length ||
+    !Array.isArray(release.weights) || release.taskIds.length !== release.weights.length || new Set(release.taskIds).size !== release.taskIds.length ||
     release.taskIds.some((taskId) => typeof taskId !== "string" || !taskId) ||
     release.weights.some((weight, index) => weight !== expectedWeights[index])) {
     throw new HttpError(503, "RELEASE_INVALID", "The active release has an invalid ordered task inventory");
@@ -420,7 +422,7 @@ function normalizeSelection(release: RunAdmissionRelease, requested: unknown): s
     throw new HttpError(503, "RELEASE_INCOMPLETE", "A complete ordered twelve-task release is required for ranked admission");
   }
   if (selected.some((id) => !allowed.includes(id) || !releaseTaskIds.includes(id))) {
-    throw new HttpError(400, "INVALID_TASK_SELECTION", "The selection contains an unknown or closed task");
+    throw new HttpError(400, "INVALID_TASK_SELECTION", "The selection contains an unknown or Training-ineligible task");
   }
   if (release.mode === "ranked" && (selected.length !== rankedTaskIds.length || selected.some((id, index) => id !== rankedTaskIds[index]))) {
     throw new HttpError(400, "INVALID_TASK_SELECTION", "Ranked runs must select the complete ordered twelve-task inventory");
@@ -443,11 +445,17 @@ function quoteForSelection(release: RunAdmissionRelease, taskIds: string[]): big
     totalWeight += weightUnits;
     if (taskIds.includes(release.taskIds[index]!)) selectedWeight += weightUnits;
   }
-  if (totalWeight !== 15n || selectedWeight <= 0n) {
-    throw new HttpError(503, "RELEASE_INVALID", "The open training release must pin the approved weight denominator of 15");
+  if (totalWeight !== BigInt(CURRENT_TRAINING_WEIGHT_SUM) || selectedWeight <= 0n) {
+    throw new HttpError(503, "RELEASE_INVALID", "The open training release must pin the approved Training weight denominator of 6");
   }
   const numerator = fullPrice * selectedWeight;
   return (numerator + totalWeight - 1n) / totalWeight;
+}
+
+/** One validated selection/quote contract for intent creation, acceptance and start. */
+export function quoteRunSelection(release: RunAdmissionRelease, requested: unknown): { taskIds: string[]; priceUnits: bigint } {
+  const taskIds = normalizeSelection(release, requested);
+  return { taskIds, priceUnits: quoteForSelection(release, taskIds) };
 }
 
 function parseRelease(release: RunAdmissionRelease | null, mode: RunMode): RunAdmissionRelease {
@@ -620,6 +628,16 @@ export async function getRunCatalog(deps: RunServiceDependencies): Promise<RunCa
       intentCreationReason: "active_release_identity_mismatch", taskCatalog
     };
   }
+  try {
+    quoteRunSelection(parseRelease(ranked, "ranked"), ranked.taskIds);
+    quoteRunSelection(parseRelease(training, "training"), training.taskIds);
+  } catch {
+    return {
+      status: "active_release_unavailable", activeRelease: null, readyToStart: false,
+      readinessReason: "active_release_invalid", intentCreationReady: false,
+      intentCreationReason: "active_release_invalid", taskCatalog
+    };
+  }
   const complete = ranked.taskIds.length === 12 && ranked.taskIds.every((id, index) => id === rankedTaskIds[index]);
   const readiness: RunReadiness = deps.executionReadinessProvider
     ? await deps.executionReadinessProvider.isPreparedForRelease(ranked.releaseIdentity, ranked.manifestHash).catch(() => ({ ready: false, reason: "readiness_observation_failed" }))
@@ -634,6 +652,8 @@ export async function getRunCatalog(deps: RunServiceDependencies): Promise<RunCa
       releaseIdentity: ranked.releaseIdentity,
       taskIds: [...ranked.taskIds],
       openTaskIds: [...training.taskIds],
+      openTaskWeights: [...training.weights],
+      openWeightSum: training.weights.reduce((sum, weight) => sum + weight, 0),
       completeRankedRelease: complete,
       precision: 6,
       rankedPrice: formatUnits(ranked.priceUnits),
@@ -690,9 +710,8 @@ export async function createLaunchIntent(deps: RunServiceDependencies, input: Cr
     const provider = deps.admissionReleaseProvider;
     if (!provider) throw new HttpError(503, "RELEASE_UNAVAILABLE", "There is no active validated task release");
     const release = parseRelease(await provider.getActiveAdmissionRelease(mode, tx), mode);
-    const taskIds = normalizeSelection(release, input.taskIds);
+    const { taskIds, priceUnits } = quoteRunSelection(release, input.taskIds);
     const successorPolicy = configuredSuccessorPreparationPolicy(deps, taskIds.length > 1);
-    const priceUnits = quoteForSelection(release, taskIds);
     if (release.releaseIdentity !== expectedReleaseIdentity || release.manifestHash !== expectedManifestHash || priceUnits !== expectedQuoteUnits) {
       throw new HttpError(409, "STALE_RUN_INTENT", "The active release or displayed quote changed; refresh the catalog and review the request again");
     }
@@ -933,10 +952,9 @@ export async function acceptLaunchIntent(deps: RunServiceDependencies, input: Ac
       release.manifestHash !== intent.manifest_hash || release.benchmarkHash !== intent.benchmark_hash || release.policyHash !== intent.policy_hash) {
       throw new HttpError(409, "STALE_RUN_INTENT", "The active task release changed after this launch intent was created");
     }
-    const taskIds = normalizeSelection(release, intent.task_ids);
+    const { taskIds, priceUnits: quoteUnits } = quoteRunSelection(release, intent.task_ids);
     requireStoredSuccessorPreparationPolicy(taskIds, intent.successor_preparation_policy_version,
       intent.successor_preparation_timeout_seconds);
-    const quoteUnits = quoteForSelection(release, taskIds);
     if (quoteUnits !== toBigInt(intent.quote_price_units)) throw new HttpError(409, "STALE_RUN_INTENT", "The active quote changed after this launch intent was created");
     if (financial.operationLimit !== null && quoteUnits > financial.operationLimit) throw new HttpError(409, "AGENT_BUDGET_EXCEEDED", "The quote exceeds this agent's per-operation limit");
 
@@ -1388,9 +1406,9 @@ export async function startQueuedRun(
   }
   const initial = await deps.db.transaction(async (tx) => {
     const found = await query<{ owner_id: string; agent_id: string; release_identity: string; manifest_hash: string; mode: RunMode; task_ids: string[];
-      benchmark_version: string; benchmark_hash: string; policy_hash: string; status: RunStatus;
+      benchmark_version: string; benchmark_hash: string; policy_hash: string; status: RunStatus; quote_price_units: bigint | string;
       successor_preparation_policy_version: string | null; successor_preparation_timeout_seconds: number | null }>(tx, sql`SELECT r.owner_id,r.release_identity,r.manifest_hash,r.mode,r.task_ids,
-        r.agent_id,r.benchmark_version,r.benchmark_hash,r.policy_hash,r.status,
+        r.agent_id,r.benchmark_version,r.benchmark_hash,r.policy_hash,r.status,r.quote_price_units,
         r.successor_preparation_policy_version,r.successor_preparation_timeout_seconds
       FROM oid_benchmark_run r JOIN oid_run_launch_intent i ON i.id=r.intent_id WHERE r.id=${runId} LIMIT 1`);
     if (!found[0]) throw new HttpError(404, "RUN_NOT_FOUND", "The run does not exist");
@@ -1418,9 +1436,13 @@ export async function startQueuedRun(
       initial.task_ids.every((id, index) => id === releaseTaskIds.filter((taskId) => initial.task_ids.includes(taskId))[index]);
   if (!validated || validated.releaseIdentity !== initial.release_identity || validated.manifestHash !== initial.manifest_hash ||
     validated.benchmarkVersion !== initial.benchmark_version || validated.benchmarkHash !== initial.benchmark_hash ||
-    validated.policyHash !== initial.policy_hash || releaseTaskIds.length !== (initial.mode === "ranked" ? 12 : 8) ||
+    validated.policyHash !== initial.policy_hash || releaseTaskIds.length !== (initial.mode === "ranked" ? 12 : CURRENT_TRAINING_TASK_IDS.length) ||
     validated.mode !== initial.mode || !selectedAreValid) {
     throw new HttpError(503, "RELEASE_INCOMPLETE", "A complete validated twelve-task release is required before start");
+  }
+  const startQuote = quoteRunSelection({ ...validated, priceUnits: validated.pricing.priceUnits, precision: validated.pricing.precision }, initial.task_ids);
+  if (startQuote.priceUnits !== toBigInt(initial.quote_price_units)) {
+    throw new HttpError(503, "RELEASE_INVALID", "The stored run quote does not match its validated selection");
   }
   const taskTimeoutSeconds = validated.taskDeadlines.find((task) => task.taskId === initial.task_ids[0])?.timeoutSeconds;
   const overallTimeoutSeconds = validated.overallTimeoutSeconds;

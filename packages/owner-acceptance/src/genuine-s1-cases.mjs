@@ -11,13 +11,14 @@ import { runCodexNativeOwnerAcceptance } from './codex-client-cases.mjs';
 import { runCodexOwnerProfileCases } from './codex-owner-profile-cases.mjs';
 import { runBrlLaunchAdmissionPreAcceptCases, runBrlLaunchAdmissionPrimaryOnlyCase, captureBrlPrimaryMcpAcceptance,
   runBrlLaunchAdmissionPostCompletionCases } from './benchmark-run-lifecycle-launch-probe.mjs';
+import { loadCurrentTaskReleasePins } from '../../../infrastructure/owner-identity/current-task-release-pins.mjs';
 
 const { Pool } = pg;
 const ROOT = '/workspace';
 const EVIDENCE_ROOT = 'artifacts/runs/genuine-s1-owner-run';
 const SEQUENCE_EVIDENCE_ROOT = 'artifacts/runs/genuine-training-sequence-owner-run';
 const RANKED_EVIDENCE_ROOT = 'artifacts/runs/genuine-ranked-worker-owner-run';
-export const OPEN_TASK_IDS = Object.freeze(['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2']);
+export const OPEN_TASK_IDS = Object.freeze(['S1', 'M1', 'H1']);
 const RANKED_TASK_IDS = ['S1', 'S2', 'S3', 'S4', 'M1', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3', 'U1'];
 const SUPPORTED_TASKS = new Set(OPEN_TASK_IDS);
 const evidenceRootForTask = (taskId = 'S1') => {
@@ -26,13 +27,6 @@ const evidenceRootForTask = (taskId = 'S1') => {
 };
 const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
 const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
-const PIN = Object.freeze({
-  validation: { path: 'artifacts/runs/bts-difficulty-v2-release-validation/368c4bf6-defb-4205-87d7-a242576732c0/validation.json', sha256: '36fd0bb7154f4639a25acd4daf5a4384b557cb22466f27be622fd47c43558594' },
-  cases: { path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json', sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b' },
-  release: { path: 'artifacts/runs/bts-difficulty-v2-release-candidates/9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979/candidate-release.json', sha256: '32e71ec759ccd0d3b612e5d87db969ad13e1d9d5213ab77f9a8eadc9e4f6a67f' },
-  minimum: { path: 'artifacts/runs/bts-v2-minimum-action-review/40c1a8d1-5697-490f-93d9-3d57442a0688/review.json', sha256: '8fcf1bbfdd7b7f4e8a9bc146a20484c683e207a5ea523863669edec520a20cb0' },
-  references: { path: 'artifacts/runs/bts-v2-reference-verification/6be1a286-111c-40bf-a320-1fd8e4b99426/verification.json', sha256: 'f77ef62de268c41295f6b23665cbb4a4f9b41083eaba78826de06a091dac981b' },
-});
 const HEX_HASH = /^[0-9a-f]{64}$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const delay = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -44,14 +38,13 @@ function demand(condition, code) {
 }
 
 export function normalizeTrainingSequenceTaskIds(requested) {
-  // This limits the owner-capture harness to the already-used S1/S2 sequence or
-  // the complete canonical open inventory. It does not change service selection policy.
+  // The bounded training harness accepts the current S1/M1 transition or all current cases.
   const validIds = Array.isArray(requested) && requested.every((id) => typeof id === 'string' && SUPPORTED_TASKS.has(id)) &&
     new Set(requested).size === requested.length;
-  const s1s2 = validIds && requested.length === 2 && requested.includes('S1') && requested.includes('S2');
+  const s1m1 = validIds && requested.length === 2 && requested.includes('S1') && requested.includes('M1');
   const allOpen = validIds && JSON.stringify(requested) === JSON.stringify(OPEN_TASK_IDS);
-  demand(s1s2 || allOpen, 'unsupported_genuine_task_selection');
-  return s1s2 ? ['S1', 'S2'] : [...OPEN_TASK_IDS];
+  demand(s1m1 || allOpen, 'unsupported_genuine_task_selection');
+  return s1m1 ? ['S1', 'M1'] : [...OPEN_TASK_IDS];
 }
 
 export function trainingSequenceTransitions(taskIds) {
@@ -160,7 +153,7 @@ export function quoteTrainingSelectionUnits(release, taskIds) {
   const totalWeight = tasks.reduce((sum, task) => sum + task.taskWeight, 0);
   const selectedWeight = tasks.filter((task) => taskIds.includes(task.taskId))
     .reduce((sum, task) => sum + task.taskWeight, 0);
-  demand(JSON.stringify(inventory) === JSON.stringify(OPEN_TASK_IDS) && totalWeight === 15 &&
+  demand(JSON.stringify(inventory) === JSON.stringify(OPEN_TASK_IDS) && totalWeight === 6 &&
     selectedWeight > 0 && Number.isSafeInteger(selectedWeight), 'training_quote_release_inventory_invalid');
   return (BigInt(release.trainingPriceUnits) * BigInt(selectedWeight) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
 }
@@ -238,6 +231,8 @@ function bindMinimumReview(manifest, minimum, taskRelease) {
 }
 
 export async function validateAndActivatePinnedRelease({ repositoryRoot, databaseUrl, observerDatabaseUrl, bddContext = null }) {
+  const PIN = await loadCurrentTaskReleasePins(repositoryRoot);
+  const expectedCaseCount = RANKED_TASK_IDS.length + OPEN_TASK_IDS.length;
   const pinnedDocuments = {};
   for (const [name, row] of Object.entries(PIN)) {
     const read = await safeBytes(repositoryRoot, row.path, row.sha256);
@@ -253,13 +248,19 @@ export async function validateAndActivatePinnedRelease({ repositoryRoot, databas
     validation.manifestBinding?.boundManifestHash && validation.claims?.productReleaseActivated === false &&
     validation.claims?.ownerRunAcceptance === false && validation.claims?.taskGrade === false,
   'pinned_release_validation_not_authoritative');
+  demand(validation.sources?.caseCandidate?.path === PIN.cases.path && validation.sources?.caseCandidate?.sha256 === PIN.cases.sha256 &&
+    validation.sources?.releaseCandidate?.path === PIN.release.path && validation.sources?.releaseCandidate?.sha256 === PIN.release.sha256 &&
+    validation.sources?.minimumActionReview?.path === PIN.minimum.path && validation.sources?.minimumActionReview?.sha256 === PIN.minimum.sha256 &&
+    validation.sources?.semanticReferenceReview?.path === PIN.references.path && validation.sources?.semanticReferenceReview?.sha256 === PIN.references.sha256,
+  'current_release_validation_artifact_binding_mismatch');
   demand(capturedRelease.schemaVersion === 'bts-task-release-candidate-capture/v2' &&
-    capturedRelease.captureId === '9cdbaf6a-2c75-47ac-b4c4-2a1dfd997979' &&
+    capturedRelease.captureId === PIN.release.path.split('/')[3] &&
     capturedRelease.classification === 'full_inventory_candidate_not_validated_or_activated_release',
   'pinned_release_candidate_invalid');
   demand(candidateCases.schemaVersion === 'bts-difficulty-v2-case-candidates/v1' &&
     candidateCases.participantToolProtocol === 'separate_payment_delivery_v2' && Array.isArray(candidateCases.cases) &&
-    candidateCases.cases.length === 20, 'pinned_case_candidate_invalid');
+    candidateCases.captureId === PIN.cases.path.split('/')[3] && candidateCases.cases.length === expectedCaseCount,
+  'pinned_case_candidate_invalid');
   const sourceRows = pinRows(validation.sourceInputs, 'validation_source_inventory_invalid');
   const releaseRows = pinRows(capturedRelease.sourceInputs, 'release_source_inventory_invalid');
   const minimumRows = pinRows(minimumReview.sourceInputs, 'minimum_source_inventory_invalid');
@@ -296,11 +297,11 @@ export async function validateAndActivatePinnedRelease({ repositoryRoot, databas
     minimumReview.executionIdentityHash === original.executionIdentityHash && referenceReview.executionIdentityHash === original.executionIdentityHash,
   'review_case_or_identity_binding_mismatch');
   const parsedCases = candidateCases.cases.map((value) => TaskCaseSchema.parse(value));
-  demand(parsedCases.length === 20 && OPEN_TASK_IDS.every((taskId) =>
+  demand(parsedCases.length === expectedCaseCount && OPEN_TASK_IDS.every((taskId) =>
     parsedCases.filter((taskCase) => taskCase.taskId === taskId && taskCase.mode === 'training').length === 1),
     'case_inventory_invalid');
   const byKey = new Map(parsedCases.map((taskCase) => [taskCase.taskId + ':' + taskCase.mode, taskCase]));
-  demand([...original.cases.training, ...original.cases.ranked].length === 20 &&
+  demand([...original.cases.training, ...original.cases.ranked].length === expectedCaseCount &&
     [...original.cases.training, ...original.cases.ranked].every((taskCase) => {
       const candidate = byKey.get(taskCase.taskId + ':' + taskCase.mode);
       return candidate && canonicalTaskJson(candidate) === canonicalTaskJson(taskCase);
@@ -337,7 +338,7 @@ export async function validateAndActivatePinnedRelease({ repositoryRoot, databas
   try {
     const activation = await activatePostgresTaskReleaseCandidate(db, bound, verifier);
     demand(activation.status === 'validated' && activation.release.manifest.manifestHash === bound.manifestHash &&
-      verifiedReferences.length === 20 && difficultyEvidence?.status === 'approved', 'full_release_verifier_blocked');
+      verifiedReferences.length === expectedCaseCount && difficultyEvidence?.status === 'approved', 'full_release_verifier_blocked');
     const active = await taskReleaseSource.getActiveAdmissionRelease('training');
     demand(active?.releaseIdentity === bound.releaseIdentity && active.manifestHash === bound.manifestHash,
       'active_release_database_binding_mismatch');
@@ -2492,7 +2493,9 @@ async function captureAndEvaluateTrainingTask(context) {
 async function fenceAndCompleteKnownS1({ input, output, record, observerPool, postgresByEnvironment, created, taskReleaseSource,
   evidenceSource, sealed, collection, run, execution, recorded, taskIndex = 0, sequenceMode = false }) {
   const taskId = recorded.evaluation.result.taskId;
-  demand(SUPPORTED_TASKS.has(taskId) && run.task_ids[taskIndex] === taskId && taskIndex < run.task_ids.length,
+  const runModeSupportsTask = run.mode === 'ranked' ? RANKED_TASK_IDS.includes(taskId)
+    : run.mode === 'training' && SUPPORTED_TASKS.has(taskId);
+  demand(runModeSupportsTask && run.task_ids[taskIndex] === taskId && taskIndex < run.task_ids.length,
     'completion_task_identity_mismatch');
   const preparationId = sealed.bundle.execution.preparationId;
   const leaseId = sealed.bundle.execution.leaseId;
@@ -2964,13 +2967,13 @@ async function requestOwnerCancellation({ ownerPage, runId, observerPool, output
         output.runAfterCleanup = row;
         const preparationIndexes = latest.preparations.map((entry) => entry.task_index);
         const trainingSequenceObserved = output.mode === 'training' && output.taskIds?.length > 1;
-        const sequenceObservedS2 = trainingSequenceObserved && output.taskIds?.[1] === 'S2' &&
+        const sequenceObservedM1 = trainingSequenceObserved && output.taskIds?.[1] === 'M1' &&
           output.trainingSuccessorActivations?.some((entry) => entry.toTaskIndex === 1) === true;
         const transitionCount = output.trainingSuccessorActivations?.length ?? 0;
         const trainingSequenceTransitionsObserved = trainingSequenceObserved && transitionCount === output.taskIds.length - 1;
         output.cleanupEvidence = { terminalStatus: row.status,
           cancellationEvidencePresent: typeof row.cancellation_evidence_hash === 'string' && HEX_HASH.test(row.cancellation_evidence_hash),
-          ...(output.mode === 'training' ? { sequenceObservedS2, trainingSequenceTransitionsObserved,
+          ...(output.mode === 'training' ? { sequenceObservedM1, trainingSequenceTransitionsObserved,
             successorActivationCount: transitionCount } : {}),
           preparationLeaseCount: latest.preparations.length,
           preparationTaskIndexes: preparationIndexes,
@@ -3003,7 +3006,7 @@ async function runGenuineOwnerRunCase(input) {
     'primary_client_profile_requires_ranked_bdd_worker');
   const trainingSequenceMode = sequenceMode && mode === 'training';
   const taskIds = sequenceMode
-    ? rankedMode ? input.taskIds : normalizeTrainingSequenceTaskIds(input.taskIds ?? ['S1', 'S2'])
+    ? rankedMode ? input.taskIds : normalizeTrainingSequenceTaskIds(input.taskIds ?? ['S1', 'M1'])
     : [input.taskId ?? 'S1'];
   demand(Array.isArray(taskIds) && taskIds.length >= 1 &&
     (rankedMode ? sequenceMode && JSON.stringify(taskIds) === JSON.stringify(RANKED_TASK_IDS) && input.automaticWorkerEvaluation === true
@@ -3012,7 +3015,7 @@ async function runGenuineOwnerRunCase(input) {
   'unsupported_genuine_task_selection');
   const taskTransitions = trainingSequenceMode ? trainingSequenceTransitions(taskIds) : [];
   const taskId = taskIds[0];
-  demand(rankedMode || !taskIds.some((id) => ['M1', 'M3', 'M4', 'H1', 'H2'].includes(id)) ||
+  demand(rankedMode || !taskIds.some((id) => id !== 'S1') ||
     input.automaticWorkerEvaluation === true, 'open_task_capture_requires_server_worker');
   const output = {
     schemaVersion: rankedMode ? 'genuine-ranked-worker-owner-run-capture/v1'
@@ -3078,7 +3081,7 @@ async function runGenuineOwnerRunCase(input) {
     }
     output.release = release;
     record('pinned_full_release_validation_and_isolated_activation', 'verified', {
-      manifestHash: release.manifestHash, caseCount: 20, sourceInputCount: release.sourceInputCount,
+      manifestHash: release.manifestHash, caseCount: 15, sourceInputCount: release.sourceInputCount,
       activatedInFreshDatabase: true,
     });
 
@@ -3241,7 +3244,7 @@ async function runGenuineOwnerRunCase(input) {
       (rankedMode ? output.release.rankedTasks.length === RANKED_TASK_IDS.length &&
         output.release.rankedTasks.every((entry, index) => entry.taskId === RANKED_TASK_IDS[index]) && totalWeight === 26
         : output.release.trainingTasks.length === catalog.activeRelease.openTaskIds.length &&
-          output.release.trainingTasks.every((entry, index) => entry.taskId === catalog.activeRelease.openTaskIds[index]) && totalWeight === 15) &&
+          output.release.trainingTasks.every((entry, index) => entry.taskId === catalog.activeRelease.openTaskIds[index]) && totalWeight === 6) &&
       selectedWeight > 0, 'validated_release_pricing_projection_invalid');
     const quoteUnits = rankedMode ? fullPrice : ((fullPrice * BigInt(selectedWeight)) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
     demand(!trainingSequenceMode || (quoteUnits === selectedTrainingQuoteUnits && grantAmountUnits >= quoteUnits),
@@ -3553,7 +3556,7 @@ export async function runGenuineS1OwnerCase(input) {
 }
 
 export async function runGenuineTrainingSequenceOwnerCase(input) {
-  return runGenuineOwnerRunCase({ ...input, sequenceMode: true, taskIds: input.taskIds ?? ['S1', 'S2'] });
+  return runGenuineOwnerRunCase({ ...input, sequenceMode: true, taskIds: input.taskIds ?? ['S1', 'M1'] });
 }
 
 export async function runGenuineRankedOwnerCase(input) {
@@ -3615,7 +3618,7 @@ export async function writeGenuineTrainingSequenceCapture({ repositoryRoot, capt
 }
 
 export async function writeGenuineTrainingSequenceStartupBlock({ repositoryRoot, captureId, phase, reasonCode,
-  automaticWorkerEvaluation = false, taskIds = ['S1', 'S2'] }) {
+  automaticWorkerEvaluation = false, taskIds = ['S1', 'M1'] }) {
   const selectedTaskIds = normalizeTrainingSequenceTaskIds(taskIds);
   return writeGenuineTrainingSequenceCapture({ repositoryRoot, capture: {
     schemaVersion: 'genuine-training-sequence-owner-run-capture/v1', captureId, taskIds: selectedTaskIds, mode: 'training',
@@ -3701,7 +3704,8 @@ export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, auto
   demand(configPath === '.local/owner-identity/bef-task-coordinator.json', 'coordinator_config_path_not_pinned');
   const manifestBytes = await safeBytes(repositoryRoot, 'infrastructure/benchmark-environment/manifest.json');
   const manifest = JSON.parse(manifestBytes.bytes.toString('utf8'));
-  const release = JSON.parse((await safeBytes(repositoryRoot, PIN.release.path, PIN.release.sha256)).bytes.toString('utf8'));
+  const currentPins = await loadCurrentTaskReleasePins(repositoryRoot);
+  const release = JSON.parse((await safeBytes(repositoryRoot, currentPins.release.path, currentPins.release.sha256)).bytes.toString('utf8'));
   const releaseManifest = release.manifest;
   demand(releaseManifest?.executionIdentity?.environmentManifestSha256 === manifestBytes.sha256 &&
     manifest.local?.identity === 'private-anvil-fork' && manifest.local?.chainId === 8453 && Array.isArray(manifest.x402?.catalog),

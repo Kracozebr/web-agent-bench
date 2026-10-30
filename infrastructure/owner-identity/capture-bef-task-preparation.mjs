@@ -8,6 +8,7 @@ import {
   taskPreparationPublicPinsSha256,
 } from '../../packages/owner-identity/src/bef-task-preparation.ts';
 import { sha256CanonicalTaskJson, TaskCaseSchema } from '../../packages/owner-identity/src/task-release.ts';
+import { CURRENT_TASK_RELEASE_POINTER_PATH, loadCurrentTaskReleasePins } from './current-task-release-pins.mjs';
 
 const EXPECTED = Object.freeze({
   envId: 'bef-env-a',
@@ -22,8 +23,6 @@ const EXPECTED = Object.freeze({
   verificationPath: 'artifacts/runs/bts-runtime-feasibility-verification/5da32b24-3bbe-4e23-8969-ee954d7acf72/verification.json',
   witnessPath: 'artifacts/runs/bts-release-feasibility-witness/f28df42b-6341-467a-9be9-380e63ab4325/witness.json',
   rawManifestPath: 'artifacts/runs/bts-release-feasibility-witness/f28df42b-6341-467a-9be9-380e63ab4325/manifest.raw.json',
-  caseCandidatesPath: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json',
-  caseCandidatesSha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b',
 });
 
 const root = process.cwd();
@@ -60,11 +59,13 @@ const ownerContextPaths = [
   'infrastructure/benchmark-environment/manifest.json',
   'infrastructure/benchmark-environment/resource.json',
   'infrastructure/owner-identity/capture-bef-task-preparation.mjs',
+  'infrastructure/owner-identity/current-task-release-pins.mjs',
   'infrastructure/owner-identity/verify-runtime-feasibility.mjs',
   'infrastructure/owner-identity/task-release-local-policy.json',
   EXPECTED.verificationPath,
   EXPECTED.witnessPath,
   EXPECTED.rawManifestPath,
+  CURRENT_TASK_RELEASE_POINTER_PATH,
   'pnpm-lock.yaml',
 ];
 const forbiddenEvidenceKeys = /^(?:adminKey|serviceKey|observerPassword|password|secret|payerPrivateKey|privateKey|runToken|runTokenSha256|tokenSha256|authorization|authorizationHeader)$/i;
@@ -545,16 +546,19 @@ async function verifyRetainedS4Capture(path, expectedSha256) {
   requireCondition(sha256(input) === expectedSha256, 'retained_s4_capture_hash_mismatch');
   const capture = JSON.parse(input);
   requireCondition(capture.schemaVersion === 'owner-bef-task-preparation-capture/v1'
-    && capture.syntheticProvider?.taskId === 'S4' && ['ranked', 'training'].includes(capture.syntheticProvider.mode)
+    && capture.syntheticProvider?.taskId === 'S4' && capture.syntheticProvider.mode === 'ranked'
     && uuidPattern.test(capture.preparationId) && uuidPattern.test(capture.captureId)
     && capture.adapterReplay.firstOutcome?.status === 'prepared' && capture.adapterReplay.sameGeneration
     && capture.adapterReplay.putAttempts === 1 && capture.fixtureApprovePostAttempts === 1
     && capture.fence?.confirmed && capture.s4FixtureEvidence?.outcome === 'observed', 'retained_s4_capture_not_joinable');
-  if (!ownerContextPaths.includes(EXPECTED.caseCandidatesPath)) ownerContextPaths.push(EXPECTED.caseCandidatesPath);
+  const currentPins = await loadCurrentTaskReleasePins(root);
+  for (const path of [currentPins.cases.path, currentPins.validation.path]) {
+    if (!ownerContextPaths.includes(path)) ownerContextPaths.push(path);
+  }
   const sourceBefore = await snapshotSourceInputs(root);
   await readPinnedInputs();
-  const candidateBytes = await readFile(resolve(root, EXPECTED.caseCandidatesPath));
-  requireCondition(sha256(candidateBytes) === EXPECTED.caseCandidatesSha256, 'case_candidates_pin_mismatch');
+  const candidateBytes = await readFile(resolve(root, currentPins.cases.path));
+  requireCondition(sha256(candidateBytes) === currentPins.cases.sha256, 'case_candidates_pin_mismatch');
   const candidates = JSON.parse(candidateBytes);
   const matches = candidates.cases.filter((row) => row.taskId === 'S4' && row.mode === capture.syntheticProvider.mode);
   requireCondition(matches.length === 1, 's4_case_inventory_mismatch');
@@ -610,11 +614,17 @@ async function main() {
   }
   const s4Mode = args.length === 5 && args[0] === '--capture-synthetic-local-bef-env-a'
     && args[1] === '--task-id' && args[2] === 'S4' && args[3] === '--mode'
-    && ['ranked', 'training'].includes(args[4]) ? args[4] : null;
+    && args[4] === 'ranked' ? args[4] : null;
+  requireCondition(!(args.length === 5 && args[0] === '--capture-synthetic-local-bef-env-a'
+    && args[1] === '--task-id' && args[2] === 'S4' && args[3] === '--mode' && args[4] === 'training'),
+  'training_task_not_open_in_current_release');
   requireCondition((args.length === 1 && args[0] === '--capture-synthetic-local-bef-env-a') || s4Mode,
     'explicit_capture_argument_required');
   const selectedTaskId = s4Mode ? 'S4' : 'S1';
-  if (s4Mode) ownerContextPaths.push(EXPECTED.caseCandidatesPath);
+  const currentPins = await loadCurrentTaskReleasePins(root);
+  for (const path of [currentPins.cases.path, currentPins.validation.path]) {
+    if (!ownerContextPaths.includes(path)) ownerContextPaths.push(path);
+  }
   requireCondition(process.env.BEF_API_HOST_PORT === EXPECTED.apiHostPort, 'unexpected_api_host_port');
 
   const captureId = randomUUID();
@@ -646,8 +656,8 @@ async function main() {
   let initialState = { stateSha256: sha256CanonicalTaskJson(initialStateCore), ...initialStateCore };
   let selectedCase = null;
   if (s4Mode) {
-    const bytes = await readFile(resolve(root, EXPECTED.caseCandidatesPath));
-    requireCondition(sha256(bytes) === EXPECTED.caseCandidatesSha256, 'case_candidates_pin_mismatch');
+    const bytes = await readFile(resolve(root, currentPins.cases.path));
+    requireCondition(sha256(bytes) === currentPins.cases.sha256, 'case_candidates_pin_mismatch');
     const candidates = JSON.parse(bytes);
     requireCondition(candidates.executionIdentityHash === EXPECTED.executionIdentitySha256
       && sha256CanonicalTaskJson(candidates.executionIdentity) === EXPECTED.executionIdentitySha256, 'case_candidates_identity_mismatch');
@@ -816,8 +826,9 @@ async function main() {
     environmentId: EXPECTED.envId,
     syntheticProvider: { classification: synthetic.source.classification, taskId: selectedTaskId,
       mode: s4Mode ?? 'training', caseId: synthetic.caseId,
-      actualCaseInput: s4Mode ? { path: EXPECTED.caseCandidatesPath, sha256: EXPECTED.caseCandidatesSha256,
+      actualCaseInput: s4Mode ? { path: currentPins.cases.path, sha256: currentPins.cases.sha256,
         caseHash: selectedCase.caseHash } : null },
+    currentReleaseValidation: currentPins.validation,
     pins: {
       environmentManifestSha256: EXPECTED.manifestSha256,
       applicationSourceSha256: EXPECTED.applicationSourceSha256,

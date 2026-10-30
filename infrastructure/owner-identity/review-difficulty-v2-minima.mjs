@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { TaskCaseSchema, canonicalTaskJson } from '../../packages/owner-identity/src/task-release.ts';
-import { PUBLIC_TASK_CATALOG } from '../../packages/owner-identity/src/task-catalog.ts';
+import { CURRENT_TRAINING_TASK_IDS, PUBLIC_TASK_CATALOG, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
 import { loadV2ReferenceContext, verifyTaskReferenceEvidenceV2 } from '../../packages/owner-identity/src/task-reference-evidence-v2.ts';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -129,9 +129,10 @@ async function main() {
     && !args[1].split('/').some((part) => part === '..' || part === '.' || !part), 'usage');
   const inputBytes = await readFile(args[1]); demand(sha(inputBytes) === args[3], 'candidate_pin_mismatch');
   const candidate = JSON.parse(inputBytes);
-  demand(candidate.cases.length === 20 && candidate.participantToolProtocol === 'separate_payment_delivery_v2', 'inventory_or_protocol_mismatch');
-  const expected = PUBLIC_TASK_CATALOG.flatMap((row) => [`${row.taskId}:ranked`,
-    ...(row.trainingAvailable ? [`${row.taskId}:training`] : [])]).sort();
+  demand(candidate.cases.length === TASK_IDS.length + CURRENT_TRAINING_TASK_IDS.length
+    && candidate.participantToolProtocol === 'separate_payment_delivery_v2', 'inventory_or_protocol_mismatch');
+  const expected = [...TASK_IDS.map((taskId) => `${taskId}:ranked`),
+    ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`)].sort();
   demand(canonicalTaskJson(candidate.cases.map((row) => `${row.taskId}:${row.mode}`).sort())
     === canonicalTaskJson(expected), 'case_inventory_mismatch');
   const policyPath = 'infrastructure/owner-identity/task-release-local-policy.json';

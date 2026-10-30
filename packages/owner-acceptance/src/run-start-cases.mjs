@@ -7,7 +7,7 @@ import { createSyntheticTaskPreparationReleaseFixture } from "./task-store-cases
 
 const key = () => randomUUID();
 const digest = (value) => createHash("sha256").update(value).digest("hex");
-const openTaskIds = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
+const openTaskIds = ["S1", "M1", "H1"];
 const weightFor = (taskId) => ({ S: 1, M: 2, H: 3, U: 5 })[taskId[0]];
 const quoteUnits = "1000000";
 const quotePrice = "1.000000";

@@ -7,28 +7,28 @@ Feature: Benchmark task suite approved scenarios
   Executable mirror of the selected active OpenSpec contract.
 
   @req_bts_req_001 @scn_bts_sc_001 @gate_environment @mandatory
-  Scenario: Actual manifests bind the fixed inventory and source evidence
+  Scenario: Current manifest binds the catalog and source evidence
     Given the approved environment setup for "BTS-SC-001"
-    When a release candidate is constructed from actual feasibility and same-tool reference-path evidence and its complete case manifest is validated
-    Then the accepted manifest SHALL bind immutable inventory case rubric and execution identities before task admission without claiming measured difficulty from labels alone
+    When a release candidate for the current catalog is constructed from actual feasibility and same-tool reference-path evidence and its complete case manifest is validated
+    Then the accepted manifest SHALL bind exactly twelve ranked cases and S1/M1/H1 training cases with immutable inventory, case, rubric and execution identities before admission, without claiming measured difficulty from labels alone
 
   @req_bts_req_001 @scn_bts_sc_002 @gate_environment @mandatory
-  Scenario: Incomplete substituted or unsolvable releases cannot activate
+  Scenario: Invalid current inventories cannot activate
     Given the approved environment setup for "BTS-SC-002"
-    When validation receives unresolved amounts, wrong block/code identities, missing or incomplete data validators, no qualifying offer, an initially solved paid/payout case or initially satisfied U1 final-allocation objective, empty/duplicate U1 component/allocation-asset/spender sets, fewer than two unique U1 payout obligations or duplicate payout entries
-    Then activation SHALL fail before task admission or any charge and preserve invalid-field or missing-prerequisite evidence instead of inventing defaults
+    When a candidate adds or removes a training ID, changes a weight or weight sum, reuses a release identity, or has unresolved amounts, wrong block/code identities, missing or incomplete data validators, no qualifying offer, an initially solved paid/payout case or initially satisfied U1 final-allocation objective, empty/duplicate U1 component/allocation-asset/spender sets, fewer than two unique U1 payout obligations or duplicate payout entries
+    Then activation SHALL fail before task admission or any charge and preserve invalid-field or missing-prerequisite evidence instead of inventing defaults or rewriting historical evidence
 
   @req_bts_req_002 @scn_bts_sc_003 @gate_environment @mandatory
-  Scenario: Open selections quote one whole-request price with denominator fifteen
+  Scenario: Current selections quote once at the fixed bundle price
     Given the approved environment setup for "BTS-SC-003"
-    When agents quote full open training weighted subsets and full ranked then retry admitted reservations after price or version changes
-    Then quotes SHALL use eight open tasks at 0.5 USDC subsets rounded once over weight fifteen and twelve ranked tasks at 1 USDC while admitted reservations retain their pinned price and source identities
+    When agents quote S1/M1/H1 subsets and the full training bundle, quote full ranked and retry an admitted reservation after price or release changes
+    Then quotes SHALL use 83334, 166667 and 250000 micro-USDC for S1/M1/H1 respectively and 500000 for all three using one ceiling over denominator 6, while ranked SHALL remain twelve tasks at 1 USDC and admitted reservations retain their pinned price and source identities
 
   @req_bts_req_002 @scn_bts_sc_004 @gate_environment @mandatory
   Scenario: Closed training IDs are denied before financial effects
     Given the approved environment setup for "BTS-SC-004"
-    When a scoped caller requests a closed ID alone or mixed with open IDs through tools direct HTTP or a stale training link
-    Then the entire request SHALL reject without a case payload run or reservation rather than filter the selection or expose closed parameters
+    When a scoped caller requests any task outside S1/M1/H1 alone or mixed with an open ID through tools, direct HTTP or a stale training link
+    Then the entire request SHALL reject before a case payload, run or reservation rather than filter the selection or expose closed parameters
 
   @req_bts_req_003 @scn_bts_sc_005 @gate_environment @mandatory
   Scenario: Cutoff evaluation uses observed final state and historical violations
@@ -43,10 +43,10 @@ Feature: Benchmark task suite approved scenarios
     Then the task SHALL remain unknown until original evidence resolves it and reconstruction SHALL detect divergence without action replay score overwrite fabricated zero or duplicate refund
 
   @req_bts_req_004 @scn_bts_sc_007 @gate_environment @mandatory
-  Scenario: Issuance and post-run projections disclose only authorized fields
+  Scenario: Issuance and post-run projections disclose only authorized current-catalog fields
     Given the approved environment setup for "BTS-SC-007"
-    When an actual scoped run receives open and closed tasks and its owner reads training post-task and ranked post-run results
-    Then the agent SHALL receive necessary conditions while owner feedback follows release timing and closed results expose only score and allowed reason category without exact case solution or journal
+    When an actual scoped run receives current open and closed tasks and its owner reads training post-task and ranked post-run results
+    Then the scoped agent SHALL receive necessary conditions for its issued task in either mode, with Training issuance limited to S1/M1/H1, while owner feedback follows release timing and closed results expose only score and allowed reason category without exact case solution or journal
 
   @req_bts_req_004 @scn_bts_sc_008 @gate_environment @mandatory
   Scenario: Public foreign and cache surfaces do not leak closed cases

@@ -85,10 +85,10 @@ Feature: Beta PoC delivery approved scenarios
     Then only the validated runtime SHALL prepare and execute its bound synthetic task effects, qualification manifests SHALL allow operator-restricted evidence collection for declared enabled but unverified profiles without claiming cohort readiness, release manifests SHALL require all four verified families, independent chain/database reads SHALL confirm isolation and fencing, and invalid readiness or forbidden access SHALL create no unauthorized effect or charged start
 
   @req_bpc_req_006 @scn_bpc_sc_014 @gate_environment @mandatory
-  Scenario: All eight training tasks preserve selection price and evidence
+  Scenario: Current Training preserves selection price and evidence
     Given the approved environment setup for "BPC-SC-014"
-    When agents run single, multi-task and all-eight open training selections and attempt closed, mixed, repeated or invalid IDs, stale quotes or caller-supplied grades
-    Then valid selections SHALL execute only their pinned ordered tasks with independently verified outcomes, exact fixed source charge and authorized detailed feedback, invalid selections SHALL create no reservation or execution, and supplied grade claims SHALL NOT replace authoritative grading
+    When an owner selects a single task, a multi-task subset or all of S1/M1/H1 through the real UI and starts the bound Training run, the connected agent performs its task actions, and UI or direct-API attempts exercise closed or non-current IDs, mixed/duplicate/empty/invalid selections, stale or cross-selection quotes and caller-supplied grades
+    Then only the current S1/M1/H1 selection SHALL be admitted in canonical order at the exact formula and single-task charges above; run, quote, task results and source evidence SHALL bind the submitted selection and actual effects; invalid UI/API/quote attempts SHALL create no run, preparation, reservation, debit, action or BEF effect; new validation evidence SHALL use fresh paths and frozen repository proof artifacts SHALL remain unchanged; and authoritative server grading and authorized feedback SHALL remain in force
 
   @req_bpc_req_007 @scn_bpc_sc_015 @gate_environment @mandatory
   Scenario: Full12 grading and private feedback preserve the original contract

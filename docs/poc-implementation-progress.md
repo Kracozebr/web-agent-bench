@@ -1,5 +1,200 @@
 # PoC implementation progress
 
+## 30 October: first completed native current Full12
+
+Actual Chrome intent `071fa9bf-5073-41da-9cc5-08aca792bacc`, accepted by the
+isolated native Codex client, produced run `a9f5c4fa-551a-4c8d-b657-eb9b89dac640`.
+It completed normally at 15:53:12 MSK: all twelve evaluations are known. Six
+tasks passed, four failed and two received partial credit. A completed pipeline
+does not mean the agent solved every task. Chrome's result view independently
+shows these twelve grades. No reference worker or local tool solved the tasks.
+
+Execution took 502.2 seconds (8m22s); admission to completion took 513.1 seconds
+(8m33s), including 10.9 seconds initial preparation. Successor preparation and
+grading are included in the run duration. Each task's duration below runs from
+task start to its terminal database result, including grading, rather than only
+model thinking time.
+
+| Task | Credit | Seconds |
+| --- | --- | ---: |
+| S1 | 1/1 | 26.2 |
+| S2 | 0/1 | 38.4 |
+| S3 | 0/1 | 23.9 |
+| S4 | 1/1 | 16.4 |
+| M1 | 1/1 | 37.3 |
+| M2 | 1/1 | 42.7 |
+| M3 | 0/1 | 41.5 |
+| M4 | 0/1 | 21.5 |
+| H1 | 1/1 | 48.4 |
+| H2 | 1/1 | 29.2 |
+| H3 | 3/10 | 27.1 |
+| U1 | 3/4 | 49.2 |
+
+The independent observer-only verifier recomputed all twelve input/result/bundle
+hashes, 92 runtime files and two exact manifest-pinned source leaves, with no
+missing files or mismatches. All 40 actions have resolved delivered receipts.
+All twelve preparation generations are fenced; the claim and execution slot are
+released. Exactly one 1,000,000-unit bonus fee was debited, with no cash or refund.
+Available bonus balance is 196.533332 USDC; operation/day/benchmark caps remain
+200 USDC. The approved replacement credential is kept only in its private local
+file and was not added to evidence or Git.
+
+Native CLI exited 0 after 539.6 seconds, with 194 MCP calls, eight tool errors,
+zero local tool calls, and successful private auth-alias cleanup. The tool errors
+did not prevent completion; CLI exit alone is not the grading proof. Private
+reproduction readbacks are `.local/owner-identity/google-local/full12-06-independent-verification.json`
+and `full12-06-timings.json`; the sanitized client summary is `codex-full12-06.json`
+in that directory. Reproduce the read-only check with
+`docker exec -w /workspace/packages/owner-identity oid-google-local node /workspace/.tmp/verify-current-google-run.mjs a9f5c4fa-551a-4c8d-b657-eb9b89dac640 ranked`.
+
+This closes the local native current Training/Full12 qualification gap. Target-host
+acceptance, report-image attachment, other client families, and refreshed mandatory
+BDD runtime evidence remain open; no OpenSpec gate or archive status is promoted.
+
+## 30 October: current Training selection
+
+Owner-approved scope: one current catalog, with Training limited to S1/M1/H1
+and Ranked retaining the original twelve cases, weights and rubrics. No legacy
+catalog reader or migration is required. Old local qualification runs may be
+discarded, but deletion is not needed to activate a fresh validated release;
+accounts, bonus ledger, reports and screenshots must not be reset incidentally.
+
+Training weights are 1/2/3, denominator 6, with a 500,000 micro-USDC bundle.
+The single-task quotes are 83,334 / 166,667 / 250,000 micro-USDC. Round once per
+request: the full bundle costs 500,000, whereas three separate single requests
+sum to 500,001. The browser derives choices and weights from validated backend
+metadata; missing or contradictory metadata disables launch creation.
+
+Implementation verification so far: 28 focused catalog/release/feedback/server/UI
+tests passed, as did the isolated PostgreSQL admission regression and backend/web
+typechecks. Semantic harness audits pass for all 34 BTS, 25 BRL and 26 BPC
+scenario contracts. These are implementation checks, not current release or
+participant end-to-end acceptance.
+
+Fresh offline validation
+`artifacts/runs/bts-difficulty-v2-release-validation/cf8b4dc8-aa8b-41a1-bf8d-c0b0ed5c1c62/validation.json`
+passed for all 15 cases and 1,701 source pins, with `sourceUnchanged:true`.
+Its SHA-256 is `df6e3186c13755579ca2d4e5148c01b7f6a2b485bbbb460e5a9f81cb52ca71f4`.
+Normal Google-local restart activated manifest
+`1e4843cb5660b4b2cdd7d120c13fb34ab497f045bcd4ade8ce10220be2f4146e`.
+Actual Chrome shows only the three Training choices and the metadata-derived
+denominator 6; full Ranked still lists all twelve tasks at 1 USDC.
+
+The real Chrome intent `f5f3db5e-49b0-4b52-81c2-09ec5a6e56dc` was accepted by
+the isolated native Codex client and produced Training run
+`60e91ed6-21f2-4b9d-b422-fe9426d238f0`. It completed at 14:22:31 MSK with
+S1/M1/H1 all known, passed, credit 1/1. Independent read-only verification
+recomputed all three input/result/bundle hashes and 24 runtime evidence files;
+all three preparations are fenced, the claim released, and no slot remains.
+The 500,000-unit fee has two source allocations (33,332 and 466,668), whose
+debits sum to the single bundle price. There is no cash allocation or refund.
+
+Admission-to-completion took 125.2 seconds, including 10.6 seconds initial
+queue/preparation; execution-to-completion took 114.7 seconds. Per-task start to
+terminal result: S1 27.4 seconds, M1 37.5, H1 40.7. These include evaluation;
+the agent closed them after 25.5/33.6/38.2 seconds respectively. The separate
+native-client wall time was 153.1 seconds, with 47 MCP calls, one recoverable tool
+error, zero local tool calls, exit 0 and successful private auth-alias cleanup.
+Client exit is not the grading proof. Private readbacks are
+`.local/owner-identity/google-local/training3-01-independent-verification.json`
+and `training3-01-timings.json` in the same directory.
+
+The following actual Ranked attempt, run
+`cfb210ae-e238-40d0-bb52-9061e559101f` from Chrome intent
+`26a1aa98-e356-4f0a-adee-655a5054813f`, retained ten known evaluations before
+H3 closed at 14:31:34 MSK without a grade. H2 passed 1/1; U1 was not issued.
+The operator stopped the native client while it was polling this grading stall;
+its nonzero exit is operator termination, not a spontaneous client crash. Private
+auth cleanup succeeded. The before-fix observer verifies ten input/result hashes,
+eleven bundle hashes, 73 runtime files and two manifest-pinned source leaves;
+one 1,000,000-unit bonus debit remains. This attempt is not full12 acceptance.
+
+Read-only reproduction isolated `TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH` in the
+chain-owner inspection branch. H3/U1 intentionally prove their paid inspections
+through the composite paid child, while M3/M4/H2 carry a separate chain inspection
+proof. The sealer incorrectly demanded the latter fields from H3. Restricting
+that branch to M3/M4/H2 preserves H3/U1's strict paid command/GET/response proof.
+The full retained H3 bundle now passes the patched production loader read-only;
+62 focused tests pass with one existing optional PG skip, and typecheck passes.
+No historical action or grade was rewritten. The expired closed-but-ungraded
+task also exposed a separate cancellation/slot-cleanup gap. After the ordinary
+grading retry, the coordinator now selects only fully reconciled closed tasks
+past the overall deadline, without known grades, unresolved cutoff actions or
+active platform recovery, and uses normal cancellation/fencing. The focused
+suite passes 19 tests with one unrelated integration skip; its guarded isolated
+PostgreSQL test verifies normal claim/slot release without a grade/refund and
+preserves pending/unknown actions. An observer-only selector probe matched only
+the actual stalled run; its cancellation callbacks were spies. Runtime restart
+and the next actual attempt remain separate checks. Private before-fix snapshot:
+`.local/owner-identity/google-local/full12-04-before-fix-verification.json`.
+
+Normal runtime restart then recorded the original H3 result as known partial
+3/10, with input SHA `73842a59bbe16441f8ba93bda27b336dc0bb86a301bc84599d2267a070c3829e`
+and result SHA `9cc47b11995dfcb306b8912672641d0fe1ef1f74d875fb6bd56ffca2f7f2cae9`,
+matching the earlier read-only pure-evaluator diagnostic. The expired run ended
+as `cancelled / coordinator_run_deadline` with eleven known evaluations, all
+eleven prepared generations fenced, claim released and no slot. U1 remains
+unissued; no grade is fabricated for it. The original fee remains exactly
+1,000,000 units without a second charge or refund. This live recovery used the
+ordinary grading retry and late-known-gap cancellation; the new permanently
+ungraded selector has its separate isolated-PG and read-only-selector evidence.
+Post-fix snapshot: `full12-04-after-fix-verification.json` in the same directory.
+
+The first native launch for the following intent made zero MCP tool calls and
+admitted no run: its locally cached credential had been replaced at 14:45 MSK.
+A bounded initialize diagnostic returned native HTTP 401 with a bearer challenge.
+After explicit owner approval, actual Chrome replaced that credential again at
+15:13 MSK and saved the one-time value only into the ignored private credential
+file; the value was hidden from the page and never printed. The new binding was
+checked independently and initialize returned HTTP 200, protocol 2025-06-18.
+The same still-pending intent was reused, so this connection failure created no
+second admission or fee.
+
+With the refreshed key, intent `a999d7df-f980-435b-a3e7-08680e32b9d1` admitted
+Ranked run `993ce0fc-a197-4bc1-9c8e-737029704663`. Nine evaluations were known
+before H2 closed after 53.2 seconds. Its actual seven-action prefix contains one
+source-proven rejected transfer followed by six observed transfers; it has no
+inspection action. Full-loader replay exposed a distinct traversal omission:
+the packet returns rejected child references, but the loader registered only
+observed owner/external actions, so the final proof saw a missing rejected child.
+
+A dedicated bounded decode/classification path now carries rejected children to
+the existing strict durable/history/source-operation/event/zero-cost verifier.
+Full-loader regressions cover rejected-only and mixed seven-action prefixes plus
+missing, tampered, foreign, transaction-claim and incomplete-proof negatives.
+64 tests pass with one existing optional PG skip; typecheck passes. The actual
+retained H2 input passes the patched full loader and pure evaluator read-only:
+known passed 1/1, input SHA
+`bb592e5d5849dbb8ba6da519efdd0c811072af05c1d8326b9654f8fa90768675`,
+result SHA `9ef6dbcb62f4c7d6f78a76d41ed2eeb378d00633dbdd80f95c76864e56bb9987`.
+This diagnostic does not post a grade to the cancelled run.
+
+Before that patch was deployed, the new deadline cleanup independently passed
+its first actual stalled-task check: the live API cancelled this run for
+`coordinator_run_deadline` without an API restart, preserving its nine known
+evaluations and leaving H2 ungraded. All ten created preparations were fenced,
+the claim/slot released, and the one 1,000,000-unit fee remained unchanged without
+a refund. Independent replay checks 67 runtime files and two source leaves.
+The native client had been deliberately stopped during the stall; its private
+auth cleanup succeeded. Snapshot:
+`.local/owner-identity/google-local/full12-05-before-H2-fix-verification.json`.
+
+Historical acceptance summaries were copied byte-for-byte under
+`artifacts/runs/current-training-prior-acceptance/1439a19e-e481-43fc-adef-880019e5e8c2/`.
+The current BTS/BRL acceptance replay rejects the historical contract bindings
+(BTS: two failed, 32 skipped; BRL: three failed, 22 skipped). Earlier passed
+labels must not be carried into the changed contract. Current target/browser
+gates remain unproven.
+
+Before the current Training run, the owner authorized another 200 internal bonus USDC and financial
+caps of 200 USDC for this same local test agent. Actual Chrome actions issued
+grant `279a20a9-d946-44b5-b1b0-928a8f813dae` and saved financial policy revision 4.
+At that grant checkpoint, independent observer readback confirmed 200,033,332 available micro-USDC, one new
+ledger entry, unchanged six debit rows, and 200,000,000-unit operation/day and
+benchmark caps. Cash shortfall remains false and forum cap zero. This replaces
+the earlier per-attempt top-up restriction for the ongoing local test work;
+it does not authorize real deposits, withdrawals, or cash charges.
+
 ## 30 October: real Google and native Codex local qualification
 
 This is a separate loopback-only qualification on real Google authentication and

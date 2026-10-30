@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "bts-current-task-release-inputs/v1",
+  "classification": "current_candidate_artifact_pinset_not_validation_or_activation",
+  "cases": {
+    "path": "artifacts/runs/bts-difficulty-v2-case-candidates/0b68e103-c296-45f9-a97a-b6b8f14a44e5/candidate-cases.json",
+    "sha256": "4c66c32fb00de697b46317ad6a90dd0e0ed5b63812f9545a0fc5b03d94fc5356"
+  },
+  "release": {
+    "path": "artifacts/runs/bts-difficulty-v2-release-candidates/901b520e-c3e0-41b1-bcae-a6ab25478744/candidate-release.json",
+    "sha256": "cbe4d91393e89a2b0aa43ffe6fb4c3ba8c0e1b85928d60322b1d6c0df8652459"
+  },
+  "minimum": {
+    "path": "artifacts/runs/bts-v2-minimum-action-review/97b7f94d-13e9-4a4b-ab68-7b8de7a31201/review.json",
+    "sha256": "7d3aca4637c83dffea4754755e659b1cf7faa6b34eb07403c4f771bc2d2b3926"
+  },
+  "references": {
+    "path": "artifacts/runs/bts-v2-reference-verification/70b7803a-dbe4-4f79-ba8b-bc815c9b5272/verification.json",
+    "sha256": "6361ea447034c293ddc22475853d9c9fa8bbee22fdaa17bd4babbee05f74e496"
+  }
+}

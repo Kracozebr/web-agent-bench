@@ -606,6 +606,84 @@ export async function cancelExpiredKnownRunGaps(input:{db:OwnerDatabase;assertLe
   return cancelled;
 }
 
+type ExpiredClosedUngradedTask = {
+  run_id:string;mode:string;run_status:string;overall_deadline:Date|string;observed_at:Date|string;
+  task_status:string;closure_status:string;action_cutoff_sequence:string|number|null;
+  accepted_action_sequence:string|number;reconciled_action_sequence:string|number;active_task_count:number;
+  known_evaluation:boolean;unresolved_cutoff_action:boolean;active_platform_recovery:boolean;claim_slot_matches:boolean;
+};
+
+function nonnegativeSequence(value:string|number|null):bigint|null {
+  if(typeof value==='number')return Number.isSafeInteger(value)&&value>=0?BigInt(value):null;
+  if(typeof value!=='string'||!/^\d+$/.test(value))return null;
+  try{return BigInt(value);}catch{return null;}
+}
+
+export function isExpiredClosedUngradedTask(value:ExpiredClosedUngradedTask):boolean {
+  const deadline=new Date(value.overall_deadline).getTime(),now=new Date(value.observed_at).getTime();
+  const cutoff=nonnegativeSequence(value.action_cutoff_sequence),accepted=nonnegativeSequence(value.accepted_action_sequence),
+    reconciled=nonnegativeSequence(value.reconciled_action_sequence);
+  return UUID.test(value.run_id)&&['training','ranked'].includes(value.mode)&&value.run_status==='running'&&
+    Number.isFinite(deadline)&&Number.isFinite(now)&&now>=deadline&&value.task_status==='active'&&value.closure_status==='closed'&&
+    cutoff!==null&&accepted===cutoff&&reconciled!==null&&reconciled>=cutoff&&value.active_task_count===1&&
+    value.known_evaluation===false&&value.unresolved_cutoff_action===false&&value.active_platform_recovery===false&&
+    value.claim_slot_matches===true;
+}
+
+/**
+ * AICODE-NOTE: A closed task that remains ungraded past the run deadline gets one normal cancellation
+ * attempt after its grading retry. This preserves unknown evidence and relies on the existing exact-fence
+ * cancellation path; platform recovery and unresolved cutoff actions retain their own authority.
+ */
+export async function cancelExpiredClosedUngradedTasks(input:{db:OwnerDatabase;assertLeaseHeld():Promise<void>;
+  requestCancellation(runId:string,reason:LocalCoordinatorCancellationReason):Promise<void>;drainCancellations():Promise<void>},
+  recoveringRunIds:ReadonlySet<string>=new Set(),limit=16):Promise<number>{
+  await input.assertLeaseHeld();
+  const candidates=await input.db.execute(sql`WITH expired_candidates AS (
+    SELECT r.id AS run_id,r.mode,r.status AS run_status,r.overall_deadline,
+      clock_timestamp() AS observed_at,t.status AS task_status,t.closure_status,
+      t.action_cutoff_sequence::text AS action_cutoff_sequence,t.accepted_action_sequence::text AS accepted_action_sequence,
+      t.reconciled_action_sequence::text AS reconciled_action_sequence,
+      (SELECT count(*)::int FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active') AS active_task_count,
+      EXISTS (SELECT 1 FROM oid_run_task_evaluation e WHERE e.run_id=r.id AND e.task_index=t.task_index
+        AND e.result_json->>'status'='known') AS known_evaluation,
+      EXISTS (SELECT 1 FROM oid_run_task_action a
+        LEFT JOIN oid_run_task_action_receipt receipt ON receipt.action_id=a.id
+        LEFT JOIN oid_run_task_action_outbox outbox ON outbox.action_id=a.id
+        WHERE a.run_id=r.id AND a.task_index=t.task_index AND a.action_sequence<=t.action_cutoff_sequence
+          AND (receipt.action_id IS NULL OR receipt.receipt_status NOT IN ('observed','rejected_before_execution')
+            OR outbox.action_id IS NULL OR outbox.status<>'delivered')) AS unresolved_cutoff_action,
+      EXISTS (SELECT 1 FROM oid_run_platform_recovery recovery WHERE recovery.run_id=r.id
+        AND recovery.status IN ('recovering','unknown','exhausted')) AS active_platform_recovery,
+      (c.status='claimed' AND s.state='running' AND s.released_at IS NULL AND s.claim_id=c.claim_id) AS claim_slot_matches
+    FROM oid_benchmark_run r
+    JOIN oid_run_task t ON t.run_id=r.id
+    JOIN oid_run_dispatch_claim c ON c.run_id=r.id AND c.status='claimed'
+    JOIN oid_run_execution_slot s ON s.run_id=r.id AND s.agent_id=r.agent_id AND s.claim_id=c.claim_id
+      AND s.state='running' AND s.released_at IS NULL
+    WHERE r.status='running' AND r.mode IN ('training','ranked') AND r.overall_deadline<=clock_timestamp()
+      AND t.status='active' AND t.closure_status='closed' AND t.action_cutoff_sequence IS NOT NULL
+      AND t.accepted_action_sequence=t.action_cutoff_sequence AND t.reconciled_action_sequence>=t.action_cutoff_sequence
+      AND (SELECT count(*) FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active')=1
+      AND (SELECT count(*)::bigint FROM oid_run_task_action a WHERE a.run_id=r.id AND a.task_index=t.task_index)=t.action_cutoff_sequence
+      AND COALESCE((SELECT max(a.action_sequence) FROM oid_run_task_action a WHERE a.run_id=r.id AND a.task_index=t.task_index),0)=t.action_cutoff_sequence
+  )
+  SELECT * FROM expired_candidates
+  WHERE known_evaluation=false AND unresolved_cutoff_action=false AND active_platform_recovery=false AND claim_slot_matches=true
+  ORDER BY overall_deadline,run_id,task_status LIMIT ${limit}`) as unknown as ExpiredClosedUngradedTask[];
+  await input.assertLeaseHeld();
+  let cancelled=0;
+  const seen=new Set<string>();
+  for(const candidate of candidates){
+    if(!isExpiredClosedUngradedTask(candidate)||recoveringRunIds.has(candidate.run_id)||seen.has(candidate.run_id))continue;
+    await input.assertLeaseHeld();
+    await input.requestCancellation(candidate.run_id,'coordinator_run_deadline');
+    await input.drainCancellations();
+    seen.add(candidate.run_id);cancelled++;
+  }
+  return cancelled;
+}
+
 export function successorFailureCancellationReason(
   code: string | null,
   hasPreparationIntent: boolean,
@@ -1584,6 +1662,8 @@ async function createBefTaskCoordinatorCore(input: {
     // AICODE-NOTE: Resume closed tasks from retained observations before lost-RAM
     // handling; grading/fencing never restores or resends an actor session.
     await processClosedTrainingTasks(recoveringRunIds);
+    await cancelExpiredClosedUngradedTasks({db:input.db,assertLeaseHeld:()=>lease.assertHeld(),requestCancellation,drainCancellations},
+      recoveringRunIds,batchSize);
     await cancelRunningBindingsWithoutRam(recoveringRunIds);
     await drainCancellations();
     await discardFencedSessions();

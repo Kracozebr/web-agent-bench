@@ -75,10 +75,10 @@ test('first-task orchestration rebases global money only after proving this run 
   'no other callback scope may move the baseline');
 });
 
-test('all-open training selection is canonical and contains seven adjacent transitions', () => {
-  assert.deepEqual(OPEN_TASK_IDS, ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2']);
+test('current Training selection is canonical and contains two adjacent transitions', () => {
+  assert.deepEqual(OPEN_TASK_IDS, ['S1', 'M1', 'H1']);
   assert.deepEqual(normalizeTrainingSequenceTaskIds(OPEN_TASK_IDS), OPEN_TASK_IDS);
-  assert.deepEqual(normalizeTrainingSequenceTaskIds(['S2', 'S1']), ['S1', 'S2']);
+  assert.deepEqual(normalizeTrainingSequenceTaskIds(['M1', 'S1']), ['S1', 'M1']);
   assert.deepEqual(trainingSequenceTransitions(OPEN_TASK_IDS), OPEN_TASK_IDS.slice(1).map((toTaskId, index) => ({
     fromTaskIndex: index,
     fromTaskId: OPEN_TASK_IDS[index],
@@ -89,7 +89,7 @@ test('all-open training selection is canonical and contains seven adjacent trans
 
 test('training capture helper rejects empty, duplicate, closed, unknown and unsupported sequences', () => {
   for (const selection of [[], ['S1', 'S1'], ['S1', 'S3'], ['S1', 'UNKNOWN'], ['S2', 'S4'],
-    ['S1', 'S2', 'S4'], ['S2', 'S1', 'S4'], [...OPEN_TASK_IDS].reverse()]) {
+    ['S1', 'S2'], ['S1', 'M1', 'S2'], [...OPEN_TASK_IDS].reverse()]) {
     assert.throws(() => normalizeTrainingSequenceTaskIds(selection), { code: 'unsupported_genuine_task_selection' });
   }
 });
@@ -112,33 +112,40 @@ test('recovery proxy settings require explicit automatic worker and strict loopb
   { code: 'platform_recovery_observer_proxy_must_be_loopback' });
 });
 
-test('training quote rounds the selected weight once and keeps the established S1/S2 grant floor', () => {
-  const weights = [1, 1, 1, 2, 2, 2, 3, 3];
+test('current bundle quote allocates 500000 once across Training weights 1/2/3', () => {
+  const weights = [1, 2, 3];
   const release = { trainingPriceUnits: '500000', trainingTasks: OPEN_TASK_IDS.map((taskId, index) => ({
     taskId, taskWeight: weights[index],
   })) };
-  const s1s2Quote = quoteTrainingSelectionUnits(release, ['S1', 'S2']);
+  const s1Quote = quoteTrainingSelectionUnits(release, ['S1']);
+  const m1Quote = quoteTrainingSelectionUnits(release, ['M1']);
+  const h1Quote = quoteTrainingSelectionUnits(release, ['H1']);
+  const s1m1Quote = quoteTrainingSelectionUnits(release, ['S1', 'M1']);
   const allOpenQuote = quoteTrainingSelectionUnits(release, OPEN_TASK_IDS);
 
-  assert.equal(s1s2Quote, 66_667n);
-  assert.equal(trainingSequenceGrantAmountUnits(s1s2Quote), 100_000n);
+  assert.equal(s1Quote, 83_334n);
+  assert.equal(m1Quote, 166_667n);
+  assert.equal(h1Quote, 250_000n);
+  assert.equal(s1m1Quote, 250_000n);
+  assert.equal(trainingSequenceGrantAmountUnits(s1Quote), 100_000n);
+  assert.equal(trainingSequenceGrantAmountUnits(m1Quote), 166_667n);
+  assert.equal(trainingSequenceGrantAmountUnits(h1Quote), 250_000n);
   assert.equal(allOpenQuote, 500_000n);
   assert.equal(trainingSequenceGrantAmountUnits(allOpenQuote), 500_000n);
 });
 
-test('all-open successor basis requires the immediate predecessor event and matching prior deadline', () => {
+test('current Training successor basis requires the immediate predecessor event and matching prior deadline', () => {
   const taskIds = [...OPEN_TASK_IDS];
-  const transition = trainingSequenceTransitions(taskIds)[3]; // M1 -> M3
+  const transition = trainingSequenceTransitions(taskIds)[1]; // M1 -> H1
   const startDeadline = '2026-10-29T10:00:00.000Z';
   const predecessorDeadline = '2026-10-29T10:05:00.000Z';
   const runStartedEvents = [{ sequence: '1', payload: { overallDeadline: startDeadline } }];
   const activationEvents = [
-    { sequence: '2', payload: { toTaskIndex: 1 } },
-    { sequence: '3', payload: { toTaskIndex: 2 } },
-    { sequence: '4', payload: { toTaskIndex: 3, overallDeadline: predecessorDeadline } },
+    { sequence: '2', payload: { fromTaskIndex: 0, fromTaskId: 'S1', toTaskIndex: 1,
+      toTaskId: 'M1', overallDeadline: predecessorDeadline } },
     { sequence: '7', payload: { ...transition, previousOverallDeadline: predecessorDeadline } },
   ];
-  const terminalizationEvents = [{ sequence: '6', payload: { taskIndex: 3, taskId: 'M1' } }];
+  const terminalizationEvents = [{ sequence: '6', payload: { taskIndex: 1, taskId: 'M1' } }];
   const proof = { taskIds, transition, runStartedEvents, activationEvents, terminalizationEvents,
     initialOverallDeadline: startDeadline };
 
@@ -146,21 +153,21 @@ test('all-open successor basis requires the immediate predecessor event and matc
   assert.throws(() => trainingSequenceTransitionBasis({ ...proof, terminalizationEvents: [] }),
     { code: 'successor_predecessor_terminalization_missing_or_stale' });
   assert.throws(() => trainingSequenceTransitionBasis({ ...proof,
-    terminalizationEvents: [{ sequence: '6', payload: { taskIndex: 3, taskId: 'M3' } }] }),
+    terminalizationEvents: [{ sequence: '6', payload: { taskIndex: 1, taskId: 'H1' } }] }),
   { code: 'successor_predecessor_terminalization_missing_or_stale' });
   assert.throws(() => trainingSequenceTransitionBasis({ ...proof,
     activationEvents: activationEvents.map((event) => event.sequence === '7'
       ? { ...event, payload: { ...event.payload, previousOverallDeadline: startDeadline } } : event) }),
   { code: 'successor_previous_deadline_missing_or_stale' });
   assert.throws(() => trainingSequenceTransitionBasis({ ...proof,
-    activationEvents: activationEvents.map((event) => event.sequence === '4'
+    activationEvents: activationEvents.map((event) => event.sequence === '2'
       ? { ...event, payload: { ...event.payload, overallDeadline: undefined } }
       : event.sequence === '7' ? { ...event, payload: { ...event.payload, previousOverallDeadline: startDeadline } } : event) }),
   { code: 'successor_previous_deadline_missing_or_stale' });
 });
 
-test('first successor uses the authoritative run-start deadline when the pre-start snapshot is null', () => {
-  const taskIds = ['S1', 'S2'];
+test('first current successor uses the authoritative run-start deadline when the pre-start snapshot is null', () => {
+  const taskIds = ['S1', 'M1'];
   const transition = trainingSequenceTransitions(taskIds)[0];
   const deadline = '2026-10-29T00:19:37.332Z';
   const proof = {
@@ -178,8 +185,8 @@ test('first successor uses the authoritative run-start deadline when the pre-sta
   { code: 'successor_previous_deadline_missing_or_stale' });
 });
 
-test('first successor preserves Date milliseconds and rejects stale or malformed supplied deadlines', () => {
-  const taskIds = ['S1', 'S2'];
+test('first current successor preserves Date milliseconds and rejects stale or malformed supplied deadlines', () => {
+  const taskIds = ['S1', 'M1'];
   const transition = trainingSequenceTransitions(taskIds)[0];
   const deadline = '2026-10-29T00:19:37.332Z';
   const proof = {
@@ -203,20 +210,20 @@ test('first successor preserves Date milliseconds and rejects stale or malformed
 });
 
 test('cleanup reports fenced selected-prefix leases when successor proof failed before recording activation', () => {
-  const taskIds = ['S1', 'S2'];
+  const taskIds = ['S1', 'M1'];
   const preparations = [
     { task_index: 0, task_id: 'S1', lease_state: 'fenced' },
-    { task_index: 1, task_id: 'S2', lease_state: 'fenced' },
+    { task_index: 1, task_id: 'M1', lease_state: 'fenced' },
   ];
   const recordedSuccessorActivations = [];
 
   assert.equal(recordedSuccessorActivations.length, 0);
   assert.equal(trainingCleanupLeasePrefixIsFenced({ mode: 'training', preparations, taskIds }), true);
   assert.equal(trainingCleanupLeasePrefixIsFenced({ mode: 'training', preparations: [
-    ...preparations, { task_index: 2, task_id: 'S4', lease_state: 'fenced' },
+    ...preparations, { task_index: 2, task_id: 'H1', lease_state: 'fenced' },
   ], taskIds }), false);
   assert.equal(trainingCleanupLeasePrefixIsFenced({ mode: 'training', preparations: [
-    { ...preparations[0], task_id: 'S2' }, preparations[1],
+    { ...preparations[0], task_id: 'M1' }, preparations[1],
   ], taskIds }), false);
   assert.equal(trainingCleanupLeasePrefixIsFenced({ mode: 'training', preparations: [
     preparations[0], { ...preparations[1], lease_state: 'leased' },
@@ -227,8 +234,8 @@ test('cleanup reports fenced selected-prefix leases when successor proof failed 
   ] }), true);
 });
 
-test('verifier activation result shape satisfies the all-open chain consumer', () => {
-  const taskIds = [...OPEN_TASK_IDS];
+test('verifier activation result shape satisfies the current Training chain consumer', () => {
+  const taskIds = ['S1', 'M1'];
   const transition = trainingSequenceTransitions(taskIds)[0];
   const activationResult = trainingSuccessorActivationResult({ transition, proof: {
     taskIndex: transition.toTaskIndex, taskId: transition.toTaskId, activationEventSequence: '9',
@@ -237,13 +244,13 @@ test('verifier activation result shape satisfies the all-open chain consumer', (
   assert.deepEqual({ fromTaskIndex: activationResult.fromTaskIndex, fromTaskId: activationResult.fromTaskId,
     toTaskIndex: activationResult.toTaskIndex, toTaskId: activationResult.toTaskId,
     taskIndex: activationResult.taskIndex, taskId: activationResult.taskId }, {
-    fromTaskIndex: 0, fromTaskId: 'S1', toTaskIndex: 1, toTaskId: 'S2', taskIndex: 1, taskId: 'S2',
+    fromTaskIndex: 0, fromTaskId: 'S1', toTaskIndex: 1, toTaskId: 'M1', taskIndex: 1, taskId: 'M1',
   });
-  assert.equal(trainingSuccessorActivationChainMatches(['S1', 'S2'], [activationResult]), true);
-  assert.equal(trainingSuccessorActivationChainMatches(taskIds, [activationResult]), false);
-  const completeProofs = trainingSequenceTransitions(taskIds).map((edge) => trainingSuccessorActivationResult({ transition: edge,
+  assert.equal(trainingSuccessorActivationChainMatches(taskIds, [activationResult]), true);
+  assert.equal(trainingSuccessorActivationChainMatches(OPEN_TASK_IDS, [activationResult]), false);
+  const completeProofs = trainingSequenceTransitions(OPEN_TASK_IDS).map((edge) => trainingSuccessorActivationResult({ transition: edge,
     proof: { taskIndex: edge.toTaskIndex, taskId: edge.toTaskId, activationEventSequence: String(edge.toTaskIndex + 8) } }));
-  assert.equal(trainingSuccessorActivationChainMatches(taskIds, completeProofs), true);
-  assert.equal(trainingSuccessorActivationChainMatches(taskIds, completeProofs.map((entry, index) => index === 0
+  assert.equal(trainingSuccessorActivationChainMatches(OPEN_TASK_IDS, completeProofs), true);
+  assert.equal(trainingSuccessorActivationChainMatches(OPEN_TASK_IDS, completeProofs.map((entry, index) => index === 0
     ? { ...entry, toTaskId: undefined } : entry)), false);
 });

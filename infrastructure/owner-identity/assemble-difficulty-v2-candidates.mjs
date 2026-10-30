@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { TaskCaseSchema, canonicalTaskJson, sha256CanonicalTaskJson, taskCaseHash,
   taskRubricHash, taskMandatoryRules } from '../../packages/owner-identity/src/task-release.ts';
-import { PUBLIC_TASK_CATALOG } from '../../packages/owner-identity/src/task-catalog.ts';
+import { CURRENT_TRAINING_TASK_IDS, PUBLIC_TASK_CATALOG, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
 import { calculateParticipantExpenseBudget } from '../../packages/owner-identity/src/task-case-assembler.ts';
 import { verifyRetainedTaskFeasibility } from '../../packages/owner-identity/src/task-feasibility-evidence.ts';
 import { projectDeliveryEnvelope } from '../../packages/benchmark-environment/src/probe/task-reference-cases.ts';
@@ -16,6 +16,8 @@ import { projectU1V2Candidate } from './project-u1-v2-candidate.mjs';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hashPattern = /^[0-9a-f]{64}$/;
 const boundary = 'actual_tool_http_x402_local_evm_application_store';
+const frozenCandidatePath = 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json';
+const frozenCandidateSha256 = '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b';
 function must(condition, code) { if (!condition) throw new Error(code); }
 function uint(value) { must(typeof value === 'string' && /^(?:0|[1-9][0-9]*)$/.test(value), 'uint_invalid'); return value; }
 function safePath(path) {
@@ -170,6 +172,13 @@ async function main() {
   must(integrity.status === 'verified' && integrity.classification === 'raw_artifact_integrity_and_trace_binding_not_semantic_task_acceptance',
     'integrity_contract_invalid');
   await pinned(integrity.retainedInputIndex.path, integrity.retainedInputIndex.sha256);
+  const frozenCasesInput = await pinned(frozenCandidatePath, frozenCandidateSha256), frozenCandidate = frozenCasesInput.value;
+  must(frozenCandidate.schemaVersion === 'bts-difficulty-v2-case-candidates/v1'
+    && frozenCandidate.captureId === frozenCandidatePath.split('/')[3] && Array.isArray(frozenCandidate.cases)
+    && frozenCandidate.cases.length === 20 && Array.isArray(frozenCandidate.sourceInputs), 'frozen_candidate_inventory_invalid');
+  const frozenCases = frozenCandidate.cases.map((value) => TaskCaseSchema.parse(value));
+  const frozenByKey = new Map(frozenCases.map((taskCase) => [`${taskCase.taskId}:${taskCase.mode}`, taskCase]));
+  must(frozenByKey.size === frozenCases.length, 'frozen_candidate_keys_invalid');
   const identityPath = 'artifacts/runs/bts-runtime-feasibility-verification/5da32b24-3bbe-4e23-8969-ee954d7acf72/verification.json';
   const identityInput = await pinned(identityPath, '0d0032dd24f5a9e8c4bcccf9e80088287f719ec1299a4649ba9de0300825feb0');
   const identity = identityInput.value.executionIdentity, identityHash = sha256CanonicalTaskJson(identity);
@@ -185,20 +194,41 @@ async function main() {
     expectedIdentityHash: identityHash, profilePolicy: { path: policyPath, sha256: sha(policyBytes) },
     participantToolProtocol: 'separate_payment_delivery_v2' });
   must(feasibility.status === 'verified', 'current_retained_feasibility_not_verified');
+  const expectedCaseKeys = [
+    ...TASK_IDS.map((taskId) => `${taskId}:ranked`),
+    ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`),
+  ].sort();
+  const expectedCaseKeySet = new Set(expectedCaseKeys);
+  const integrityCaseKeys = integrity.captures.map((capture) => `${capture.taskId}:${capture.mode}`).sort();
+  const frozenProbePins = new Set(frozenCandidate.sourceInputs
+    .filter((row) => typeof row.path === 'string' && row.path.endsWith('/probe.json') && hashPattern.test(row.sha256))
+    .map((row) => `${row.path}\0${row.sha256}`));
+  must(integrityCaseKeys.length === expectedCaseKeys.length && new Set(integrityCaseKeys).size === expectedCaseKeys.length
+    && integrityCaseKeys.every((key, index) => key === expectedCaseKeys[index])
+    && integrity.captures.every((capture) => expectedCaseKeySet.has(`${capture.taskId}:${capture.mode}`)
+      && frozenProbePins.has(`${capture.probe.path}\0${capture.probe.sha256}`)),
+  'current_raw_probes_do_not_match_frozen_case_sources');
   const captureId = randomUUID(), outputPrefix = `artifacts/runs/bts-difficulty-v2-case-candidates/${captureId}`;
   await mkdir(outputPrefix, { recursive: true });
-  const cases = [], files = [], sourceInputs = [{ path: args[1], sha256: args[3] },
+  const cases = expectedCaseKeys.map((key) => frozenByKey.get(key));
+  must(cases.every(Boolean), 'current_cases_missing_from_frozen_candidate');
+  const evidenceFiles = new Map();
+  const sourceInputs = [{ path: args[1], sha256: args[3] },
+    { path: frozenCandidatePath, sha256: frozenCandidateSha256 },
+    integrity.verifierSource,
     { ...integrity.retainedInputIndex }, { ...identityInput.value.witness },
     { path: identityPath, sha256: sha(identityInput.bytes) }, { path: policyPath, sha256: sha(policyBytes) },
     ...identityInput.value.applicationSchemaLineage.migrationFiles];
   for (const path of ['infrastructure/owner-identity/assemble-difficulty-v2-candidates.mjs', 'pnpm-lock.yaml',
     'infrastructure/owner-identity/project-basic-v2-candidates.mjs', 'infrastructure/owner-identity/project-u1-v2-candidate.mjs',
-    ...['task-release', 'task-catalog', 'task-case-assembler', 'task-feasibility-evidence'].map((name) => `packages/owner-identity/src/${name}.ts`),
+    ...['task-release', 'task-catalog', 'task-case-assembler', 'task-reference-inventory', 'task-feasibility-evidence']
+      .map((name) => `packages/owner-identity/src/${name}.ts`),
     'infrastructure/owner-identity/verify-runtime-feasibility.mjs',
     'packages/benchmark-environment/src/probe/environment.ts',
     'packages/benchmark-environment/src/probe/task-reference-cases.ts', 'packages/benchmark-environment/src/probe/task-route-reference.ts']) {
     sourceInputs.push({ path, sha256: sha(await readFile(path)) });
   }
+  let projectedCaseCount = 0;
   for (const source of integrity.captures) {
     const probeInput = await pinned(source.probe.path, source.probe.sha256), probe = probeInput.value;
     const captureRoot = dirname(source.probe.path);
@@ -213,54 +243,78 @@ async function main() {
     const manifest = (await rawArtifact(probe.manifest.path)).value;
     const projected = await buildProjection(probe, manifest, identity, policy, rawArtifact);
     sourceInputs.push(...(projected.resourceInputs ?? []));
+    const taskKey = `${probe.taskId}:${probe.mode}`;
+    const frozen = frozenByKey.get(taskKey);
+    must(frozen && expectedCaseKeySet.has(taskKey), 'projection_case_not_in_current_frozen_inventory');
     const caseId = `bts-${probe.mode}-${probe.taskId.toLowerCase()}-local-v2`;
+    must(frozen.caseId === caseId, 'frozen_case_identity_mismatch');
     const initialHash = sha256CanonicalTaskJson(projected.initial), finalHash = sha256CanonicalTaskJson(projected.final);
     const rawReferences = [...artifacts.values()].map((ref) => ({ path: `${captureRoot}/${ref.path}`, sha256: ref.sha256, boundary: ref.boundary }));
     sourceInputs.push(...rawReferences.map(({ path, sha256 }) => ({ path, sha256 })));
-    const envelopeFiles = {};
-    for (const purpose of ['initial_state_projection', 'reference_execution_trace']) {
-      const path = `${outputPrefix}/${probe.mode}/${probe.taskId}/${purpose}.json`;
-      const bytes = Buffer.from(`${canonicalTaskJson({ schemaVersion: 'bts-task-case-evidence-composition/v2',
-        classification: 'schema_candidate_from_retained_reference_not_semantic_verification', purpose,
-        taskId: probe.taskId, mode: probe.mode, caseId, executionIdentityHash: identityHash,
-        taskStateSha256: purpose === 'initial_state_projection' ? initialHash : finalHash,
-        probe: source.probe, inputProfile: probe.difficultyProfile,
-        policyInput: { path: policyPath, sha256: sha(policyBytes) }, rawReferences,
-        initialState: projected.initial, finalState: projected.final,
-        measuredExpenseAndCandidateBudget: projected.expense,
-        projectionEvidence: projected.extraEvidence ?? null,
-        participantActions: probe.captureReferences.participantActions,
-        noDifficultyApproval: true, noReleaseActivation: true })}\n`);
-      await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { flag: 'wx' });
-      const ref = { path, sha256: sha(bytes), boundary }; files.push(ref); envelopeFiles[purpose] = ref;
-    }
-    const base = { caseId, mode: probe.mode, taskId: probe.taskId, rubricVersion: 'bts-rubric/v1',
+    const initialEvidence = (await pinned(frozen.initialStateEvidence.path, frozen.initialStateEvidence.sha256)).value;
+    const referenceEvidence = (await pinned(frozen.referencePath.evidence.path, frozen.referencePath.evidence.sha256)).value;
+    const { stateSha256: _initialStateSha256, ...frozenInitialCore } = frozen.initialState;
+    const evidenceMatchesProjection = [initialEvidence, referenceEvidence].every((evidence) =>
+      evidence.schemaVersion === 'bts-task-case-evidence-composition/v2'
+      && evidence.taskId === probe.taskId && evidence.mode === probe.mode && evidence.caseId === caseId
+      && evidence.executionIdentityHash === identityHash
+      && canonicalTaskJson(evidence.probe) === canonicalTaskJson(source.probe)
+      && canonicalTaskJson(evidence.inputProfile) === canonicalTaskJson(probe.difficultyProfile)
+      && canonicalTaskJson(evidence.policyInput) === canonicalTaskJson({ path: policyPath, sha256: sha(policyBytes) })
+      && canonicalTaskJson(evidence.rawReferences) === canonicalTaskJson(rawReferences)
+      && canonicalTaskJson(evidence.initialState) === canonicalTaskJson(projected.initial)
+      && canonicalTaskJson(evidence.finalState) === canonicalTaskJson(projected.final)
+      && canonicalTaskJson(evidence.measuredExpenseAndCandidateBudget) === canonicalTaskJson(projected.expense)
+      && canonicalTaskJson(evidence.projectionEvidence) === canonicalTaskJson(projected.extraEvidence ?? null)
+      && canonicalTaskJson(evidence.participantActions) === canonicalTaskJson(probe.captureReferences.participantActions));
+    const expectedBase = { caseId, mode: probe.mode, taskId: probe.taskId, rubricVersion: 'bts-rubric/v1',
       rubricHash: taskRubricHash(probe.taskId), taskWeight: PUBLIC_TASK_CATALOG.find((task) => task.taskId === probe.taskId).weight,
       mandatoryRules: taskMandatoryRules(probe.taskId), executionIdentityHash: identityHash,
       taskDeadlineSeconds: policy.taskDeadlineSeconds, initialState: { stateSha256: initialHash, ...projected.initial },
-      initialStateEvidence: envelopeFiles.initial_state_projection,
-      referencePath: { evidence: envelopeFiles.reference_execution_trace, actionCount: probe.participantActionCount,
+      initialStateEvidence: frozen.initialStateEvidence,
+      referencePath: { evidence: frozen.referencePath.evidence, actionCount: probe.participantActionCount,
         initialStateSha256: initialHash, finalStateSha256: finalHash, toolSurfaceSha256: identity.toolSurfaceSha256 },
       objective: projected.objective };
-    const candidate = TaskCaseSchema.parse({ ...base, caseHash: taskCaseHash(base) });
-    cases.push(candidate); sourceInputs.push(source.probe);
+    const reconstructed = TaskCaseSchema.parse({ ...expectedBase, caseHash: taskCaseHash(expectedBase) });
+    const { caseHash: frozenCaseHash, ...frozenWithoutHash } = frozen;
+    must(evidenceMatchesProjection && initialHash === frozen.initialState.stateSha256
+      && canonicalTaskJson(projected.initial) === canonicalTaskJson(frozenInitialCore)
+      && canonicalTaskJson(reconstructed) === canonicalTaskJson(frozen)
+      && taskCaseHash(frozenWithoutHash) === frozenCaseHash,
+    'frozen_case_projection_or_evidence_mismatch');
+    projectedCaseCount++;
+    for (const ref of [frozen.initialStateEvidence, frozen.referencePath.evidence]) {
+      sourceInputs.push({ path: ref.path, sha256: ref.sha256 });
+      evidenceFiles.set(ref.path, ref);
+    }
+    sourceInputs.push(source.probe);
   }
   for (const input of sourceInputs) await pinned(input.path, input.sha256, false);
   must((await sourceDigests('/workspace')).appSourceSha256 === appSource.appSourceSha256, 'application_source_changed');
-  const rankedIds = PUBLIC_TASK_CATALOG.map((task) => task.taskId);
-  const trainingIds = PUBLIC_TASK_CATALOG.filter((task) => task.trainingAvailable).map((task) => task.taskId);
-  const completeInventory = cases.length === 20 && [['ranked', rankedIds], ['training', trainingIds]].every(([mode, ids]) =>
-    ids.every((id) => cases.filter((taskCase) => taskCase.mode === mode && taskCase.taskId === id).length === 1));
-  const status = completeInventory ? 'complete_inventory_candidates' : 'partial_candidates';
+  const completeInventory = cases.length === expectedCaseKeys.length;
+  const preservedRankedCount = cases.filter((taskCase) => taskCase.mode === 'ranked').length;
+  const preservedTrainingCount = cases.filter((taskCase) => taskCase.mode === 'training').length;
+  const casesPreserved = completeInventory && projectedCaseCount === expectedCaseKeys.length
+    && preservedRankedCount === TASK_IDS.length
+    && preservedTrainingCount === CURRENT_TRAINING_TASK_IDS.length;
+  const status = completeInventory && casesPreserved ? 'complete_inventory_candidates' : 'partial_candidates';
   const output = Buffer.from(`${JSON.stringify({ schemaVersion: 'bts-difficulty-v2-case-candidates/v1',
     classification: 'typed_case_candidates_not_validated_release', status,
     captureId, executionIdentity: identity, executionIdentityHash: identityHash,
     participantToolProtocol: 'separate_payment_delivery_v2', sourceInputs, sourceUnchanged: true,
+    frozenCandidateBaseline: { path: frozenCandidatePath, sha256: frozenCandidateSha256,
+      caseCount: frozenCases.length, rankedCaseCount: frozenCases.filter((taskCase) => taskCase.mode === 'ranked').length,
+      trainingCaseCount: frozenCases.filter((taskCase) => taskCase.mode === 'training').length },
+    projectedCandidate: { caseCount: cases.length, rankedCaseCount: cases.filter((taskCase) => taskCase.mode === 'ranked').length,
+      trainingTaskIds: CURRENT_TRAINING_TASK_IDS },
+    preservedFrozenCases: { rankedCaseCount: preservedRankedCount, selectedTrainingCaseCount: preservedTrainingCount,
+      projectedCaseCount, allCurrentCasesDeepEqualFrozenBaseline: casesPreserved },
     feasibilityRevalidated: feasibility,
     probeBuildCohort: { policy: 'individual_capture_source_pins_with_uniform_runtime_identity',
       distinctProbeSourceSha256: [...new Set(integrity.captures.map((capture) => capture.probeSourceSha256))],
       historicalProbeSourceTreeReplay: 'not_claimed' },
-    cases, evidenceFiles: files, blockers: [...(completeInventory ? [] : ['full_twenty_case_inventory_missing']), 'semantic_reference_verifier_missing',
+    cases, evidenceFiles: [...evidenceFiles.values()], blockers: [...(completeInventory ? [] : ['current_fifteen_case_inventory_missing']),
+      ...(casesPreserved ? [] : ['frozen_ranked_and_selected_training_cases_not_preserved']), 'semantic_reference_verifier_missing',
       'difficulty_review_missing', 'release_not_validated'], claims: { releaseValidated: false,
       releaseActivated: false, taskGrade: false, difficultyApproved: false } }, null, 2)}\n`);
   await writeFile(`${outputPrefix}/candidate-cases.json`, output, { flag: 'wx' });

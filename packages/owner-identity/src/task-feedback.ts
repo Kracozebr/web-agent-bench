@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { OwnerDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
-import { isClosedRankedTask, type TaskId } from "./task-catalog.js";
+import { isClosedTrainingTask, type TaskId } from "./task-catalog.js";
 import type { TaskEvaluationResult } from "./task-evaluator.js";
 import { sha256CanonicalTaskJson } from "./task-release.js";
 
@@ -36,7 +36,7 @@ export async function getOwnerRunFeedback(db: OwnerDatabase, ownerId: string, ru
     WHERE run_id=${runId} ORDER BY task_index`) as unknown as Array<{ task_id: TaskId; result_json: unknown; result_hash: string }>;
   const tasks: TaskFeedback[] = [];
   for (const row of rows) {
-    if (run.mode === "training" && isClosedRankedTask(row.task_id)) continue;
+    if (run.mode === "training" && isClosedTrainingTask(row.task_id)) continue;
     const result = (typeof row.result_json === "string" ? JSON.parse(row.result_json) : row.result_json) as TaskEvaluationResult;
     if (result.taskId !== row.task_id || sha256CanonicalTaskJson(result) !== row.result_hash) throw new Error("Task feedback identity or hash mismatch");
     tasks.push(projectTaskFeedback(result));

@@ -1,6 +1,6 @@
 {
   "acceptance_state": "failed",
-  "active_delta_sha256": "bb5e1bc1a49e83331d69274de9d1ec1db8b530a787f8287e945a4d25cf3d82ec",
+  "active_delta_sha256": "a306041ed86c63eaa503588ab08a99b3e3c1a3d3dd006278254473b0b5ba542e",
   "bef_spec_profile": "active-delta",
   "change": "benchmark-task-suite",
   "command": [
@@ -16,13 +16,13 @@
     "--junitxml=artifacts/bdd-evidence/benchmark-task-suite-pytest.xml"
   ],
   "execution_started": true,
-  "exit_code": 0,
-  "finished_at_utc": "2026-10-28T14:08:02.698186Z",
+  "exit_code": 1,
+  "finished_at_utc": "2026-10-30T10:34:51.915176Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "1967ae002840ac357530fd456b6b84cfe3bed172",
+  "git_commit": "f6dd02f8ea5bc50e5b642e0fafe53aec15c28955",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 34,
@@ -35,16 +35,16 @@
     "unprotected_scenarios": [],
     "warnings": []
   },
-  "harness_contract_sha256": "2012e752cccd30359d7cff6aaf59c745d65c8d9834325a54d63e7467b1fd07af",
-  "harness_sources_sha256": "76277f950f62e1b299da7b5b82c65ec3239ed9aa3776ef1f19eec47da9b8358e",
-  "harness_sources_sha256_after": "76277f950f62e1b299da7b5b82c65ec3239ed9aa3776ef1f19eec47da9b8358e",
+  "harness_contract_sha256": "839429468f48e4570032c75624e8a812766bb44074e03fd559659ce6c4f17883",
+  "harness_sources_sha256": "57efa421029b714097fe94f05492070c145702f108755c43f73d229ef370c9a0",
+  "harness_sources_sha256_after": "57efa421029b714097fe94f05492070c145702f108755c43f73d229ef370c9a0",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/benchmark-task-suite/specs/*/spec.md",
-  "scenario_map_sha256": "dc8e6d8b08b1b890b79d60553bfbcfbb17ce85cd02a6cfee084b1f1c01dc360b",
+  "scenario_map_sha256": "449f3fa15bc1badd1dff3c2fe87a54e2ac2871194189abeae62b2dfebdc45555",
   "scenario_results": {
-    "BTS-SC-001": "passed",
-    "BTS-SC-002": "passed",
+    "BTS-SC-001": "failed",
+    "BTS-SC-002": "failed",
     "BTS-SC-003": "blocked",
     "BTS-SC-004": "blocked",
     "BTS-SC-005": "blocked",
@@ -80,5 +80,5 @@
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-28T13:59:33.073669Z"
+  "started_at_utc": "2026-10-30T10:34:32.882319Z"
 }

@@ -1,14 +1,21 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import postgres from 'postgres';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import type { OwnerDatabase } from './db.js';
+import { addFixture, hash as fixtureHash } from './task-run-completion.test-fixture.js';
+import { consumeRunCancellationOutbox, requestRunCancellationFromCoordinator } from './run-service.js';
+import { createTaskPreparationCancellationExecutor } from './task-preparation.js';
+import type { TaskReleaseQuerySource } from './task-release.js';
 import { activeTaskNeedsCancellation, activeTaskNeedsCancellationAfterRecovery, handoffCommittedSuccessor, isResumablePreDispatchPreparation,
   isBoundedSuccessorWindowFailure, isValidSuccessorLocator, leaseGuardedPreparedTaskStartPort,
   predecessorFinishedBeforeOriginalDeadline, successorFailureCancellationReason, parseLocalBefTaskCoordinatorConfig,
-  isExpiredKnownRunGap,cancelExpiredKnownRunGaps,
+  isExpiredKnownRunGap,cancelExpiredKnownRunGaps,isExpiredClosedUngradedTask,cancelExpiredClosedUngradedTasks,
   parseBetaBefTaskCoordinatorConfig,
   BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY, PostgresLocalCoordinatorLease, taskIndexFromFenceResult, cleanupFailedLocalBefTaskCoordinatorStartup,
   writeSafeEvidence, type CoordinatorReservedSql } from './bef-task-coordinator.js';
@@ -251,6 +258,138 @@ const expiredGap={run_id:'10000000-0000-4000-8000-000000000001',claim_id:'100000
  observed_at:'2026-10-30T09:12:46.000Z',predecessor_finished_at:'2026-10-30T09:12:46.000Z',predecessor_status:'completed',
  predecessor_closure_status:'closed',evaluation_status:'known',active_task_count:0,stored_fence_matches:true,terminal_event_matches:true,
  successor_queued:true,claim_slot_matches:true};
+
+const expiredClosedUngradedTask={run_id:'10000000-0000-4000-8000-000000000021',mode:'training',run_status:'running',
+ overall_deadline:'2026-10-30T09:12:46.000Z',observed_at:'2026-10-30T09:12:46.000Z',task_status:'active',
+ closure_status:'closed',action_cutoff_sequence:'2',accepted_action_sequence:'2',reconciled_action_sequence:'2',active_task_count:1,
+ known_evaluation:false,unresolved_cutoff_action:false,active_platform_recovery:false,claim_slot_matches:true};
+
+test('expired closed ungraded cleanup requires a complete resolved cutoff and no known grade or recovery',()=>{
+ assert.equal(isExpiredClosedUngradedTask(expiredClosedUngradedTask),true);
+ for(const patch of [
+  {run_status:'cancelled'},{mode:'pvp'},{observed_at:'2026-10-30T09:12:45.999Z'},
+  {task_status:'completed'},{closure_status:'closing'},{action_cutoff_sequence:null},
+  {accepted_action_sequence:'1'},{reconciled_action_sequence:'1'},{active_task_count:0},{active_task_count:2},
+  {known_evaluation:true},{unresolved_cutoff_action:true},{active_platform_recovery:true},{claim_slot_matches:false},
+  {overall_deadline:'invalid'},{observed_at:'invalid'},{action_cutoff_sequence:'-1'},
+  {run_id:'not-a-uuid'},
+ ])assert.equal(isExpiredClosedUngradedTask({...expiredClosedUngradedTask,...patch}),false);
+});
+
+test('expired closed ungraded cleanup requests only normal run cancellation once and skips active recovery',async()=>{
+ const calls:string[]=[];let terminal=false;
+ const dependencies={db:{execute:async()=>terminal?[]:[expiredClosedUngradedTask,expiredClosedUngradedTask,
+   {...expiredClosedUngradedTask,run_id:'10000000-0000-4000-8000-000000000022',active_platform_recovery:true}]},
+  async assertLeaseHeld(){calls.push('lease');},
+  async requestCancellation(runId:string,reason:string){assert.equal(runId,expiredClosedUngradedTask.run_id);
+   assert.equal(reason,'coordinator_run_deadline');calls.push('cancel');terminal=true;},
+  async drainCancellations(){calls.push('drain');},
+ } as unknown as Parameters<typeof cancelExpiredClosedUngradedTasks>[0];
+ assert.equal(await cancelExpiredClosedUngradedTasks(dependencies),1);
+ assert.equal(await cancelExpiredClosedUngradedTasks(dependencies),0);
+ assert.equal(calls.filter((value)=>value==='cancel').length,1);assert.equal(calls.filter((value)=>value==='drain').length,1);
+ const recovering={...dependencies,db:{execute:async()=>[expiredClosedUngradedTask]}} as unknown as Parameters<typeof cancelExpiredClosedUngradedTasks>[0];
+ assert.equal(await cancelExpiredClosedUngradedTasks(recovering,new Set([expiredClosedUngradedTask.run_id])),0);
+ const lostLease={...dependencies,async assertLeaseHeld(){throw new Error('local_bef_coordinator_lease_lost');}};
+ await assert.rejects(()=>cancelExpiredClosedUngradedTasks(lostLease));
+ assert.equal(calls.filter((value)=>value==='cancel').length,1);
+});
+
+const deadlineCleanupPgEnabled=process.env.OID_COORDINATOR_DEADLINE_CLEANUP_PG_TEST==='1';
+
+async function closeSyntheticDeadlineTaskWithAction(client:ReturnType<typeof postgres>,
+ fixture:Awaited<ReturnType<typeof addFixture>>,receiptStatus:'observed'|'pending'|'unknown'):Promise<void>{
+ const actionId=randomUUID(),grantId=randomUUID(),closureId=randomUUID();
+ const operationId=`deadline_${randomUUID().replaceAll('-','')}`;
+ const payloadHash=fixtureHash(`${fixture.runId}:${receiptStatus}:command`),evidenceHash=fixtureHash(`${fixture.runId}:${receiptStatus}:receipt`);
+ await client`INSERT INTO oid_agent_access_grant(id,owner_id,agent_id,operation_id,resource,role,access_generation,expires_at)
+   VALUES(${grantId},${fixture.ownerId},${fixture.agentId},${`grant_${randomUUID().replaceAll('-','')}`},
+     'https://example.invalid/api/agent','agent',1,clock_timestamp()+interval '1 day')`;
+ await client`UPDATE oid_run_task SET accepted_action_sequence=1 WHERE run_id=${fixture.runId} AND task_index=0`;
+ await client`INSERT INTO oid_run_task_action(id,run_id,task_index,owner_id,agent_id,access_generation,grant_id,task_id,
+     environment_id,action_sequence,operation_id,payload_hash,action_kind,command_json)
+   VALUES(${actionId},${fixture.runId},0,${fixture.ownerId},${fixture.agentId},1,${grantId},'S1',${fixture.environmentId},
+     1,${operationId},${payloadHash},'inspect_catalog','{}'::jsonb)`;
+ await client`INSERT INTO oid_run_task_action_outbox(action_id,status,delivered_at)
+   VALUES(${actionId},'delivered',clock_timestamp())`;
+ if(receiptStatus==='pending')await client`INSERT INTO oid_run_task_action_receipt(action_id) VALUES(${actionId})`;
+ else await client`INSERT INTO oid_run_task_action_receipt(action_id,receipt_revision,receipt_status,evidence_hash)
+   VALUES(${actionId},1,${receiptStatus},${evidenceHash})`;
+ const closureHash=fixtureHash(`${fixture.runId}:${receiptStatus}:closure`);
+ await client`INSERT INTO oid_run_task_closure(id,run_id,task_index,operation_id,payload_hash,reason,action_cutoff_sequence,
+     actor_kind,owner_id,agent_id)
+   VALUES(${closureId},${fixture.runId},0,NULL,${closureHash},'agent_finish',1,'coordinator',${fixture.ownerId},${fixture.agentId})`;
+ await client`INSERT INTO oid_run_task_finish_outbox(closure_id,status,delivered_at)
+   VALUES(${closureId},'delivered',clock_timestamp())`;
+ await client`UPDATE oid_run_task SET closure_id=${closureId},closure_status='closed',closure_payload_hash=${closureHash},
+     closure_reason='agent_finish',closed_at=clock_timestamp(),action_cutoff_sequence=1,reconciled_action_sequence=1
+   WHERE run_id=${fixture.runId} AND task_index=0`;
+}
+
+test('isolated PostgreSQL selector cancels only resolved expired cutoffs through normal cleanup',{skip:!deadlineCleanupPgEnabled},async()=>{
+ const sourceUrlValue=process.env.OID_DATABASE_URL;
+ assert.ok(sourceUrlValue,'The explicitly enabled isolated coordinator PostgreSQL test must provide OID_DATABASE_URL');
+ const sourceUrl=new URL(sourceUrlValue);
+ assert.equal(sourceUrl.hostname,'postgres','The isolated coordinator regression must run inside the owner-identity Docker network');
+ assert.equal(sourceUrl.username,'oid_owner');assert.equal(sourceUrl.pathname,'/owner_identity');
+ const databaseName=`oid_deadline_cleanup_${randomUUID().replaceAll('-','')}`;
+ assert.match(databaseName,/^oid_deadline_cleanup_[0-9a-f]{32}$/);
+ const testUrl=new URL(sourceUrlValue);testUrl.pathname=`/${databaseName}`;
+ const admin=postgres(sourceUrlValue,{max:1,connect_timeout:10});
+ let client:ReturnType<typeof postgres>|undefined;
+ try{
+  await admin.unsafe(`CREATE DATABASE ${databaseName}`);
+  const migration=spawnSync('pnpm',['--filter','@web-agent-bench/owner-identity','migrate'],{
+   cwd:'/workspace',env:{...process.env,OID_DATABASE_URL:testUrl.toString()},encoding:'utf8',timeout:60_000});
+  assert.equal(migration.status,0,'The deadline cleanup regression database must migrate successfully');
+  client=postgres(testUrl.toString(),{max:8,connect_timeout:10});
+  const db=drizzle(client) as unknown as OwnerDatabase;
+  const good=await addFixture(client,{actionOpen:true,includeEvaluation:false,overallDeadlinePast:true});
+  const pending=await addFixture(client,{actionOpen:true,includeEvaluation:false,overallDeadlinePast:true});
+  const unknown=await addFixture(client,{actionOpen:true,includeEvaluation:false,overallDeadlinePast:true});
+  await closeSyntheticDeadlineTaskWithAction(client,good,'observed');
+  await closeSyntheticDeadlineTaskWithAction(client,pending,'pending');
+  await closeSyntheticDeadlineTaskWithAction(client,unknown,'unknown');
+  const fixtures=[good,pending,unknown];
+  const releaseSource={
+   async getActiveAdmissionRelease(){return null;},
+   async getValidatedReleaseRecord(identity:string,manifestHash:string){
+    return fixtures.find((fixture)=>fixture.record.releaseIdentity===identity&&fixture.record.manifestHash===manifestHash)?.record as never??null;
+   },
+  } satisfies TaskReleaseQuerySource;
+  const unbound:Array<{runId:string;taskIndex:number}>=[];
+  const cancellationExecutor=createTaskPreparationCancellationExecutor({db,releaseSource,
+   environmentSelector:{async selectEnvironment(){throw new Error('deadline cleanup must not select an environment');}},
+   preparationAdapter:{async prepare(){throw new Error('stored fence must be reused');},async reconcile(){throw new Error('stored fence must be reused');},
+    async fence(){throw new Error('stored fence must be reused');},clearCredentials(){}},
+  },{unbindSession(runId,taskIndex){unbound.push({runId,taskIndex});}});
+  const cleaned=await cancelExpiredClosedUngradedTasks({db,async assertLeaseHeld(){},
+   async requestCancellation(runId,reason){await requestRunCancellationFromCoordinator(db,{runId,reason});},
+   async drainCancellations(){await consumeRunCancellationOutbox(db,cancellationExecutor,100);},
+  });
+  assert.equal(cleaned,1);
+  assert.deepEqual(unbound,[{runId:good.runId,taskIndex:0}]);
+  for(const [fixture,expectedStatus] of [[good,'cancelled'],[pending,'running'],[unknown,'running']] as const){
+   const stateRows:Array<{status:string;claim_status:string;slot_count:number;evaluation_count:number;refund_count:number}>=await client`SELECT r.status,c.status AS claim_status,
+       (SELECT count(*)::int FROM oid_run_execution_slot slot WHERE slot.run_id=r.id) AS slot_count,
+       (SELECT count(*)::int FROM oid_run_task_evaluation e WHERE e.run_id=r.id) AS evaluation_count,
+       (SELECT count(*)::int FROM oid_ledger_entry entry WHERE entry.owner_id=r.owner_id AND entry.entry_type='refund') AS refund_count
+     FROM oid_benchmark_run r JOIN oid_run_dispatch_claim c ON c.run_id=r.id WHERE r.id=${fixture.runId}`;
+   assert.equal(stateRows[0]?.status,expectedStatus);
+   if(fixture===good){
+    assert.equal(stateRows[0]?.claim_status,'released');assert.equal(stateRows[0]?.slot_count,0);
+    assert.equal(stateRows[0]?.evaluation_count,0);assert.equal(stateRows[0]?.refund_count,0);
+   }else{
+    assert.equal(stateRows[0]?.claim_status,'claimed');assert.equal(stateRows[0]?.slot_count,1);
+    assert.equal(stateRows[0]?.evaluation_count,0);assert.equal(stateRows[0]?.refund_count,0);
+   }
+  }
+ }finally{
+  if(client)await client.end();
+  await admin.unsafe(`DROP DATABASE IF EXISTS ${databaseName}`).catch(()=>undefined);
+  await admin.end();
+ }
+});
 
 test('known task gaps clean up only predecessors that finished at or after the run deadline',()=>{
  assert.equal(isExpiredKnownRunGap({...expiredGap,observed_at:'2026-10-30T09:12:45.999Z'}),false);

@@ -10,6 +10,9 @@ import {
   errorText,
   getCurrentOwner,
   newOperationId,
+  trainingCatalogWeights,
+  selectedRunQuote,
+  trainingQuoteDescription,
   type RunCatalogResponse,
   type RunLaunchIntent,
   type RunMode,
@@ -34,34 +37,6 @@ interface PendingOperation {
 }
 
 const rankedTaskIds = ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"];
-const trainingTaskIds = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
-const usdcUnitScale = BigInt(1_000_000);
-const trainingTaskWeights: Record<string, bigint> = { S1: BigInt(1), S2: BigInt(1), S4: BigInt(1), M1: BigInt(2), M3: BigInt(2), M4: BigInt(2), H1: BigInt(3), H2: BigInt(3) };
-
-function usdcUnits(value: string): bigint | null {
-  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/.exec(value);
-  if (!match) return null;
-  return BigInt(match[1]!) * usdcUnitScale + BigInt((match[2] ?? "").padEnd(6, "0") || "0");
-}
-
-function formatUsdcUnits(units: bigint): string {
-  return `${units / usdcUnitScale}.${(units % usdcUnitScale).toString().padStart(6, "0")}`;
-}
-
-function selectedQuote(release: NonNullable<RunCatalogResponse["activeRelease"]>, mode: RunMode, taskIds: string[]): string | null {
-  if (mode === "ranked") {
-    const units = usdcUnits(release.rankedPrice);
-    return units === null ? null : formatUsdcUnits(units);
-  }
-  if (taskIds.length === 0) return null;
-  const fullOpenPriceUnits = usdcUnits(release.trainingPrice);
-  if (fullOpenPriceUnits === null) return null;
-  const selectedWeight = taskIds.reduce((sum, id) => sum + (trainingTaskWeights[id] ?? BigInt(0)), BigInt(0));
-  if (selectedWeight <= BigInt(0)) return null;
-  const numerator = fullOpenPriceUnits * selectedWeight;
-  return formatUsdcUnits(numerator === BigInt(0) ? BigInt(0) : (numerator + BigInt(14)) / BigInt(15));
-}
-
 function timestamp(value: string | null): string {
   if (!value) return "Not set";
   const parsed = new Date(value);
@@ -153,17 +128,21 @@ export function RunLaunchPanel() {
 
   const selectedAgent = agents.find((agent) => agent.id === agentId) ?? null;
   const release = catalog?.activeRelease ?? null;
+  const trainingWeights = release ? trainingCatalogWeights(release) : null;
+  const trainingTaskIds = trainingWeights ? [...trainingWeights.keys()] : [];
   const releaseAvailable = Boolean(
     release?.completeRankedRelease
     && /^[0-9a-f]{64}$/i.test(release.manifestHash)
-    && release.releaseIdentity.length > 0
+    && typeof release.releaseIdentity === "string" && release.releaseIdentity.length > 0
+    && Array.isArray(release.taskIds)
     && rankedTaskIds.every((id, index) => release.taskIds[index] === id)
-    && trainingTaskIds.every((id, index) => release.openTaskIds[index] === id),
+    && release.taskIds.length === rankedTaskIds.length
+    && trainingWeights,
   );
   const modeAllowed = selectedAgent ? agentCanUse(selectedAgent, mode) : false;
   const selectedTasks = mode === "ranked" ? rankedTaskIds : trainingTaskIds.filter((id) => taskIds.includes(id));
   const cashCeilingValid = /^\d+(?:\.\d{1,6})?$/.test(cashCeiling.trim());
-  const quotePrice = useMemo(() => release ? selectedQuote(release, mode, selectedTasks) : null, [mode, release, selectedTasks]);
+  const quotePrice = useMemo(() => release ? selectedRunQuote(release, mode, selectedTasks) : null, [mode, release, selectedTasks]);
   const canCreate = Boolean(ownerReady && !busy && releaseAvailable && catalog?.intentCreationReady === true && selectedAgent && modeAllowed && selectedTasks.length > 0 && cashCeilingValid && quotePrice !== null);
 
   function changeMode(nextMode: RunMode) {
@@ -341,7 +320,7 @@ export function RunLaunchPanel() {
               <dt>Benchmark hash</dt><dd>{release.benchmarkHash}</dd>
               <dt>Policy hash</dt><dd>{release.policyHash}</dd>
               <dt>Ranked quote</dt><dd>{release.rankedPrice} USDC</dd>
-              <dt>Full open training quote</dt><dd>{release.trainingPrice} USDC; selected weight is quoted over denominator 15</dd>
+              <dt>Full open training quote</dt><dd>{trainingQuoteDescription(release)}</dd>
             </dl>
             {!catalog?.readyToStart ? <p className="notice notice-warning" data-testid="run-release-readiness">Execution start is still gated: {catalog?.readinessReason || "executor readiness is not confirmed"}.</p> : null}
             {catalog?.intentCreationReady !== true ? <p className="notice notice-warning" data-testid="run-intent-policy-readiness">Intent creation is disabled until the server confirms a bounded intent lifetime and pending-intent capacity policy. {catalog?.intentCreationReason || "Launch intent policy is not configured."}</p> : null}
@@ -380,12 +359,12 @@ export function RunLaunchPanel() {
 
           {mode === "training" ? (
             <fieldset className="permission-fieldset" disabled={busy || !releaseAvailable}>
-              <legend>Open training tasks</legend>
-              <p className="fine">Select one or more open tasks. Closed cases are not offered for training.</p>
+              <legend>Training tasks</legend>
+              <p className="fine">Select one or more available training tasks. The current catalog determines eligibility.</p>
               <div className="permission-list" data-testid="run-training-task-list">
                 {trainingTaskIds.map((id) => (
                   <label className="permission-switch" key={id} htmlFor={`run-task-${id}`}>
-                    <span className="permission-copy"><strong>{id}</strong><small>Open training task</small></span>
+                    <span className="permission-copy"><strong>{id}</strong><small>Training task</small></span>
                     <input
                       id={`run-task-${id}`}
                       data-testid={`run-task-checkbox-${id}`}

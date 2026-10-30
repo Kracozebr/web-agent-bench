@@ -5,9 +5,10 @@ import pg from "pg";
 const { Pool } = pg;
 const key = () => randomUUID();
 const sha256 = (value) => createHash("sha256").update(value, "utf8").digest("hex");
-const OPEN_TASK_IDS = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
+const OPEN_TASK_IDS = ["S1", "M1", "H1"];
 const taskWeight = (taskId) => ({ S: 1, M: 2, H: 3, U: 5 })[taskId[0]];
-const SELECTED_QUOTE_UNITS = "1000000";
+const SELECTED_TASK_IDS = ["M1", "H1"];
+const SELECTED_QUOTE_UNITS = "416667";
 
 // AICODE-NOTE: This isolated direct-service case supplements the positive local
 // browser/worker path with a code-derived lot and the beta bonus-only source guard.
@@ -53,7 +54,7 @@ function syntheticTrainingPorts() {
     mode: "training",
     taskIds: OPEN_TASK_IDS,
     weights: OPEN_TASK_IDS.map(taskWeight),
-    priceUnits: "15000000",
+    priceUnits: "500000",
     precision: 6,
   };
   const validated = {
@@ -221,11 +222,11 @@ export async function runBonusOnlyCashSubstitutionCase({ databaseUrl, observerDa
       ownerId: owner.ownerId,
       agentId: owner.agentId,
       mode: "training",
-      taskIds: ["S1"],
-      cashCeiling: "1.000000",
+      taskIds: SELECTED_TASK_IDS,
+      cashCeiling: "0.416667",
       expectedReleaseIdentity: ports.release.releaseIdentity,
       expectedManifestHash: ports.release.manifestHash,
-      expectedQuotePrice: "1.000000",
+      expectedQuotePrice: "0.416667",
       operationId: key(),
     });
     const grantOperationId = `bcg_${sha256(`${issue.code.id}\0${owner.ownerId}`)}`;
@@ -270,12 +271,12 @@ export async function runBonusOnlyCashSubstitutionCase({ databaseUrl, observerDa
         row.bonus_grant_id === ids.grantId && row.operation_id === grantOperationId && row.available_delta_units === "250000");
     const noCashFallbackEffects = after.intent?.status === "pending" && after.intent.run_id === null &&
       after.intent.quote_price_units === SELECTED_QUOTE_UNITS &&
-      after.intent.cash_ceiling_units === "1000000" && after.runs.length === 0 && after.reservations.length === 0 &&
+      after.intent.cash_ceiling_units === SELECTED_QUOTE_UNITS && after.runs.length === 0 && after.reservations.length === 0 &&
       after.budgetHolds.length === 0 && after.entries.every((row) => !["reserve", "debit"].includes(row.entry_type)) &&
       JSON.stringify(before.intent) === JSON.stringify(after.intent) &&
       JSON.stringify(before.entries) === JSON.stringify(after.entries) && JSON.stringify(before.totals) === JSON.stringify(after.totals);
     const verified = before.policy?.allow_cash_shortfall === true && after.policy?.allow_cash_shortfall === true &&
-      bonusAvailable === 250000n && shortfall === 750000n && cashAvailable >= shortfall &&
+      bonusAvailable === 250000n && shortfall === 166667n && cashAvailable >= shortfall &&
       rejection?.status === 409 && rejection.code === "BETA_BONUS_BALANCE_REQUIRED" && codeGrantBound && noCashFallbackEffects;
     assert.equal(verified, true, "Bonus-only acceptance must reject a code-lot shortfall despite sufficient cash and owner cash permission");
 
@@ -285,7 +286,7 @@ export async function runBonusOnlyCashSubstitutionCase({ databaseUrl, observerDa
       status: "verified",
       captureId,
       policy: { bonusOnly: true, ownerAllowCashShortfall: true },
-      syntheticRelease: { mode: "training", selectedTaskIds: ["S1"], fullTaskIds: ports.release.taskIds,
+      syntheticRelease: { mode: "training", selectedTaskIds: SELECTED_TASK_IDS, fullTaskIds: ports.release.taskIds,
         fullPriceUnits: ports.release.priceUnits, selectedQuoteUnits: SELECTED_QUOTE_UNITS },
       funding: { codeId: ids.codeId, issueOperationId: issue.operationId, issuerOwnerId: issuer.ownerId,
         redemptionId: ids.redemptionId, redemptionOperationId: redemption.operationId, ownerId: owner.ownerId,

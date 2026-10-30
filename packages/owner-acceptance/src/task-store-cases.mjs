@@ -253,8 +253,8 @@ export async function runTaskStoreCases({ databaseUrl, observerDatabaseUrl, repo
 
 function makeSyntheticManifest(api, releaseIdentity = "synthetic-bts-release-v1") {
   const TASK_IDS = ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"];
-  const TRAINING_IDS = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
-  const CLOSED_RANKED_IDS = ["S3", "M2", "H3", "U1"];
+  const TRAINING_IDS = ["S1", "M1", "H1"];
+  const CLOSED_RANKED_IDS = TASK_IDS.filter((taskId) => !TRAINING_IDS.includes(taskId));
   const WEIGHT = { S1: 1, S2: 1, S3: 1, S4: 1, M1: 2, M2: 2, M3: 2, M4: 2, H1: 3, H2: 3, H3: 3, U1: 5 };
   const RULES = {
     S1: ["no_wrong_or_extra_principal", "native_reserve"],
@@ -389,7 +389,7 @@ function makeSyntheticManifest(api, releaseIdentity = "synthetic-bts-release-v1"
       orderedTaskIds: TASK_IDS,
       rankedWeightSum: 26,
       openTrainingTaskIds: TRAINING_IDS,
-      openTrainingWeightSum: 15,
+      openTrainingWeightSum: 6,
       closedRankedOnlyTaskIds: CLOSED_RANKED_IDS,
     },
     pricing: { precision: 6, openTrainingPriceUnits: "500000", rankedPriceUnits: "1000000", trainingRounding: "ceil_once_per_request" },

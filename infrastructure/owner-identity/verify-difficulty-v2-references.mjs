@@ -2,11 +2,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { TaskCaseSchema, canonicalTaskJson } from '../../packages/owner-identity/src/task-release.ts';
+import { CURRENT_TRAINING_TASK_IDS, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
 import { loadV2ReferenceContext, verifyTaskReferenceEvidenceV2 } from '../../packages/owner-identity/src/task-reference-evidence-v2.ts';
 import { V2ReferenceError } from '../../packages/owner-identity/src/task-reference-evidence-v2-types.ts';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const sourcePaths = ['pnpm-lock.yaml', 'infrastructure/owner-identity/verify-difficulty-v2-references.mjs',
-  ...['task-release', 'task-reference-evidence-v2', 'task-reference-evidence-v2-types']
+  ...['task-release', 'task-catalog', 'task-reference-evidence-v2', 'task-reference-evidence-v2-types']
     .map((name) => `packages/owner-identity/src/${name}.ts`)];
 async function main() {
   const args = process.argv.slice(2), contextOnly = args.length === 5 && args[4] === '--context-only';
@@ -19,6 +20,13 @@ async function main() {
   if (sha(inputBytes) !== args[3]) throw new Error('candidate_pin_mismatch');
   const candidate = JSON.parse(inputBytes);
   if (candidate.schemaVersion !== 'bts-difficulty-v2-case-candidates/v1' || !Array.isArray(candidate.cases)) throw new Error('candidate_invalid');
+  const expectedKeys = [
+    ...TASK_IDS.map((taskId) => `${taskId}:ranked`),
+    ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`),
+  ].sort();
+  const actualKeys = candidate.cases.map((taskCase) => `${taskCase.taskId}:${taskCase.mode}`).sort();
+  if (actualKeys.length !== expectedKeys.length || new Set(actualKeys).size !== expectedKeys.length
+    || canonicalTaskJson(actualKeys) !== canonicalTaskJson(expectedKeys)) throw new Error('current_fifteen_case_inventory_invalid');
   const policyPath = 'infrastructure/owner-identity/task-release-local-policy.json';
   const policyHash = sha(await readFile(policyPath));
   if (!contextOnly) sourcePaths.push(...['basic', 'advanced'].map((name) => `packages/owner-identity/src/task-reference-evidence-v2-${name}.ts`));

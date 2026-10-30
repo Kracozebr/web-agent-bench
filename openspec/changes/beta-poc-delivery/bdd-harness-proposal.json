@@ -466,7 +466,7 @@
     },
     "BPC-SC-014": {
       "requirement_id": "BPC-REQ-006",
-      "title": "Current Training selection preserves price and evidence",
+      "title": "Current Training preserves selection price and evidence",
       "gate": "environment",
       "mandatory": true,
       "named_mapper": "test_bpc_sc_014",

@@ -164,7 +164,7 @@ test('assembles all twelve pinned ranked cases as schema-valid, unactivated cand
   assert.ok(h3Baseline.rawReferences.some((item: { path: string }) => item.path.endsWith('rpc/0007-task-h3-market-brief-payer-usdc-before.json')));
 });
 
-test('assembles the eight open training candidates from their retained training captures', async () => {
+test('assembles only the three current training candidates from the retained training capture corpus', async () => {
   const [result, ranked] = await Promise.all([trainingAssemblyPromise, assemblyPromise]);
   assert.equal(result.status, 'candidates_only', result.taskResults.map((item) => `${item.taskId}:${item.blockers.join(',')}`).join(';'));
   assert.equal(result.profile?.inputIndexPath, trainingSourceIndexRelative);
@@ -172,11 +172,12 @@ test('assembles the eight open training candidates from their retained training 
   const trainingCapture = result.inventory?.captures.find((item) => item.kind === 'training_reference');
   assert.equal(trainingCapture?.probeSha256, '7bc0c7fc24d4e09eecd0da35768355d12c838e67f9d11e2d5399ea4d61a6a1e8');
   assert.equal(trainingCapture?.rawArtifactCount, 512);
+  // The immutable source capture still contains eight historical primitives; only the current catalog is projected into release cases.
   assert.deepEqual(trainingCapture?.primitives.map((item) => item.taskId), ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2']);
-  assert.equal(result.cases.length, 8);
-  assert.deepEqual(result.cases.map((item) => item.taskId), ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2']);
-  assert.equal(result.evidenceFiles.length, 16);
-  assert.equal(result.taskResults.length, 8);
+  assert.equal(result.cases.length, 3);
+  assert.deepEqual(result.cases.map((item) => item.taskId), ['S1', 'M1', 'H1']);
+  assert.equal(result.evidenceFiles.length, 6);
+  assert.equal(result.taskResults.length, 3);
   assert.ok(result.taskResults.every((item) => item.status === 'assembled'));
   assert.equal(result.claims.taskAcceptance, false);
   assert.equal(result.claims.taskGrade, false);
@@ -210,26 +211,12 @@ test('assembles the eight open training candidates from their retained training 
   }
 
   const s1 = getTaskCase(result.cases, 'S1');
-  const s2 = getTaskCase(result.cases, 'S2');
-  const s4 = getTaskCase(result.cases, 'S4');
   const m1 = getTaskCase(result.cases, 'M1');
-  const m3 = getTaskCase(result.cases, 'M3');
-  const m4 = getTaskCase(result.cases, 'M4');
   const h1 = getTaskCase(result.cases, 'H1');
-  const h2 = getTaskCase(result.cases, 'H2');
   assert.equal(s1.objective.exactPrincipalUnits, '200000');
-  assert.equal(s2.objective.completePaymentRequirements.amountUnits, '125000');
-  assert.equal(new Set(s2.objective.requiredAnswerFields).size, s2.objective.requiredAnswerFields.length);
-  assert.equal(s4.objective.initialAllowanceUnits, '20000');
   assert.equal(m1.objective.paymentRequirements.amountUnits, '100000');
-  assert.equal(m3.objective.exactInputUnits, '200000');
-  assert.equal(m3.objective.minimumNativeOutputWei, '74902635102393');
-  assert.equal(m4.objective.exactInputUnits, '200000');
-  assert.equal(m4.objective.initialAllowanceScope[0]?.amountUnits, '0');
   assert.equal(h1.objective.requiredComponents.length, 2);
   assert.equal(h1.objective.expenseBudgetUsdcUnits, '700000');
-  assert.deepEqual(h2.objective.obligations.map((item) => item.exactAmountUnits), ['200000', '300000']);
-  assert.equal(h2.objective.expenseBudgetUsdcUnits, '10000');
 });
 
 test('blocks training candidate assembly when the retained training probe pin changes', async () => {

@@ -442,6 +442,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     const paidEvidenceByPath = new Map<string, Record<string, unknown>>();
     const paidResponsesByActionId = new Map<string, Record<string, unknown>>();
     const chainActionsByPath = new Map<string, Record<string, unknown>>();
+    const rejectedChainActionsByPath = new Map<string, Record<string, unknown>>();
     const chainEvidenceByPath = new Map<string, Record<string, unknown>>();
     const queue: Array<{ reference: EvidenceReference; ancestors: ReadonlySet<string> }> =
       [...references.values()].map((reference) => ({ reference, ancestors: new Set<string>() }));
@@ -496,6 +497,9 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           packet.execution.initialStateSha256 !== row.initial_state_sha256)
         fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The chain packet execution pins differ from PostgreSQL');
       chainPacket = packet; chainPacketEvidence = packetRef;
+      for (const action of packet.rejectedChainActions ?? []) {
+        rejectedChainActionsByPath.set(action.actionEvidence.path, action as unknown as Record<string, unknown>);
+      }
       for (const action of [...packet.ownerActions, ...packet.externalActions]) {
         const key = action.actionEvidence.path;
         const prior = chainActionsByPath.get(key);
@@ -642,6 +646,15 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
             fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A paid-data action response differs from its receipt status');
           paidEvidenceByPath.set(ref.path, evidenceValue);
           if (response) paidResponsesByActionId.set(action.actionId, response);
+        } else if (rejectedChainActionsByPath.has(ref.path)) {
+          // AICODE-NOTE: Source-proven pre-broadcast rejections have no selected response/receipt.
+          // Their complete child and BEF rejection proof are checked by verifyChainOwnerActions.
+          let evidenceValue: unknown;
+          try { evidenceValue = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bounded.subarray(0, offset))) as unknown; }
+          catch { fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A rejected chain action evidence file is malformed'); }
+          if (!plainObject(evidenceValue) || containsSecretKey(evidenceValue))
+            fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A rejected chain action evidence file is malformed');
+          chainEvidenceByPath.set(ref.path, evidenceValue);
         } else if (chainActionsByPath.has(ref.path)) {
           const action = chainActionsByPath.get(ref.path)!;
           let evidenceValue: unknown;
@@ -1121,7 +1134,9 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
         }
         if (BigInt(String(sourceEvents[1]!.eventSequence)) <= BigInt(String(sourceEvents[0]!.eventSequence))) failAction();
       }
-      if (expected.actionKind === 'inspect_catalog' || expected.actionKind === 'inspect_offer') {
+      // AICODE-NOTE: H3/U1 inspections use the paid child schema and its independent source verifier below.
+      if (['M3', 'M4', 'H2'].includes(packet.taskId) &&
+          (expected.actionKind === 'inspect_catalog' || expected.actionKind === 'inspect_offer')) {
         const parsedInspection = TaskActionCommandSchema.safeParse(expected.command);
         const inspection = expected.rawResponseSha256;
         const body = plainObject(response) ? response : null;

@@ -23,9 +23,13 @@ const {
   validateTaskReleaseCandidate,
   validatedModeProjection,
 } = releaseApi;
-const { CLOSED_RANKED_IDS, PUBLIC_TASK_CATALOG, TASK_IDS, quoteOpenTrainingSelection, selectTaskIds } = catalogApi;
+const {
+  CLOSED_RANKED_IDS, CLOSED_TRAINING_IDS, CURRENT_TRAINING_TASK_IDS,
+  CURRENT_TRAINING_TASK_WEIGHTS, CURRENT_TRAINING_WEIGHT_BY_ID, CURRENT_TRAINING_WEIGHT_SUM,
+  PUBLIC_TASK_CATALOG, TASK_IDS, quoteOpenTrainingSelection, selectTaskIds,
+} = catalogApi;
 
-const TRAINING_IDS = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'];
+const TRAINING_IDS = CURRENT_TRAINING_TASK_IDS;
 const WEIGHT = { S1: 1, S2: 1, S3: 1, S4: 1, M1: 2, M2: 2, M3: 2, M4: 2, H1: 3, H2: 3, H3: 3, U1: 5 };
 const RULES = {
   S1: ['no_wrong_or_extra_principal', 'native_reserve'],
@@ -272,7 +276,7 @@ function makeManifest() {
       orderedTaskIds: TASK_IDS,
       rankedWeightSum: 26,
       openTrainingTaskIds: TRAINING_IDS,
-      openTrainingWeightSum: 15,
+      openTrainingWeightSum: CURRENT_TRAINING_WEIGHT_SUM,
       closedRankedOnlyTaskIds: CLOSED_RANKED_IDS,
     },
     pricing: { precision: 6, openTrainingPriceUnits: '500000', rankedPriceUnits: '1000000', trainingRounding: 'ceil_once_per_request' },
@@ -333,21 +337,64 @@ test('tool protocol is a release policy pin while omitted legacy protocol preser
 
 test('synthetic contract: pinned inventory and mode exposure preserve the approved order', () => {
   assert.deepEqual(TASK_IDS, ['S1', 'S2', 'S3', 'S4', 'M1', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3', 'U1']);
-  assert.deepEqual(CLOSED_RANKED_IDS, ['S3', 'M2', 'H3', 'U1']);
-  assert.deepEqual(selectTaskIds('training', [...TRAINING_IDS].reverse()), { ok: true, mode: 'training', taskIds: TRAINING_IDS, weightSum: 15 });
+  assert.deepEqual(TRAINING_IDS, ['S1', 'M1', 'H1']);
+  assert.deepEqual(CURRENT_TRAINING_TASK_WEIGHTS, [1, 2, 3]);
+  assert.deepEqual(CURRENT_TRAINING_WEIGHT_BY_ID, { S1: 1, M1: 2, H1: 3 });
+  assert.equal(CURRENT_TRAINING_WEIGHT_SUM, 6);
+  assert.deepEqual(CLOSED_RANKED_IDS, ['S2', 'S3', 'S4', 'M2', 'M3', 'M4', 'H2', 'H3', 'U1']);
+  assert.deepEqual(CLOSED_TRAINING_IDS, ['S2', 'S3', 'S4', 'M2', 'M3', 'M4', 'H2', 'H3', 'U1']);
+  assert.deepEqual(CLOSED_RANKED_IDS, CLOSED_TRAINING_IDS);
+  assert.deepEqual(selectTaskIds('training', [...TRAINING_IDS].reverse()), { ok: true, mode: 'training', taskIds: TRAINING_IDS, weightSum: 6 });
   assert.deepEqual(selectTaskIds('ranked', [...TASK_IDS].reverse()), { ok: true, mode: 'ranked', taskIds: TASK_IDS, weightSum: 26 });
   assert.deepEqual(selectTaskIds('training', ['S3']), { ok: false, reason: 'closed_training_task' });
+  assert.deepEqual(selectTaskIds('training', ['S1', 'S2']), { ok: false, reason: 'closed_training_task' });
   assert.deepEqual(selectTaskIds('ranked', TASK_IDS.slice(0, 11)), { ok: false, reason: 'ranked_selection_must_be_complete' });
-  assert.deepEqual(PUBLIC_TASK_CATALOG.filter((task) => !task.trainingAvailable).map((task) => task.taskId), CLOSED_RANKED_IDS);
+  assert.deepEqual(PUBLIC_TASK_CATALOG.filter((task) => !task.trainingAvailable).map((task) => task.taskId), CLOSED_TRAINING_IDS);
 });
 
-test('synthetic contract: open training price uses one integer ceiling and preserves zero', () => {
+test('synthetic contract: every current training subset uses one integer ceiling over weight six', () => {
+  const expected = [
+    [['S1'], 1, '83334'],
+    [['M1'], 2, '166667'],
+    [['H1'], 3, '250000'],
+    [['S1', 'M1'], 3, '250000'],
+    [['S1', 'H1'], 4, '333334'],
+    [['M1', 'H1'], 5, '416667'],
+    [['S1', 'M1', 'H1'], 6, '500000'],
+  ];
+  for (const [taskIds, selectedWeight, priceUnits] of expected) {
+    const quote = quoteOpenTrainingSelection([...taskIds].reverse(), '500000');
+    assert.equal(quote.denominatorWeight, 6);
+    assert.equal(quote.selectedWeight, selectedWeight);
+    assert.equal(quote.priceUnits, priceUnits);
+    assert.deepEqual(quote.taskIds, taskIds);
+  }
   assert.equal(quoteOpenTrainingSelection(['S1'], '0').priceUnits, '0');
-  assert.equal(quoteOpenTrainingSelection(['S1'], '500000').priceUnits, '33334');
-  assert.equal(quoteOpenTrainingSelection(['S1', 'S2'], '500000').priceUnits, '66667');
-  assert.equal(quoteOpenTrainingSelection(['M1', 'S1'], '1').priceUnits, '1');
   assert.deepEqual(quoteOpenTrainingSelection(['S3'], '500000'), { ok: false, reason: 'closed_training_task' });
+  assert.deepEqual(quoteOpenTrainingSelection(['S1', 'S2'], '500000'), { ok: false, reason: 'closed_training_task' });
   assert.deepEqual(quoteOpenTrainingSelection(['S1'], '0001'), { ok: false, reason: 'invalid_price' });
+});
+
+test('synthetic contract: manifest schema binds exactly the current fifteen-case inventory', () => {
+  const candidate = makeManifest();
+  assert.equal(candidate.cases.training.length + candidate.cases.ranked.length, 15);
+  assert.equal(TaskReleaseManifestSchema.safeParse(candidate).success, true);
+
+  const extraTrainingCase = structuredClone(candidate);
+  extraTrainingCase.cases.training.push(makeCase('training', 'S2', candidate.executionIdentityHash));
+  assert.equal(TaskReleaseManifestSchema.safeParse(extraTrainingCase).success, false);
+
+  const wrongTrainingSet = structuredClone(candidate);
+  wrongTrainingSet.inventory.openTrainingTaskIds = ['S1', 'S2', 'H1'];
+  assert.equal(TaskReleaseManifestSchema.safeParse(wrongTrainingSet).success, false);
+
+  const wrongTrainingWeight = structuredClone(candidate);
+  wrongTrainingWeight.inventory.openTrainingWeightSum = 15;
+  assert.equal(TaskReleaseManifestSchema.safeParse(wrongTrainingWeight).success, false);
+
+  const missingTrainingClosedId = structuredClone(candidate);
+  missingTrainingClosedId.inventory.closedRankedOnlyTaskIds = ['S3', 'M2', 'H3', 'U1'];
+  assert.equal(TaskReleaseManifestSchema.safeParse(missingTrainingClosedId).success, false);
 });
 
 test('synthetic contract: renamed or reordered copies do not establish distinct training cases', async () => {

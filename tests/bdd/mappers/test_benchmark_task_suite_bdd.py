@@ -3,15 +3,15 @@
 
 from pytest_bdd import scenario
 
-@scenario("../features/benchmark_task_suite.feature", "Actual manifests bind the fixed inventory and source evidence")
+@scenario("../features/benchmark_task_suite.feature", "Current manifest binds the catalog and source evidence")
 def test_bts_sc_001():
     """Named mapper for BTS-SC-001."""
 
-@scenario("../features/benchmark_task_suite.feature", "Incomplete substituted or unsolvable releases cannot activate")
+@scenario("../features/benchmark_task_suite.feature", "Invalid current inventories cannot activate")
 def test_bts_sc_002():
     """Named mapper for BTS-SC-002."""
 
-@scenario("../features/benchmark_task_suite.feature", "Open selections quote one whole-request price with denominator fifteen")
+@scenario("../features/benchmark_task_suite.feature", "Current selections quote once at the fixed bundle price")
 def test_bts_sc_003():
     """Named mapper for BTS-SC-003."""
 
@@ -27,7 +27,7 @@ def test_bts_sc_005():
 def test_bts_sc_006():
     """Named mapper for BTS-SC-006."""
 
-@scenario("../features/benchmark_task_suite.feature", "Issuance and post-run projections disclose only authorized fields")
+@scenario("../features/benchmark_task_suite.feature", "Issuance and post-run projections disclose only authorized current-catalog fields")
 def test_bts_sc_007():
     """Named mapper for BTS-SC-007."""
 

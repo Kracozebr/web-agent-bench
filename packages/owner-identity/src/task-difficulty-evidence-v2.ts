@@ -3,16 +3,13 @@ import { constants } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { PUBLIC_TASK_CATALOG, TASK_IDS } from './task-catalog.js';
-import { canonicalTaskJson, type DifficultyVerification, type EvidenceReference, type ReferencePathVerification,
+import { canonicalTaskJson, TaskCaseSchema, type DifficultyVerification, type EvidenceReference, type ReferencePathVerification,
   type TaskCase, type TaskReleaseManifest } from './task-release.js';
 import { loadV2ReferenceContext, verifyTaskReferenceEvidenceV2, type V2ReferenceVerifierInput } from './task-reference-evidence-v2.js';
 import { V2ReferenceError, v2Require, type V2Document, type V2ReferenceContext } from './task-reference-evidence-v2-types.js';
 
 const HASH = /^[0-9a-f]{64}$/;
-const EXPECTED_CASES_PIN = {
-  path: 'artifacts/runs/bts-difficulty-v2-case-candidates/00f47005-8951-4003-b6b3-4540172e15d9/candidate-cases.json',
-  sha256: '7ddc9b1181041933aad76c056ffa3288a65265e3d9e6725381343412ce05e82b',
-} as const;
+const CURRENT_CASE_COUNT = 15;
 const REVIEW_SCHEMA = 'bts-v2-minimum-action-review/v1';
 const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
 const EXPECTED_ACTIONS: Record<string, readonly string[]> = {
@@ -48,7 +45,7 @@ export type DifficultyEvidenceV2Input = {
   executionIdentityHash: string;
   identity: TaskReleaseManifest['executionIdentity'];
   profilePolicy: { path: string; sha256: string };
-  /** This pin identifies the case set reviewed by the original engineering capture. */
+  /** The current release-input pin identifies the case set reviewed by this artifact. */
   caseCandidate: { path: string; sha256: string };
   /** The independent wrapper results produced earlier in this same candidate validation. */
   verifiedReferences: readonly { taskCase: TaskCase; result: ReferencePathVerification }[];
@@ -254,13 +251,56 @@ export function deriveMinimumActionProof(ctx: V2ReferenceContext,
   }
 }
 
-function expectedCaseKeys(cases: readonly TaskCase[]): string[] {
+export function currentDifficultyCaseKeys(cases: readonly Pick<TaskCase, 'taskId' | 'mode'>[]): string[] {
   const keys = cases.map((taskCase) => `${taskCase.taskId}:${taskCase.mode}`);
-  demand(keys.length === 20 && new Set(keys).size === 20, 'difficulty_case_inventory_invalid');
+  demand(keys.length === CURRENT_CASE_COUNT && new Set(keys).size === CURRENT_CASE_COUNT,
+    'difficulty_case_inventory_invalid');
   const expected = PUBLIC_TASK_CATALOG.flatMap((item) => [`${item.taskId}:ranked`,
     ...(item.trainingAvailable ? [`${item.taskId}:training`] : [])]).sort();
   demand(same(keys.sort(), expected), 'difficulty_case_inventory_mismatch');
   return keys;
+}
+
+function expectedCaseKeys(cases: readonly TaskCase[]): string[] {
+  return currentDifficultyCaseKeys(cases);
+}
+
+export async function verifyCurrentDifficultyCaseCandidate(
+  repositoryRoot: string,
+  caseCandidate: DifficultyEvidenceV2Input['caseCandidate'],
+  cases: readonly TaskCase[],
+): Promise<readonly TaskCase[]> {
+  const bytes = await pinnedBytes(repositoryRoot, caseCandidate.path, caseCandidate.sha256);
+  const candidate = asObject(JSON.parse(bytes.toString('utf8')), 'difficulty_case_candidate_invalid');
+  demand(candidate.schemaVersion === 'bts-difficulty-v2-case-candidates/v1'
+    && candidate.participantToolProtocol === 'separate_payment_delivery_v2'
+    && Array.isArray(candidate.cases) && candidate.cases.length === CURRENT_CASE_COUNT,
+  'difficulty_case_candidate_inventory_invalid');
+  const candidateRows = candidate.cases.map((value) => asObject(value, 'difficulty_case_candidate_invalid'));
+  currentDifficultyCaseKeys(candidateRows as unknown as Array<Pick<TaskCase, 'taskId' | 'mode'>>);
+  const expectedKeys = expectedCaseKeys(cases);
+  const keyOf = (taskCase: Record<string, unknown>) => `${taskCase.taskId}:${taskCase.mode}`;
+  const sortedCandidate = [...candidateRows].sort((left, right) => keyOf(left).localeCompare(keyOf(right)));
+  const sortedInput = [...cases].sort((left, right) => keyOf(left).localeCompare(keyOf(right)));
+  demand(same(sortedCandidate, sortedInput), 'difficulty_case_candidate_binding_mismatch');
+  const candidateCases = candidateRows.map((value) => TaskCaseSchema.parse(value));
+  demand(same(expectedCaseKeys(candidateCases), expectedKeys), 'difficulty_case_candidate_inventory_mismatch');
+  return candidateCases;
+}
+
+export function indexCurrentDifficultyReviewResults(reviewRows: unknown,
+  expectedKeys: readonly string[]): Map<string, V2Document> {
+  demand(Array.isArray(reviewRows) && reviewRows.length === CURRENT_CASE_COUNT,
+    'difficulty_review_result_inventory_invalid');
+  const reviewByKey = new Map<string, V2Document>();
+  for (const raw of reviewRows) {
+    const row = asObject(raw, 'difficulty_review_result_invalid'), key = `${row.taskId}:${row.mode}`;
+    demand(!reviewByKey.has(key) && HASH.test(String(row.caseHash)), 'difficulty_review_result_identity_invalid');
+    reviewByKey.set(key, row);
+  }
+  demand(reviewByKey.size === CURRENT_CASE_COUNT && expectedKeys.every((key) => reviewByKey.has(key)),
+    'difficulty_review_result_inventory_mismatch');
+  return reviewByKey;
 }
 
 function sourcePins(review: V2Document): Array<{ path: string; sha256: string }> {
@@ -298,9 +338,9 @@ function refResultMatches(taskCase: TaskCase, result: ReferencePathVerification,
  */
 export async function verifyDifficultyEvidenceV2(input: DifficultyEvidenceV2Input): Promise<DifficultyVerification> {
   try {
-    demand(input.evidence.boundary === BOUNDARY && HASH.test(input.evidence.sha256)
-      && input.caseCandidate.path === EXPECTED_CASES_PIN.path && input.caseCandidate.sha256 === EXPECTED_CASES_PIN.sha256,
+    demand(input.evidence.boundary === BOUNDARY && HASH.test(input.evidence.sha256),
     'difficulty_review_binding_invalid');
+    await verifyCurrentDifficultyCaseCandidate(input.repositoryRoot, input.caseCandidate, input.cases);
     const bytes = await pinnedBytes(input.repositoryRoot, input.evidence.path, input.evidence.sha256);
     const review = asObject(JSON.parse(bytes.toString('utf8')), 'difficulty_review_document_invalid');
     demand(review.schemaVersion === REVIEW_SCHEMA
@@ -317,18 +357,10 @@ export async function verifyDifficultyEvidenceV2(input: DifficultyEvidenceV2Inpu
 
     const keys = expectedCaseKeys(input.cases);
     const caseByKey = new Map(input.cases.map((taskCase) => [`${taskCase.taskId}:${taskCase.mode}`, taskCase]));
-    const reviewRows = review.results;
-    demand(Array.isArray(reviewRows) && reviewRows.length === 20, 'difficulty_review_result_inventory_invalid');
-    const reviewByKey = new Map<string, V2Document>();
-    for (const raw of reviewRows) {
-      const row = asObject(raw, 'difficulty_review_result_invalid'), key = `${row.taskId}:${row.mode}`;
-      demand(!reviewByKey.has(key) && HASH.test(String(row.caseHash)), 'difficulty_review_result_identity_invalid');
-      reviewByKey.set(key, row);
-    }
-    demand(reviewByKey.size === 20 && keys.every((key) => reviewByKey.has(key)), 'difficulty_review_result_inventory_mismatch');
+    const reviewByKey = indexCurrentDifficultyReviewResults(review.results, keys);
 
     const referenceByKey = new Map(input.verifiedReferences.map((item) => [`${item.taskCase.taskId}:${item.taskCase.mode}`, item]));
-    demand(referenceByKey.size === 20, 'difficulty_semantic_result_inventory_invalid');
+    demand(referenceByKey.size === CURRENT_CASE_COUNT, 'difficulty_semantic_result_inventory_invalid');
     const findings: string[] = [];
     for (const key of keys) {
       const taskCase = caseByKey.get(key)!;

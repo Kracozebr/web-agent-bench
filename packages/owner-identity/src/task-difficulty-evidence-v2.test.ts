@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { deriveMinimumActionProof } from './task-difficulty-evidence-v2.js';
-import type { TaskReleaseManifest } from './task-release.js';
+import { CURRENT_TRAINING_TASK_IDS, TASK_IDS } from './task-catalog.js';
+import { currentDifficultyCaseKeys, deriveMinimumActionProof, indexCurrentDifficultyReviewResults,
+  verifyCurrentDifficultyCaseCandidate } from './task-difficulty-evidence-v2.js';
+import type { TaskCase, TaskReleaseManifest } from './task-release.js';
 import type { V2Action, V2ReferenceContext } from './task-reference-evidence-v2-types.js';
 
 const router = '0x2626664c2603336e57b271c5c0b26f421741e481';
@@ -73,4 +79,70 @@ test('H2 lower bound counts distinct recipients and rejects batch/conversion sho
   assert.equal(deriveMinimumActionProof(context).minimum, 6);
   const batchContext = asContext({ ...context, manifest: { tools: { ...toolManifest.tools, writes: [...toolManifest.tools.writes, 'batch'] } } });
   assert.throws(() => deriveMinimumActionProof(batchContext), { message: 'minimum_participant_protocol_not_sealed' });
+});
+
+function currentCaseRows() {
+  return [
+    ...TASK_IDS.map((taskId) => ({ taskId, mode: 'ranked', caseHash: 'a'.repeat(64), objective: { reviewedValue: String(taskId) } })),
+    ...CURRENT_TRAINING_TASK_IDS.map((taskId) => ({ taskId, mode: 'training', caseHash: 'b'.repeat(64), objective: { reviewedValue: String(taskId) } })),
+  ];
+}
+
+function candidateDocument(cases: readonly Record<string, unknown>[]) {
+  return { schemaVersion: 'bts-difficulty-v2-case-candidates/v1',
+    participantToolProtocol: 'separate_payment_delivery_v2', cases };
+}
+
+function sha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+test('difficulty review candidate binding rejects a changed case with a recomputed candidate hash', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'bts-difficulty-case-pin-'));
+  const candidatePath = join(repositoryRoot, 'candidate.json');
+  try {
+    const cases = currentCaseRows();
+    const changedCases = structuredClone(cases);
+    changedCases[0]!.objective.reviewedValue = 'changed-content';
+    const bytes = Buffer.from(JSON.stringify(candidateDocument(changedCases)));
+    await writeFile(candidatePath, bytes, { flag: 'wx' });
+    const caseCandidate = { path: 'candidate.json', sha256: sha256(bytes) };
+    await assert.rejects(verifyCurrentDifficultyCaseCandidate(repositoryRoot, caseCandidate,
+      cases as unknown as readonly TaskCase[]), { message: 'difficulty_case_candidate_binding_mismatch' });
+  } finally {
+    await unlink(candidatePath).catch(() => undefined);
+    await rmdir(repositoryRoot);
+  }
+});
+
+test('difficulty review rejects the prior twenty-case candidate and review inventories', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'bts-difficulty-old-inventory-'));
+  const candidatePath = join(repositoryRoot, 'candidate.json');
+  try {
+    const oldTrainingIds = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'];
+    const cases = currentCaseRows();
+    const oldTwentyCaseRows = [
+      ...TASK_IDS.map((taskId) => ({ taskId, mode: 'ranked', caseHash: 'a'.repeat(64), objective: {} })),
+      ...oldTrainingIds.map((taskId) => ({ taskId, mode: 'training', caseHash: 'b'.repeat(64), objective: {} })),
+    ];
+    const bytes = Buffer.from(JSON.stringify(candidateDocument(oldTwentyCaseRows)));
+    await writeFile(candidatePath, bytes, { flag: 'wx' });
+    await assert.rejects(verifyCurrentDifficultyCaseCandidate(repositoryRoot,
+      { path: 'candidate.json', sha256: sha256(bytes) }, cases as unknown as readonly TaskCase[]),
+    { message: 'difficulty_case_candidate_inventory_invalid' });
+
+    const currentKeys = currentDifficultyCaseKeys(cases as unknown as readonly TaskCase[]);
+    const currentRows = currentKeys.map((key) => {
+      const [taskId, mode] = key.split(':');
+      return { taskId, mode, caseHash: 'c'.repeat(64) };
+    });
+    assert.equal(indexCurrentDifficultyReviewResults(currentRows, currentKeys).size, 15);
+    const oldTwentyReviewRows = [...TASK_IDS.map((taskId) => ({ taskId, mode: 'ranked', caseHash: 'd'.repeat(64) })),
+      ...oldTrainingIds.map((taskId) => ({ taskId, mode: 'training', caseHash: 'e'.repeat(64) }))];
+    assert.throws(() => indexCurrentDifficultyReviewResults(oldTwentyReviewRows, currentKeys),
+      { message: 'difficulty_review_result_inventory_invalid' });
+  } finally {
+    await unlink(candidatePath).catch(() => undefined);
+    await rmdir(repositoryRoot);
+  }
 });

@@ -4,7 +4,7 @@ import pg from "pg";
 
 const key = () => randomUUID();
 const inventory = ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"];
-const openIds = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
+const openIds = ["S1", "M1", "H1"];
 const weights = (ids) => ids.map((id) => ({ S: 1, M: 2, H: 3, U: 5 })[id[0]]);
 
 // This injected provider is exclusively a coordinator transaction test double.

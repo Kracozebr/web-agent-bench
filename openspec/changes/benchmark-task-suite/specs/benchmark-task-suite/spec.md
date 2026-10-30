@@ -43,7 +43,7 @@ The active scoped agent SHALL receive all task conditions/constraints and normal
 
 #### Scenario: BTS-SC-007 Issuance and post-run projections disclose only authorized current-catalog fields
 - **WHEN** an actual scoped run receives current open and closed tasks and its owner reads training post-task and ranked post-run results
-- **THEN** the agent SHALL receive necessary conditions only for S1/M1/H1 while owner feedback follows release timing and closed results expose only score and allowed reason category without exact case solution or journal
+- **THEN** the scoped agent SHALL receive necessary conditions for its issued task in either mode, with Training issuance limited to S1/M1/H1, while owner feedback follows release timing and closed results expose only score and allowed reason category without exact case solution or journal
 
 #### Scenario: BTS-SC-008 Public foreign and cache surfaces do not leak closed cases
 - **WHEN** anonymous foreign-owner and delegated credentials request owner results closed task data and cached or rendered bodies outside their scope

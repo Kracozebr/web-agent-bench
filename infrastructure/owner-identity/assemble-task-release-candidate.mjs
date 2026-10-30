@@ -4,6 +4,7 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { TaskCaseSchema, TaskReleaseManifestSchema, sha256CanonicalTaskJson,
   taskBenchmarkHash, taskCaseHash, taskPolicyHash, validateTaskReleaseCandidate } from '../../packages/owner-identity/src/task-release.ts';
+import { CURRENT_TRAINING_TASK_IDS, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
 import { verifyRetainedTaskFeasibility } from '../../packages/owner-identity/src/task-feasibility-evidence.ts';
 
 if (process.platform !== 'linux' || process.cwd() !== '/workspace' || process.argv.length !== 4) {
@@ -46,6 +47,17 @@ if (ranked.schemaVersion !== 'bts-offline-ranked-case-candidate-capture/v1' ||
   throw new Error('Both inputs must be complete source-stable candidate captures');
 }
 const a = ranked.assembly, b = training.assembly;
+if (!Array.isArray(a.cases) || !Array.isArray(b.cases)) throw new Error('current_fifteen_case_inputs_required');
+const expectedRankedKeys = TASK_IDS.map((taskId) => `${taskId}:ranked`).sort();
+const expectedTrainingKeys = CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`).sort();
+const rankedKeys = a.cases.map((taskCase) => `${taskCase.taskId}:${taskCase.mode}`).sort();
+const trainingKeys = b.cases.map((taskCase) => `${taskCase.taskId}:${taskCase.mode}`).sort();
+if (rankedKeys.length !== expectedRankedKeys.length || new Set(rankedKeys).size !== expectedRankedKeys.length
+    || rankedKeys.some((key, index) => key !== expectedRankedKeys[index])
+    || trainingKeys.length !== expectedTrainingKeys.length || new Set(trainingKeys).size !== expectedTrainingKeys.length
+    || trainingKeys.some((key, index) => key !== expectedTrainingKeys[index])) {
+  throw new Error('current_fifteen_case_inputs_required');
+}
 if (a.executionIdentityHash !== b.executionIdentityHash ||
     sha256CanonicalTaskJson(a.executionIdentity) !== a.executionIdentityHash ||
     sha256CanonicalTaskJson(b.executionIdentity) !== b.executionIdentityHash ||
@@ -90,11 +102,11 @@ const review = {
 };
 const reviewBytes = Buffer.from(`${JSON.stringify(review, null, 2)}\n`);
 const manifest = {
-  schemaVersion: 'bts-task-release/v1', releaseIdentity: `${policy.profileId}-candidate`, benchmarkVersion: 'bts-local-v1',
+  schemaVersion: 'bts-task-release/v1', releaseIdentity: `${policy.profileId}-current-${captureId}`, benchmarkVersion: 'bts-local-v1',
   manifestHash: '0'.repeat(64), benchmarkHash: '0'.repeat(64), policyHash: '0'.repeat(64),
-  inventory: { orderedTaskIds: ['S1', 'S2', 'S3', 'S4', 'M1', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3', 'U1'],
-    rankedWeightSum: 26, openTrainingTaskIds: ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'],
-    openTrainingWeightSum: 15, closedRankedOnlyTaskIds: ['S3', 'M2', 'H3', 'U1'] },
+  inventory: { orderedTaskIds: [...TASK_IDS],
+    rankedWeightSum: 26, openTrainingTaskIds: [...CURRENT_TRAINING_TASK_IDS],
+    openTrainingWeightSum: 6, closedRankedOnlyTaskIds: TASK_IDS.filter((taskId) => !CURRENT_TRAINING_TASK_IDS.includes(taskId)) },
   pricing: { precision: 6, openTrainingPriceUnits: '500000', rankedPriceUnits: '1000000', trainingRounding: 'ceil_once_per_request' },
   deadlines: { taskTimeoutSeconds: policy.taskDeadlineSeconds, trainingRunTimeoutSeconds: policy.trainingRunTimeoutSeconds,
     rankedRunTimeoutSeconds: policy.rankedRunTimeoutSeconds },

@@ -470,6 +470,12 @@ class ExplicitBenchmarkRunLifecycleEvidenceCase(BenchmarkRunLifecycleEvidenceCas
     def _verify_BRL_SC_001(self, context: ScenarioContext, then_text: str) -> None:
         del then_text
         facts = self._facts_for_verification(context, "BRL-SC-001")
+        context.check("new_training_quote_over_6", facts.get("new_training_quote_over_6") is True)
+        context.check("training_eligibility_s1_m1_h1", facts.get("training_eligibility_s1_m1_h1") is True)
+        context.check("training_quote_over_6", facts.get("training_quote_over_6") is True)
+        context.check("single_quotes_83334_166667_250000", facts.get("single_quotes_83334_166667_250000") is True)
+        context.check("whole_request_rounding", facts.get("whole_request_rounding") is True)
+        context.check("ranked_twelve_price_and_weights_unchanged", facts.get("ranked_twelve_price_and_weights_unchanged") is True)
         context.check("identity_snapshot", facts.get("identity_snapshot") is True)
         context.check("quoted_price_immutable", facts.get("quoted_price_immutable") is True)
         context.check("reservation_created", facts.get("reservation_created") is True)
@@ -481,7 +487,6 @@ class ExplicitBenchmarkRunLifecycleEvidenceCase(BenchmarkRunLifecycleEvidenceCas
         context.check("activation_alone_no_cancel_or_retarget", facts.get("activation_alone_no_cancel_or_retarget") is True)
         context.check("pinned_exposure", facts.get("pinned_exposure") is True)
         context.check("pinned_open_weight_denominator", facts.get("pinned_open_weight_denominator") is True)
-        context.check("new_training_quote_over_15", facts.get("new_training_quote_over_15") is True)
         context.check("old_admission_snapshot_preserved", facts.get("old_admission_snapshot_preserved") is True)
         context.check("price_changes_after_queue", facts.get("price_changes_after_queue") is True)
         context.check("zero_becomes_paid", facts.get("zero_becomes_paid") is True)
@@ -913,6 +918,8 @@ class ExplicitBenchmarkRunLifecycleEvidenceCase(BenchmarkRunLifecycleEvidenceCas
     def _verify_BRL_SC_025(self, context: ScenarioContext, then_text: str) -> None:
         del then_text
         facts = self._facts_for_verification(context, "BRL-SC-025")
+        context.check("actual_backend_postgres_current_quote_binding", facts.get("actual_backend_postgres_current_quote_binding") is True)
+        context.check("actual_browser_current_three_task_selection_and_quote", facts.get("actual_browser_current_three_task_selection_and_quote") is True)
         context.check("real_owner_ui_waiting_before_admission", facts.get("real_owner_ui_waiting_before_admission") is True)
         context.check("linked_run_only_after_commit", facts.get("linked_run_only_after_commit") is True)
         context.check("reload_same_handoff_identity", facts.get("reload_same_handoff_identity") is True)

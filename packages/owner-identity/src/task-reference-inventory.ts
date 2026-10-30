@@ -10,8 +10,10 @@ const CAPTURE_CLASSIFICATION = 'local_fork_public_tool_evidence_not_bts_task_acc
 const PRIMITIVE_CLASSIFICATION = 'verified_raw_reference_primitives_not_task_acceptance';
 
 export type BtsTaskId = (typeof TASK_ORDER)[number];
-const TRAINING_TASK_ORDER = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'] as const;
-export type TrainingTaskId = (typeof TRAINING_TASK_ORDER)[number];
+// AICODE-NOTE: This is the immutable eight-task source-capture profile. It is
+// parsed as historical evidence; current release eligibility is defined by task-catalog.ts.
+const CAPTURED_TRAINING_TASK_ORDER = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'] as const;
+export type CapturedTrainingTaskId = (typeof CAPTURED_TRAINING_TASK_ORDER)[number];
 export type TaskReferenceCaptureKind = 'unified_reference' | 'native_reference' | 'h3_reference' | 'u1_reference' | 'training_reference';
 export type TaskReferenceEvidenceMode = 'reference' | 'training_reference';
 
@@ -119,7 +121,7 @@ const TRAINING_CASES = [
   { taskId: 'H2', payoutUsdcUnits: ['200000', '300000'] },
 ] as const;
 
-const TRAINING_OBSERVATIONS: Record<TrainingTaskId, readonly string[]> = {
+const TRAINING_OBSERVATIONS: Record<CapturedTrainingTaskId, readonly string[]> = {
   S1: ['task-transfer-before-block', 'task-transfer-before-payer-usdc', 'task-transfer-receipt'],
   S2: ['task-reference-s2-state-before-payer-usdc', 'task-reference-s2-public-offer-read'],
   S4: ['task-native-s4-before-setup-payer-usdc', 'task-native-s4-before-setup-usdc-router-allowance'],
@@ -506,7 +508,7 @@ function probeArtifactReference(probe: JsonRecord, path: unknown, code: string):
   catch { return null; }
 }
 
-function trainingCaseValid(taskId: TrainingTaskId, value: JsonRecord): boolean {
+function trainingCaseValid(taskId: CapturedTrainingTaskId, value: JsonRecord): boolean {
   const capture = record(value.capture);
   if (!capture || capture.status !== (taskId === 'H2' ? 'observed_candidate' : 'captured')) return false;
   switch (taskId) {
@@ -629,9 +631,9 @@ function inspectTrainingReference(probe: JsonRecord, blockers: string[]): Inspec
     blockers.push('training_reference_profile_schema_or_status_invalid');
   }
   if (!successful) blockers.push('capture_not_successful:training_reference');
-  if (!capture || capture.taskCount !== TRAINING_TASK_ORDER.length || !Array.isArray(capture.cases) ||
+  if (!capture || capture.taskCount !== CAPTURED_TRAINING_TASK_ORDER.length || !Array.isArray(capture.cases) ||
       !jsonEqual(capture.cases, TRAINING_CASES) || !Array.isArray(capture.captures) ||
-      capture.captures.length !== TRAINING_TASK_ORDER.length || !Array.isArray(probe.artifacts) || probe.artifacts.length !== 512) {
+      capture.captures.length !== CAPTURED_TRAINING_TASK_ORDER.length || !Array.isArray(probe.artifacts) || probe.artifacts.length !== 512) {
     blockers.push('training_reference_case_inventory_invalid');
     return { successful: false, primitives: [], refs: [] };
   }
@@ -646,8 +648,8 @@ function inspectTrainingReference(probe: JsonRecord, blockers: string[]): Inspec
     }
   }
   const generationIds = new Set<string>();
-  for (let index = 0; index < TRAINING_TASK_ORDER.length; index += 1) {
-    const expectedId = TRAINING_TASK_ORDER[index]!;
+  for (let index = 0; index < CAPTURED_TRAINING_TASK_ORDER.length; index += 1) {
+    const expectedId = CAPTURED_TRAINING_TASK_ORDER[index]!;
     const row = record(capture.captures[index]);
     const generation = record(row?.generation);
     const fence = record(row?.generationFence);
@@ -826,8 +828,8 @@ async function verifyTypedArtifactContents(
       }
     };
 
-    for (let index = 0; index < TRAINING_TASK_ORDER.length; index += 1) {
-      const taskId = TRAINING_TASK_ORDER[index]!;
+    for (let index = 0; index < CAPTURED_TRAINING_TASK_ORDER.length; index += 1) {
+      const taskId = CAPTURED_TRAINING_TASK_ORDER[index]!;
       const row = rows[index];
       const taskCapture = record(row?.capture);
       const generation = record(row?.generation);
@@ -1289,7 +1291,7 @@ export async function verifyTaskCaptureInventory(inputValue: unknown): Promise<T
     const hadBlockedAttempt = captures.some((capture) => (capture.status === 'blocked' || !capture.compatibleWithInventoryPins) &&
       (capture.kind === 'u1_reference' && id === 'U1' || capture.kind === 'h3_reference' && id === 'H3' ||
        capture.kind === 'native_reference' && ['S4', 'M3', 'M4'].includes(id) ||
-       capture.kind === 'training_reference' && (TRAINING_TASK_ORDER as readonly string[]).includes(id) ||
+       capture.kind === 'training_reference' && (CAPTURED_TRAINING_TASK_ORDER as readonly string[]).includes(id) ||
        capture.kind === 'unified_reference'));
     return { taskId: id, status: sources.length > 0 ? 'observed_primitive' : hadBlockedAttempt ? 'blocked' : 'not_observed', primitives: sources };
   });

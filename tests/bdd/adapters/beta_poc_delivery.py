@@ -493,11 +493,12 @@ class BetaPocEvidenceCase:
 
     def _verify_BPC_SC_014(self, context: ScenarioContext) -> None:
         facts = self._verified_facts(context, "BPC-SC-014")
-        context.check("all_eight_runtime_covered", facts["all_eight_runtime_covered"])
-        context.check("single_multi_full_selection", facts["single_multi_full_selection"])
-        context.check("ordered_effects", facts["ordered_effects"])
-        context.check("exact_open_denominator_charge", facts["exact_open_denominator_charge"])
-        context.check("authoritative_feedback", facts["authoritative_feedback"])
+        context.check("current_training_selection_order_s1_m1_h1", facts.get("current_training_selection_order_s1_m1_h1") is True)
+        context.check("single_multi_full_bundle_micro_usdc_exact_rounding", facts.get("single_multi_full_bundle_micro_usdc_exact_rounding") is True)
+        context.check("ui_api_quote_selection_bindings", facts.get("ui_api_quote_selection_bindings") is True)
+        context.check("independent_task_effects_and_server_feedback", facts.get("independent_task_effects_and_server_feedback") is True)
+        context.check("invalid_selection_no_run_preparation_or_funds", facts.get("invalid_selection_no_run_preparation_or_funds") is True)
+        context.check("fresh_non_overwriting_validation_evidence_path", facts.get("fresh_non_overwriting_validation_evidence_path") is True)
 
     def _execute_BPC_SC_015(self, context: ScenarioContext) -> None:
         self._execute_evidence(context, "BPC-SC-015")

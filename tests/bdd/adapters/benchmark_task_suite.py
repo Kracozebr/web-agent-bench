@@ -51,7 +51,7 @@ SECRET_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 TASK_IDS = ("S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1")
-TRAINING_IDS = ("S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2")
+TRAINING_IDS = ("S1", "M1", "H1")
 TASK_WEIGHTS = {"S1": 1, "S2": 1, "S3": 1, "S4": 1, "M1": 2, "M2": 2,
                 "M3": 2, "M4": 2, "H1": 3, "H2": 3, "H3": 3, "U1": 5}
 REFERENCE_ACTION_PLANS = {
@@ -445,14 +445,14 @@ def _verify_task_manifest(manifest: Any) -> tuple[bool, list[dict[str, Any]], li
     cases = manifest.get("cases")
     if not isinstance(inventory, dict) or inventory.get("orderedTaskIds") != list(TASK_IDS) or inventory.get("rankedWeightSum") != 26:
         return False, [], []
-    if inventory.get("openTrainingTaskIds") != list(TRAINING_IDS) or inventory.get("openTrainingWeightSum") != 15:
+    if inventory.get("openTrainingTaskIds") != list(TRAINING_IDS) or inventory.get("openTrainingWeightSum") != 6:
         return False, [], []
-    if inventory.get("closedRankedOnlyTaskIds") != ["S3", "M2", "H3", "U1"]:
+    if inventory.get("closedRankedOnlyTaskIds") != [task_id for task_id in TASK_IDS if task_id not in TRAINING_IDS]:
         return False, [], []
     if not isinstance(cases, dict) or not isinstance(cases.get("training"), list) or not isinstance(cases.get("ranked"), list):
         return False, [], []
     training, ranked = cases["training"], cases["ranked"]
-    if len(training) != 8 or len(ranked) != 12:
+    if len(training) != 3 or len(ranked) != 12:
         return False, [], []
     if [row.get("taskId") for row in training if isinstance(row, dict)] != list(TRAINING_IDS):
         return False, [], []
@@ -820,6 +820,10 @@ def _derive_release_facts(scenario_id: str, capture: dict[str, Any], repository_
         return facts
     identity = manifest["executionIdentity"]
     execution_hash = _sha256_json(identity)
+    facts["training_ids_and_weights"] = all(row.get("taskWeight") == TASK_WEIGHTS[row["taskId"]] for row in training)
+    facts["release_identity"] = isinstance(manifest.get("releaseIdentity"), str) and bool(manifest["releaseIdentity"].strip())
+    facts["manifest_hash"] = manifest.get("manifestHash") == _sha256_json(_without_key(manifest, "manifestHash"))
+    facts["case_count"] = len(training) == 3 and len(ranked) == 12
     positive = capture.get("positiveActivation") if isinstance(capture.get("positiveActivation"), dict) else {}
     facts["release_hash"] = bool(
         positive.get("status") == "validated"
@@ -866,8 +870,8 @@ def _derive_release_facts(scenario_id: str, capture: dict[str, Any], repository_
         facts["raw_paths_hashes"] = _verify_raw_release_references(repository_root, release, training, ranked, execution_hash)
         facts["reference_path_lengths"] = bool(
             facts["raw_paths_hashes"]
-            and release.get("verifier", {}).get("referencePathCount") == 20
-            and release.get("verifier", {}).get("verifiedReferencePathCount") == 20
+            and release.get("verifier", {}).get("referencePathCount") == 15
+            and release.get("verifier", {}).get("verifiedReferencePathCount") == 15
             and all(_verify_reference_evidence(repository_root, row, execution_hash)[1] == row["referencePath"]["actionCount"]
                     for row in training + ranked)
         )
@@ -913,7 +917,8 @@ def _derive_release_facts(scenario_id: str, capture: dict[str, Any], repository_
     scenario_variant_ids = {variant_id for variant_ids in negative_map.values() for variant_id in variant_ids}
     scenario_variants_verified = all(variant_results.get(variant_id) is True for variant_id in scenario_variant_ids)
     full_variant_coverage = bool(
-        coverage.get("requested") == 17 and coverage.get("observed") == 17
+        coverage.get("requested") == len(RELEASE_VARIANT_REQUIREMENTS)
+        and coverage.get("observed") == len(RELEASE_VARIANT_REQUIREMENTS)
         and coverage.get("notRun") == 0 and coverage.get("failed") == 0
         and all(variant_results.values())
     )
@@ -1414,6 +1419,10 @@ class BenchmarkTaskSuiteEvidenceCase:
 
     def _verify_BTS_SC_001(self, context: ScenarioContext) -> None:
         facts = self._verify_evidence(context)
+        context.check("training_ids_and_weights", facts.get("training_ids_and_weights") is True)
+        context.check("release_identity", facts.get("release_identity") is True)
+        context.check("manifest_hash", facts.get("manifest_hash") is True)
+        context.check("case_count", facts.get("case_count") is True)
         context.check("release_hash", facts.get("release_hash") is True)
         context.check("case_hashes", facts.get("case_hashes") is True)
         context.check("source_environment_hash", facts.get("source_environment_hash") is True)
@@ -1449,6 +1458,8 @@ class BenchmarkTaskSuiteEvidenceCase:
 
     def _verify_BTS_SC_003(self, context: ScenarioContext) -> None:
         facts = self._verify_evidence(context)
+        context.check("singleton_quotes_micro_usdc", facts.get("singleton_quotes_micro_usdc") is True)
+        context.check("full_bundle_quote_micro_usdc", facts.get("full_bundle_quote_micro_usdc") is True)
         context.check("selected_ids", facts.get("selected_ids") is True)
         context.check("open_weight_sum", facts.get("open_weight_sum") is True)
         context.check("integer_quote", facts.get("integer_quote") is True)
@@ -1511,6 +1522,8 @@ class BenchmarkTaskSuiteEvidenceCase:
 
     def _verify_BTS_SC_007(self, context: ScenarioContext) -> None:
         facts = self._verify_evidence(context)
+        context.check("current_closed_training_ids", facts.get("current_closed_training_ids") is True)
+        context.check("current_open_training_ids", facts.get("current_open_training_ids") is True)
         context.check("issued_conditions", facts.get("issued_conditions") is True)
         context.check("feedback_release_state", facts.get("feedback_release_state") is True)
         context.check("owner_binding", facts.get("owner_binding") is True)

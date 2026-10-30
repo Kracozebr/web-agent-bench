@@ -11,9 +11,11 @@ import { getAddress } from 'viem';
 import type { OwnerDatabase } from './db.js';
 import type { EvidenceReference, TaskCase, TaskReleaseQuerySource } from './task-release.js';
 import { canonicalTaskJson, sha256CanonicalTaskJson } from './task-release.js';
-import type { M1CaptureAction } from './task-m1-capture-packet.js';
+import { splitPayRequestSha256, type M1CaptureAction } from './task-m1-capture-packet.js';
 import { createS3CapturePacketFixture } from './task-s3-capture-packet.fixture.js';
 import { TaskSealedEvidenceSource } from './task-sealed-evidence-source.js';
+import { makeRejectedChainCaptureFixture } from './task-chain-capture-packet.fixture.js';
+import { projectTaskChainCapturePacket } from './task-chain-capture-packet.js';
 
 const HASH = (label: string) => createHash('sha256').update(label).digest('hex');
 const OWNER = '10000000-0000-4000-8000-000000000001';
@@ -1122,7 +1124,7 @@ test('sealed chain read binds the complete packet offer command to the durable o
     transaction_hash: null, tool_response_json: response, tool_response_hash: sha256CanonicalTaskJson(response), history_revision: 1,
     history_status: 'observed', history_evidence_hash: actionEvidence.sha256, history_evidence_path: actionEvidence.path,
     history_transaction_hash: null, history_tool_response_json: response, history_tool_response_hash: sha256CanonicalTaskJson(response) };
-  const packet = { ownerActions: [], externalActions: [packetAction] };
+  const packet = { taskId: 'M3', ownerActions: [], externalActions: [packetAction] };
   const invoke = async (candidatePacket: unknown) => {
     const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
       async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
@@ -1133,9 +1135,15 @@ test('sealed chain read binds the complete packet offer command to the durable o
       .verifyChainOwnerActions(tx, row, candidatePacket, new Map([[actionEvidence.path, evidenceValue]]), new Map());
   };
 
-  await assert.rejects(invoke(packet), (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
-  await invoke({ ownerActions: [], externalActions: [{ ...packetAction,
-    inspection: { ...packetAction.inspection, command: durableCommand } }] });
+  for (const taskId of ['M3','M4','H2']) {
+    row.task_id=taskId; dbAction.task_id=taskId; packet.taskId=taskId;
+    const correct={...packet,externalActions:[{...packetAction,inspection:{...packetAction.inspection,command:durableCommand}}]};
+    await invoke(correct);
+    for(const altered of [packet,{...packet,externalActions:[{...packetAction,inspection:undefined}]},
+      {...correct,externalActions:[{...correct.externalActions[0],inspection:{command:durableCommand,rawResponseSha256:HASH('wrong-raw')}}]}]) {
+      await assert.rejects(invoke(altered),(error:{code?:string})=>error.code==='TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+    }
+  }
 });
 
 test('sealed H2 rejected transfer binds durable receipt, recovery child, and neutral BEF rejection proof', async () => {
@@ -1336,5 +1344,216 @@ test('isolated PostgreSQL source reads original S1 evidence from a fenced genera
     await client.end();
     if (databaseCreated) await admin.unsafe(`DROP DATABASE ${databaseName}`);
     await admin.end();
+  }
+});
+
+function compositeOwnerReplayFixture(taskId: 'H3' | 'U1') {
+  const ids=[1,2,3].map(n=>`91000000-0000-4000-8000-${String(n).padStart(12,'0')}`);
+  const readOp='92000000-0000-4000-8000-000000000001',payOp='92000000-0000-4000-8000-000000000002';
+  const participantId='93000000-0000-4000-8000-000000000001';
+  const payment={scheme:'exact',network:'eip155:8453',asset:S2_ASSET,amount:'125000',payTo:S2_RECIPIENT,transferMethod:'eip3009'};
+  const readHandle={kind:'offer',operationId:readOp};
+  const content={schema:'synthetic-data/v1',value:1};const bytes=Buffer.from(JSON.stringify(content));const resourceHash=HASH(bytes.toString());
+  const txHash='0x'+'a'.repeat(64);
+  const commands:Array<Record<string,unknown>>=[{kind:'inspect_offer',resourceId:'synthetic-resource',offerId:'standard'},
+    {kind:'pay',resourceId:'synthetic-resource',offerId:'standard',offerReadActionId:ids[0]},
+    {kind:'retrieve',payActionId:ids[1]}];
+  const responses:Array<Record<string,unknown>>=[{operationId:readOp,readHandle,freeInspection:true,deliveryState:'not_delivered',resourceId:'synthetic-resource',resourceSha256:resourceHash,
+      contentType:'application/json',payment,offers:[{id:'standard',payment}]},
+    {operationId:payOp,status:'payment_confirmed',deliveryHandle:payOp,payment:{transactionHash:txHash,receiptStatus:'success',amount:'125000',asset:S2_ASSET,network:payment.network,payTo:S2_RECIPIENT}},
+    {operationId:payOp,resourceId:'synthetic-resource',contentType:'application/json',contentHash:resourceHash,contentBytes:bytes.toString('base64'),content}];
+  const protocols=[null,{schema:'bef-x402-split-payment-observation-v1',befOperationId:payOp,resourceId:'synthetic-resource',offerId:'standard',resourceSha256:resourceHash,
+      amountUnits:'125000',network:payment.network,asset:S2_ASSET,readHandle,acceptedTerms:payment},
+    {schema:'bef-x402-retrieve-observation-v1',payOperationId:payOp,deliveryMatchesPinnedResource:true}];
+  const row={run_id:RUN,task_index:10,owner_id:OWNER,agent_id:AGENT,task_id:taskId,environment_id:ENVIRONMENT,generation_id:GENERATION,
+    environment_manifest_hash:ENV_MANIFEST_HASH,application_source_hash:SOURCE_HASH,action_cutoff_sequence:'3'};
+  const children=new Map<string,Record<string,unknown>>();
+  const actions=commands.map((command,index)=>{
+    const actionId=ids[index]!,ownerOperationId=`synthetic-composite-operation-${index}`,befOperationId=index===0?readOp:payOp;
+    const commandSha256=sha256CanonicalTaskJson({runId:RUN,taskIndex:10,command}),rawResponseSha256=HASH(`composite-response-${index}`);
+    const transactionHash=index===1?txHash:null;
+    const child={schema:'bef-task-action-observation-v1',actionId,runId:RUN,taskIndex:10,actionSequence:String(index+1),ownerOperationId,actionKind:command.kind,
+      commandSha256,environmentId:ENVIRONMENT,generationId:GENERATION,manifestSha256:ENV_MANIFEST_HASH,applicationSourceSha256:SOURCE_HASH,
+      idempotencyKey:`task-action-${actionId}`,status:'observed',befOperationId,transactionHash,rawResponseSha256,participantToolResponse:responses[index],paymentProtocol:protocols[index]};
+    const actionEvidence={path:`${COORDINATOR_EVIDENCE_ROOT}action/composite-${taskId}-${index}.json`,sha256:sha256CanonicalTaskJson(child),boundary:'actual_tool_http_x402_local_evm_application_store' as const};
+    children.set(actionEvidence.path,child);
+    return {actionId,actionSequence:index+1,ownerOperationId,actionKind:command.kind,commandSha256,receiptStatus:'observed',actionEvidence,befOperationId,transactionHash,
+      rawResponseSha256,safeResponse:responses[index],paymentProtocol:protocols[index],retrievedContent:index===2?{payloadSchemaVersion:'bef-delivery-envelope/v1',resourceSchema:'synthetic-data/v1',
+        resourceId:'synthetic-resource',contentType:'application/json',contentSha256:resourceHash,byteCount:bytes.length,validJson:true}:null};
+  });
+  const actionRows=actions.map((action,index)=>({id:action.actionId,run_id:RUN,task_index:10,owner_id:OWNER,agent_id:AGENT,task_id:taskId,environment_id:ENVIRONMENT,
+    action_sequence:String(index+1),operation_id:action.ownerOperationId,payload_hash:action.commandSha256,action_kind:action.actionKind,command_json:commands[index]!,
+    receipt_revision:1,receipt_status:'observed',evidence_hash:action.actionEvidence.sha256,evidence_path:action.actionEvidence.path,transaction_hash:action.transactionHash,
+    tool_response_json:responses[index]!,tool_response_hash:sha256CanonicalTaskJson(responses[index]),history_revision:1,history_status:'observed',history_evidence_hash:action.actionEvidence.sha256,
+    history_evidence_path:action.actionEvidence.path,history_transaction_hash:action.transactionHash,history_tool_response_json:responses[index]!,history_tool_response_hash:sha256CanonicalTaskJson(responses[index])}));
+  const operation=(index:number,operationId:string)=>({operation_id:operationId,env_id:ENVIRONMENT,generation_id:GENERATION,participant_id:participantId,
+    idempotency_key_sha256:HASH(`task-action-${ids[index]}`),response_sha256:actions[index]!.rawResponseSha256});
+  const operations=[{...operation(0,readOp),operation_kind:'offer',status:'accepted',receipt_status:'not_submitted',transaction_hash:null,
+      request_sha256:HASH(JSON.stringify({method:'GET',path:'/offer',resourceId:'synthetic-resource'}))},
+    {...operation(1,payOp),operation_kind:'purchase',status:'delivered',receipt_status:'success',transaction_hash:txHash,payment_response_mode:'deferred_delivery',
+      selected_resource_id:'synthetic-resource',selected_offer_id:'standard',selected_amount_units:'125000',selected_resource_sha256:resourceHash,
+      request_sha256:splitPayRequestSha256(ENVIRONMENT,{resourceId:'synthetic-resource',offerId:'standard',readHandle,acceptedTerms:payment})}];
+  const paid={ownerActions:actions,bef:{after:{generation:{participant_id:participantId},operations,payments:[],deliveries:[]}}};
+  // This is the actual producer's composite external-action shape: no M3/M4/H2 inspection proof extension.
+  const chain={taskId,ownerActions:[],externalActions:actions.map(({rawResponseSha256:_raw,safeResponse:_response,paymentProtocol:_protocol,retrievedContent:_content,...action})=>action)};
+  return {row,actions,actionRows,children,paid,chain};
+}
+
+test('H3 and U1 shared inspect/pay/retrieve prefixes retain both chain and paid source verification',async()=>{
+  for(const taskId of ['H3','U1'] as const) {
+    const fixture=compositeOwnerReplayFixture(taskId);
+    const source=new TaskSealedEvidenceSource({taskReleaseSource:{async getActiveAdmissionRelease(){return null;},async getValidatedReleaseRecord(){return null;}},evidenceRoot:process.cwd()});
+    const invoke=async(f=fixture)=>{
+      const tx={async execute(){return f.actionRows;}};
+      const verifier=source as unknown as {
+        verifyChainOwnerActions(tx:unknown,row:unknown,packet:unknown,chain:ReadonlyMap<string,Record<string,unknown>>,paid:ReadonlyMap<string,Record<string,unknown>>):Promise<void>;
+        verifyPaidOwnerActions(tx:unknown,row:unknown,packet:unknown,children:ReadonlyMap<string,Record<string,unknown>>,composite:boolean):Promise<void>;
+      };
+      await verifier.verifyChainOwnerActions(tx,f.row,f.chain,new Map(),f.children);
+      await verifier.verifyPaidOwnerActions(tx,f.row,f.paid,f.children,true);
+    };
+    await invoke();
+    for(const variant of ['paid-command','raw-hash','read-handle','read-id','source-request','missing-paid-proof','altered-get-response','cutoff'] as const){
+      const altered=structuredClone(fixture);
+      if(variant==='paid-command')Object.assign(altered.actionRows[1]!.command_json,{offerId:'foreign'});
+      if(variant==='raw-hash')altered.paid.ownerActions[0]!.rawResponseSha256=HASH('tampered-raw');
+      if(variant==='read-handle') (altered.children.get(altered.actions[0]!.actionEvidence.path)!.participantToolResponse as Record<string,unknown>).readHandle={kind:'offer',operationId:'foreign'};
+      if(variant==='read-id')altered.paid.ownerActions[0]!.befOperationId='94000000-0000-4000-8000-000000000001';
+      if(variant==='source-request')altered.paid.bef.after.operations[0]!.request_sha256=HASH('wrong-get');
+      if(variant==='missing-paid-proof')altered.paid.ownerActions=altered.paid.ownerActions.slice(1);
+      if(variant==='altered-get-response') {
+        // Keep durable current/history responses consistent: the remaining paid GET verifier must still reject this handle.
+        const response={...altered.actionRows[0]!.tool_response_json,readHandle:{kind:'catalog',operationId:altered.actions[0]!.befOperationId}};
+        altered.children.get(altered.actions[0]!.actionEvidence.path)!.participantToolResponse=response;
+        altered.actionRows[0]!.tool_response_json=response;
+        altered.actionRows[0]!.history_tool_response_json=response;
+        altered.actionRows[0]!.tool_response_hash=sha256CanonicalTaskJson(response);
+        altered.actionRows[0]!.history_tool_response_hash=sha256CanonicalTaskJson(response);
+      }
+      if(variant==='cutoff')altered.row.action_cutoff_sequence='2';
+      await assert.rejects(invoke(altered),(error:{code?:string})=>error.code==='TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+    }
+  }
+});
+
+async function rejectedFullLoaderFixture(root: string, observed: boolean) {
+  const base=await makeFixture(root), f=makeRejectedChainCaptureFixture('H2',observed);
+  const p=f.packet,b=p.binding,x=p.execution;
+  if(observed){
+    // Match the native failure shape: rejected sequence 1 followed by six independent observed transfers.
+    const census=p.bef.before as Record<string,any>,first=p.ownerActions[0]!,firstTx=p.rpc.transactions[0]!;
+    const clone=(value:unknown,replacements:Map<unknown,unknown>):any=>replacements.has(value)?replacements.get(value):Array.isArray(value)?value.map(v=>clone(v,replacements)):
+      value&&typeof value==='object'?Object.fromEntries(Object.entries(value).map(([k,v])=>[k,clone(v,replacements)])):value;
+    for(let i=2;i<6;i++){
+      const actionId=`96000000-0000-4000-8000-${String(i).padStart(12,'0')}`,operationId=`97000000-0000-4000-8000-${String(i).padStart(12,'0')}`;
+      const txHash='0x'+HASH(`extra-transfer-${i}`),blockHash='0x'+HASH(`extra-block-${i}`),blockNumber=String(101+i);
+      const replacements=new Map<unknown,unknown>([[first.actionId,actionId],[first.befOperationId,operationId],[first.transactionHash,txHash],
+        [firstTx.blockHash,blockHash],[firstTx.blockNumber,blockNumber]]);
+      const action=clone(first,replacements);action.actionSequence=i+2;action.ownerOperationId=`owner-extra-transfer-${i}`;
+      action.actionEvidence={...action.actionEvidence,path:`${COORDINATOR_EVIDENCE_ROOT}action/${actionId}.json`};p.ownerActions.push(action);
+      const tx=clone(firstTx,replacements);tx.nonce=String(i);for(const log of tx.logs)log.rpcBlockNumber='0x'+Number(blockNumber).toString(16);
+      tx.receiptLogsSha256=sha256CanonicalTaskJson(tx.logs);p.rpc.transactions.push(tx);p.rpc.transferLogs.push(...tx.logs);
+      const prior=p.rpc.intervalBlocks.at(-1)!;p.rpc.intervalBlocks.push({number:blockNumber,hash:blockHash,parentHash:prior.hash,transactionCount:1,participantTransactions:[txHash],externalTransactions:[]});
+      const operation=clone(census.operations[0],replacements);operation.idempotencyKeySha256=HASH(`task-action-${actionId}`);census.operations.push(operation);
+      const selection=clone(census.selectedExecutions[0],replacements);selection.prestate.blockNumber=String(100+i);selection.transactionIntent.nonce=String(i);
+      const cost=clone(census.costs[0],replacements);cost.receiptBlockParentHash=prior.hash;
+      const measurementSha=sha256CanonicalTaskJson({measurement:'H2-0',receipt:{transactionHash:txHash,status:'success',gasUsed:'100',effectiveGasPrice:'2'}});
+      replacements.set(selection.measurement.measurementSha256,measurementSha);selection.measurement.measurementSha256=measurementSha;
+      census.selectedExecutions.push(selection);census.costs.push(cost);
+      const sourceEvents=census.selectedEvents.filter((event:any)=>event.operationId===first.befOperationId);
+      for(let j=0;j<sourceEvents.length;j++){const event=clone(sourceEvents[j],replacements);event.eventId=`98000000-0000-4000-8000-${String(i*10+j).padStart(12,'0')}`;
+        event.eventSequence=String(i*sourceEvents.length+j+1);
+        if(event.eventKind==='prestate_observed')event.eventPayload.prestate=structuredClone(selection.prestate);
+        if(event.eventKind==='original_tx_hash_bound')event.eventPayload.transactionIntent=structuredClone(selection.transactionIntent);
+        event.eventJsonSha256=sha256CanonicalTaskJson(event.eventPayload);census.selectedEvents.push(event);}
+    }
+    census.counts={...census.counts,operations:'6',selectedExecutions:'6',selectedEvents:String(census.selectedEvents.length),costs:'6'};
+    p.bef.after=structuredClone(census);p.bef.censusSha256=sha256CanonicalTaskJson(census);
+    const last=p.rpc.intervalBlocks.at(-1)!;p.rpc.final.blockNumber=last.number;p.rpc.final.blockHash=last.hash;p.rpc.final.parentHash=last.parentHash;p.rpc.final.participantTransactionCount='6';
+    const participant=p.rpc.final.balances.find(a=>a.account==='participant'&&a.assetId==='USDC')!;participant.amountUnits=String(BigInt(participant.amountUnits)-4000n);
+    const recipient=p.rpc.final.balances.find(a=>a.account===String(first.command.recipient)&&a.assetId==='USDC')!;recipient.amountUnits=String(BigInt(recipient.amountUnits)+4000n);
+    const native=p.rpc.final.balances.find(a=>a.account==='participant'&&a.assetId==='ETH')!;native.amountUnits=String(BigInt(native.amountUnits)-800n);
+    p.closure.actionCutoffSequence=7;p.closure.reconciledActionSequence=7;
+  }
+  const write=async(path:string,payload:unknown)=>{const bytes=Buffer.from(JSON.stringify(payload)+'\n');await mkdir(dirname(resolve(root,path)),{recursive:true});await writeFile(resolve(root,path),bytes);return createHash('sha256').update(bytes).digest('hex');};
+  for(const ref of [p.preparation.fixtureEvidence,p.preparation.baselineEvidence])ref.sha256=await write(ref.path,{synthetic:true});
+  const actionRows:Record<string,any>[]=[];
+  const children=new Map<string,Record<string,any>>();
+  const rejected=p.rejectedChainActions![0]!;
+  const all=[rejected,...p.ownerActions];
+  for(const action of all){
+    const isRejected=action.actionId===rejected.actionId;
+    const command=action.command;
+    action.commandSha256=sha256CanonicalTaskJson({runId:b.runId,taskIndex:0,command});
+    const response=isRejected?null:{operationId:action.befOperationId,selectedAction:{...(action as any).selectedAction,token:p.rpc.assets.find(a=>a.assetId==='USDC')!.address},
+      outcome:'success',transaction:{hash:action.transactionHash},receipt:{transactionHash:action.transactionHash,status:'success'}};
+    const child:Record<string,any>=isRejected?{...f.rejectedActionDocument,commandSha256:action.commandSha256}:
+      {schema:'bef-task-action-observation-v1',actionId:action.actionId,runId:b.runId,taskIndex:0,actionSequence:String(action.actionSequence),ownerOperationId:action.ownerOperationId,
+        actionKind:action.actionKind,commandSha256:action.commandSha256,environmentId:b.environmentId,generationId:x.generationId,manifestSha256:x.environmentManifestHash,
+        applicationSourceSha256:x.applicationSourceHash,idempotencyKey:`task-action-${action.actionId}`,status:'observed',befOperationId:action.befOperationId,
+        transactionHash:action.transactionHash,participantToolResponse:response,receiptStatus:'success'};
+    children.set(action.actionEvidence.path,child);action.actionEvidence.sha256=await write(action.actionEvidence.path,child);
+    const status=isRejected?'rejected_before_execution':'observed';
+    actionRows.push({id:action.actionId,run_id:b.runId,task_index:0,owner_id:b.ownerId,agent_id:b.agentId,task_id:'H2',environment_id:b.environmentId,
+      action_sequence:String(action.actionSequence),operation_id:action.ownerOperationId,payload_hash:action.commandSha256,action_kind:action.actionKind,command_json:command,
+      receipt_revision:1,receipt_status:status,evidence_hash:action.actionEvidence.sha256,evidence_path:action.actionEvidence.path,transaction_hash:action.transactionHash,
+      tool_response_json:response,tool_response_hash:response?sha256CanonicalTaskJson(response):null,history_revision:1,history_status:status,
+      history_evidence_hash:action.actionEvidence.sha256,history_evidence_path:action.actionEvidence.path,history_transaction_hash:action.transactionHash,
+      history_tool_response_json:response,history_tool_response_hash:response?sha256CanonicalTaskJson(response):null});
+  }
+  const replacements=new Map<unknown,unknown>([[RUN,b.runId],[OWNER,b.ownerId],[AGENT,b.agentId],[CLOSURE,p.closure.closureId],[PREPARATION,x.preparationId],[LEASE,x.leaseId],[GENERATION,x.generationId],
+    [RELEASE_ID,b.releaseIdentity],[MANIFEST_HASH,b.manifestHash],[CASE_ID,b.caseId],[CASE_HASH,b.caseHash],[RUBRIC_HASH,b.rubricHash],[ENVIRONMENT,b.environmentId],
+    [ENV_MANIFEST_HASH,x.environmentManifestHash],[SOURCE_HASH,x.applicationSourceHash],[EXECUTION_HASH,x.executionIdentityHash],[INITIAL_STATE_HASH,x.initialStateSha256],['S1','H2']]);
+  const replace=(v:any):any=>replacements.has(v)?replacements.get(v):Array.isArray(v)?v.map(replace):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,value])=>[k,replace(value)])):v;
+  const row=replace(base.row);
+  const capture:EvidenceReference={path:`${COORDINATOR_EVIDENCE_ROOT}observation/full-rejected-${observed}.json`,sha256:'0'.repeat(64),boundary:'actual_tool_http_x402_local_evm_application_store'};
+  const projection=projectTaskChainCapturePacket(p,{binding:b,taskCase:f.taskCase,evidence:capture,ethValuation:f.ethValuation});
+  const covered=Math.max(0,...[projection.transfers,projection.finalStates,projection.allowanceChanges,projection.allowanceUses,projection.trades,projection.conversions,projection.expenses].flatMap(a=>a.map(e=>e.sequence)));
+  const observations={schemaVersion:'bts-task-observations/v1',binding:b,coveredThroughSequence:covered,captureEvidence:capture,coverage:projection.coverage,
+    transfers:projection.transfers,finalStates:projection.finalStates,allowanceChanges:projection.allowanceChanges,allowanceUses:projection.allowanceUses,trades:projection.trades,
+    conversions:projection.conversions,expenses:projection.expenses,payments:[],stateMutations:[],answers:[],selections:[],deliveries:[]};
+  const {environmentId:_environment,...execution}=x;
+  const bundle={schemaVersion:'bts-task-observation-bundle/v1',binding:b,closure:{...p.closure,operationId:row.closure_operation_id,payloadHash:row.closure_payload_hash,reason:row.closure_reason},
+    execution,cutoff:{observationSequence:covered,status:'authoritative',evidence:capture},observations};
+  const persist=async()=>{capture.sha256=await write(capture.path,p);Object.assign(row,{action_cutoff_sequence:String(p.closure.actionCutoffSequence),reconciled_action_sequence:String(p.closure.reconciledActionSequence),
+    closure_action_cutoff_sequence:String(p.closure.actionCutoffSequence),bundle_action_cutoff_sequence:String(p.closure.actionCutoffSequence),bundle_reconciled_action_sequence:String(p.closure.reconciledActionSequence),
+    observation_cutoff_sequence:String(covered),cutoff_evidence:capture,bundle_hash:sha256CanonicalTaskJson(bundle),bundle_json:bundle});};
+  await persist();
+  const record={releaseIdentity:b.releaseIdentity,manifestHash:b.manifestHash,manifest:{releaseIdentity:b.releaseIdentity,manifestHash:b.manifestHash,
+    executionIdentity:{environmentManifestSha256:x.environmentManifestHash,localChainId:Number(p.rpc.localChainId),assets:p.rpc.assets.map(a=>({...a,chainId:Number(p.rpc.localChainId)})),contracts:p.rpc.contracts},
+    costPolicy:{ethValuation:f.ethValuation},cases:{ranked:[f.taskCase],training:[]}}};
+  const load=async()=>{let reads=0;const tx={async execute(){return ++reads===1?[row]:actionRows;}};
+    const source=new TaskSealedEvidenceSource({taskReleaseSource:{async getActiveAdmissionRelease(){return null;},async getValidatedReleaseRecord(){return record as never;}},evidenceRoot:root});
+    return source.load({runId:b.runId,taskIndex:0,closureId:p.closure.closureId},tx as never);};
+  const rewriteRejected=async()=>{rejected.actionEvidence.sha256=await write(rejected.actionEvidence.path,children.get(rejected.actionEvidence.path));
+    actionRows[0]!.evidence_hash=rejected.actionEvidence.sha256;actionRows[0]!.history_evidence_hash=rejected.actionEvidence.sha256;await persist();};
+  return {packet:p,row,bundle,children,actionRows,load,persist,rewriteRejected};
+}
+
+test('full source loader traverses rejected transfer children for rejected-only and mixed observed prefixes',async()=>{
+  for(const observed of [false,true]){
+    const root=await mkdtemp(join(tmpdir(),'bts-rejected-loader-'));
+    try{const f=await rejectedFullLoaderFixture(root,observed);const input=await f.load();assert.ok(input);assert.equal(input.run.acceptedActionCutoffSequence,observed?7:1);}
+    finally{await rm(root,{recursive:true,force:true});}
+  }
+});
+
+test('full rejected-child traversal rejects missing bytes, foreign identity, claimed effects and missing source/cutoff proof',async()=>{
+  for(const variant of ['missing','tampered','foreign-child','claimed-tx','missing-source','source-event','source-cost','omitted-cutoff'] as const){
+    const root=await mkdtemp(join(tmpdir(),'bts-rejected-negative-'));
+    try{const f=await rejectedFullLoaderFixture(root,true),rejected=f.packet.rejectedChainActions![0]!,child=f.children.get(rejected.actionEvidence.path)!;
+      if(variant==='missing')await rm(resolve(root,rejected.actionEvidence.path));
+      if(variant==='tampered')await writeFile(resolve(root,rejected.actionEvidence.path),'{}');
+      if(variant==='foreign-child'){child.actionId=randomUUID();await f.rewriteRejected();}
+      if(variant==='claimed-tx'){child.transactionHash='0x'+'f'.repeat(64);await f.rewriteRejected();}
+      if(variant==='missing-source'){delete f.packet.bef.before.rejectedChainOperations;delete f.packet.bef.after.rejectedChainOperations;await f.persist();}
+      if(variant==='source-event'||variant==='source-cost'){
+        const proof=(f.packet.bef.before.rejectedChainOperations as Array<Record<string,any>>)[0]!;
+        if(variant==='source-event')proof.selectedEvents=[];else proof.costsCount=1;
+        f.packet.bef.after=structuredClone(f.packet.bef.before);f.packet.bef.censusSha256=sha256CanonicalTaskJson(f.packet.bef.before);await f.persist();
+      }
+      if(variant==='omitted-cutoff'){f.packet.rejectedChainActions=[];await f.persist();}
+      await assert.rejects(f.load());
+    }finally{await rm(root,{recursive:true,force:true});}
   }
 });

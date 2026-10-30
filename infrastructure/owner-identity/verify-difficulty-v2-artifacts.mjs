@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { CURRENT_TRAINING_TASK_IDS, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hashPattern = /^[0-9a-f]{64}$/;
@@ -44,7 +45,12 @@ async function main() {
   requireFact(sha(indexBytes) === args[3], 'index_pin_mismatch');
   const index = JSON.parse(indexBytes);
   requireFact(index.schemaVersion === 'bts-difficulty-v2-artifact-inputs/v1'
-    && Array.isArray(index.captures) && index.captures.length > 0 && index.captures.length <= 20, 'index_invalid');
+    && Array.isArray(index.captures) && index.captures.length === TASK_IDS.length + CURRENT_TRAINING_TASK_IDS.length,
+  'current_fifteen_case_source_index_required');
+  const expectedKeys = new Set([
+    ...TASK_IDS.map((taskId) => `${taskId}:ranked`),
+    ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`),
+  ]);
   const records = [], seen = new Set();
   for (const source of index.captures) {
     requireFact(source.path.startsWith('artifacts/runs/') && source.path.endsWith('/probe.json')
@@ -53,6 +59,7 @@ async function main() {
     requireFact(sha(probeBytes) === source.sha256, 'probe_hash_mismatch');
     const probe = JSON.parse(probeBytes);
     const key = `${probe.taskId}:${probe.mode}`;
+    requireFact(expectedKeys.has(key), 'case_outside_current_release_inventory');
     requireFact(!seen.has(key), 'duplicate_task_mode'); seen.add(key);
     requireFact(probe.schemaVersion === 'bts-difficulty-v2-reference-probe/v1'
       && probe.classification === 'local_fork_reference_evidence_not_bts_task_acceptance'
@@ -101,6 +108,8 @@ async function main() {
       applicationSourceSha256: digests.before.appSourceSha256, probeSourceSha256: digests.before.probeSourceSha256,
       generationId: fence.generationId });
   }
+  requireFact(seen.size === expectedKeys.size && [...expectedKeys].every((key) => seen.has(key)),
+    'current_fifteen_case_inventory_incomplete');
   requireFact(sha(await bytesAt(root, args[1])) === args[3], 'index_changed');
   requireFact(sha(await bytesAt(root, verifierPath)) === verifierSha256, 'verifier_changed');
   const captureId = randomUUID();

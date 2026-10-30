@@ -12,7 +12,7 @@ import { acceptLaunchIntent, claimNextQueuedRun, createLaunchIntent, startQueued
 import type { RunAdmissionRelease, ValidatedTaskRelease } from './task-release.js';
 
 const enabled = process.env.OID_BETA_OPERATIONS_LOCK_ORDER_PG_TEST === '1';
-const OPEN_TRAINING_TASKS = ['S1', 'S2', 'S4', 'M1', 'M3', 'M4', 'H1', 'H2'] as const;
+const OPEN_TRAINING_TASKS = ['S1', 'M1', 'H1'] as const;
 const RELEASE = {
   releaseIdentity: 'operations-lock-order-pg-test-v1',
   benchmarkVersion: 'operations-lock-order-pg-test-v1',
@@ -22,13 +22,13 @@ const RELEASE = {
 };
 const ADMISSION_RELEASE: RunAdmissionRelease = {
   ...RELEASE, mode: 'training', taskIds: OPEN_TRAINING_TASKS,
-  weights: [1, 1, 1, 2, 2, 2, 3, 3], priceUnits: '15000', precision: 6,
+  weights: [1, 2, 3], priceUnits: '6000', precision: 6,
 };
 const VALIDATED_RELEASE: ValidatedTaskRelease = {
   ...RELEASE, mode: 'training', taskIds: OPEN_TRAINING_TASKS,
-  weights: [1, 1, 1, 2, 2, 2, 3, 3],
+  weights: [1, 2, 3],
   taskDeadlines: OPEN_TRAINING_TASKS.map((taskId) => ({ taskId, timeoutSeconds: 120 })),
-  overallTimeoutSeconds: 1800, pricing: { priceUnits: '15000', precision: 6 },
+  overallTimeoutSeconds: 1800, pricing: { priceUnits: '6000', precision: 6 },
 };
 
 function deferred<T = void>() {

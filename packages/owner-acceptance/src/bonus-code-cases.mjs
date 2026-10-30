@@ -15,7 +15,7 @@ const ADMIN_CODES = "/api/admin/bonus-codes";
 const OWNER_REDEEM = "/api/owner/bonus-codes/redeem";
 const CODE_VALUE = /^BPC-[A-Za-z0-9_-]{43}$/;
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const TRAINING_TASK_IDS = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"];
+const TRAINING_TASK_IDS = ["S1", "M1", "H1"];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -223,12 +223,12 @@ function formatUsdc(units) {
 }
 
 function selectedTrainingQuote(release, taskIds) {
-  const weights = { S1: 1n, S2: 1n, S4: 1n, M1: 2n, M3: 2n, M4: 2n, H1: 3n, H2: 3n };
+  const weights = { S1: 1n, M1: 2n, H1: 3n };
   const selectedWeight = taskIds.reduce((sum, taskId) => sum + (weights[taskId] ?? 0n), 0n);
   assert(selectedWeight > 0n && taskIds.every((taskId) => Object.hasOwn(weights, taskId)),
     "Training launch selection is not in the approved open-task inventory");
   const numerator = usdcUnits(release.trainingPrice) * selectedWeight;
-  return formatUsdc((numerator + 14n) / 15n);
+  return formatUsdc((numerator + 5n) / 6n);
 }
 
 async function runEffectsSnapshot(connectionString, { ownerId, agentId, intentId, operationIds = [] }) {

@@ -50,7 +50,11 @@
         "lost_response_retry_after_activation",
         "activation_during_preparation",
         "closed_training_selection",
-        "old_admission_not_repriced"
+        "old_admission_not_repriced",
+        "client_supplied_denominator_or_weights",
+        "invalid_denominator_15",
+        "ranked_denominator_26",
+        "sum_of_rounded_single_quotes"
       ],
       "required_observations": [
         "identity_snapshot",
@@ -64,8 +68,13 @@
         "activation_alone_no_cancel_or_retarget",
         "pinned_exposure",
         "pinned_open_weight_denominator",
-        "new_training_quote_over_15",
-        "old_admission_snapshot_preserved"
+        "new_training_quote_over_6",
+        "old_admission_snapshot_preserved",
+        "training_eligibility_s1_m1_h1",
+        "training_quote_over_6",
+        "single_quotes_83334_166667_250000",
+        "whole_request_rounding",
+        "ranked_twelve_price_and_weights_unchanged"
       ]
     },
     "BRL-SC-002": {
@@ -91,7 +100,10 @@
         "closed_training_id",
         "mixed_open_closed",
         "forged_exposure",
-        "zero_price_closed_request"
+        "zero_price_closed_request",
+        "each_of_nine_ineligible_ids_alone_and_mixed",
+        "open_but_training_ineligible",
+        "forged_training_eligibility"
       ],
       "required_observations": [
         "unauthorized_rejected",
@@ -772,15 +784,17 @@
         "native_selected_client_action_evidence",
         "fallback_setup_approvals_counted_separately",
         "no_secret_in_link_or_prompt",
-        "no_hosted_model_invocation"
+        "no_hosted_model_invocation",
+        "actual_browser_current_three_task_selection_and_quote",
+        "actual_backend_postgres_current_quote_binding"
       ]
     }
   },
   "schema_version": 1,
   "spec_snapshot": {
-    "normative_clauses": 181,
+    "normative_clauses": 192,
     "requirement_clause_counts": {
-      "BRL-REQ-001": 19,
+      "BRL-REQ-001": 27,
       "BRL-REQ-002": 7,
       "BRL-REQ-003": 35,
       "BRL-REQ-004": 8,
@@ -791,7 +805,7 @@
       "BRL-REQ-009": 11,
       "BRL-REQ-010": 6,
       "BRL-REQ-011": 8,
-      "BRL-REQ-012": 34
+      "BRL-REQ-012": 37
     },
     "requirements": 12,
     "scenario_ids_sha256": "5b388ca4449881d69fd12d49552454abf2dc6b58e1a932719d7facff845431a2",

@@ -2,14 +2,23 @@
 
 Status: readiness checklist. Current local evidence: R37 runtime commit `e0b5932`, independently verified 29 October 2026. This checklist does not change the approved scope, OpenSpec task checkboxes, or target gate statuses. It is a launch-readiness summary, not a target acceptance record.
 
-30 October local update: real Google sign-in/admin access and one genuine native
-Codex S1 run now have browser-to-PostgreSQL proof (`passed`, 1/1). One genuine
-full12 attempt retained nine evaluations before cancellation at H2. After the
-H2 evidence fixes, a retry cancelled during preparation of S2. The latest attempt
-reached S4; its four evaluations are S1 1/1, S2 7/10, S3 0/1 and recovered S4 1/1.
-The S4 owner-key validator and late-known-task cleanup defects are fixed; normal
-deadline cancellation, fenced preparations and released claim/slot were verified.
-Full12 acceptance remains incomplete. Owner/agent text reports were opened
+30 October local update: real Google sign-in/admin access and the current
+three-task Training have browser-to-PostgreSQL proof. Native Codex completed
+S1/M1/H1 with three known passed 1/1 results, a single 0.5 bonus-USDC fee,
+verified evidence and released claim/slot. Admission to completion took 125.2
+seconds, including initial preparation. The current catalog has only those three
+Training tasks, denominator 6, and the unchanged twelve Ranked cases at 1 USDC.
+
+The current native Full12 now also completed normally: run
+`a9f5c4fa-551a-4c8d-b657-eb9b89dac640` has twelve known grades (six passed,
+four failed, two partial), independently verified input/result/bundle hashes,
+92 runtime files, two manifest-pinned source leaves, one bonus-USDC fee and
+all twelve generations fenced with claim/slot released. Execution took 502.2
+seconds; admission to completion took 513.1 seconds. The earlier H3 inspection
+and H2 rejected-child loader defects have bounded fixes and regressions. The
+closed-but-ungraded deadline cleanup also ran on the earlier actual H2 stall,
+without fabricating a grade or extra debit.
+Owner/agent text reports were opened
 in the admin UI; neither has an attached image, so screenshot acceptance remains
 incomplete. See the dated
 [qualification record](poc-implementation-progress.md#30-october-real-google-and-native-codex-local-qualification).
@@ -17,7 +26,7 @@ These loopback observations do not satisfy the target-host or four-client gates.
 
 ## Readiness decision
 
-**Not ready for an external 3–5-person beta or 20–30-person release.** The repository contains substantial beta code and local browser/PostgreSQL captures, including a completed bonus-funded all-eight training sequence and a completed full12 worker run. Those use a local reference participant and fixture Google; they do not establish a target deployment, actual Google sign-in, or participant-owned model execution. The current progress record also says no mandatory beta gate has been accepted.
+**Not ready for an external 3–5-person beta or 20–30-person release.** The current three-task Training and Full12 have real Google and participant-owned model proof on loopback. Historical eight-task/reference-worker captures belong to their original builds. Target deployment, other clients and mandatory beta acceptance gates remain open.
 
 The approved task file marks 1.1, 1.3, and 8.2 checked. Those boxes track their named artifact/implementation outputs; the mix of implementation, external setup, and acceptance work in the rest of the list is not a code-completion percentage.
 
@@ -42,7 +51,7 @@ The approved task file marks 1.1, 1.3, and 8.2 checked. Those boxes track their 
 
 ### P1 — Configure and prove the actual target profile
 
-- [ ] Select the host and domain, provision HTTPS and trusted origins, create/configure the Google OAuth project, register the exact callback, and verify the selected founder account’s real Google subject before admin bootstrap. The approved record says the OAuth project is absent and the server/domain are unselected.
+- [ ] Select the host and domain, provision HTTPS and trusted origins, configure the production Google OAuth callback and verify the founder subject on that target. The Google project and local sign-in/admin bootstrap now work; server/domain and production callback remain unselected.
 - [ ] Prepare the pinned production qualification manifest and secret references; deploy web/API/worker, persistent PostgreSQL and private evidence storage. Keep PostgreSQL, BEF admin, and raw RPC private. Prove readiness and an actual task start against the pinned target without fixture authentication or a local model provider.
 - [ ] Run target-host SC021 operations evidence: health/readiness, pause and drain, reads/reports while paused, queue/disk/resource admission, bounded load, and restart with queued/running/completed work. Verify identities, holds, claims, slots, fences, and no duplicate effects. The implemented pause and queue status UI do not substitute for this workload/restart capture.
 - [ ] Run the approved SC016/017 timing and recovery cases on the target: caps under concurrency, duplicate dispatch/start, original 24-hour queue deadline at/before/after start, cancellation/restart, expiry cleanup, and preserved holds until confirmed fence. Keep deadline, successor preparation, and platform recovery clocks separate.

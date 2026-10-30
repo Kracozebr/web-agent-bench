@@ -30,7 +30,7 @@
 ## 4. Training, feedback and material exposure
 
 - [ ] 4.1 Integrate the current S1/M1/H1 catalog, admission and whole-request integer pricing over denominator 6 with the unchanged 0.500000-USDC bundle (BTS-SC-003/004).
-- [ ] 4.2 Implement scoped issuance and feedback projections from the current open set S1/M1/H1; keep ranked closed reason categories allowlisted (BTS-SC-007/008).
+- [ ] 4.2 Implement scoped issuance for all twelve Ranked tasks and Training issuance/feedback for only S1/M1/H1; keep ranked closed reason categories allowlisted (BTS-SC-007/008).
 - [ ] 4.3 Make training options and quotes derive from the current catalog's open IDs, weights and denominator; preserve the twelve-task ranked selector and quote (BTS-SC-003/004).
 - [ ] 4.4 Verify direct API, rendered payload, hydration/cache and public artifact boundaries against the current catalog and sealed materials; retain authorized internal evidence (BTS-SC-007/008).
 
@@ -47,4 +47,4 @@
 - [ ] 6.2 Execute all 34 mandatory BTS scenarios at their actual declared boundary; missing prerequisites remain blocked, not a reference-model pass.
 - [ ] 6.3 Record raw paths/hashes and current manifest/case/rubric/runtime provenance; separately label execution/grading/client/mainnet claims and do not expose closed payloads.
 - [ ] 6.4 Reconcile actual evidence, tasks and related packet versions; sync/archive only after explicit implementation scope and all mandatory gates pass.
-- [ ] 6.5 Mirror the approved current inventory, quote and feedback variants into the existing Gherkin/mapper/runtime harness contract under BTS-SC-001–004 and BTS-SC-007; preserve the 34 scenario IDs and leave unexecuted gates not_run or blocked.
+- [ ] 6.5 Mirror the approved current inventory, quote and feedback variants into the existing Gherkin/mapper/runtime harness contract under BTS-SC-001вЂ“004 and BTS-SC-007; preserve the 34 scenario IDs and leave unexecuted gates not_run or blocked.
