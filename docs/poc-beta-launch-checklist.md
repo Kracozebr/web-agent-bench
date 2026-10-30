@@ -3,9 +3,12 @@
 Status: readiness checklist. Current local evidence: R37 runtime commit `e0b5932`, independently verified 29 October 2026. This checklist does not change the approved scope, OpenSpec task checkboxes, or target gate statuses. It is a launch-readiness summary, not a target acceptance record.
 
 30 October local update: real Google sign-in/admin access and one genuine native
-Codex S1 run now have browser-to-PostgreSQL proof (`passed`, 1/1). The genuine
-full12 attempt has nine durable evaluations but is blocked at H2; H3/U1 and the
-owner screenshot/admin report journey remain incomplete. See the dated
+Codex S1 run now have browser-to-PostgreSQL proof (`passed`, 1/1). One genuine
+full12 attempt retained nine evaluations before cancellation at H2. After the
+H2 evidence fixes, the latest retry passed S1 but cancelled during preparation
+of S2. Full12 acceptance remains incomplete. Owner/agent text reports were opened
+in the admin UI; neither has an attached image, so screenshot acceptance remains
+incomplete. See the dated
 [qualification record](poc-implementation-progress.md#30-october-real-google-and-native-codex-local-qualification).
 These loopback observations do not satisfy the target-host or four-client gates.
 

@@ -82,7 +82,8 @@ export type BefPreparationDiagnosticPhase =
   | 'source_rpc_pin'
   | 'local_rpc_response'
   | 'local_rpc_pin'
-  | 'existing_status';
+  | 'existing_status'
+  | 'preparation_put';
 
 export type BefPreparationDiagnosticReasonCode =
   | 'lookup_failed'
@@ -113,11 +114,34 @@ export type BefPreparationDiagnostic = {
   environmentId: string;
   phase: BefPreparationDiagnosticPhase;
   reasonCode: BefPreparationDiagnosticReasonCode;
+  fixturePhase?: BefPreparationFixturePhase;
+  /** At most four exact safe producer class names; never an error message. */
+  fixtureCauseClass?: string | null;
 };
+
+const FIXTURE_DIAGNOSTIC_PHASES = ['identity', 'read_token_before', 'validate_donor_funds', 'set_donor_balance',
+  'set_payer_balance', 'impersonate', 'pin_funding_timestamp', 'reset_donor_balance', 'send_transfer',
+  'persist_transaction_hash', 'stop_impersonating', 'wait_receipt', 'validate_receipt', 'read_token_after', 'validate_effects', 'unknown'] as const;
+type BefPreparationFixturePhase = typeof FIXTURE_DIAGNOSTIC_PHASES[number];
+const FIXTURE_DIAGNOSTIC_CAUSES = new Set(['AbortError', 'AggregateError', 'BaseError', 'Error', 'FixtureReceiptPollTimeoutError',
+  'HttpRequestError', 'InternalRpcError', 'InvalidInputRpcError', 'MethodNotFoundRpcError', 'MethodNotSupportedRpcError',
+  'RequestError', 'RpcRequestError', 'TimeoutError', 'TransactionNotFoundError', 'TransactionReceiptNotFoundError',
+  'TypeError', 'UnknownRpcError', 'WaitForTransactionReceiptTimeoutError', 'OtherError']);
+
+function preparationPutFailureDetails(value: unknown): Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'> {
+  const body = object(value);
+  if (!body || body.error !== 'preparation_failed' || body.fixtureState !== 'unknown' ||
+      typeof body.fixturePhase !== 'string' || !FIXTURE_DIAGNOSTIC_PHASES.some((phase) => phase === body.fixturePhase)) return {};
+  const cause = body.fixtureCauseClass;
+  if (cause !== null && (typeof cause !== 'string' || cause.length > 160 || cause.split('>').length > 4 ||
+      !cause.split('>').every((name) => FIXTURE_DIAGNOSTIC_CAUSES.has(name)))) return {};
+  return { fixturePhase: body.fixturePhase as BefPreparationFixturePhase, fixtureCauseClass: cause as string | null };
+}
 
 type PreparationDiagnosticReporter = (
   phase: BefPreparationDiagnosticPhase,
   reasonCode: BefPreparationDiagnosticReasonCode,
+  details?: Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'>,
 ) => Promise<void>;
 
 export type BefTaskPreparationAdapterDependencies = {
@@ -600,7 +624,7 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
   private async prepareOnce(intent: TaskPreparationIntentPins): Promise<TaskPreparationAdapterOutcome> {
     if (!validIntent(intent)) return this.unknown('preparation_identity_mismatch');
     let diagnosticEmitted = false;
-    const diagnose: PreparationDiagnosticReporter = async (phase, reasonCode) => {
+    const diagnose: PreparationDiagnosticReporter = async (phase, reasonCode, details) => {
       if (diagnosticEmitted) return;
       diagnosticEmitted = true;
       try {
@@ -609,6 +633,7 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
           environmentId: intent.environmentId,
           phase,
           reasonCode,
+          ...details,
         });
       } catch {
         // Diagnostics are best effort and must not change preparation's fail-closed result.
@@ -696,11 +721,18 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
           payerPrivateKey,
         });
       } catch {
+        await diagnose('preparation_put', 'request_failed');
         await this.readPublicStatus(intent, apiBase).catch(() => null);
         return this.unknown('adapter_outcome_unknown');
       }
 
       if (putResponse.status !== 201) {
+        const reasonCode: BefPreparationDiagnosticReasonCode = putResponse.status === 502 ? 'http_502'
+          : putResponse.status === 503 ? 'http_503'
+          : putResponse.status === 504 ? 'http_504'
+          : putResponse.status >= 400 && putResponse.status < 500 ? 'http_4xx'
+          : putResponse.status >= 500 && putResponse.status < 600 ? 'http_5xx' : 'http_status_other';
+        await diagnose('preparation_put', reasonCode, preparationPutFailureDetails(putResponse.body));
         await this.readPublicStatus(intent, apiBase).catch(() => null);
         return this.unknown('adapter_outcome_unknown');
       }

@@ -81,8 +81,53 @@ ranked run was cancelled with `coordinator_executor_session_lost`; nine existing
 evaluations remain, H2 has no evaluation and H3/U1 never started. The earlier
 blocked snapshot is retained unchanged.
 
-Remaining local work is deploying the checksum fix, a complete full12 retry, and the
-owner screenshot/admin report journey. Target deployment, the other three client
+Runtime `3542f06` was deployed normally. The user approved one additional 0.1
+bonus USDC and a daily ceiling of 2.1 USDC. Actual admin/owner UI actions issued
+and claimed one additional single-use code. Read-only verification confirms one
+claim, a 100,000-unit grant to the intended owner, daily and benchmark-category
+ceilings of 2,100,000 units, unchanged operation ceiling 2,000,000, disabled cash
+shortfall, and unchanged Training/Ranked-only access. The existing manual key
+remained active. During issuance the one-time bonus code appeared in a tool
+output; it was subsequently claimed once by the intended owner and is exhausted.
+Its plaintext is not retained in this record.
+
+Fresh browser intent `d306b04e-b2bb-40a6-af63-4c385d22eca4` produced genuine
+native Codex run `d2a50ef3-0740-4c90-be5c-c2e0898dfbe2`. S1 again passed 1/1,
+then the coordinator cancelled with `coordinator_preparation_failed` while
+preparing S2. The other eleven tasks did not start. The native client exited 0;
+that exit does not turn the cancelled platform run into a successful full12.
+Independent verification matches the S1 input/result/bundle/source bindings and
+five recursive evidence files. The one-USDC fee used two bonus grants and thus
+two debit rows, not two run fees. Total owner debits are 2,066,668 units, with
+33,332 available and zero reserved/expired. No ranked publication records exist.
+The separate private snapshot is
+`.local/owner-identity/google-local/full12-02-independent-verification.json`,
+SHA-256 `5c9ca7e26266b3ef83ecb13093fa39a619d32123206f34c35db8c9abf456c67`.
+The earlier blocked snapshot remains unchanged.
+
+The S2 failure occurred after the source reset and new generation binding, before
+a funding transaction hash was recorded. BEF returned bounded fixture phase/cause
+metadata transiently, but the owner adapter discarded it; the exact historical
+inner cause is unknown. Current quota observations do not establish exhaustion
+or explain the earlier failure. No source reset, retry or extra bonus charge is
+used to retrospectively invent that missing diagnosis.
+
+The preparation adapter now records a bounded `preparation_put` diagnostic for
+request failures and non-201 replies. Only an HTTP category and exact allowlisted
+fixture phase/cause-class chain are retained; raw responses, errors, requests and
+success tokens are excluded. The unknown outcome and one-PUT/GET-only recovery
+behavior are unchanged. Focused tests: 28/28 passed; typecheck passed. The adapter
+and test are outside all four currently activated frozen source inventories.
+This instrumentation does not establish the cancelled run's historical cause
+or close the preparation runtime gate.
+
+Both the native agent report and the owner S1 text report were opened through
+the actual admin UI and independently matched to PostgreSQL. The owner report
+retains its S1 training context. Both explicitly show zero screenshots, so image
+upload/admin image acceptance remains incomplete.
+
+Remaining local work is diagnosing and resolving preparation failure, a complete
+full12 retry, and the owner screenshot/admin image journey. Target deployment, the other three client
 families and the participant pilot remain separate release prerequisites.
 
 Historical checkpoint: 29 October 2026, Europe/Moscow. Approved planning baseline:
