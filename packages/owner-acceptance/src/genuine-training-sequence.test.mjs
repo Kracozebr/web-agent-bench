@@ -5,7 +5,19 @@ import { OPEN_TASK_IDS, automaticWorkerCallbackFinancialBoundaryUnchanged, autom
   quoteTrainingSelectionUnits, trainingSequenceGrantAmountUnits,
   trainingCleanupLeasePrefixIsFenced, trainingSequenceTransitionBasis, trainingSequenceTransitions,
   trainingSuccessorActivationChainMatches, trainingSuccessorActivationResult,
-  validateGenuineRecoveryProxySettings } from './genuine-s1-cases.mjs';
+  validateGenuineRecoveryProxySettings, projectGenuineAssertionCode } from './genuine-s1-cases.mjs';
+
+test('assertion diagnostics retain a public predicate and omit paths, text and arbitrary values', () => {
+  const error = { code: 'ERR_ASSERTION', stack: 'Error: private text\n at check (/private/root/ranked-bdd-cases.mjs:459:3)',
+    actual: 429, expected: 400, message: 'a private report body', input: { token: 'synthetic-private-value' } };
+  assert.equal(projectGenuineAssertionCode(error), 'assert_ranked_bdd_cases_459_actual_429_expected_400');
+  assert.equal(projectGenuineAssertionCode({ ...error, actual: 'synthetic-private-value', expected: { body: 'private' } }),
+    'assert_ranked_bdd_cases_459');
+  assert.equal(projectGenuineAssertionCode({ ...error, actual: 'SYNTHETIC_PRIVATE_VALUE', expected: 'INVALID_REQUEST' }),
+    'assert_ranked_bdd_cases_459_expected_INVALID_REQUEST');
+  assert.equal(projectGenuineAssertionCode({ ...error, stack: 'Error: private text\n at check (/private/untrusted.mjs:459:3)' }), null);
+  assert.equal(projectGenuineAssertionCode({ ...error, code: 'DIFFERENT_ERROR' }), null);
+});
 
 test('automatic worker charge invariance keeps prior owner refunds and lots as baseline', () => {
   const initial = { runId: '96e13ff8-bbfc-4cb0-bbab-d091bc9ab632', moneySha256: 'a'.repeat(64),

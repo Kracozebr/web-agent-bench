@@ -163,7 +163,25 @@ export function trainingSequenceGrantAmountUnits(quoteUnits) {
   return quoteUnits > 100_000n ? quoteUnits : 100_000n;
 }
 
+export function projectGenuineAssertionCode(error) {
+  if (error?.code !== 'ERR_ASSERTION' || typeof error.stack !== 'string') return null;
+  const location = /(?:^|[\\/])(ranked-bdd-cases|benchmark-run-lifecycle-launch-probe)\.mjs:(\d{1,6}):\d+/.exec(error.stack);
+  if (!location) return null;
+  const parts = ['assert', location[1].replaceAll('-', '_'), location[2]];
+  const knownCodes = new Set(['INVALID_REQUEST', 'UNAUTHORIZED', 'RATE_LIMITED', 'TOO_MANY_REQUESTS',
+    'ORIGIN_NOT_ALLOWED', 'MISDIRECTED_REQUEST', 'INTERNAL_ERROR', 'RUN_NOT_ACTIVE']);
+  for (const [name, value] of [['actual', error.actual], ['expected', error.expected]]) {
+    if ((Number.isInteger(value) && value >= 0 && value <= 10000) || typeof value === 'boolean') {
+      parts.push(name, String(value));
+    } else if (typeof value === 'string' && knownCodes.has(value)) parts.push(name, value);
+  }
+  const code = parts.join('_');
+  return code.length <= 96 ? code : parts.slice(0, 3).join('_');
+}
+
 function safeErrorCode(error, fallback = 'genuine_s1_case_failed') {
+  const assertionCode = projectGenuineAssertionCode(error);
+  if (assertionCode) return assertionCode;
   const code = typeof error?.code === 'string' ? error.code
     : typeof error?.message === 'string' ? error.message : '';
   return /^[A-Za-z0-9_]{1,96}$/.test(code) ? code : fallback;
@@ -3476,7 +3494,7 @@ async function runGenuineOwnerRunCase(input) {
     if (bddContext && !input.primaryClientOnly && rankedMode && output.runCompletion?.status === 'verified') {
       record('bdd_ranked_replay_forgery_restart', 'started');
       output.bdd.ranked = await runRankedBddCases({runId, ownerId: input.ownerId, agentId,
-        publicOrigin: input.publicOrigin, agentBearer: actorCredential, ownerPage: input.ownerPage,
+        publicOrigin: input.publicOrigin, apiOrigin: input.apiOrigin, agentBearer: actorCredential, ownerPage: input.ownerPage,
         observerPool, db: created.db, taskReleaseSource, evidenceSource, evidenceRoot: input.repoRoot,
         restartApi: input.restartApi});
       record('bdd_ranked_replay_forgery_restart', output.bdd.ranked.status);

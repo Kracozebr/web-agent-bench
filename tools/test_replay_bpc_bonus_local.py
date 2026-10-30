@@ -114,13 +114,13 @@ class BonusReplayTests(unittest.TestCase):
                 expected_error="MODE_NOT_AUTHORIZED", kind="missing_mode_permission")
 
     def test_cap_and_bonus_shortfall_denials_bind_raw_policy_and_pending_intent(self):
-        intent = pending_intent()
+        intent = pending_intent(quote="83334")
         before = empty_run_snapshot(intent=intent.copy(), agentIntents=[intent.copy()],
-            financialPolicy={"allow_cash_shortfall": False, "operation_limit_units": "999999"})
+            financialPolicy={"allow_cash_shortfall": False, "operation_limit_units": "83333"})
         cap = {"intent": {"intentId": "intent-1", "operationId": "intent-op", "mode": "training", "taskIds": ["S1"]}, "accept": {
             "method": "POST", "path": "/api/agent/run-intents/intent-1/accept", "status": 409,
             "errorCode": "AGENT_BUDGET_EXCEEDED", "operationId": "accept-op"},
-            "operationQuoteUnits": "1000000", "operationLimitUnits": "999999",
+            "operationQuoteUnits": "83334", "operationLimitUnits": "83333",
             "before": copy.deepcopy(before), "after": copy.deepcopy(before), "cleanup": {"status": 200,
                 "statusAfterCleanup": "cancelled"}, "verified": False,
         }
@@ -145,14 +145,14 @@ class BonusReplayTests(unittest.TestCase):
             verify_run_denial(cap, expected_database=DB, expected_status=409,
                 expected_error="AGENT_BUDGET_EXCEEDED", kind="nominal_cap_exceeded")
 
-        tasks = ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"]
-        full_intent = pending_intent(tasks=tasks, quote="15000000")
+        tasks = ["S1", "M1", "H1"]
+        full_intent = pending_intent(tasks=tasks, quote="500000")
         shortfall_snapshot = empty_run_snapshot(intent=full_intent.copy(), agentIntents=[full_intent.copy()],
             bonusAvailableUnits="0", financialPolicy={"allow_cash_shortfall": False, "operation_limit_units": None})
         shortfall = {"intent": {"intentId": "intent-1", "operationId": "intent-op", "mode": "training", "taskIds": tasks},
             "accept": {"method": "POST", "path": "/api/agent/run-intents/intent-1/accept", "status": 409,
                 "errorCode": "CASH_PERMISSION_REQUIRED", "operationId": "shortfall-op"},
-            "quoteUnits": "15000000", "bonusAvailableUnits": "0", "shortfallUnits": "15000000",
+            "quoteUnits": "500000", "bonusAvailableUnits": "0", "shortfallUnits": "500000",
             "before": copy.deepcopy(shortfall_snapshot), "after": copy.deepcopy(shortfall_snapshot),
             "cleanup": {"status": 200, "statusAfterCleanup": "cancelled"}, "verified": False,
         }
@@ -191,8 +191,8 @@ class BonusReplayTests(unittest.TestCase):
             "totals": [{"source_kind": "tester_bonus", "available_units": "250000", "reserved_units": "0"},
                 {"source_kind": "cash_usdc", "available_units": "2000000", "reserved_units": "0"}],
             "policy": {"allow_cash_shortfall": True},
-            "intent": {"status": "pending", "run_id": None, "quote_price_units": "1000000",
-                "cash_ceiling_units": "1000000"},
+            "intent": {"status": "pending", "run_id": None, "quote_price_units": "416667",
+                "cash_ceiling_units": "416667"},
             "runs": [], "runOperations": [], "reservations": [], "budgetHolds": [],
         }
         case = {"boundary": "local_isolated_direct_service_with_independent_read_only_postgres",
@@ -201,7 +201,7 @@ class BonusReplayTests(unittest.TestCase):
             "funding": {"codeId": code_id, "issueOperationId": "issue-op", "issuerOwnerId": issuer,
                 "redemptionId": "redemption-1", "redemptionOperationId": claim_op, "ownerId": owner,
                 "grantId": grant_id, "acceptOperationId": "accept-op"},
-            "syntheticRelease": {"selectedQuoteUnits": "1000000"},
+            "syntheticRelease": {"selectedQuoteUnits": "416667"},
             "before": copy.deepcopy(base), "after": copy.deepcopy(base),
         }
         self.assertTrue(verify_bonus_only_cash_substitution(case, DB)["bonusOnlyCashSubstitutionRejected"])

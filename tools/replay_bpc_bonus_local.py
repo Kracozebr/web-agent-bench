@@ -203,7 +203,7 @@ def verify_run_denial(case: dict, *, expected_database: str | None = None,
     if (intent_row.get("operation_id") != intent.get("operationId") or intent_row.get("status") != "pending"
             or intent_row.get("run_id") is not None):
         raise AssertionError("Rejected agent acceptance did not leave only the pre-existing pending intent")
-    expected_tasks = ["S1"] if kind == "nominal_cap_exceeded" else ["S1", "S2", "S4", "M1", "M3", "M4", "H1", "H2"]
+    expected_tasks = ["S1"] if kind == "nominal_cap_exceeded" else ["S1", "M1", "H1"]
     if (intent_row.get("mode") != "training" or intent.get("mode") != "training"
             or intent_row.get("task_ids") != expected_tasks or intent.get("taskIds") != expected_tasks):
         raise AssertionError("Rejected acceptance does not bind the intended training selection")
@@ -295,7 +295,7 @@ def verify_bonus_only_cash_substitution(case: dict, expected_database: str | Non
     quote_units = int((after.get("intent") or {}).get("quote_price_units", "-1"))
     if case.get("syntheticRelease", {}).get("selectedQuoteUnits") != str(quote_units):
         raise AssertionError("Selected synthetic release quote does not match the persisted intent")
-    if (bonus_units != 250000 or quote_units - bonus_units != 750000 or cash_units < quote_units - bonus_units
+    if (bonus_units != 250000 or quote_units - bonus_units != 166667 or cash_units < quote_units - bonus_units
             or (after.get("policy") or {}).get("allow_cash_shortfall") is not True):
         raise AssertionError("Raw bonus shortfall is not backed by enough cash and owner cash permission")
     direct_fields = (

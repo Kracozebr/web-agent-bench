@@ -4,11 +4,27 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
-import { createBoundedEvidenceStoreView } from './ranked-bdd-cases.mjs';
+import { createBoundedEvidenceStoreView, verifyRestartedRankedApiHealth } from './ranked-bdd-cases.mjs';
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
 const OBSERVATION = 'artifacts/runs/owner-identity-bef-task-coordinator/observation';
 const BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
+
+test('restart probe checks the API origin and rejects an unhealthy API', async () => {
+  const webOrigin = 'http://127.0.0.1:3000';
+  const apiOrigin = 'http://127.0.0.1:8784';
+  const requests = [];
+  const health = await verifyRestartedRankedApiHealth(apiOrigin, async (url, options) => {
+    requests.push({ url: String(url), method: options.method, redirect: options.redirect });
+    return new Response(null, { status: url.origin === apiOrigin ? 200 : 404 });
+  });
+  assert.equal(health.status, 200);
+  assert.deepEqual(requests, [{ url: `${apiOrigin}/healthz`, method: 'GET', redirect: 'manual' }]);
+  await assert.rejects(verifyRestartedRankedApiHealth(webOrigin, async () => new Response(null, { status: 404 })),
+    { code: 'ERR_ASSERTION' });
+  await assert.rejects(verifyRestartedRankedApiHealth(apiOrigin, async () => new Response(null, { status: 503 })),
+    { code: 'ERR_ASSERTION' });
+});
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');

@@ -40,6 +40,13 @@ function caseSubject(taskCase) {
   return `${taskCase.mode}/${taskCase.taskId}/${taskCase.caseId}`;
 }
 
+export function expectedReleaseReferenceCount(manifest) {
+  const trainingCases = manifest?.cases?.training;
+  const rankedCases = manifest?.cases?.ranked;
+  if (!Array.isArray(trainingCases) || !Array.isArray(rankedCases)) return null;
+  return trainingCases.length + rankedCases.length;
+}
+
 function replaceStateProjection(taskCase, changes, sha256CanonicalTaskJson) {
   const balances = changes.balances ?? taskCase.initialState.balances;
   const allowances = changes.allowances ?? taskCase.initialState.allowances;
@@ -411,6 +418,7 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
   const activation = positiveActivation;
   const verifiedManifest = activation?.release?.manifest;
   const referenceRows = Array.isArray(referenceResults) ? referenceResults : [];
+  const expectedReferenceCount = expectedReleaseReferenceCount(verifiedManifest);
   const releaseApi = await import('../../owner-identity/dist/task-release.js');
   const storeApi = await import('../../owner-identity/dist/task-store.js');
   const base = {
@@ -421,7 +429,8 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
       activation?.status !== 'validated' || !verifiedManifest || !manifest ||
       manifest.releaseIdentity !== verifiedManifest.releaseIdentity || manifest.manifestHash !== verifiedManifest.manifestHash ||
       typeof verifier?.verifyFeasibility !== 'function' || typeof verifier?.verifyReferencePath !== 'function' ||
-      typeof verifier?.verifyDifficultyReview !== 'function' || referenceRows.length !== 20 ||
+      typeof verifier?.verifyDifficultyReview !== 'function' || expectedReferenceCount === null ||
+      referenceRows.length !== expectedReferenceCount ||
       referenceRows.some((entry) => entry?.result?.status !== 'verified') || difficultyEvidence?.status !== 'approved') {
     return { ...base, status: 'not_run', reasonCode: 'actual_positive_release_verification_not_complete', variants: [] };
   }

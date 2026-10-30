@@ -4,7 +4,7 @@
   "bef_spec_profile": "active-delta",
   "change": "benchmark-run-lifecycle",
   "command": [
-    ".venv/bin/python",
+    ".venv/Scripts/python.exe",
     "-m",
     "pytest",
     "tests/bdd/mappers/test_benchmark_run_lifecycle_bdd.py",
@@ -16,13 +16,13 @@
     "--junitxml=artifacts/bdd-evidence/benchmark-run-lifecycle-pytest.xml"
   ],
   "execution_started": true,
-  "exit_code": 1,
-  "finished_at_utc": "2026-10-30T10:35:37.448109Z",
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-30T16:17:17.835256Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "f6dd02f8ea5bc50e5b642e0fafe53aec15c28955",
+  "git_commit": "877d202d163e8429a3fce53e8f0dd1d46a2daa8a",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 25,
@@ -36,12 +36,12 @@
     "warnings": []
   },
   "harness_contract_sha256": "a2ef7f712b1fc2fffe0ed75f213b7cb94f7b877071558a4ade42b791bf651f8a",
-  "harness_sources_sha256": "e355a371dc49218143014bb8fcbdaedc5c1fa412beabf2f9bffeb2350b3730f3",
-  "harness_sources_sha256_after": "e355a371dc49218143014bb8fcbdaedc5c1fa412beabf2f9bffeb2350b3730f3",
+  "harness_sources_sha256": "afe57eba2390a35d8251fa03b4547555c2e799130dc5103f7ba6d6fe559817dd",
+  "harness_sources_sha256_after": "afe57eba2390a35d8251fa03b4547555c2e799130dc5103f7ba6d6fe559817dd",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/benchmark-run-lifecycle/specs/*/spec.md",
-  "scenario_map_sha256": "ef8a28ef8166b87bb6b8cbca8610fc443c9f2baca937c668a2b682fa7d3aac74",
+  "scenario_map_sha256": "1a9ed2890ffdf5928a0450452230cc12b0e8ca85769cebd4dd0b0b3cac5d7cb6",
   "scenario_results": {
     "BRL-SC-001": "blocked",
     "BRL-SC-002": "blocked",
@@ -65,11 +65,11 @@
     "BRL-SC-020": "blocked",
     "BRL-SC-021": "blocked",
     "BRL-SC-022": "blocked",
-    "BRL-SC-023": "failed",
-    "BRL-SC-024": "failed",
-    "BRL-SC-025": "failed"
+    "BRL-SC-023": "blocked",
+    "BRL-SC-024": "blocked",
+    "BRL-SC-025": "blocked"
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-30T10:35:18.035390Z"
+  "started_at_utc": "2026-10-30T16:17:15.333318Z"
 }

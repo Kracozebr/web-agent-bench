@@ -6,7 +6,7 @@ import { parseCodexTurnEvents, projectCodexFailureDiagnostic, runCodexMcpFixture
   runCodexMcpProtocolCompatibilityProbe, runCodexMcpSdkStrictCompatibilityProbe,
   projectCodexOwnerMcpEvents, codexOwnerPreflightWasAllowed,
   runCodexNativeOwnerAcceptance, runCodexNativeOwnerRevocationProbe,
-  createCodexToolOperationIds } from './codex-client-cases.mjs';
+  createCodexToolOperationIds, pinnedCodexNpmExecArgs, runProcess } from './codex-client-cases.mjs';
 
 const RUN_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -259,6 +259,32 @@ test('CLI failure diagnostics classify bounded output without retaining raw stde
   assert.ok(strictConfig.errorCodeClasses.includes('strict_config_error'));
   assert.ok(strictConfig.errorCodeClasses.includes('mcp_handshake_error'));
   assert.equal(JSON.stringify(strictConfig).includes('private-fixture-value'), false);
+});
+
+test('pinned Codex npm calls bound cold fetches and reuse the exact pin offline for the turn', () => {
+  assert.deepEqual(pinnedCodexNpmExecArgs(['codex', '--version']), [
+    'exec', '--yes', '--fetch-retries=1', '--fetch-timeout=30000', '--package=@openai/codex@0.165.0',
+    '--', 'codex', '--version',
+  ]);
+  assert.deepEqual(pinnedCodexNpmExecArgs(['codex', 'exec', '--ephemeral'], { preferOffline: true }), [
+    'exec', '--yes', '--fetch-retries=1', '--fetch-timeout=30000', '--prefer-offline',
+    '--package=@openai/codex@0.165.0', '--', 'codex', 'exec', '--ephemeral',
+  ]);
+  assert.throws(() => pinnedCodexNpmExecArgs(['codex', '']), /codex_npm_command_arguments_invalid/);
+});
+
+test('CLI process timeouts retain a stage-specific safe reason without output text', async () => {
+  await assert.rejects(() => runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], {
+    cwd: process.cwd(), env: { PATH: process.env.PATH ?? '' }, timeoutMs: 25,
+    timeoutCode: 'codex_version_acquisition_timeout',
+  }), (error) => {
+    assert.equal(error.code, 'codex_version_acquisition_timeout');
+    assert.equal(error.safeDiagnostic.signal, 'SIGKILL');
+    assert.equal(error.safeDiagnostic.stdoutBytes, 0);
+    assert.equal(error.safeDiagnostic.stderrBytes, 0);
+    assert.equal(JSON.stringify(error.safeDiagnostic).includes('setTimeout'), false);
+    return true;
+  });
 });
 
 test('pinned Codex CLI executes a native MCP call against the local non-owner fixture', async () => {

@@ -1,5 +1,142 @@
 # PoC implementation progress
 
+## 30 October: refreshed acceptance runner diagnostics
+
+The current release producer derives its required reference count from the
+validated manifest: three Training cases plus twelve Ranked cases. It no longer
+requires the historical twenty-row catalog. The independent bonus replay now
+checks S1/M1/H1 and the current 500,000-unit Training bundle, retaining its
+ledger, denial and no-partial-effect assertions. Five replay regressions pass.
+
+The full Ranked BDD tail had a separate reproducible harness defect: after
+restarting the API it fetched `/healthz` from the web origin on port 3000, which
+returns 404. The actual API on port 8784 returns 200. The runner now passes the
+API origin explicitly; a regression verifies that healthy API responses pass
+and actual API failures still fail. Fifteen focused Ranked/Training diagnostics
+and evidence-view tests pass with no skips. This identifies a deterministic
+failure in that tail, but the earlier capture retained only `ERR_ASSERTION`, so
+its exact first failing assertion cannot be retrospectively proved.
+
+Fresh captures also encountered CLI startup timeouts before any acceptance or
+run creation. Those captures have no parsed client events or stdout/stderr;
+they do not demonstrate a benchmark-task failure. CLI acquisition and turn
+timeouts now have separate safe reason codes, bounded npm fetch retries, the
+unchanged exact CLI pin and cache reuse within the isolated client home. Raw
+stderr, tokens and arbitrary assertion values are not added to evidence.
+Read-only review leaves two bounded follow-ups open: native-turn catch projections
+still omit the turn timeout code (the version-acquisition error propagates), and
+the supplementary cash-substitution replay binds the quote to the persisted
+intent but does not independently bind every synthetic-release selection
+descriptor field. Neither is a passed target gate or a claim of complete
+diagnostic/bonus-race coverage.
+
+The final bounded full-Ranked reference-worker attempt is capture
+`f54674d5-178f-4ad4-8f1d-5c04e86d3fc0`, with a stable frozen 447-input source
+inventory. Native MCP acceptance passed. Six tasks reached known evaluations,
+completed terminalization and verified observer fences: S1 passed, S2 partial,
+S3/S4/M1/M2 passed. Before task index 6 (M3) was issued, the run was cancelled
+with `coordinator_preparation_failed`. Its overall deadline was still more than
+ten minutes away; this was not overall deadline expiry. The generic
+`run_terminal_before_task_issue` identifies the downstream observation, not the
+underlying preparation cause. The replay/restart tail and subsequent intent
+expiry matrix were not reached. The API-origin fix therefore has regression
+proof but no successful fresh full-tail capture. This synthetic-worker result
+is separate from the earlier actual participant-owned Codex Full12 completion.
+
+Fresh bounded bonus capture `c93044f2-1731-440f-9728-4750d71de6dc` and reports
+capture `8b604622-7035-4995-945f-33e6a337faef` have no local producer failures
+and unchanged 447-input source inventories. The path-to-file-hash maps match
+the final Ranked capture; envelope hashes differ because capture/database IDs
+differ. Independent bonus replay verifies browser issue/claim, anonymous and
+wrong-scope denials, nominal-cap and shortfall denials without partial effects,
+and the separately labelled synthetic cash-substitution boundary. Independent
+report replay verifies owner submission, private screenshot storage, admin
+triage and the enumerated local negative observations. Target-host, all-four
+native-client and retention/restore gates remain unrun by these local slices.
+
+The three current-source acceptance wrappers were run with the repository
+`.venv/Scripts/python.exe`. Their scenario results are:
+
+| Change | Passed | Failed | Blocked (pytest skipped) | Pytest exit |
+| --- | ---: | ---: | ---: | ---: |
+| benchmark-task-suite | 0 | 2 | 32 | 1 |
+| benchmark-run-lifecycle | 0 | 0 | 25 | 0 |
+| beta-poc-delivery | 0 | 0 | 26 | 0 |
+
+All three wrappers retain unchanged harness-source hashes before/after. A pytest
+zero with only skips is not acceptance: all mandatory gates remain non-passing.
+The two BTS failures are independent evidence-coverage failures, not a stale
+base catalog: the current manifest verifies S1/M1/H1 and 3+12 cases, but the
+producer's seventeen negative variants omit the four newly required controls
+`training_set_mismatch`, `training_weight_or_sum_mismatch`,
+`ranked_or_training_case_count_mismatch`, and `release_identity_reuse`.
+The producer's `verified` claim does not establish these missing variants.
+No negative assertion or contract was removed to make the replay pass.
+The derived summaries are retained under `tests/bdd/changes/<change>/acceptance-evidence.json`;
+raw capture/index files remain in ignored `artifacts/runs/acceptance/`.
+Final mirror and semantic checks pass for the baseline 20 contracts and the
+three changes (34 BTS, 25 BRL, 26 BPC). Strict OpenSpec validation passes 13/13
+items. All 447 retained path-to-SHA entries still match current source files
+after the wrappers, with zero missing or changed files. These structural checks
+do not convert the runtime failures or blocked gates to passed.
+
+## 30 October: private screenshot attached through actual Chrome
+
+The owner used the existing agent report's **Attach screenshot** control in
+actual Google Chrome on `/reports`. Report
+`ce17de4c-1adc-4302-81b1-51e266b36f13` now has one owner-uploaded screenshot;
+the original agent-authored text, status and revision remain unchanged. The
+owner detail and `/admin/reports` both loaded the protected image at its actual
+1692 by 890 dimensions. Admin detail shows the `owner_attached_image` audit.
+Fresh unauthenticated HTTP reads of this exact image through both owner and
+admin routes return 401 `UNAUTHORIZED` and `Cache-Control: no-store`; no credential
+or browser session is supplied by that separate read-only privacy probe.
+This is the approved owner-attachment fallback for a native-agent report,
+not automatic desktop capture or a new native-agent image-byte claim.
+
+An independent `oid_observer` repeatable-read/read-only verifier checks the
+runtime database namespace, same-owner report binding, uploader authority,
+upload/report/audit binding, private non-symlink path, actual file bytes,
+dimensions, decoded WebP and stripped metadata. The normalized file is 33,102
+bytes, SHA-256 `c54c6b5620a2f388eab3384bdc42999bff6e5b95ed099dc719e80a4188044e1b`.
+Before/after fingerprints of ledger, runs, tasks, actions, receipts, outbox,
+evaluations and their stored timing fields match. The owner control report
+`9db7c8a8-5953-4d57-b9aa-881060c6c1f2` still has zero images. Available bonus
+credit remains 196.533332 USDC. No benchmark action or credit was issued.
+
+The first selected file had a `.png` name but JPEG bytes from the screenshot
+tool. After that upload failed, the observer found no attached image or unfinished
+upload row for this owner; pure image validation rejected its PNG declaration
+and accepted JPEG. Selecting an unchanged
+byte copy with the correct `.jpg` extension completed the actual UI flow.
+No format, authentication, quota or storage check was weakened. Browser-extension
+file selection initially required the owner to enable local file-URL access;
+native window automation could not confidently resolve the current URL.
+
+Reproduce the independent check with
+`docker exec -w /workspace oid-google-local node infrastructure/owner-identity/verify-google-local-report-attachment.mjs --agent-report-id ce17de4c-1adc-4302-81b1-51e266b36f13 --owner-report-id 9db7c8a8-5953-4d57-b9aa-881060c6c1f2 --compare-before .local/owner-identity/google-local/report-attachment/before-with-timers.json --output .local/owner-identity/google-local/report-attachment/after-new-check.json`.
+Use a fresh output path; snapshots are never overwritten. The completed root and
+independent review readbacks are `after-attached.json` and
+`after-attached-reviewed.json` in that private directory. The actual admin-view
+proof is `admin-preview-proof.jpg`. This closes the local Google/native-report
+attachment gap, while target-host and all-four-client screenshot gates remain
+separate and unaccepted.
+
+An additional authenticated agent-HTTP negative on the actual completed Google
+Full12 run supplied forged grade/result fields to U1's finish endpoint. It returned
+400 `INVALID_REQUEST`; the subsequent observer comparison retained identical
+ledger/run/task/action/receipt/outbox/evaluation/timer fingerprints and the image.
+This separate check is recorded in `forged-finish-denial-proof.json` and
+`after-forged-finish-denial.json` in the same private directory; it is not a
+substitute for the full BRL replay/restart matrix.
+
+After all isolated captures exited, the normal Google runtime was restarted
+with its existing database, private volume and executor enabled. Readiness
+returned to real-Google mode. `after-normal-restart.json` independently passes
+the same observer-only comparison: the agent report still has one valid private
+image, the owner control has none, and business/timing fingerprints remain
+unchanged. Reloaded Chrome owner/admin views both decode the 1692 by 890 image.
+
 ## 30 October: first completed native current Full12
 
 Actual Chrome intent `071fa9bf-5073-41da-9cc5-08aca792bacc`, accepted by the
@@ -47,9 +184,10 @@ and `full12-06-timings.json`; the sanitized client summary is `codex-full12-06.j
 in that directory. Reproduce the read-only check with
 `docker exec -w /workspace/packages/owner-identity oid-google-local node /workspace/.tmp/verify-current-google-run.mjs a9f5c4fa-551a-4c8d-b657-eb9b89dac640 ranked`.
 
-This closes the local native current Training/Full12 qualification gap. Target-host
-acceptance, report-image attachment, other client families, and refreshed mandatory
-BDD runtime evidence remain open; no OpenSpec gate or archive status is promoted.
+This closes the local native current Training/Full12 qualification gap. The later
+local report-image attachment check is recorded above. Target-host acceptance,
+other client families and complete mandatory BDD runtime evidence remain separate;
+no OpenSpec gate or archive status is promoted by this native run.
 
 ## 30 October: current Training selection
 

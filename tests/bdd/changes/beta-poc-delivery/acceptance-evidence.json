@@ -1,0 +1,182 @@
+{
+  "acceptance_state": "failed",
+  "active_delta_sha256": "c8493337d64358d0f09dd4bf8a78dccc042679f7b745aeda3fec02287a279065",
+  "bef_spec_profile": "active-delta",
+  "change": "beta-poc-delivery",
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_beta_poc_delivery_bdd.py",
+    "--change",
+    "beta-poc-delivery",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/beta-poc-delivery-pytest.xml"
+  ],
+  "execution_started": true,
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-30T16:17:55.841723Z",
+  "gate": {
+    "class": "per_scenario",
+    "mandatory": true,
+    "scenario_classes": {
+      "BPC-SC-001": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-002": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-003": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-004": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-005": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-006": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-007": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-008": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-009": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-010": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-011": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-012": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-013": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-014": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-015": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-016": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-017": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-018": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-019": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-020": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-021": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-022": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-023": {
+        "class": "artifact",
+        "mandatory": true
+      },
+      "BPC-SC-024": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-025": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "BPC-SC-026": {
+        "class": "environment",
+        "mandatory": true
+      }
+    }
+  },
+  "git_commit": "877d202d163e8429a3fce53e8f0dd1d46a2daa8a",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "approved_scenarios": 26,
+    "change": "beta-poc-delivery",
+    "coverage_status": "complete",
+    "errors": [],
+    "normative_source": "openspec/changes/beta-poc-delivery/specs/*/spec.md",
+    "protected_scenarios": 26,
+    "status": "passed",
+    "unprotected_scenarios": [],
+    "warnings": []
+  },
+  "harness_contract_sha256": "451dc3717a3df2d5506a1ed72966927605d8a0b07be7ae737c0fe082af2d9292",
+  "harness_sources_sha256": "e5c64e1577eb2c24ff35803a0c6ec25366f6754eea3a1d711ddb88c1ef1ae074",
+  "harness_sources_sha256_after": "e5c64e1577eb2c24ff35803a0c6ec25366f6754eea3a1d711ddb88c1ef1ae074",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/beta-poc-delivery/specs/*/spec.md",
+  "scenario_map_sha256": "6ae957f5a521597ac1ac67060cf032381e3706274f359175fcd66c04b9acb7cb",
+  "scenario_results": {
+    "BPC-SC-001": "blocked",
+    "BPC-SC-002": "blocked",
+    "BPC-SC-003": "blocked",
+    "BPC-SC-004": "blocked",
+    "BPC-SC-005": "blocked",
+    "BPC-SC-006": "blocked",
+    "BPC-SC-007": "blocked",
+    "BPC-SC-008": "blocked",
+    "BPC-SC-009": "blocked",
+    "BPC-SC-010": "blocked",
+    "BPC-SC-011": "blocked",
+    "BPC-SC-012": "blocked",
+    "BPC-SC-013": "blocked",
+    "BPC-SC-014": "blocked",
+    "BPC-SC-015": "blocked",
+    "BPC-SC-016": "blocked",
+    "BPC-SC-017": "blocked",
+    "BPC-SC-018": "blocked",
+    "BPC-SC-019": "blocked",
+    "BPC-SC-020": "blocked",
+    "BPC-SC-021": "blocked",
+    "BPC-SC-022": "blocked",
+    "BPC-SC-023": "blocked",
+    "BPC-SC-024": "blocked",
+    "BPC-SC-025": "blocked",
+    "BPC-SC-026": "blocked"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-30T16:17:52.882082Z"
+}

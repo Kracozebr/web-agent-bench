@@ -13,6 +13,9 @@ const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const MAX_STDERR_BYTES = 256 * 1024;
 const MAX_DIAGNOSTIC_STDERR_BYTES = 16 * 1024;
 const MAX_RUNTIME_MS = 90_000;
+const CODEX_VERSION_ACQUISITION_TIMEOUT_MS = 180_000;
+const NPM_FETCH_RETRIES = 1;
+const NPM_FETCH_TIMEOUT_MS = 30_000;
 
 function sha256(value) { return createHash("sha256").update(value).digest("hex"); }
 function safeName(value) {
@@ -243,7 +246,19 @@ export function projectCodexFailureDiagnostic({ exitCode = null, signal = null, 
   };
 }
 
-function runProcess(executable, args, { cwd, env, timeoutMs = MAX_RUNTIME_MS, expectedMessage = null } = {}) {
+export function pinnedCodexNpmExecArgs(commandArgs, { preferOffline = false } = {}) {
+  if (!Array.isArray(commandArgs) || commandArgs.length === 0 ||
+      !commandArgs.every((argument) => typeof argument === "string" && argument.length > 0)) {
+    throw new TypeError("codex_npm_command_arguments_invalid");
+  }
+  return ["exec", "--yes", `--fetch-retries=${NPM_FETCH_RETRIES}`,
+    `--fetch-timeout=${NPM_FETCH_TIMEOUT_MS}`,
+    ...(preferOffline ? ["--prefer-offline"] : []), `--package=${CODEX_CLI_PACKAGE}@${CODEX_CLI_VERSION}`,
+    "--", ...commandArgs];
+}
+
+export function runProcess(executable, args, { cwd, env, timeoutMs = MAX_RUNTIME_MS, timeoutCode = "codex_client_timeout",
+  expectedMessage = null } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd, env, shell: false, windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"] });
@@ -258,7 +273,7 @@ function runProcess(executable, args, { cwd, env, timeoutMs = MAX_RUNTIME_MS, ex
     let settled = false;
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      finish(null, "codex_client_timeout", null, "SIGKILL");
+      finish(null, timeoutCode, null, "SIGKILL");
     }, timeoutMs);
     const finish = (value, error, exitCode = null, signal = null) => {
       if (settled) return;
@@ -370,18 +385,19 @@ async function prepareCodexHome(baseUrl, mcp) {
 }
 
 async function verifyCodexVersion(env, workingDirectory) {
-  const result = await runProcess("npm", ["exec", "--yes", `--package=${CODEX_CLI_PACKAGE}@${CODEX_CLI_VERSION}`,
-    "--", "codex", "--version"], { cwd: workingDirectory, env, timeoutMs: 120_000 });
+  const result = await runProcess("npm", pinnedCodexNpmExecArgs(["codex", "--version"]), {
+    cwd: workingDirectory, env, timeoutMs: CODEX_VERSION_ACQUISITION_TIMEOUT_MS,
+    timeoutCode: "codex_version_acquisition_timeout" });
   const versionOutput = result.stdoutText.trim();
   if (versionOutput !== `codex-cli ${CODEX_CLI_VERSION}`) throw new Error("codex_cli_version_pin_mismatch");
   return { package: CODEX_CLI_PACKAGE, version: CODEX_CLI_VERSION, outputSha256: result.stdoutSha256 };
 }
 
 async function runCodexTurn({ env, workingDirectory, prompt, expectedMessage = "READY", timeoutMs = MAX_RUNTIME_MS }) {
-  const result = await runProcess("npm", ["exec", "--yes", `--package=${CODEX_CLI_PACKAGE}@${CODEX_CLI_VERSION}`,
-    "--", "codex", "exec", "--ephemeral", "--strict-config", "--json", "--color", "never", "--skip-git-repo-check",
-    "--cd", workingDirectory, "--sandbox", "read-only", "--model", CODEX_FIXTURE_MODEL, prompt],
-  { cwd: workingDirectory, env, timeoutMs, expectedMessage });
+  const result = await runProcess("npm", pinnedCodexNpmExecArgs(["codex", "exec", "--ephemeral", "--strict-config",
+    "--json", "--color", "never", "--skip-git-repo-check", "--cd", workingDirectory,
+    "--sandbox", "read-only", "--model", CODEX_FIXTURE_MODEL, prompt], { preferOffline: true }),
+  { cwd: workingDirectory, env, timeoutMs, timeoutCode: "codex_exec_timeout", expectedMessage });
   return { exitCode: result.code, completed: result.terminalTurnEventSeen && result.expectedMessageSeen,
     outputBytes: result.stdoutBytes, outputSha256: result.stdoutSha256,
     stderrBytes: result.stderrBytes, stderrSha256: result.stderrSha256, eventTypes: result.eventTypes,

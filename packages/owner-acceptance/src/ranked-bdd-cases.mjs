@@ -38,6 +38,7 @@ function requireInputs(input) {
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.ownerId ?? '') ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.agentId ?? '') ||
       typeof input.publicOrigin !== 'string' || !/^https?:\/\//.test(input.publicOrigin) ||
+      typeof input.apiOrigin !== 'string' || !/^https?:\/\//.test(input.apiOrigin) ||
       typeof input.agentBearer !== 'string' || input.agentBearer.length < 16 ||
       !input.observerPool || typeof input.observerPool.connect !== 'function' ||
       !input.db || typeof input.db.transaction !== 'function' ||
@@ -576,6 +577,14 @@ async function runUnknownEvidenceReconstructionProbe(input, target, completedSna
  * admitted real ranked run; this function does not create runs, seed outcomes, or invoke task actions.
  * The one deliberate mutation-shaped request is a strict-schema forged grade, expected to be rejected.
  */
+export async function verifyRestartedRankedApiHealth(apiOrigin, fetchImpl = globalThis.fetch) {
+  const health = await fetchImpl(new URL('/healthz', apiOrigin), {
+    method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(5000),
+  });
+  assert.equal(health.ok, true, 'restarted owner API must become healthy');
+  return health;
+}
+
 export async function runRankedBddCases(input) {
   requireInputs(input);
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
@@ -608,8 +617,7 @@ export async function runRankedBddCases(input) {
     database: assertUnchanged(before, afterForgery, 'forged_agent_finish') });
 
   await input.restartApi();
-  const health = await fetchImpl(new URL('/healthz', input.publicOrigin), { method: 'GET', redirect: 'manual' });
-  assert.equal(health.ok, true, 'restarted owner API must become healthy');
+  const health = await verifyRestartedRankedApiHealth(input.apiOrigin, fetchImpl);
   const replayAfterRestart = await completeKnownRankedRun(completionDependencies, { runId: target.runId });
   assert.deepEqual(replayAfterRestart, { runId: target.runId, status: 'completed', finishedAt: persistedFinishedAt, replayed: true });
   const ownerResults = await readOwnerResults(input.ownerPage, target.runId, before.evaluations);

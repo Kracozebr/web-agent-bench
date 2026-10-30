@@ -2,9 +2,21 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { createReleaseNegativeCandidates } from './release-bdd-cases.mjs';
+import { createReleaseNegativeCandidates, expectedReleaseReferenceCount } from './release-bdd-cases.mjs';
 
 const fixturePath = process.env.BTS_RELEASE_PROBE_FIXTURE;
+
+test('release probe expects verified reference rows for the manifest case inventory', () => {
+  const manifest = {
+    cases: {
+      training: [{}, {}, {}],
+      ranked: Array.from({ length: 12 }, () => ({})),
+    },
+  };
+  assert.equal(expectedReleaseReferenceCount(manifest), 15);
+  assert.equal(expectedReleaseReferenceCount({ cases: { training: [], ranked: [] } }), 0);
+  assert.equal(expectedReleaseReferenceCount({ cases: { training: [] } }), null);
+});
 
 test('retained release fixture produces a bounded, production-blocked initially satisfied U1 allocation', {
   skip: !fixturePath,
