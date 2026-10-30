@@ -1,0 +1,287 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "pending",
+  "runtime_acceptance": "not_run",
+  "normative_delta": "specs/task-preparation-prefetch/spec.md",
+  "planned_runtime_manifest": "tests/bdd/changes/task-preparation-prefetch/harness-contracts.json",
+  "note": "Deferred planning only. Contracts are not installed in the live registry. User authorized saving research/specification and commit/push, not implementation or executable assertions. Browser initiation plus backend/database proof remains required for user-facing journeys.",
+  "protected_scenarios": {
+    "TPP-SC-001": {
+      "requirement_id": "TPP-REQ-001",
+      "title": "Concurrent staging obeys budgets without another charge",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_001",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "bounded_unique_stage_reservations",
+        "unchanged_original_charge_claim_and_slot",
+        "eligible_serial_fallback"
+      ],
+      "negative_variants": [
+        "same_delivery_race",
+        "global_budget_exhausted",
+        "disabled_or_unsupported_profile",
+        "non_immediate_or_queued_run"
+      ],
+      "durable_effects": [
+        "stage_identity",
+        "preparation_reservation",
+        "unchanged_ledger_and_current_task"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    },
+    "TPP-SC-002": {
+      "requirement_id": "TPP-REQ-002",
+      "title": "Preparing another environment preserves the current task",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_002",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "distinct_compatible_leases",
+        "reset_funding_baseline_verified",
+        "current_environment_unchanged"
+      ],
+      "negative_variants": [
+        "active_environment_reset",
+        "wrong_facilitator_or_case_pin",
+        "stale_or_foreign_generation",
+        "mutated_or_unverified_snapshot"
+      ],
+      "durable_effects": [
+        "independent_generation_bindings",
+        "baseline_evidence",
+        "current_state_fingerprint",
+        "exact_fence_evidence"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    },
+    "TPP-SC-003": {
+      "requirement_id": "TPP-REQ-003",
+      "title": "Future-generation access remains denied until activation",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_003",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "future_content_private",
+        "staged_participant_effects_denied",
+        "current_task_continues"
+      ],
+      "negative_variants": [
+        "direct_future_tool_with_staged_credential",
+        "future_detail_read",
+        "stale_or_foreign_credential",
+        "token_or_hidden_answer_disclosure"
+      ],
+      "durable_effects": [
+        "denial_observations",
+        "unchanged_actions_receipts_grades_timers_and_ledger"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    },
+    "TPP-SC-004": {
+      "requirement_id": "TPP-REQ-004",
+      "title": "Activation replay preserves one task and its proof chain",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_004",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "exact_known_predecessor_proof",
+        "one_atomic_current_task_activation",
+        "cross_service_authority_reconciled"
+      ],
+      "negative_variants": [
+        "duplicate_worker_or_callback",
+        "lost_acknowledgement_and_restart",
+        "unknown_or_tampered_bundle",
+        "cancel_or_revoke_race",
+        "partial_owner_bef_handshake"
+      ],
+      "durable_effects": [
+        "activation_identity",
+        "unchanged_original_run_charge_claim",
+        "one_current_task",
+        "immutable_predecessor_proof"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    },
+    "TPP-SC-005": {
+      "requirement_id": "TPP-REQ-005",
+      "title": "Early readiness and expiry do not inflate execution time",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_005",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "activation_only_task_clock",
+        "actual_post_terminal_wait_excluded_once",
+        "bounded_stage_and_active_lifetimes"
+      ],
+      "negative_variants": [
+        "readiness_before_terminalization",
+        "readiness_after_terminalization",
+        "expiry_before_at_after_activation",
+        "replayed_clock_adjustment",
+        "expired_or_fenced_generation_revival"
+      ],
+      "durable_effects": [
+        "original_clock_policy",
+        "single_start_and_clock_event",
+        "generation_expiry",
+        "unchanged_charge"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    },
+    "TPP-SC-006": {
+      "requirement_id": "TPP-REQ-006",
+      "title": "Failure and revocation retain resources until confirmed cleanup",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_006",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "all_affected_generations_identified",
+        "unknown_retained_until_exact_fence",
+        "eligible_safe_fallback"
+      ],
+      "negative_variants": [
+        "cancel_revoke_and_restart_races",
+        "lost_setup_reply",
+        "lost_fence_confirmation",
+        "expired_stage",
+        "lost_private_credentials",
+        "rollback_with_standby"
+      ],
+      "durable_effects": [
+        "fence_and_reconciliation_records",
+        "lease_release_once",
+        "unchanged_original_ledger_and_results"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    },
+    "TPP-SC-007": {
+      "requirement_id": "TPP-REQ-007",
+      "title": "Concurrent preflight and caches reject stale or partial facts",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_007",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "all_required_checks_bound",
+        "immutable_cache_identity",
+        "live_authority_and_baseline_rechecked"
+      ],
+      "negative_variants": [
+        "out_of_order_checks",
+        "partial_timeout",
+        "release_or_cache_corruption",
+        "permission_change",
+        "baseline_change",
+        "duplicate_setup_dispatch"
+      ],
+      "durable_effects": [
+        "verification_evidence",
+        "cache_identity",
+        "denied_or_unknown_stage",
+        "unchanged_dispatch_and_economic_effects"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    },
+    "TPP-SC-008": {
+      "requirement_id": "TPP-REQ-008",
+      "title": "Paired workload captures establish only measured improvements",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_tpp_sc_008",
+      "adapter": "task_preparation_prefetch",
+      "boundary": "environment",
+      "boundary_detail": "owner_coordinator_postgres_two_private_bef_evm_environments",
+      "required_observations": [
+        "matched_serial_and_overlap_profiles",
+        "all_phase_and_resource_metrics",
+        "independent_quality_and_isolation_replay",
+        "honest_missing_observation_status"
+      ],
+      "negative_variants": [
+        "resource_pressure_regression",
+        "missing_phase_or_cpu_memory_sample",
+        "uncontrolled_cache_or_background_activity",
+        "incomplete_capture",
+        "producer_only_success_claim",
+        "mismatched_source_profile"
+      ],
+      "durable_effects": [
+        "raw_capture_inventory_and_hashes",
+        "source_policy_and_case_pins",
+        "observer_replay_report",
+        "explicit_gate_and_capacity_scope"
+      ],
+      "evidence_mode": "actual_environment_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_diagnostic_setup_or_fault_injection",
+        "internal_worker_delivery",
+        "readonly_db_rpc_observation"
+      ],
+      "runtime_status": "not_run"
+    }
+  }
+}

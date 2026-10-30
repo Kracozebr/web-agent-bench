@@ -84,6 +84,8 @@ The approved task file marks 1.1, 1.3, and 8.2 checked. Those boxes track their 
 
 ## External inputs and boundaries
 
+Deferred performance follow-up: [preparation research and measurements](task-preparation-optimization-research.md) and [task-preparation-prefetch proposal](../openspec/changes/task-preparation-prefetch/proposal.md) preserve the 30 October findings for later review. This is not an extra approved beta implementation requirement, a closed readiness gate or an enabled runtime feature.
+
 The remaining external prerequisites are host/domain selection, HTTPS and production Google callback/secret configuration with the founder subject verified on that target, and three missing client/model sessions. The Google project and local founder sign-in already work. Their waiting time is not an engineering estimate. No duration or percentage is assigned here. If an effort estimate is added later, state the assumption of up to three parallel agents plus one integrating/reviewing root, identify shared-source/build serialization, and report external dependency wait separately.
 
 This checklist follows the approved boundary in [approval](../openspec/changes/beta-poc-delivery/approval.md), [spec](../openspec/changes/beta-poc-delivery/specs/beta-poc-delivery/spec.md), and [tasks](../openspec/changes/beta-poc-delivery/tasks.md). Existing implementation and evidence status remain recorded in [progress](poc-implementation-progress.md); this checklist does not change them.
