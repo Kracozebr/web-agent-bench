@@ -6,13 +6,24 @@ import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import type { OwnerDatabase } from './db.js';
 import { addFixture } from './task-run-completion.test-fixture.js';
-import { requestRunCancellation, consumeRunCancellationOutbox } from './run-service.js';
+import { requestRunCancellation, requestRunCancellationFromCoordinator, consumeRunCancellationOutbox } from './run-service.js';
 import { finalizeKnownTrainingTask } from './task-run-completion.js';
 import { beginSuccessorTaskPreparation, createTaskPreparationCancellationExecutor } from './task-preparation.js';
 import type { TaskReleaseQuerySource } from './task-release.js';
 import type { EvaluateTaskInput } from './task-evaluator.js';
 
 const enabled = process.env.OID_RUN_CANCELLATION_BETWEEN_TASKS_PG_TEST === '1';
+
+test('trusted coordinator accepts the bounded run-deadline cancellation reason without exposing arbitrary reasons',async()=>{
+ let lookups=0;
+ const db={async execute(){lookups++;return [];}} as unknown as OwnerDatabase;
+ const runId='10000000-0000-4000-8000-000000000001';
+ assert.equal(await requestRunCancellationFromCoordinator(db,{runId,reason:'coordinator_run_deadline'}),null);
+ assert.equal(lookups,1);
+ await assert.rejects(()=>requestRunCancellationFromCoordinator(db,{runId,reason:'untrusted_deadline_override' as never}),
+  (error:{code?:string})=>error.code==='INVALID_COORDINATOR_CANCELLATION');
+ assert.equal(lookups,1);
+});
 
 test('post-start cancellation between known fenced tasks reuses the exact stored predecessor fence', { skip: !enabled }, async () => {
   const sourceUrlValue = process.env.OID_DATABASE_URL;

@@ -8,6 +8,7 @@ import postgres from 'postgres';
 import { activeTaskNeedsCancellation, activeTaskNeedsCancellationAfterRecovery, handoffCommittedSuccessor, isResumablePreDispatchPreparation,
   isBoundedSuccessorWindowFailure, isValidSuccessorLocator, leaseGuardedPreparedTaskStartPort,
   predecessorFinishedBeforeOriginalDeadline, successorFailureCancellationReason, parseLocalBefTaskCoordinatorConfig,
+  isExpiredKnownRunGap,cancelExpiredKnownRunGaps,
   parseBetaBefTaskCoordinatorConfig,
   BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY, PostgresLocalCoordinatorLease, taskIndexFromFenceResult, cleanupFailedLocalBefTaskCoordinatorStartup,
   writeSafeEvidence, type CoordinatorReservedSql } from './bef-task-coordinator.js';
@@ -243,6 +244,42 @@ test('only explicit saved successor-policy expiry failures use the no-intent can
   assert.equal(successorFailureCancellationReason('RUN_TASK_PREDECESSOR_NOT_KNOWN', false, true), null);
   assert.equal(successorFailureCancellationReason('RUN_TASK_PREDECESSOR_NOT_KNOWN', true, null),
     'coordinator_interrupted_preparation');
+});
+
+const expiredGap={run_id:'10000000-0000-4000-8000-000000000001',claim_id:'10000000-0000-4000-8000-000000000002',
+ predecessor_task_index:3,mode:'ranked' as const,run_status:'running',overall_deadline:'2026-10-30T09:12:46.000Z',
+ observed_at:'2026-10-30T09:12:46.000Z',predecessor_finished_at:'2026-10-30T09:12:46.000Z',predecessor_status:'completed',
+ predecessor_closure_status:'closed',evaluation_status:'known',active_task_count:0,stored_fence_matches:true,terminal_event_matches:true,
+ successor_queued:true,claim_slot_matches:true};
+
+test('known task gaps clean up only predecessors that finished at or after the run deadline',()=>{
+ assert.equal(isExpiredKnownRunGap({...expiredGap,observed_at:'2026-10-30T09:12:45.999Z'}),false);
+ assert.equal(isExpiredKnownRunGap(expiredGap),true);
+ assert.equal(isExpiredKnownRunGap({...expiredGap,observed_at:'2026-10-30T09:12:46.001Z'}),true);
+ for(const predecessor_finished_at of ['2026-10-30T09:12:46.000Z','2026-10-30T09:12:47.000Z']){
+  assert.equal(isExpiredKnownRunGap({...expiredGap,observed_at:'2026-10-30T09:12:48.000Z',predecessor_finished_at}),true);
+ }
+ assert.equal(isExpiredKnownRunGap({...expiredGap,observed_at:'2026-10-30T09:14:00.000Z',predecessor_finished_at:'2026-10-30T09:12:45.999Z'}),false,
+  'a pre-deadline predecessor retains its saved successor-preparation time exclusion after the old wall-clock deadline');
+ for(const patch of [{run_status:'cancelled'},{predecessor_status:'active'},{predecessor_closure_status:'open'},{evaluation_status:'unknown'},
+  {active_task_count:1},{stored_fence_matches:false},{terminal_event_matches:false},{successor_queued:false},{claim_slot_matches:false},
+  {overall_deadline:'invalid'},{observed_at:'invalid'},{predecessor_finished_at:'invalid'},{claim_id:'foreign-nonuuid'},
+  {predecessor_finished_at:'2026-10-30T09:12:49.000Z'}])assert.equal(isExpiredKnownRunGap({...expiredGap,...patch}),false);
+});
+
+test('deadline gap cleanup uses only normal cancellation/drain once, independently of paused admission or unhealthy runtime',async()=>{
+ const calls:string[]=[];let terminal=false;
+ const dependencies={db:{execute:async()=>terminal?[]:[expiredGap,expiredGap,{...expiredGap,stored_fence_matches:false}]},
+  async assertLeaseHeld(){calls.push('lease');},
+  async requestCancellation(runId:string,reason:string){assert.equal(runId,expiredGap.run_id);assert.equal(reason,'coordinator_run_deadline');calls.push('cancel');terminal=true;},
+  async drainCancellations(){calls.push('drain');},
+ } as unknown as Parameters<typeof cancelExpiredKnownRunGaps>[0];
+ assert.equal(await cancelExpiredKnownRunGaps(dependencies),1);
+ assert.equal(await cancelExpiredKnownRunGaps(dependencies),0);
+ assert.equal(calls.filter((value)=>value==='cancel').length,1);assert.equal(calls.filter((value)=>value==='drain').length,1);
+ const lostLease={...dependencies,async assertLeaseHeld(){throw new Error('lease_lost');}};
+ await assert.rejects(()=>cancelExpiredKnownRunGaps(lostLease));
+ assert.equal(calls.filter((value)=>value==='cancel').length,1);
 });
 
 test('lost RAM selection and cancellation cleanup use the exact active task index', () => {

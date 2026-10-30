@@ -1175,6 +1175,7 @@ export type LocalCoordinatorCancellationReason =
   | "coordinator_preparation_failed"
   | "coordinator_interrupted_preparation"
   | "coordinator_executor_session_lost"
+  | "coordinator_run_deadline"
   | "coordinator_platform_failure";
 
 /**
@@ -1188,7 +1189,7 @@ export async function requestRunCancellationFromCoordinator(
   input: { runId: string; reason: LocalCoordinatorCancellationReason },
 ): Promise<RunStatus | null> {
   const runId = parseUuid(input.runId, "runId");
-  if (!["coordinator_preparation_failed", "coordinator_interrupted_preparation", "coordinator_executor_session_lost", "coordinator_platform_failure"]
+  if (!["coordinator_preparation_failed", "coordinator_interrupted_preparation", "coordinator_executor_session_lost", "coordinator_platform_failure", "coordinator_run_deadline"]
     .includes(input.reason)) {
     throw new HttpError(400, "INVALID_COORDINATOR_CANCELLATION", "The coordinator cancellation reason is not allowlisted");
   }

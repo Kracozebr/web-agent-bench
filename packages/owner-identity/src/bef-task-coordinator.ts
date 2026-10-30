@@ -540,6 +540,72 @@ export function predecessorFinishedBeforeOriginalDeadline(input: {
   return finishedAt < overallDeadline;
 }
 
+type ExpiredKnownRunGap = {
+  run_id:string;predecessor_task_index:number;claim_id:string;mode:'training'|'ranked';
+  run_status:string;overall_deadline:Date|string;observed_at:Date|string;predecessor_finished_at:Date|string;predecessor_status:string;
+  predecessor_closure_status:string;evaluation_status:string;active_task_count:number;
+  stored_fence_matches:boolean;terminal_event_matches:boolean;successor_queued:boolean;claim_slot_matches:boolean;
+};
+
+export function isExpiredKnownRunGap(value:ExpiredKnownRunGap):boolean {
+  // AICODE-NOTE: Pre-deadline predecessors retain their saved preparation-time exclusion after the old wall-clock deadline.
+  const deadline=new Date(value.overall_deadline).getTime(),now=new Date(value.observed_at).getTime(),finished=new Date(value.predecessor_finished_at).getTime();
+  return isValidSuccessorLocator(value)&&value.run_status==='running'&&Number.isFinite(deadline)&&Number.isFinite(now)&&now>=deadline&&
+    Number.isFinite(finished)&&finished>=deadline&&finished<=now&&['completed','failed'].includes(value.predecessor_status)&&value.predecessor_closure_status==='closed'&&value.evaluation_status==='known'&&
+    value.active_task_count===0&&value.stored_fence_matches===true&&value.terminal_event_matches===true&&
+    value.successor_queued===true&&value.claim_slot_matches===true;
+}
+
+/** Terminal resource cleanup does not depend on runtime health or the admission mode. */
+export async function cancelExpiredKnownRunGaps(input:{db:OwnerDatabase;assertLeaseHeld():Promise<void>;
+  requestCancellation(runId:string,reason:LocalCoordinatorCancellationReason):Promise<void>;drainCancellations():Promise<void>},limit=16):Promise<number>{
+  await input.assertLeaseHeld();
+  const candidates=await input.db.execute(sql`SELECT r.id AS run_id,p.task_index AS predecessor_task_index,c.claim_id,r.mode,
+      r.status AS run_status,r.overall_deadline,clock_timestamp() AS observed_at,p.finished_at AS predecessor_finished_at,p.status AS predecessor_status,
+      p.closure_status AS predecessor_closure_status,e.result_json->>'status' AS evaluation_status,
+      (SELECT count(*)::int FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active') AS active_task_count,
+      true AS stored_fence_matches,true AS terminal_event_matches,true AS successor_queued,true AS claim_slot_matches
+    FROM oid_benchmark_run r
+    JOIN oid_run_dispatch_claim c ON c.run_id=r.id AND c.status='claimed'
+    JOIN oid_run_execution_slot s ON s.run_id=r.id AND s.agent_id=r.agent_id AND s.claim_id=c.claim_id
+      AND s.state='running' AND s.released_at IS NULL
+    JOIN oid_run_task p ON p.run_id=r.id AND p.status IN ('completed','failed') AND p.closure_status='closed' AND p.finished_at IS NOT NULL
+      AND p.action_cutoff_sequence IS NOT NULL AND p.reconciled_action_sequence>=p.action_cutoff_sequence
+    JOIN oid_run_task_evaluation e ON e.run_id=p.run_id AND e.task_index=p.task_index AND e.closure_id=p.closure_id
+      AND e.result_json->>'status'='known'
+    JOIN oid_run_task_observation_bundle b ON b.run_id=p.run_id AND b.task_index=p.task_index AND b.closure_id=p.closure_id AND b.task_id=p.task_id
+    JOIN oid_task_preparation_intent i ON i.run_id=p.run_id AND i.task_index=p.task_index AND i.task_id=p.task_id
+      AND i.environment_id=b.environment_id
+    JOIN oid_task_environment_lease l ON l.lease_id=i.lease_id AND l.preparation_id=i.preparation_id AND l.environment_id=i.environment_id
+      AND l.state='fenced' AND l.fence_evidence->>'confirmed'='true'
+      AND lower(l.fence_evidence->>'preparationId')=i.preparation_id::text AND lower(l.fence_evidence->>'leaseId')=i.lease_id::text
+      AND l.fence_evidence->>'environmentId'=i.environment_id AND lower(l.fence_evidence->>'generationId')=b.generation_id::text
+      AND l.fence_evidence->'evidence'->>'boundary'='actual_tool_http_x402_local_evm_application_store'
+      AND l.fence_evidence->'evidence'->>'sha256'~'^[0-9a-fA-F]{64}$'
+    JOIN LATERAL (SELECT status,generation_id FROM oid_task_preparation_observation WHERE preparation_id=i.preparation_id ORDER BY revision DESC LIMIT 1) o
+      ON o.status='fenced' AND o.generation_id=b.generation_id
+    JOIN oid_task_execution_binding eb ON eb.run_id=p.run_id AND eb.task_index=p.task_index AND eb.env_id=b.environment_id AND eb.generation_id=b.generation_id
+    JOIN oid_run_task n ON n.run_id=p.run_id AND n.task_index=p.task_index+1 AND n.status='queued' AND n.closure_status='open'
+      AND n.started_at IS NULL AND n.finished_at IS NULL
+    WHERE r.status='running' AND r.mode IN ('training','ranked') AND r.overall_deadline<=clock_timestamp()
+      AND p.finished_at>=r.overall_deadline AND p.task_index BETWEEN 0 AND 10
+      AND NOT EXISTS (SELECT 1 FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active')
+      AND EXISTS (SELECT 1 FROM oid_run_event ev WHERE ev.run_id=r.id AND ev.event_type='task.terminalized'
+        AND ev.payload_json->>'taskIndex'=p.task_index::text)
+    ORDER BY r.overall_deadline,r.id,p.task_index LIMIT ${limit}`) as unknown as ExpiredKnownRunGap[];
+  await input.assertLeaseHeld();
+  let cancelled=0;
+  const seen=new Set<string>();
+  for(const candidate of candidates){
+    if(!isExpiredKnownRunGap(candidate)||seen.has(candidate.run_id))continue;
+    await input.assertLeaseHeld();
+    await input.requestCancellation(candidate.run_id,'coordinator_run_deadline');
+    await input.drainCancellations();
+    seen.add(candidate.run_id);cancelled++;
+  }
+  return cancelled;
+}
+
 export function successorFailureCancellationReason(
   code: string | null,
   hasPreparationIntent: boolean,
@@ -1521,6 +1587,7 @@ async function createBefTaskCoordinatorCore(input: {
     await cancelRunningBindingsWithoutRam(recoveringRunIds);
     await drainCancellations();
     await discardFencedSessions();
+    await cancelExpiredKnownRunGaps({db:input.db,assertLeaseHeld:()=>lease.assertHeld(),requestCancellation,drainCancellations},batchSize);
     const runtimeHealthy = await betaRuntimeHealthy();
     if (runtimeHealthy) {
       let admissionsActive = !runServiceDependencies.betaOperationsEnabled;

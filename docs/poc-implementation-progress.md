@@ -175,8 +175,63 @@ read-only transaction after the patch; this is evidence loading, not a persisted
 grade. Focused collector/packet/sealed-source tests: 57 passed, zero failed, one
 PostgreSQL-only test skipped; typecheck passed. A separate audit found no matching
 UUID-only owner-key defect in other task packet families; fourteen in-memory
-format checks passed. Deployment and normal coordinator outcome remain to be
-verified before claiming S4 runtime recovery or complete full12 acceptance.
+format checks passed.
+
+After normal deployment of `925bed9`, the coordinator recovered the original S4
+without a new actor action: completed, known, passed 1/1. The independent post-fix
+snapshot is `.local/owner-identity/google-local/full12-03-postfix-verification.json`.
+All four evaluated tasks' bindings/hashes and seventeen recursive evidence files
+match. S4 cutoff/accepted/reconciled are 1/1/1; its preparation and generation are
+fenced with verified evidence. However the expired run still held its dispatch
+claim/slot, with four terminal tasks, zero active and eight queued. This exposed
+a separate cleanup gap: successor selection excludes a predecessor terminalized
+at/after the overall deadline, and lost-session cleanup only selects active tasks.
+
+The narrow cleanup fix uses existing coordinator cancellation/drain/fence/release
+with reason `coordinator_run_deadline`. It requires an expired running run, a known
+closed terminal predecessor finished at/after the deadline, an exact claimed
+slot, a queued successor, zero active tasks and confirmed stored fence lineage.
+Pre-deadline predecessors retain the approved bounded preparation-time exclusion.
+No task, deadline, grade, bonus grant, refund or fee policy changes. A read-only
+dry run of the actual selector found exactly the original stalled run. Focused
+tests: seventeen passed, two existing PostgreSQL tests skipped; typecheck passed.
+Runtime cancellation and resource release still require post-deployment readback.
+
+### Measured task durations in genuine local attempts
+
+Read-only PostgreSQL snapshot on 30 October: each local task has a 60-second
+execution deadline. Full12 starts with a 720-second execution budget; saved
+successor-preparation intervals are excluded once under the existing 180-second
+per-transition policy. The latest run added 26.008 seconds for its three actual
+handoffs, giving 12 minutes 26 seconds to its recorded deadline. A successful
+full12 wall time has not yet been measured. Single-task S1 completed in 42.4
+seconds after start, with 14.1 seconds of initial queue/preparation separately.
+
+The following is the latest actual execution per task, not one completed full12.
+S1-S4 are from attempt 03; M1-H2 are from attempt 01. Duration ends at agent finish
+or automatic task-deadline closure, not at delayed grading/resource cleanup.
+
+| Task | Seconds to closure | Persisted result |
+| --- | ---: | --- |
+| S1 | 27.6 | passed 1/1 |
+| S2 | 33.5 | partial 7/10 |
+| S3 | 20.5 | failed 0/1 |
+| S4 | 16.2 | recovered passed 1/1 |
+| M1 | 60.9 | failed 0/1, deadline closure |
+| M2 | 61.0 | passed 1/1, deadline closure |
+| M3 | 28.2 | failed 0/1 |
+| M4 | 8.6 | failed 0/1 |
+| H1 | 36.6 | passed 1/1 |
+| H2 | 44.3 | no persisted evaluation |
+| H3 | — | never started |
+| U1 | — | never started |
+
+Normal measured closure-to-evaluation time is about 0.8-2.6 seconds. S4 instead
+took 1,246.9 seconds from closure to evaluation because of validator failure,
+diagnosis and rebuild; its observed 21-minute total is not agent solving time.
+Protocol-format gaps between fixtures/reference adapters and native clients,
+plus missing failure-to-cleanup paths, caused the long platform stalls. Partial
+or zero known task grades are separate ordinary benchmark outcomes.
 
 Both the native agent report and the owner S1 text report were opened through
 the actual admin UI and independently matched to PostgreSQL. The owner report
