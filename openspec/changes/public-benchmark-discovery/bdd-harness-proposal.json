@@ -1,0 +1,228 @@
+{
+  "schema_version": "beta-usability-bdd-proposal/v1",
+  "change": "public-benchmark-discovery",
+  "status": "approved_not_installed",
+  "approval": "approved_2026-10-31",
+  "execution_status": "not_run",
+  "scenarios": {
+    "PBD-SC-001": {
+      "requirement_id": "PBD-REQ-001",
+      "title": "Explain the product before sign-in",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pbd_sc_001",
+      "adapter": "public_benchmark_discovery",
+      "boundary": "environment",
+      "boundary_detail": "anonymous_browser_web_api",
+      "required_observations": [
+        "anonymous_route_render",
+        "product_and_price_copy",
+        "favicon_metadata_fetch",
+        "private_route_auth",
+        "versioned_ranked_human_assistance_rule_with_exceptions",
+        "unverified_autonomy_disclosure"
+      ],
+      "negative_variants": [
+        "no_session",
+        "mobile_keyboard_navigation",
+        "missing_release",
+        "private_route_deeplink",
+        "missing_or_stale_rules_link",
+        "technical_confirmation_misclassified_as_solution_assistance"
+      ],
+      "durable_effects": [
+        "public_read_only",
+        "no_owner_or_run_creation_from_get"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PBD-SC-002": {
+      "requirement_id": "PBD-REQ-002",
+      "title": "Publish descriptions and grading rules for twelve task families",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pbd_sc_002",
+      "adapter": "public_benchmark_discovery",
+      "boundary": "environment",
+      "boundary_detail": "public_browser_validated_release_projection",
+      "required_observations": [
+        "twelve_family_projection",
+        "weights_prices_training_consistency",
+        "public_version_binding",
+        "invalid_metadata_state",
+        "known_solution_and_best_run_learnability_disclosure",
+        "closed_case_embargo_and_autonomy_limits"
+      ],
+      "negative_variants": [
+        "training_eligibility_confusion",
+        "stale_price_or_version",
+        "missing_description",
+        "wrong_weight_sum",
+        "obsolete_eight_task_training_copy",
+        "unsupported_autonomy_or_unseen_task_claim"
+      ],
+      "durable_effects": [
+        "read_only_public_catalog",
+        "unchanged_catalog_admission_and_grading"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PBD-SC-003": {
+      "requirement_id": "PBD-REQ-003",
+      "title": "Keep sealed Ranked cases outside every public projection",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pbd_sc_003",
+      "adapter": "public_benchmark_discovery",
+      "boundary": "environment",
+      "boundary_detail": "public_http_build_artifacts_cache_private_issuance",
+      "required_observations": [
+        "allowlisted_serialization",
+        "canary_absence_all_surfaces",
+        "hidden_path_denials",
+        "future_task_denial"
+      ],
+      "negative_variants": [
+        "unexpected_manifest_field",
+        "hydration_leak",
+        "source_map_or_static_asset",
+        "shared_cache",
+        "queued_ranked_case"
+      ],
+      "durable_effects": [
+        "no_sealed_material_publication",
+        "unchanged_current_task_authority"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PBD-SC-004": {
+      "requirement_id": "PBD-REQ-004",
+      "title": "Publish only authoritative complete Ranked results",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pbd_sc_004",
+      "adapter": "public_benchmark_discovery",
+      "boundary": "environment",
+      "boundary_detail": "coordinator_public_readmodel_anonymous_browser_postgres",
+      "required_observations": [
+        "completion_handoff_binding",
+        "one_coherent_best_pointer",
+        "public_card_score_distinction",
+        "anonymous_render_cache",
+        "unpublished_missing_indistinguishability",
+        "first_publication_negative_cache_invalidation",
+        "public_card_without_selected_version_score"
+      ],
+      "negative_variants": [
+        "training_or_subset",
+        "cancelled_unknown",
+        "forged_score",
+        "equal_or_lower_result",
+        "duplicate_handoff",
+        "private_metadata",
+        "private_card_direct_id_probe",
+        "negative_cache_before_publication",
+        "already_public_no_version_score"
+      ],
+      "durable_effects": [
+        "existing_idempotent_public_marker_and_best_result",
+        "no_new_scoring_formula"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PBD-SC-005": {
+      "requirement_id": "PBD-REQ-005",
+      "title": "Distinguish empty publication from restricted or unavailable service",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pbd_sc_005",
+      "adapter": "public_benchmark_discovery",
+      "boundary": "environment",
+      "boundary_detail": "anonymous_browser_public_api_manifest_cache",
+      "required_observations": [
+        "raw_http_state",
+        "ui_state_mapping",
+        "cache_control",
+        "manifest_guard_decision"
+      ],
+      "negative_variants": [
+        "missing_manifest",
+        "wrong_network",
+        "empty_list",
+        "unknown_agent",
+        "backend_timeout",
+        "cache_state_change"
+      ],
+      "durable_effects": [
+        "read_only_public_state",
+        "no_automatic_manifest_or_guard_change"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PBD-SC-006": {
+      "requirement_id": "PBD-REQ-006",
+      "title": "Keep public rollout separate from target beta acceptance",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pbd_sc_006",
+      "adapter": "public_benchmark_discovery",
+      "boundary": "environment",
+      "boundary_detail": "target_release_manifest_runtime_gate_public_http",
+      "required_observations": [
+        "release_gate_inventory",
+        "target_profile_and_source_pins",
+        "activation_denial",
+        "content_vs_results_state"
+      ],
+      "negative_variants": [
+        "missing_client_gate",
+        "local_reference_only",
+        "unselected_host",
+        "wrong_https_origin",
+        "stale_build"
+      ],
+      "durable_effects": [
+        "no_unapproved_cohort_activation",
+        "unchanged_existing_beta_gates"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    }
+  }
+}
+

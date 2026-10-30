@@ -1,0 +1,220 @@
+{
+  "schema_version": "beta-usability-bdd-proposal/v1",
+  "change": "benchmark-time-budgets",
+  "status": "approved_not_installed",
+  "approval": "approved_2026-10-31",
+  "execution_status": "not_run",
+  "scenarios": {
+    "BTB-SC-001": {
+      "requirement_id": "BTB-REQ-001",
+      "title": "Measure separate non-overlapping timing phases",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_btb_sc_001",
+      "adapter": "benchmark_time_budgets",
+      "boundary": "environment",
+      "boundary_detail": "worker_monotonic_events_postgres_native_trace",
+      "required_observations": [
+        "phase_event_boundaries",
+        "per_task_wall_decomposition",
+        "clock_resolution_and_overlap",
+        "independent_replay"
+      ],
+      "negative_variants": [
+        "missing_timestamp",
+        "clock_jump",
+        "overlap_or_double_count",
+        "cancelled_run",
+        "unobservable_model_reasoning"
+      ],
+      "durable_effects": [
+        "append_only_timing_evidence",
+        "unchanged_score_and_billing"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "BTB-SC-002": {
+      "requirement_id": "BTB-REQ-002",
+      "title": "Calibrate task budgets before choosing numeric defaults",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_btb_sc_002",
+      "adapter": "benchmark_time_budgets",
+      "boundary": "environment",
+      "boundary_detail": "native_client_serial_benchmark_resource_capture",
+      "required_observations": [
+        "per_client_per_task_samples",
+        "latency_distribution",
+        "platform_overhead_separation",
+        "proposed_numeric_policy_and_approval"
+      ],
+      "negative_variants": [
+        "single_fast_reference_sample",
+        "missing_client",
+        "platform_stall_contamination",
+        "changing_hardware_or_model"
+      ],
+      "durable_effects": [
+        "measurement_only_until_numeric_approval",
+        "no_active_timer_change"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "BTB-SC-003": {
+      "requirement_id": "BTB-REQ-003",
+      "title": "Pin clocks at admission and survive restart",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_btb_sc_003",
+      "adapter": "benchmark_time_budgets",
+      "boundary": "environment",
+      "boundary_detail": "admission_coordinator_clock_postgres_bef",
+      "required_observations": [
+        "admitted_policy_snapshot",
+        "authoritative_start_deadline",
+        "queue_and_preparation_bounds",
+        "no_reprice",
+        "proven_recovery_interval_and_authorized_clock_adjustment"
+      ],
+      "negative_variants": [
+        "activation_admission_race",
+        "missing_policy",
+        "restart",
+        "duplicate_start",
+        "deadline_boundary",
+        "reconnect",
+        "forged_or_unproven_recovery_pause",
+        "duplicate_recovery_adjustment"
+      ],
+      "durable_effects": [
+        "immutable_run_clock_policy",
+        "no_timer_revival_or_extra_charge"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "BTB-SC-004": {
+      "requirement_id": "BTB-REQ-004",
+      "title": "Apply deadlines without abandoning cutoff or recovery",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_btb_sc_004",
+      "adapter": "benchmark_time_budgets",
+      "boundary": "environment",
+      "boundary_detail": "real_deadline_action_recovery_coordinator_postgres_bef",
+      "required_observations": [
+        "clock_type_and_order",
+        "action_cutoff_receipts",
+        "evaluation_unknown_policy",
+        "fences_and_terminal_result"
+      ],
+      "negative_variants": [
+        "deadline_minus_at_plus_resolution",
+        "dispatch_or_grade_delay",
+        "owner_cancel",
+        "recovery_outlives_task",
+        "duplicate_timer"
+      ],
+      "durable_effects": [
+        "one_cutoff_and_terminal_path",
+        "source_preserving_finances",
+        "explicit_unissued_status"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "BTB-SC-005": {
+      "requirement_id": "BTB-REQ-005",
+      "title": "Show task timing and progress without misleading completion claims",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_btb_sc_005",
+      "adapter": "benchmark_time_budgets",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_timing_projection_independent_postgres",
+      "required_observations": [
+        "rendered_stage_and_task_budget",
+        "phase_to_event_binding",
+        "estimate_vs_actual_label",
+        "hidden_future_absence"
+      ],
+      "negative_variants": [
+        "late_or_missing_event",
+        "browser_clock_skew",
+        "stalled_observation",
+        "unissued_task",
+        "foreign_run"
+      ],
+      "durable_effects": [
+        "read_only_owner_timing_projection",
+        "unchanged_official_scores"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "BTB-SC-006": {
+      "requirement_id": "BTB-REQ-006",
+      "title": "Measure a serial resource baseline without requiring deferred prefetch",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_btb_sc_006",
+      "adapter": "benchmark_time_budgets",
+      "boundary": "environment",
+      "boundary_detail": "serial_target_bef_resource_observers_and_disabled_feature_state",
+      "required_observations": [
+        "serial_source_profile_case_controls",
+        "per_phase_latency_baseline",
+        "cpu_core_seconds_memory_io_rpc_raw_samples",
+        "sampling_and_attribution_limits",
+        "prefetch_disabled_and_tpp_cross_reference"
+      ],
+      "negative_variants": [
+        "resource_pressure",
+        "incomplete_or_inconsistent_samples",
+        "changed_cache_source_or_hardware",
+        "unsupported_capacity_or_speed_claim",
+        "prefetch_accidentally_enabled"
+      ],
+      "durable_effects": [
+        "read_only_serial_measurement_report",
+        "no_prefetch_implementation_or_enablement",
+        "unchanged_grade_and_financial_state"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    }
+  }
+}
+

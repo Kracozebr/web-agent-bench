@@ -1,0 +1,301 @@
+{
+  "schema_version": "beta-usability-bdd-proposal/v1",
+  "change": "agent-client-installer",
+  "status": "approved_not_installed",
+  "approval": "approved_2026-10-31",
+  "execution_status": "not_run",
+  "scenarios": {
+    "ACI-SC-001": {
+      "requirement_id": "ACI-REQ-001",
+      "title": "Install only selected client configuration safely",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_001",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "native_installer_actual_client_filesystem",
+      "required_observations": [
+        "selected_profile_detection",
+        "scoped_config_diff",
+        "backup_and_atomic_write",
+        "native_load_result",
+        "rollback_diff",
+        "package_update_authenticity_before_execution"
+      ],
+      "negative_variants": [
+        "missing_or_multiple_profiles",
+        "locked_file",
+        "concurrent_edit",
+        "interrupted_write",
+        "malicious_path",
+        "repeat_install_uninstall",
+        "tampered_package",
+        "untrusted_update_source"
+      ],
+      "durable_effects": [
+        "recoverable_scoped_config",
+        "no_unrelated_setting_or_provider_key_change"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "ACI-SC-002": {
+      "requirement_id": "ACI-REQ-002",
+      "title": "Authorize the actual owner and selected agent",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_002",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "installer_browser_oauth_server_postgres_secure_store",
+      "required_observations": [
+        "pkce_state_resource_binding",
+        "verified_owner_agent_consent",
+        "protected_token_store",
+        "secret_absence",
+        "loopback_binding_and_origin_verifier_enforcement"
+      ],
+      "negative_variants": [
+        "callback_substitution",
+        "code_replay",
+        "wrong_pkce",
+        "foreign_owner_agent",
+        "denied_consent",
+        "untrusted_installer_origin",
+        "wrong_local_origin",
+        "missing_or_replayed_local_verifier",
+        "non_loopback_bridge_access"
+      ],
+      "durable_effects": [
+        "one_scoped_grant",
+        "no_provider_secret_custody",
+        "denial_no_credential"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "ACI-SC-003": {
+      "requirement_id": "ACI-REQ-003",
+      "title": "Refresh until revocation with bounded access tokens",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_003",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "native_client_refresh_service_postgres_secure_store",
+      "required_observations": [
+        "access_expiry_and_rotation",
+        "scope_and_cap_fingerprint",
+        "restart_recovery",
+        "refresh_replay_rejection"
+      ],
+      "negative_variants": [
+        "expired_access",
+        "offline_reconnect",
+        "simultaneous_refresh",
+        "lost_refresh_response",
+        "stolen_old_refresh_replay"
+      ],
+      "durable_effects": [
+        "rotated_refresh_family",
+        "unchanged_permissions_and_caps",
+        "no_new_run_or_charge"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "ACI-SC-004": {
+      "requirement_id": "ACI-REQ-004",
+      "title": "Separate connection revocation from agent-wide revocation and restore",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_004",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_revoke_native_mcp_refresh_bef_postgres",
+      "required_observations": [
+        "scoped_vs_agent_wide_revocation_commit",
+        "native_401_and_authenticate_header",
+        "zero_revoked_scope_admission",
+        "other_connection_and_run_preserved",
+        "agent_wide_run_fences",
+        "restored_invalidation_reconciliation_before_write_enable"
+      ],
+      "negative_variants": [
+        "refresh_revoke_race",
+        "two_clients_same_agent",
+        "selected_connection_replacement",
+        "disconnect_is_not_revoke",
+        "old_checkpoint_before_revoke_or_rotation",
+        "missing_authoritative_invalidation_state"
+      ],
+      "durable_effects": [
+        "selected_or_agent_wide_revoked_families_only",
+        "existing_agent_wide_cleanup_authority",
+        "restored_write_barrier",
+        "no_permission_revival"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "ACI-SC-005": {
+      "requirement_id": "ACI-REQ-005",
+      "title": "Negotiate protocol and required capabilities",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_005",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "installer_native_mcp_initialization_owner_api",
+      "required_observations": [
+        "actual_client_version_and_protocol",
+        "capability_matrix",
+        "preflight_result",
+        "safe_incompatibility_reason"
+      ],
+      "negative_variants": [
+        "new_capable_version",
+        "missing_refresh_or_transport",
+        "absent_required_tool",
+        "spoofed_client_identity",
+        "wrong_redirect"
+      ],
+      "durable_effects": [
+        "verified_connection_metadata",
+        "no_bypass_profile_or_credential"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "ACI-SC-006": {
+      "requirement_id": "ACI-REQ-006",
+      "title": "Discover self identity and show real connection health",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_006",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "native_client_preflight_owner_browser_postgres",
+      "required_observations": [
+        "authenticated_self_identity",
+        "real_preflight_timestamp",
+        "permission_readiness_separation",
+        "zero_benchmark_effects"
+      ],
+      "negative_variants": [
+        "wrong_agent_hint",
+        "missing_tool_catalog",
+        "backend_unreachable",
+        "revoked_grant",
+        "executor_unready"
+      ],
+      "durable_effects": [
+        "connection_observation_only",
+        "unchanged_action_and_financial_rows"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "ACI-SC-007": {
+      "requirement_id": "ACI-REQ-007",
+      "title": "Launch without copying identifiers",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_007",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_native_handoff_acceptance_postgres",
+      "required_observations": [
+        "browser_launch_identity",
+        "authenticated_delivery_binding",
+        "click_count_after_setup",
+        "native_accept_preflight",
+        "reservation_and_charge_count"
+      ],
+      "negative_variants": [
+        "double_click",
+        "wrong_account_or_agent",
+        "stale_quote",
+        "client_offline",
+        "copied_or_replayed_handoff"
+      ],
+      "durable_effects": [
+        "one_owner_bound_intent_run",
+        "existing_reservation_rules",
+        "no_uuid_clipboard_dependency"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "ACI-SC-008": {
+      "requirement_id": "ACI-REQ-008",
+      "title": "Qualify every required native execution path",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_aci_sc_008",
+      "adapter": "agent_client_installer",
+      "boundary": "environment",
+      "boundary_detail": "five_native_clients_browser_target_postgres_bef",
+      "required_observations": [
+        "per_edition_native_model_trace",
+        "training_and_ranked_evaluations",
+        "report_and_refresh_revoke",
+        "independent_effects"
+      ],
+      "negative_variants": [
+        "missing_client_access",
+        "reference_worker_substitution",
+        "bridge_solves_tasks",
+        "configured_only_client",
+        "unsupported_native_handoff"
+      ],
+      "durable_effects": [
+        "source_bound_edition_acceptance",
+        "no_aggregate_masking_of_blocker"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    }
+  }
+}
+

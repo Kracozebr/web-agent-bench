@@ -1,0 +1,290 @@
+{
+  "schema_version": "beta-usability-bdd-proposal/v1",
+  "change": "participant-cabinet-ux",
+  "status": "approved_not_installed",
+  "approval": "approved_2026-10-31",
+  "execution_status": "not_run",
+  "scenarios": {
+    "PCU-SC-001": {
+      "requirement_id": "PCU-REQ-001",
+      "title": "Expose honest priced launch actions",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_001",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_quote_admission_postgres",
+      "required_observations": [
+        "displayed_price_mode_source",
+        "exact_quote_and_reservation",
+        "stale_quote_reconfirmation",
+        "single_launch"
+      ],
+      "negative_variants": [
+        "partial_training",
+        "zero_price_config",
+        "stale_release",
+        "insufficient_bonus",
+        "double_submit"
+      ],
+      "durable_effects": [
+        "existing_exact_holds_debits",
+        "no_cash_substitution_or_silent_reprice"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PCU-SC-002": {
+      "requirement_id": "PCU-REQ-002",
+      "title": "Format money without losing exact accounting",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_002",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_billing_api_independent_postgres",
+      "required_observations": [
+        "two_decimal_and_subcent_render",
+        "exact_detail_units",
+        "before_after_ledger_fingerprint",
+        "allocation_validation"
+      ],
+      "negative_variants": [
+        "subcent_nonzero",
+        "half_rounding_edges",
+        "negative_refund_display",
+        "overcap_hidden_by_rounding"
+      ],
+      "durable_effects": [
+        "unchanged_integer_arithmetic",
+        "no_financial_write_from_formatting"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PCU-SC-003": {
+      "requirement_id": "PCU-REQ-003",
+      "title": "Keep complete histories compact and private",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_003",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_cursor_api_postgres",
+      "required_observations": [
+        "initial_five_and_order",
+        "complete_cursor_traversal",
+        "compact_and_expanded_fields",
+        "foreign_cursor_denial"
+      ],
+      "negative_variants": [
+        "same_timestamp",
+        "concurrent_new_record",
+        "stale_or_foreign_cursor",
+        "empty_history"
+      ],
+      "durable_effects": [
+        "read_only_complete_owner_history",
+        "no_cross_owner_cache"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PCU-SC-004": {
+      "requirement_id": "PCU-REQ-004",
+      "title": "Explain readiness and support through accessible help",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_004",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_accessibility_actual_status_api",
+      "required_observations": [
+        "accessible_help_interaction",
+        "safe_state_error_mapping",
+        "correlation_id_binding",
+        "no_secret_render"
+      ],
+      "negative_variants": [
+        "unknown_code",
+        "offline_client",
+        "executor_unavailable",
+        "screen_keyboard_only",
+        "malicious_error_text"
+      ],
+      "durable_effects": [
+        "read_only_diagnostics",
+        "no_automatic_paid_retry"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PCU-SC-005": {
+      "requirement_id": "PCU-REQ-005",
+      "title": "Show detailed owner Training feedback safely",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_005",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_feedback_service_postgres_bef",
+      "required_observations": [
+        "actual_feedback_click",
+        "timeline_matches_receipts",
+        "safe_goal_diagnostics",
+        "ranked_and_foreign_projection",
+        "completed_training_only_action_detail",
+        "no_ranked_or_public_trace_viewer"
+      ],
+      "negative_variants": [
+        "unknown_receipt",
+        "platform_mcp_defect",
+        "unissued_task",
+        "active_ranked_request",
+        "foreign_run",
+        "forged_result_hash",
+        "active_training_unreleased_detail",
+        "ranked_or_public_trace_request"
+      ],
+      "durable_effects": [
+        "read_only_result_projection",
+        "no_score_or_refund_change"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PCU-SC-006": {
+      "requirement_id": "PCU-REQ-006",
+      "title": "Create contextual reports with optional private screenshots",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_006",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_report_upload_admin_independent_postgres_files",
+      "required_observations": [
+        "browser_submit_receipt",
+        "validated_context_and_client_source",
+        "normalized_image_hash",
+        "admin_visibility",
+        "financial_task_fingerprint"
+      ],
+      "negative_variants": [
+        "foreign_run_task_action",
+        "no_run",
+        "missing_client_version",
+        "corrupt_or_oversize_image",
+        "duplicate_submit",
+        "flood",
+        "restore_after_beta_retention_deadline"
+      ],
+      "durable_effects": [
+        "one_report_image_audit",
+        "unchanged_benchmark_and_finances",
+        "existing_beta_ended_at_plus_30_utc_day_cleanup"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PCU-SC-007": {
+      "requirement_id": "PCU-REQ-007",
+      "title": "Hide and reject non-admin administration pages",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_007",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "real_http_browser_admin_server_api_postgres",
+      "required_observations": [
+        "http_status_and_headers",
+        "role_bound_nav_and_hydration",
+        "api_role_csrf_denials",
+        "unchanged_admin_records"
+      ],
+      "negative_variants": [
+        "direct_url",
+        "subroute",
+        "prefetch",
+        "spoofed_email_role",
+        "agent_bearer",
+        "cross_session_cache"
+      ],
+      "durable_effects": [
+        "authorized_admin_writes_only",
+        "no_unauthorized_page_data_or_mutation"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PCU-SC-008": {
+      "requirement_id": "PCU-REQ-008",
+      "title": "Present connection management without manual credential clutter",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_pcu_sc_008",
+      "adapter": "participant_cabinet_ux",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_installer_status_native_mcp_postgres",
+      "required_observations": [
+        "main_vs_advanced_fields",
+        "actual_connection_observation",
+        "replacement_scope_warning",
+        "grant_and_policy_readback"
+      ],
+      "negative_variants": [
+        "no_native_connection",
+        "revoked_client",
+        "replacement_loss",
+        "other_client_grant",
+        "cancelled_confirmation"
+      ],
+      "durable_effects": [
+        "scoped_grant_changes_only",
+        "unchanged_caps_and_other_connections"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [
+        "isolated_fixture_setup_or_fault_injection",
+        "readonly_database_bef_filesystem_observation",
+        "internal_worker_delivery_only_for_worker_scenarios"
+      ],
+      "runtime_status": "not_run"
+    }
+  }
+}
+
