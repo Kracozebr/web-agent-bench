@@ -222,6 +222,64 @@ test('S4 packet returns hash references and crosslinks one action to its observe
   ]);
 });
 
+test('S4 packet accepts owner operation IDs in the task-action service format',()=>{
+  for(const ownerOperationId of ['owner-op-1234','x'.repeat(128)]){
+    const item=makeCase(true);
+    const packet=structuredClone(item.packet) as Record<string,unknown>;
+    const actions=packet.ownerActions as Array<Record<string,unknown>>;
+    actions[0]!.ownerOperationId=ownerOperationId;
+    const resealed=resealPacket(packet,item.bundle);
+    assert.equal(verifyS4CapturePacketChildren(resealed.bytes,resealed.bundle).length,3);
+  }
+});
+
+test('S4 packet accepts the task-action service format for a non-null finish operation ID',()=>{
+  for(const operationId of ['finish-op-123','x'.repeat(128)]){
+    const item=makeCase(true);
+    const bundle={...item.bundle,closure:{...item.bundle.closure,operationId}};
+    assert.equal(verifyS4CapturePacketChildren(item.bytes,bundle).length,3);
+  }
+});
+
+test('S4 packet rejects malformed non-null finish operation IDs',()=>{
+  for(const operationId of ['short','finish.operation.id','x'.repeat(129)]){
+    const item=makeCase(true);
+    const bundle={...item.bundle,closure:{...item.bundle.closure,operationId}};
+    assertPacketError(()=>verifyS4CapturePacketChildren(item.bytes,bundle),'binding_mismatch');
+  }
+});
+
+test('S4 packet rejects malformed and duplicate owner operation IDs',()=>{
+  for(const ownerOperationId of ['too-short','owner.operation.1','x'.repeat(129)]){
+    const item=makeCase(true);
+    const packet=structuredClone(item.packet) as Record<string,unknown>;
+    const actions=packet.ownerActions as Array<Record<string,unknown>>;
+    actions[0]!.ownerOperationId=ownerOperationId;
+    const resealed=resealPacket(packet,item.bundle);
+    assertPacketError(()=>verifyS4CapturePacketChildren(resealed.bytes,resealed.bundle),'child_reference_invalid');
+  }
+
+  const item=addInspectionPrefix(makeCase(true));
+  const packet=JSON.parse(item.bytes.toString('utf8')) as Record<string,unknown>;
+  const actions=packet.ownerActions as Array<Record<string,unknown>>;
+  actions[1]!.ownerOperationId=actions[0]!.ownerOperationId;
+  const resealed=resealPacket(packet,item.bundle);
+  assertPacketError(()=>verifyS4CapturePacketChildren(resealed.bytes,resealed.bundle),'child_reference_invalid');
+});
+
+test('S4 packet keeps BEF operation idempotency bound to the durable action ID',()=>{
+  const item=makeCase(true);
+  const packet=structuredClone(item.packet) as Record<string,unknown>;
+  const bef=packet.bef as Record<string,unknown>;
+  const census=bef.before as Record<string,unknown>;
+  const operations=census.operations as Array<Record<string,unknown>>;
+  operations.find((operation)=>operation.operation_id===ACTION_OPERATION)!.idempotency_key_sha256=HASH_B;
+  bef.after=structuredClone(census);
+  bef.censusSha256=hash(canonicalTaskJson(census));
+  const resealed=resealPacket(packet,item.bundle);
+  assertPacketError(()=>verifyS4CapturePacketChildren(resealed.bytes,resealed.bundle),'child_reference_invalid');
+});
+
 test('S4 packet retains both neutral inspection actions before a mutable transaction',()=>{
   const item=addInspectionPrefix(makeCase(true));
   const refs=verifyS4CapturePacketChildren(item.bytes,item.bundle);

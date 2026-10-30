@@ -3,6 +3,7 @@ import { canonicalTaskJson } from './task-release.js';
 import type { EvidenceReference } from './task-release.js';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TASK_OPERATION_ID=/^[A-Za-z0-9_-]{12,128}$/;
 const HASH=/^[0-9a-f]{64}$/i;
 const TX=/^0x[0-9a-f]{64}$/i;
 const ADDRESS=/^0x[0-9a-f]{40}$/i;
@@ -85,7 +86,8 @@ function validateBundle(bundle:S4CaptureBundleView):{cutoff:number;reconciled:nu
   validateBinding(binding);
   const closure=requireRecord(bundle.closure,['closureId','operationId','payloadHash','reason','actionCutoffSequence','reconciledActionSequence'],'binding_mismatch');
   const cutoff=safeSequence(closure.actionCutoffSequence),reconciled=safeSequence(closure.reconciledActionSequence);
-  if(!UUID.test(String(closure.closureId))||(closure.operationId!==null&&!UUID.test(String(closure.operationId)))||!validHash(closure.payloadHash)||
+  if(!UUID.test(String(closure.closureId))||(closure.operationId!==null&&
+      (typeof closure.operationId!=='string'||!TASK_OPERATION_ID.test(closure.operationId)))||!validHash(closure.payloadHash)||
       !['agent_finish','task_deadline','run_deadline'].includes(String(closure.reason))||cutoff===null||reconciled===null||cutoff>MAX_ACTIONS||reconciled<cutoff)fail('binding_mismatch');
   const execution=requireRecord(bundle.execution,['preparationId','leaseId','generationId','environmentManifestHash','applicationSourceHash','executionIdentityHash','initialStateSha256'],'binding_mismatch');
   if(!UUID.test(String(execution.preparationId))||!UUID.test(String(execution.leaseId))||!UUID.test(String(execution.generationId))||
@@ -390,7 +392,7 @@ export function verifyS4CapturePacketChildren(bytes:Buffer,bundle:S4CaptureBundl
     const allowed=['actionId','actionSequence','ownerOperationId','actionKind','commandSha256','actionEvidence','befOperationId','transactionHash'];
     if(!isRecord(action)||!exactKeys(action,allowed)||!UUID.test(String(action.actionId))||!Number.isSafeInteger(action.actionSequence)||
         (action.actionSequence as number)<1||(action.actionSequence as number)>cutoff||!['approve','transfer','inspect_catalog','inspect_offer'].includes(String(action.actionKind))||
-        !UUID.test(String(action.ownerOperationId))||
+        typeof action.ownerOperationId!=='string'||!TASK_OPERATION_ID.test(action.ownerOperationId)||
         !validHash(action.commandSha256)||!UUID.test(String(action.befOperationId))||
         (readAction?action.transactionHash!==null:!validTx(action.transactionHash))||
         !validEvidence(action.actionEvidence,ACTION_PREFIX))fail('child_reference_invalid');

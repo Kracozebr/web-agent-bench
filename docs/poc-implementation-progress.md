@@ -137,8 +137,46 @@ The successful diagnostic JSON is
 `.local/preparation-diagnostic-496f2664-7904-4869-a0b9-118afed14eeb.json`, SHA-256
 `74a1e0fc57f56415a9f2cbaaee529bfde484e68f6be2b3dd927c9474f7bbab2f`.
 Neither diagnostic reproduces or retrospectively identifies the earlier failure,
-and neither is a model benchmark, grade, or beta-gate acceptance. Further full12
-admission is waiting for the user's decision on additional test bonus and caps.
+and neither is a model benchmark, grade, or beta-gate acceptance.
+
+The user subsequently approved exactly one more full12 attempt, one additional
+bonus USDC and daily ceilings of 3.1 USDC. Actual Chrome actions issued and
+claimed code `1173d88a-89f6-47f5-81ff-5ecac3063ed3` once for the intended owner;
+no plaintext was emitted. PostgreSQL confirms a 1,000,000-unit grant and financial
+policy revision 3: daily and benchmark-category ceilings 3,100,000, operation
+ceiling 2,000,000, forum zero and cash shortfall disabled. Access policy and the
+existing manual credential stayed unchanged.
+
+Fresh UI intent `431ecc8f-bc66-416f-a5aa-6a20d96ea7f8` produced genuine native
+Codex run `f88ae43d-0386-4223-9d9f-b5932bfe87be` on runtime `1f4dd47`. S2
+preparation succeeded. Durable evaluations are S1 passed 1/1, S2 partial 7/10 and
+S3 failed 0/1. S4 submitted one approval with an observed receipt and transaction
+evidence, then closed via `agent_finish`, cutoff/reconciled 1/1. Sealing/reloading
+failed with `TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH`; S4 remains ungraded and
+eight tasks have not started in the deadline snapshot. The overall deadline was
+12:12:46 MSK; after expiry the run still showed running. The native client was
+explicitly stopped after deadline to end blocked polling, not because a new
+client crash was diagnosed; private auth-alias cleanup succeeded.
+
+Independent read-only verification of this deadline snapshot matches all three
+input/result/bundle/source bindings and thirteen recursive evidence files.
+Private snapshot:
+`.local/owner-identity/google-local/full12-03-independent-verification.json`.
+The run has one 1,000,000-unit debit. Total owner debits are 3,066,668, available
+33,332, reserved/expired zero; no ranked publication exists. The single approved
+admission is consumed. No additional run or bonus is created by the fix below.
+
+The exact S4 defect is two UUID-only checks on owner idempotency keys:
+`ownerActions[].ownerOperationId` and non-null `closure.operationId`. Both action
+and finish services already admit `[A-Za-z0-9_-]{12,128}`. The validator now uses
+that same contract for those two fields; UUID checks on actual object/BEF IDs
+remain unchanged. The actual S4 `TaskSealedEvidenceSource.load` passes in a
+read-only transaction after the patch; this is evidence loading, not a persisted
+grade. Focused collector/packet/sealed-source tests: 57 passed, zero failed, one
+PostgreSQL-only test skipped; typecheck passed. A separate audit found no matching
+UUID-only owner-key defect in other task packet families; fourteen in-memory
+format checks passed. Deployment and normal coordinator outcome remain to be
+verified before claiming S4 runtime recovery or complete full12 acceptance.
 
 Both the native agent report and the owner S1 text report were opened through
 the actual admin UI and independently matched to PostgreSQL. The owner report
