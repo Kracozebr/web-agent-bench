@@ -1,10 +1,42 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { captureBefChainCensus, collectBefChainTaskObservationCandidate, matchesReleaseCodeHash, observedRuntimeCodeHash, neutralChainInspectionEvidenceMatches, type BefChainObservationCollectorDependencies } from './bef-chain-observation-collector.js';
-import { makeChainCaptureFixture, prependChainInspectionFixture } from './task-chain-capture-packet.fixture.js';
+import { captureBefChainCensus, collectBefChainTaskObservationCandidate, matchesReleaseCodeHash, observedRuntimeCodeHash, neutralChainInspectionEvidenceMatches, rejectedChainActionEvidenceMatches, type BefChainObservationCollectorDependencies } from './bef-chain-observation-collector.js';
+import { makeChainCaptureFixture, prependChainInspectionFixture, makeRejectedChainCaptureFixture } from './task-chain-capture-packet.fixture.js';
 import { validateTaskChainCapturePacket } from './task-chain-capture-packet.js';
 import { createHash } from 'node:crypto';
 import { canonicalTaskJson } from './task-release.js';
+
+test('actual pre-broadcast rejection producer shape survives the observer census and projects without effects',async()=>{
+ const fixture=makeRejectedChainCaptureFixture('H2'),source=fixture.packet.bef.before as Record<string,unknown>;
+ const generation=source.generation as Record<string,unknown>,proof=(source.rejectedChainOperations as Record<string,unknown>[])[0]!;
+ const op=proof.operation as Record<string,unknown>,selected=proof.selectedExecution as Record<string,unknown>;
+ assert.equal(rejectedChainActionEvidenceMatches(fixture.rejectedActionDocument),true);
+ for(const key of ['transactionHash','participantToolResponse','recoverySource','paymentProtocol','receiptStatus','outcome','httpStatus','rawResponseSha256']){
+  assert.equal(rejectedChainActionEvidenceMatches({...fixture.rejectedActionDocument,[key]:null}),false,key);
+ }
+ const operation={operation_id:op.operationId,env_id:op.environmentId,generation_id:op.generationId,participant_id:op.participantId,
+  idempotency_key_sha256:op.idempotencyKeySha256,request_sha256:op.requestSha256,operation_kind:op.actionKind,status:op.status,
+  receipt_status:op.receiptStatus,transaction_hash:op.transactionHash,response_sha256:op.responseSha256,started_at:op.startedAt,completed_at:op.completedAt};
+ const execution={operation_id:selected.operationId,env_id:selected.environmentId,generation_id:selected.generationId,action_kind:selected.actionKind,
+  selected_action_json:selected.selectedAction,prestate_json:null,transaction_intent_json:null,measurement_json:null,transaction_hash:null,
+  outcome:'rejected',reason_code:'execution_observation_unknown',completed_at:selected.completedAt};
+ const events=(proof.selectedEvents as Record<string,unknown>[]).map((event)=>({event_id:event.eventId,event_sequence:event.eventSequence,
+  operation_id:event.operationId,env_id:op.environmentId,generation_id:op.generationId,event_kind:event.eventKind,transaction_hash:null,event_json:event.eventPayload}));
+ async function capture(effect=false){
+  const results:unknown[][]=[
+   [{current_user:'bef_observer',session_user:'bef_observer',database_name:'bef',transaction_read_only:'on',transaction_isolation:'repeatable read',rolsuper:false,rolbypassrls:false,schema_create:false}],
+   ['bef_environment','bef_generation','bef_operation','bef_selected_execution','bef_selected_execution_event','bef_transaction_cost'].map((table_name)=>({table_name,can_select:true,can_insert:false,can_update:false,can_delete:false,can_truncate:false})),
+   [generation],[operation],[execution],events,effect?[{operation_id:op.operationId}]:[],[{payments:'0',deliveries:'0'}],
+   [{operations:'1',selected_executions:'1',selected_events:'2',costs:effect?'1':'0'}],
+  ];
+  return captureBefChainCensus({environmentId:String(generation.env_id),withRepeatableRead:async(callback)=>callback(async()=>results.shift()!)},
+   String(generation.env_id),String(generation.generation_id),true);
+ }
+ const captured=await capture();assert.deepEqual(captured.census,source);
+ fixture.packet.bef.before=captured.census;fixture.packet.bef.after=structuredClone(captured.census);
+ assert.doesNotThrow(()=>validateTaskChainCapturePacket(fixture.packet,fixture.taskCase));
+ await assert.rejects(()=>capture(true));
+});
 
 test('read-only BEF census retains source GET rows and rejects any read cost/selected/event evidence before projection',async()=>{
  const fixture=prependChainInspectionFixture(makeChainCaptureFixture('M3'));

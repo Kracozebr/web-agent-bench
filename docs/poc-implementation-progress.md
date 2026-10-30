@@ -1,6 +1,76 @@
 # PoC implementation progress
 
-Checkpoint: 29 October 2026, Europe/Moscow. Approved planning baseline:
+## 30 October: real Google and native Codex local qualification
+
+This is a separate loopback-only qualification on real Google authentication and
+a participant-owned Codex model, not a target-host gate or a replacement for R37.
+Runtime `39070ce` includes the persistent Google launcher, the pinned complete
+Codex CLI 0.165.0 bundle, and producer-shaped inspection health validation.
+The founder authenticated with Google and opened the admin UI. Actual browser
+actions issued and redeemed one single-use code for 2 internal bonus USDC and
+created the bounded manual Codex connection. Secrets remain in ignored local
+files; model-provider usage is separate from internal platform bonuses.
+
+Training intent `8d416781-d18c-4409-b9bc-9ab6d5ed9a59` produced run
+`a27edea9-c695-472e-86de-c52c20633407`, completed at approximately 09:43 MSK.
+The native model inspected the catalog and transferred through MCP. The owner UI
+shows S1 `passed`, credit 1/1, and an independent read-only PostgreSQL observer
+confirmed the durable result, canonical input/result hashes, bundle binding and
+all five recursively referenced evidence files. Result SHA-256:
+`f22f324657f2c0661b8fff88941611520f0b57712b1476bf339de0ddc9ccd847`.
+The native client exited 0 with 13 MCP calls, including one recoverable tool
+error; its private auth alias was removed successfully. CLI exit alone is not
+the grading evidence. The earlier training run `34134d48-ed60-480e-b8cc-30128be9297d`
+remains cancelled without an evaluation after a normal executor restart; its
+retained actions must not be relabelled as a successful run.
+
+The actual browser also created ranked intent
+`91b750b0-83f9-438d-96a9-f5430b6efee2` for full12 at 1 bonus USDC, zero cash.
+Run `da6b00f1-c8ef-4dc6-a0be-858bb84b2b58` is **blocked, not completed** in the
+read-only snapshot at 10:00:48 MSK. Nine evaluations are durable and `known`:
+S1, M2 and H1 passed with full credit; S2 received 7/10; S3, S4, M1, M3 and M4
+received zero. S3 and S4 closed by task deadline; the first native client process
+failed, and a second client continued the same run without another admission or
+fee. Attribution of that client failure is not established by the sanitized log.
+H2 remains closed but ungraded because the collector rejects a source-confirmed
+pre-broadcast rejected mutation. H3 and U1 have not started. The overall deadline
+has passed. No ranked eligibility, verified result or best-result pointer exists
+for this run in that snapshot.
+
+The independent observer verified all nine result/input hashes, nine bundle
+hashes/bindings and 93 recursively referenced evidence files. The ledger contains
+exactly two 33,334-unit training debits and one 1,000,000-unit ranked debit, each
+with its matching reservation; available bonus is 933,332 units, reserved zero.
+The private, privacy-filtered snapshot is
+`.local/owner-identity/google-local/full12-independent-verification.json`.
+No mandatory beta acceptance gate is promoted by this incomplete run.
+
+The model submitted an actual agent support report and read its receipt.
+The owner report with an S1 screenshot is still an unsent draft: Chrome blocks
+automated file selection, and the correct attachment and admin view are not yet
+proven. The unrelated earlier screenshot selection was never submitted.
+
+Focused collector/packet/sealed-source regression at `39070ce`: 115 passed,
+zero failed, one PostgreSQL-only test skipped; typecheck passed. These checks
+are separate from the real S1 browser-to-database result and the blocked full12.
+
+The subsequent narrow M3/M4/H2 rejected-transfer fix retains the complete admitted
+cutoff, durable receipt/history and exact source-bound pre-broadcast rejection.
+It requires read-only observer identity, no intent/transaction/cost evidence,
+two source-hashed rejection events and unchanged balances/allowances/nonce for a
+rejected-only interval; contradictions remain unavailable. H3/U1 are excluded.
+The original H2 records passed this patched collector through read-only database
+observers/RPC and an in-memory sink: one rejected action, zero transfers and
+expenses. This diagnostic did not persist an evaluation or repair the live run.
+Combined regression: 124 passed, zero failed, one PostgreSQL-only test skipped;
+typecheck and the 34-scenario semantic BDD audit passed. These are not a completed
+full12 E2E or runtime BDD acceptance.
+
+Remaining local work is deploying the H2 fix, a complete full12 retry, and the
+owner screenshot/admin report journey. Target deployment, the other three client
+families and the participant pilot remain separate release prerequisites.
+
+Historical checkpoint: 29 October 2026, Europe/Moscow. Approved planning baseline:
 `2db5f5f`, pushed to `origin/dev`. This document reports implementation and
 verification separately; agent reports are not accepted as runtime proof.
 

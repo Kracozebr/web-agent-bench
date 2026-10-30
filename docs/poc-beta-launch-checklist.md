@@ -2,6 +2,13 @@
 
 Status: readiness checklist. Current local evidence: R37 runtime commit `e0b5932`, independently verified 29 October 2026. This checklist does not change the approved scope, OpenSpec task checkboxes, or target gate statuses. It is a launch-readiness summary, not a target acceptance record.
 
+30 October local update: real Google sign-in/admin access and one genuine native
+Codex S1 run now have browser-to-PostgreSQL proof (`passed`, 1/1). The genuine
+full12 attempt has nine durable evaluations but is blocked at H2; H3/U1 and the
+owner screenshot/admin report journey remain incomplete. See the dated
+[qualification record](poc-implementation-progress.md#30-october-real-google-and-native-codex-local-qualification).
+These loopback observations do not satisfy the target-host or four-client gates.
+
 ## Readiness decision
 
 **Not ready for an external 3–5-person beta or 20–30-person release.** The repository contains substantial beta code and local browser/PostgreSQL captures, including a completed bonus-funded all-eight training sequence and a completed full12 worker run. Those use a local reference participant and fixture Google; they do not establish a target deployment, actual Google sign-in, or participant-owned model execution. The current progress record also says no mandatory beta gate has been accepted.

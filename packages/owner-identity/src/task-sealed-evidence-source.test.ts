@@ -1137,6 +1137,113 @@ test('sealed chain read binds the complete packet offer command to the durable o
     inspection: { ...packetAction.inspection, command: durableCommand } }] });
 });
 
+test('sealed H2 rejected transfer binds durable receipt, recovery child, and neutral BEF rejection proof', async () => {
+  const actionId = '88000000-0000-4000-8000-000000000008';
+  const ownerOperationId = 'rejected-chain-owner-operation';
+  const befOperationId = '89000000-0000-4000-8000-000000000008';
+  const recipient = '0x1111111111111111111111111111111111111111';
+  const token = '0x2222222222222222222222222222222222222222';
+  const command = { kind: 'transfer' as const, amountUnits: '1250', recipient, gasLimit: '80000' };
+  const commandSha256 = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command });
+  const requestSha256 = sha256CanonicalTaskJson({ method: 'POST', path: '/tools/transfer', action: {
+    kind: 'transfer', token, amountUnits: command.amountUnits, recipient, gasLimit: command.gasLimit,
+  } });
+  const selectedAction = { kind: 'transfer', amountUnits: command.amountUnits, recipient, gasLimit: command.gasLimit };
+  const actionEvidence: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/rejected-transfer.json`,
+    sha256: HASH('rejected-transfer-child'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+  const rejected = { actionId, actionSequence: 1, ownerOperationId, actionKind: 'transfer', commandSha256, command,
+    receiptStatus: 'rejected_before_execution', reasonCode: 'platform_recovery_original_operation_terminal',
+    actionEvidence, befOperationId, transactionHash: null };
+  const child = { schema: 'bef-task-action-observation-v1', actionId, runId: RUN, taskIndex: 0, actionSequence: '1',
+    ownerOperationId, actionKind: 'transfer', commandSha256, environmentId: ENVIRONMENT, generationId: GENERATION,
+    manifestSha256: ENV_MANIFEST_HASH, applicationSourceSha256: SOURCE_HASH, idempotencyKey: `task-action-${actionId}`,
+    status: 'rejected_before_execution', reasonCode: 'platform_recovery_original_operation_terminal', befOperationId };
+  const operation = { operationId: befOperationId, environmentId: ENVIRONMENT, generationId: GENERATION,
+    participantId: '90000000-0000-4000-8000-000000000009', idempotencyKeySha256: HASH(`task-action-${actionId}`),
+    requestSha256, actionKind: 'transfer', status: 'rejected', receiptStatus: 'not_submitted', transactionHash: null,
+    responseSha256: null, startedAt: '2026-10-30T07:00:00.000Z', completedAt: '2026-10-30T07:00:01.000Z' };
+  const selectedExecution = { operationId: befOperationId, environmentId: ENVIRONMENT, generationId: GENERATION,
+    actionKind: 'transfer', selectedAction, prestate: null, transactionIntent: null, measurement: null, transactionHash: null,
+    outcome: 'rejected', reasonCode: 'execution_observation_unknown', completedAt: '2026-10-30T07:00:01.000Z' };
+  const eventPayloads = [
+    { actionKind: 'transfer', selectedAction, requestSha256 },
+    { reasonCode: 'execution_observation_unknown' },
+  ];
+  const selectedEvents = eventPayloads.map((eventPayload, index) => ({ eventId: `8a000000-0000-4000-8000-00000000000${index + 1}`,
+    eventSequence: String(20 + index), operationId: befOperationId,
+    eventKind: index === 0 ? 'selected_action_bound' : 'rejected_before_broadcast',
+    eventJsonSha256: sha256CanonicalTaskJson(eventPayload), transactionHash: null, eventPayload }));
+  const rejectionProof = { operation, selectedExecution, selectedEvents, costsCount: 0 };
+  const census = { generation: { participant_id: operation.participantId }, operations: [], externalPaymentOperations: [],
+    selectedExecutions: [], selectedEvents: [] as Record<string, unknown>[], costs: [], paymentsCount: '0', deliveriesCount: '0',
+    rejectedChainOperations: [rejectionProof] };
+  const packet = { taskId: 'H2', ownerActions: [], externalActions: [], rejectedChainActions: [rejected],
+    bef: { session: { currentUser: 'bef_observer', sessionUser: 'bef_observer', databaseName: 'bef_test', transactionReadOnly: 'on',
+      transactionIsolation: 'repeatable read', superuser: false, bypassRls: false }, before: census, after: structuredClone(census) },
+    rpc: { assets: [{ assetId: 'USDC', address: token }],
+      baseline: { balances: [{ account: 'participant', assetId: 'USDC', amountUnits: '10000' }], allowances: [], participantTransactionCount: '5' },
+      final: { balances: [{ account: 'participant', assetId: 'USDC', amountUnits: '10000' }], allowances: [], participantTransactionCount: '5' },
+      transactions: [], transferLogs: [], approvalLogs: [], swapLogs: [], wethLogs: [] } };
+  const dbAction = { id: actionId, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'H2',
+    environment_id: ENVIRONMENT, action_sequence: '1', operation_id: ownerOperationId, payload_hash: commandSha256,
+    action_kind: 'transfer', command_json: command, receipt_revision: 2, receipt_status: 'rejected_before_execution',
+    evidence_hash: actionEvidence.sha256, evidence_path: actionEvidence.path, transaction_hash: null,
+    tool_response_json: null, tool_response_hash: null, history_revision: 2, history_status: 'rejected_before_execution',
+    history_evidence_hash: actionEvidence.sha256, history_evidence_path: actionEvidence.path, history_transaction_hash: null,
+    history_tool_response_json: null, history_tool_response_hash: null };
+  const row = { run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'H2', environment_id: ENVIRONMENT,
+    generation_id: GENERATION, environment_manifest_hash: ENV_MANIFEST_HASH, application_source_hash: SOURCE_HASH,
+    action_cutoff_sequence: '1' };
+  const invoke = async (candidatePacket: unknown, candidateChild: Record<string, unknown> = child) => {
+    const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+      async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
+    }, evidenceRoot: process.cwd() });
+    const tx = { async execute() { return [dbAction]; } };
+    await (source as unknown as { verifyChainOwnerActions(tx: unknown, row: unknown, packet: unknown,
+      chainEvidence: ReadonlyMap<string, Record<string, unknown>>, paidEvidence: ReadonlyMap<string, Record<string, unknown>>): Promise<void> })
+      .verifyChainOwnerActions(tx, row, candidatePacket,
+        new Map([[actionEvidence.path, candidateChild]]), new Map());
+  };
+
+  await invoke(packet);
+  await assert.rejects(invoke({ ...packet, rejectedChainActions: [] }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(invoke(packet, { ...child, reasonCode: 'other_rejection' }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  await assert.rejects(invoke(packet, { ...child, httpStatus: 409 }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const changedCommand = structuredClone(packet);
+  changedCommand.rejectedChainActions[0]!.command.amountUnits = '1251';
+  await assert.rejects(invoke(changedCommand),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const changedRequest = structuredClone(packet);
+  changedRequest.bef.after.rejectedChainOperations[0]!.operation.requestSha256 = HASH('different-rejected-request');
+  await assert.rejects(invoke(changedRequest),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const changedEvents = structuredClone(packet);
+  changedEvents.bef.after.rejectedChainOperations[0]!.selectedEvents[1]!.eventPayload.reasonCode = 'unrecognized';
+  await assert.rejects(invoke(changedEvents),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const duplicateEventId = structuredClone(packet);
+  duplicateEventId.bef.before.selectedEvents.push({ ...selectedEvents[0], eventSequence: '30' });
+  duplicateEventId.bef.after = structuredClone(duplicateEventId.bef.before);
+  await assert.rejects(invoke(duplicateEventId),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const duplicateEventSequence = structuredClone(packet);
+  duplicateEventSequence.bef.before.selectedEvents.push({ ...selectedEvents[0], eventId: '8b000000-0000-4000-8000-000000000001' });
+  duplicateEventSequence.bef.after = structuredClone(duplicateEventSequence.bef.before);
+  await assert.rejects(invoke(duplicateEventSequence),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const changedSession = structuredClone(packet);
+  changedSession.bef.session.transactionReadOnly = 'off';
+  await assert.rejects(invoke(changedSession),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  const changedFinalState = structuredClone(packet);
+  changedFinalState.rpc.final.balances[0]!.amountUnits = '9999';
+  await assert.rejects(invoke(changedFinalState),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+});
+
 const pgEnabled = process.env.OID_TASK_SEALED_EVIDENCE_SOURCE_PG_TEST === '1';
 
 test('isolated PostgreSQL source reads original S1 evidence from a fenced generation without nesting transactions', { skip: !pgEnabled }, async () => {

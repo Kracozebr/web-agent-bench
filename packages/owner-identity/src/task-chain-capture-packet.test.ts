@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { getAddress } from 'viem';
 import test from 'node:test';
 import { collectBefChainTaskObservationCandidate } from './bef-chain-observation-collector.js';
-import { makeChainCaptureCompositeFixture, makeChainCaptureFixture, prependChainInspectionFixture } from './task-chain-capture-packet.fixture.js';
+import { makeChainCaptureCompositeFixture, makeChainCaptureFixture, prependChainInspectionFixture, makeRejectedChainCaptureFixture } from './task-chain-capture-packet.fixture.js';
 import { ChainCapturePacketError, projectTaskChainCapturePacket, validateTaskChainCapturePacket } from './task-chain-capture-packet.js';
 import { canonicalTaskJson } from './task-release.js';
 
@@ -18,7 +19,77 @@ function project(taskId:'M3'|'M4'|'H2'|'H3'|'U1'){
  return {...fixture,observations:projection(fixture)};
 }
 
+test('rejected-transfer source request retains the producer checksum token before RPC address normalization',()=>{
+ const fixture=makeRejectedChainCaptureFixture('H2'),token='0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+ fixture.packet.rpc.assets.find((asset)=>asset.assetId==='USDC')!.address=token;
+ const census=fixture.packet.bef.before as Record<string,unknown>,proof=(census.rejectedChainOperations as Record<string,unknown>[])[0]!;
+ const operation=proof.operation as Record<string,unknown>,event=(proof.selectedEvents as Record<string,unknown>[])[0]!;
+ const command=fixture.packet.rejectedChainActions![0]!.command;
+ const request=(address:string)=>createHash('sha256').update(canonicalTaskJson({method:'POST',path:'/tools/transfer',action:{...command,token:address}})).digest('hex');
+ function bindRequest(hash:string){
+  operation.requestSha256=hash;(event.eventPayload as Record<string,unknown>).requestSha256=hash;
+  event.eventJsonSha256=createHash('sha256').update(canonicalTaskJson(event.eventPayload)).digest('hex');
+  fixture.packet.bef.after=structuredClone(census);fixture.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(census)).digest('hex');
+ }
+ bindRequest(request(getAddress(token)));
+ assert.doesNotThrow(()=>projection(fixture));
+ bindRequest(request(token));
+ assert.throws(()=>projection(fixture),ChainCapturePacketError);
+});
+
 for(const taskId of ['M3','M4','H2'] as const){
+ test(`${taskId} retains a source-proven rejected transfer without projecting effects or losing the immutable cutoff`,()=>{
+  const fixture=makeRejectedChainCaptureFixture(taskId),observations=projection(fixture);
+  assert.equal(fixture.packet.closure.actionCutoffSequence,1);
+  assert.equal(fixture.packet.rejectedChainActions!.length,1);
+  for(const domain of ['transfers','allowanceChanges','allowanceUses','trades','conversions','expenses'] as const)assert.deepEqual(observations[domain],[]);
+  assert.equal(observations.finalStates.length,1);
+  assert.deepEqual(fixture.packet.rpc.baseline,fixture.packet.rpc.final);
+  const mixed=makeRejectedChainCaptureFixture(taskId,true),base=projection(makeChainCaptureFixture(taskId)),projected=projection(mixed);
+  for(const domain of ['transfers','allowanceChanges','allowanceUses','trades','conversions','expenses'] as const){
+   assert.equal(projected[domain].length,base[domain].length);
+   assert.ok(projected[domain].every((value)=>value.actionSequence>1));
+  }
+ });
+ test(`${taskId} rejects incomplete, contradictory or rebound rejected-transfer source proof`,()=>{
+  for(const [domain,key,value] of [['operation','status','settlement_unknown'],['operation','receiptStatus','unknown'],['operation','transactionHash','0x'+'f'.repeat(64)],
+   ['operation','responseSha256','f'.repeat(64)],['operation','requestSha256','f'.repeat(64)],['operation','idempotencyKeySha256','f'.repeat(64)],
+   ['operation','participantId','other-participant'],['operation','generationId','10000000-0000-4000-8000-000000000fff'],
+   ['selectedExecution','prestate',{}],['selectedExecution','transactionIntent',{}],['selectedExecution','measurement',{}],
+   ['selectedExecution','outcome','settlement_unknown'],['selectedExecution','reasonCode','different-reason']] as const){
+   const fixture=makeRejectedChainCaptureFixture(taskId),census=fixture.packet.bef.before as Record<string,unknown>;
+   const proof=(census.rejectedChainOperations as Record<string,unknown>[])[0]!;
+   (proof[domain] as Record<string,unknown>)[key]=value;
+   fixture.packet.bef.after=structuredClone(census);fixture.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(census)).digest('hex');
+   assert.throws(()=>projection(fixture),ChainCapturePacketError,`${domain}.${key}`);
+  }
+  for(const variant of ['missing','extra','altered-event','cost','missing-cutoff','command','missing-baseline'] as const){
+   const fixture=makeRejectedChainCaptureFixture(taskId),census=fixture.packet.bef.before as Record<string,unknown>;
+   const proof=(census.rejectedChainOperations as Record<string,unknown>[])[0]!;
+   if(variant==='missing')census.rejectedChainOperations=[];
+   if(variant==='extra')(census.rejectedChainOperations as unknown[]).push(structuredClone(proof));
+   if(variant==='altered-event')(proof.selectedEvents as Record<string,unknown>[])[1]!.eventKind='original_tx_hash_bound';
+   if(variant==='cost')proof.costsCount=1;
+   if(variant==='missing-cutoff')fixture.packet.closure.actionCutoffSequence=0;
+   if(variant==='command')fixture.packet.rejectedChainActions![0]!.command.amountUnits='999';
+   if(variant==='missing-baseline')fixture.packet.rpc.baseline.blockHash='0x'+'f'.repeat(64);
+   fixture.packet.bef.after=structuredClone(census);fixture.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(census)).digest('hex');
+   assert.throws(()=>projection(fixture),ChainCapturePacketError,variant);
+  }
+  for(const variant of ['event-id-collision','event-sequence-collision','operation-collision','state-change','nonce-change','unsafe-observer'] as const){
+   const fixture=makeRejectedChainCaptureFixture(taskId,variant.includes('collision')),census=fixture.packet.bef.before as Record<string,unknown>;
+   const proof=(census.rejectedChainOperations as Record<string,unknown>[])[0]!,events=proof.selectedEvents as Record<string,unknown>[];
+   const observed=(census.selectedEvents as Record<string,unknown>[])[0];
+   if(variant==='event-id-collision')events[0]!.eventId=observed!.eventId;
+   if(variant==='event-sequence-collision')events[0]!.eventSequence=observed!.eventSequence;
+   if(variant==='operation-collision')fixture.packet.rejectedChainActions![0]!.befOperationId=fixture.packet.ownerActions[0]!.befOperationId;
+   if(variant==='state-change')fixture.packet.rpc.final.balances[0]!.amountUnits='777';
+   if(variant==='nonce-change')fixture.packet.rpc.final.participantTransactionCount='1';
+   if(variant==='unsafe-observer')fixture.packet.bef.session.superuser=true;
+   fixture.packet.bef.after=structuredClone(census);fixture.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(census)).digest('hex');
+   assert.throws(()=>projection(fixture),ChainCapturePacketError,variant);
+  }
+ });
  test(`${taskId} retains the full neutral inspection prefix without adding chain or economic effects`,()=>{
   const base=makeChainCaptureFixture(taskId),fixture=prependChainInspectionFixture(base);
   const before=projection(base),after=projection(fixture);

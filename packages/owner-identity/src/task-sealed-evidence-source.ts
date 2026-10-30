@@ -942,10 +942,13 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       WHERE a.run_id=${row.run_id} AND a.task_index=${row.task_index}
       ORDER BY a.action_sequence LIMIT ${MAX_EVIDENCE_FILES + 1}`) as unknown as Array<Record<string, unknown>>;
     const cutoff = safeSequence(row.action_cutoff_sequence);
+    const rejectedChainActions = packet.rejectedChainActions ?? [];
+    const rejectedChainActionIds = new Set(rejectedChainActions.map((action) => action.actionId));
     const expectedActions: Array<Record<string, unknown>> = [
       ...packet.ownerActions.map((action) => ({ ...action, receiptStatus: 'observed' })),
       ...packet.externalActions.map((action) => ({ ...action, ...(plainObject(action.inspection)
         ? { command: action.inspection.command, rawResponseSha256: action.inspection.rawResponseSha256 } : {}) })),
+      ...rejectedChainActions,
     ];
     if (cutoff === null || cutoff > MAX_EVIDENCE_FILES || actionRows.length !== cutoff || expectedActions.length !== cutoff) {
       fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The sealed chain owner-action list does not match its immutable cutoff');
@@ -956,6 +959,37 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The sealed chain packet repeats an owner action identity');
     }
     const failAction: () => never = () => fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action differs from its durable owner receipt or retained evidence');
+    if (rejectedChainActions.length > 0) {
+      if (!['M3', 'M4', 'H2'].includes(packet.taskId)) failAction();
+      const session = packet.bef.session;
+      if (!plainObject(session) || !exactKeys(session, ['currentUser', 'sessionUser', 'databaseName', 'transactionReadOnly',
+          'transactionIsolation', 'superuser', 'bypassRls']) || session.currentUser !== 'bef_observer' ||
+          session.sessionUser !== 'bef_observer' || typeof session.databaseName !== 'string' || session.databaseName.length === 0 ||
+          session.transactionReadOnly !== 'on' || session.transactionIsolation !== 'repeatable read' ||
+          session.superuser !== false || session.bypassRls !== false) failAction();
+      const externalTransaction = packet.externalActions.some((action) => action.transactionHash !== null);
+      if (packet.ownerActions.length === 0 && !externalTransaction) {
+        const baseline = packet.rpc.baseline;
+        const final = packet.rpc.final;
+        if (packet.rpc.transactions.length !== 0 || packet.rpc.transferLogs.length !== 0 || packet.rpc.approvalLogs.length !== 0 ||
+            packet.rpc.swapLogs.length !== 0 || packet.rpc.wethLogs.length !== 0 ||
+            canonicalTaskJson(baseline.balances) !== canonicalTaskJson(final.balances) ||
+            canonicalTaskJson(baseline.allowances) !== canonicalTaskJson(final.allowances) ||
+            baseline.participantTransactionCount !== final.participantTransactionCount) failAction();
+      }
+    }
+    const rejectedProofEventIds = new Set<string>();
+    const rejectedProofEventSequences = new Set<string>();
+    if (rejectedChainActions.length > 0) {
+      const before = packet.bef.before;
+      if (!plainObject(before) || !Array.isArray(before.selectedEvents)) failAction();
+      for (const event of before.selectedEvents) {
+        if (!plainObject(event) || !UUID.test(String(event.eventId)) || !/^[1-9][0-9]*$/.test(String(event.eventSequence)) ||
+            rejectedProofEventIds.has(String(event.eventId)) || rejectedProofEventSequences.has(String(event.eventSequence))) failAction();
+        rejectedProofEventIds.add(String(event.eventId));
+        rejectedProofEventSequences.add(String(event.eventSequence));
+      }
+    }
     for (let index = 0; index < actionRows.length; index += 1) {
       const value = actionRows[index]!;
       const sequence = safeSequence(value.action_sequence as string | number);
@@ -999,6 +1033,90 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           canonicalTaskJson(evidence.participantToolResponse ?? null) !== canonicalTaskJson(response)) failAction();
       if (expectedStatus === 'observed' && !plainObject(response)) failAction();
       if (expectedStatus === 'rejected_before_execution' && (response !== null || transactionHash !== null)) failAction();
+      if (rejectedChainActionIds.has(String(expected.actionId))) {
+        const rejected = expected;
+        const rejectedCommand = TaskActionCommandSchema.safeParse(rejected.command);
+        const childKeys = ['schema', 'actionId', 'runId', 'taskIndex', 'actionSequence', 'ownerOperationId', 'actionKind', 'commandSha256',
+          'environmentId', 'generationId', 'manifestSha256', 'applicationSourceSha256', 'idempotencyKey', 'status', 'reasonCode', 'befOperationId'];
+        if (!rejectedCommand.success || rejectedCommand.data.kind !== 'transfer' || command.kind !== 'transfer' ||
+            canonicalTaskJson(rejectedCommand.data) !== canonicalTaskJson(command) ||
+            rejected.actionKind !== 'transfer' || rejected.receiptStatus !== 'rejected_before_execution' ||
+            rejected.reasonCode !== 'platform_recovery_original_operation_terminal' || rejected.befOperationId === null ||
+            rejected.transactionHash !== null || response !== null || transactionHash !== null ||
+            !exactKeys(evidence, childKeys) || evidence.reasonCode !== 'platform_recovery_original_operation_terminal' ||
+            Object.hasOwn(evidence, 'httpStatus') || Object.hasOwn(evidence, 'rawResponseSha256') ||
+            Object.hasOwn(evidence, 'outcome') || Object.hasOwn(evidence, 'receiptStatus') ||
+            Object.hasOwn(evidence, 'receiptGasUsed') || Object.hasOwn(evidence, 'receiptEffectiveGasPriceWei') ||
+            Object.hasOwn(evidence, 'paymentProtocol')) failAction();
+
+        const before = packet.bef.before;
+        const after = packet.bef.after;
+        const beforeRejected = plainObject(before) && Array.isArray(before.rejectedChainOperations) ? before.rejectedChainOperations : null;
+        const afterRejected = plainObject(after) && Array.isArray(after.rejectedChainOperations) ? after.rejectedChainOperations : null;
+        if (!beforeRejected || !afterRejected || beforeRejected.length !== rejectedChainActions.length ||
+            afterRejected.length !== rejectedChainActions.length ||
+            canonicalTaskJson(beforeRejected) !== canonicalTaskJson(afterRejected)) failAction();
+        const operationProofs = beforeRejected.filter(plainObject);
+        const source = operationProofs.find((candidate) => plainObject(candidate.operation) &&
+          String(candidate.operation.operationId).toLowerCase() === String(rejected.befOperationId).toLowerCase());
+        const operation = source && plainObject(source.operation) ? source.operation : null;
+        const selected = source && plainObject(source.selectedExecution) ? source.selectedExecution : null;
+        const sourceEvents = source && Array.isArray(source.selectedEvents) ? source.selectedEvents.filter(plainObject) : null;
+        const generation = plainObject(before) && plainObject(before.generation) ? before.generation : null;
+        const rpcAssets = packet.rpc.assets;
+        const usdc = rpcAssets.find((asset) => asset.assetId === 'USDC');
+        if (operationProofs.length !== beforeRejected.length ||
+            operationProofs.filter((candidate) => plainObject(candidate.operation) &&
+              String(candidate.operation.operationId).toLowerCase() === String(rejected.befOperationId).toLowerCase()).length !== 1 ||
+            !source || !operation || !selected || !sourceEvents || sourceEvents.length !== 2 || !generation || !usdc || typeof usdc.address !== 'string') failAction();
+        const selectedAction = { kind: 'transfer', amountUnits: rejectedCommand.data.amountUnits,
+          recipient: rejectedCommand.data.recipient.toLowerCase(), gasLimit: rejectedCommand.data.gasLimit };
+        const sourceRequestAction = { kind: 'transfer', token: usdc.address.toLowerCase(), amountUnits: rejectedCommand.data.amountUnits,
+          recipient: rejectedCommand.data.recipient.toLowerCase(), gasLimit: rejectedCommand.data.gasLimit };
+        const requestSha256 = createHash('sha256').update(canonicalTaskJson({ method: 'POST', path: '/tools/transfer', action: sourceRequestAction })).digest('hex');
+        const idempotencyKeySha256 = createHash('sha256').update(`task-action-${rejected.actionId}`).digest('hex');
+        const selectedKeys = ['operationId', 'environmentId', 'generationId', 'actionKind', 'selectedAction', 'prestate', 'transactionIntent',
+          'measurement', 'transactionHash', 'outcome', 'reasonCode', 'completedAt'];
+        if (!exactKeys(operation, ['operationId', 'environmentId', 'generationId', 'participantId', 'idempotencyKeySha256', 'requestSha256',
+            'actionKind', 'status', 'receiptStatus', 'transactionHash', 'responseSha256', 'startedAt', 'completedAt']) ||
+            String(operation.operationId).toLowerCase() !== String(rejected.befOperationId).toLowerCase() ||
+            operation.environmentId !== row.environment_id || operation.generationId !== row.generation_id ||
+            operation.participantId !== generation.participant_id || String(operation.idempotencyKeySha256).toLowerCase() !== idempotencyKeySha256 ||
+            String(operation.requestSha256).toLowerCase() !== requestSha256 || operation.actionKind !== 'transfer' || operation.status !== 'rejected' ||
+            operation.receiptStatus !== 'not_submitted' || operation.transactionHash !== null || operation.responseSha256 !== null ||
+            typeof operation.startedAt !== 'string' || typeof operation.completedAt !== 'string' ||
+            !Number.isFinite(Date.parse(operation.startedAt)) || !Number.isFinite(Date.parse(operation.completedAt)) ||
+            Date.parse(operation.completedAt) < Date.parse(operation.startedAt) ||
+            !exactKeys(selected, selectedKeys) || String(selected.operationId).toLowerCase() !== String(operation.operationId).toLowerCase() ||
+            selected.environmentId !== row.environment_id || selected.generationId !== row.generation_id || selected.actionKind !== 'transfer' ||
+            canonicalTaskJson(selected.selectedAction) !== canonicalTaskJson(selectedAction) || selected.prestate !== null ||
+            selected.transactionIntent !== null || selected.measurement !== null || selected.transactionHash !== null ||
+            selected.outcome !== 'rejected' || selected.reasonCode !== 'execution_observation_unknown' ||
+            typeof selected.completedAt !== 'string' || !Number.isFinite(Date.parse(selected.completedAt)) || source.costsCount !== 0 ||
+            plainObject(before) && (['operations', 'externalPaymentOperations', 'selectedExecutions', 'selectedEvents', 'costs'] as const).some((name) => {
+              const rows = before[name];
+              return !Array.isArray(rows) || rows.some((entry) => plainObject(entry) &&
+                String(entry.operationId ?? entry.operation_id).toLowerCase() === String(operation.operationId).toLowerCase());
+            })) failAction();
+        const eventKinds = sourceEvents.map((event) => event.eventKind);
+        const expectedPayloads = [
+          { actionKind: 'transfer', selectedAction, requestSha256 },
+          { reasonCode: 'execution_observation_unknown' },
+        ];
+        for (let eventIndex = 0; eventIndex < sourceEvents.length; eventIndex += 1) {
+          const event = sourceEvents[eventIndex]!;
+          const sequenceText = String(event.eventSequence);
+          if (!exactKeys(event, ['eventId', 'eventSequence', 'operationId', 'eventKind', 'eventJsonSha256', 'transactionHash', 'eventPayload']) ||
+              !UUID.test(String(event.eventId)) || rejectedProofEventIds.has(String(event.eventId)) || !/^[1-9][0-9]*$/.test(sequenceText) ||
+              rejectedProofEventSequences.has(sequenceText) || String(event.operationId).toLowerCase() !== String(operation.operationId).toLowerCase() ||
+              event.transactionHash !== null || event.eventKind !== ['selected_action_bound', 'rejected_before_broadcast'][eventIndex] ||
+              canonicalTaskJson(event.eventPayload) !== canonicalTaskJson(expectedPayloads[eventIndex]) ||
+              String(event.eventJsonSha256).toLowerCase() !== createHash('sha256').update(canonicalTaskJson(event.eventPayload)).digest('hex')) failAction();
+          rejectedProofEventIds.add(String(event.eventId));
+          rejectedProofEventSequences.add(sequenceText);
+        }
+        if (BigInt(String(sourceEvents[1]!.eventSequence)) <= BigInt(String(sourceEvents[0]!.eventSequence))) failAction();
+      }
       if (expected.actionKind === 'inspect_catalog' || expected.actionKind === 'inspect_offer') {
         const parsedInspection = TaskActionCommandSchema.safeParse(expected.command);
         const inspection = expected.rawResponseSha256;

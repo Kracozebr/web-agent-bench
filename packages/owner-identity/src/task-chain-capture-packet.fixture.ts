@@ -24,6 +24,43 @@ const evidence=(path:string,seed:string):EvidenceReference=>({path,sha256:sha(se
 type Command=Record<string,unknown>&{kind:'approve'|'transfer'|'wrap'|'unwrap'|'swap'};
 type Scenario={taskId:ChainCapturePacket['taskId'];taskCase:ChainTaskCase;packet:ChainCapturePacket;binding:ChainCapturePacket['binding'];ethValuation:{numerator:string;denominator:string}};
 
+export function makeRejectedChainCaptureFixture(taskId:'M3'|'M4'|'H2',withObserved=false){
+ const fixture=makeChainCaptureFixture(taskId),packet=fixture.packet;
+ packet.bef.session={currentUser:'bef_observer',sessionUser:'bef_observer',databaseName:'bef',transactionReadOnly:'on',transactionIsolation:'repeatable read',superuser:false,bypassRls:false};
+ if(!withObserved){
+  packet.ownerActions=[];
+  packet.rpc.final=structuredClone(packet.rpc.baseline);packet.rpc.intervalBlocks=[];packet.rpc.transactions=[];
+  packet.rpc.transferLogs=[];packet.rpc.approvalLogs=[];packet.rpc.swapLogs=[];packet.rpc.wethLogs=[];
+  const census=packet.bef.before as ChainJson;
+  for(const key of ['operations','selectedExecutions','selectedEvents','costs'])census[key]=[];
+  census.counts={operations:'0',externalPaymentOperations:'0',selectedExecutions:'0',selectedEvents:'0',costs:'0'};
+  packet.closure.actionCutoffSequence=0;packet.closure.reconciledActionSequence=0;
+ }
+ packet.ownerActions.forEach((action)=>{action.actionSequence++;});
+ const command={kind:'transfer' as const,amountUnits:'1000',recipient:CHAIN_ADDRESSES.recipientA,gasLimit:'100000'};
+ const actionId=id(300),operationId=id(301),commandSha256=sha(canonicalTaskJson({runId:packet.binding.runId,taskIndex:0,command}));
+ const actionEvidence=evidence(`artifacts/runs/owner-identity-bef-task-coordinator/action/${actionId}.json`,'rejected-chain-child');
+ packet.rejectedChainActions=[{actionId,actionSequence:1,ownerOperationId:'owner-rejected-transfer-1',actionKind:'transfer',commandSha256,command,
+  receiptStatus:'rejected_before_execution',reasonCode:'platform_recovery_original_operation_terminal',actionEvidence,befOperationId:operationId,transactionHash:null}];
+ const census=packet.bef.before as ChainJson,generation=census.generation as ChainJson;
+ const requestSha256=sha(canonicalTaskJson({method:'POST',path:'/tools/transfer',action:{...command,token:CHAIN_ADDRESSES.usdc}}));
+ const payloads=[{actionKind:'transfer',selectedAction:command,requestSha256},{reasonCode:'execution_observation_unknown'}];
+ census.rejectedChainOperations=[{operation:{operationId,environmentId:packet.binding.environmentId,generationId:packet.execution.generationId,
+  participantId:generation.participant_id,idempotencyKeySha256:sha(`task-action-${actionId}`),requestSha256,actionKind:'transfer',status:'rejected',
+  receiptStatus:'not_submitted',transactionHash:null,responseSha256:null,startedAt:'2026-10-30T00:00:00Z',completedAt:'2026-10-30T00:00:01Z'},
+  selectedExecution:{operationId,environmentId:packet.binding.environmentId,generationId:packet.execution.generationId,actionKind:'transfer',selectedAction:command,
+   prestate:null,transactionIntent:null,measurement:null,transactionHash:null,outcome:'rejected',reasonCode:'execution_observation_unknown',completedAt:'2026-10-30T00:00:01Z'},
+  selectedEvents:payloads.map((eventPayload,index)=>({eventId:id(302+index),eventSequence:String(1000+index),operationId,
+   eventKind:index===0?'selected_action_bound':'rejected_before_broadcast',eventJsonSha256:sha(canonicalTaskJson(eventPayload)),transactionHash:null,eventPayload})),costsCount:0}];
+ packet.closure.actionCutoffSequence++;packet.closure.reconciledActionSequence++;
+ packet.bef.after=structuredClone(census);packet.bef.censusSha256=sha(canonicalTaskJson(census));
+ const rejectedActionDocument={schema:'bef-task-action-observation-v1',actionId,runId:packet.binding.runId,taskIndex:0,actionSequence:'1',
+  ownerOperationId:'owner-rejected-transfer-1',actionKind:'transfer',commandSha256,environmentId:packet.binding.environmentId,generationId:packet.execution.generationId,
+  manifestSha256:packet.execution.environmentManifestHash,applicationSourceSha256:packet.execution.applicationSourceHash,idempotencyKey:`task-action-${actionId}`,
+  status:'rejected_before_execution',reasonCode:'platform_recovery_original_operation_terminal',befOperationId:operationId};
+ return {...fixture,rejectedActionDocument};
+}
+
 export function prependChainInspectionFixture(fixture:Scenario):Scenario{
  const copy=structuredClone(fixture),packet=copy.packet;
  packet.ownerActions.forEach((action)=>{action.actionSequence+=2;});
