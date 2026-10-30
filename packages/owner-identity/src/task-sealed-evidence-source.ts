@@ -9,6 +9,7 @@ import type { PersistedTaskObservations, TaskEvidenceBinding, TrustedTaskRun } f
 import type { TaskEvaluationEvidenceSource } from './task-result-service.js';
 import { verifyS4CapturePacketChildren, S4CapturePacketError } from './task-s4-capture-packet.js';
 import { readOnlyToolResponseMatches } from './bef-task-executor.js';
+import { observationHealthMatches } from './bef-observation-health.js';
 import { TaskActionCommandSchema, TaskFinishAnswerSchemas, type TaskActionCommand } from './task-action-service.js';
 import { M1CapturePacketError, parseM1CapturePacket, projectM1PacketObservations, splitPayRequestSha256, type M1CaptureAction, type M1CapturePacket } from './task-m1-capture-packet.js';
 import { parsePaidDataCapturePacket, projectPaidDataObservationBundle, validatePaidDataCapturePacketPins, type PaidDataAction, type PaidDataCapturePacket } from './task-paid-data-capture-packet.js';
@@ -1571,11 +1572,11 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     const finishedAt = plainObject(value) && typeof value.requestFinishedAt === 'string' ? Date.parse(value.requestFinishedAt) : Number.NaN;
     const response = plainObject(value) && plainObject(value.participantToolResponse) ? value.participantToolResponse : null;
     const handle = response && plainObject(response.readHandle) ? response.readHandle : null;
-    const health = plainObject(value) ? value.environmentHealth : undefined;
-    const healthMatches = health === undefined || (plainObject(health) && exactKeys(health,
-      ['applicationSourceSha256', 'boundary', 'envId', 'manifestSha256']) && health.boundary === 'benchmark-environment-api' &&
-      health.envId === row.environment_id && health.manifestSha256 === row.environment_manifest_hash &&
-      health.applicationSourceSha256 === row.application_source_hash);
+    const healthMatches = observationHealthMatches(plainObject(value) ? value.environmentHealth : undefined, {
+      environmentId: row.environment_id,
+      manifestSha256: row.environment_manifest_hash,
+      applicationSourceSha256: row.application_source_hash,
+    });
     const allowedKeys = ['schema', 'actionId', 'runId', 'taskIndex', 'actionSequence', 'ownerOperationId', 'actionKind',
       'commandSha256', 'environmentId', 'generationId', 'manifestSha256', 'applicationSourceSha256', 'idempotencyKey', 'status',
       'requestStartedAt', 'requestFinishedAt', 'httpStatus', 'befOperationId', 'rawResponseSha256', 'participantToolResponse', 'environmentHealth'];

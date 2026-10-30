@@ -12,6 +12,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { keccak256 } from 'viem';
 import { readOnlyToolResponseMatches, safeMeasurementProjection as safeParticipantToolResponseProjection } from './bef-task-executor.js';
+import { observationHealthMatches } from './bef-observation-health.js';
 import { TaskActionCommandSchema } from './task-action-service.js';
 import type { TaskActionCommand } from './task-action-service.js';
 import type { OwnerDatabase } from './db.js';
@@ -552,13 +553,11 @@ function validReadOnlyInspectionEvidence(row: ActionRow, document: JsonRecord,
     'transactionHash', 'outcome', 'receiptStatus', 'receiptGasUsed', 'receiptEffectiveGasPriceWei',
     'paymentProtocol', 'recoverySource', 'reasonCode',
   ];
-  const environmentHealth = document.environmentHealth;
-  const healthMatches = environmentHealth === undefined || (isRecord(environmentHealth) &&
-    Object.keys(environmentHealth).sort().join(',') === 'applicationSourceSha256,boundary,envId,manifestSha256' &&
-    environmentHealth.boundary === 'benchmark-environment-api' &&
-    environmentHealth.manifestSha256 === document.manifestSha256 &&
-    environmentHealth.applicationSourceSha256 === document.applicationSourceSha256 &&
-    environmentHealth.envId === document.environmentId);
+  const healthMatches = observationHealthMatches(document.environmentHealth, {
+    environmentId: row.environment_id,
+    manifestSha256: document.manifestSha256,
+    applicationSourceSha256: document.applicationSourceSha256,
+  });
   return row.receipt_status === 'observed' && row.transaction_hash === null &&
     claimedEffectFields.every((key) => !Object.hasOwn(document, key)) &&
     healthMatches &&

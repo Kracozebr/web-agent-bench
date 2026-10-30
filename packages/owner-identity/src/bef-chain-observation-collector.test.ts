@@ -46,8 +46,20 @@ test('neutral chain inspection requires a pinned free GET response and no claime
  ];
  for(const {command,response} of documents){
   const doc={participantToolResponse:response,httpStatus:200,rawResponseSha256:'b'.repeat(64),requestStartedAt:'2026-10-30T00:00:00Z',
-   requestFinishedAt:'2026-10-30T00:00:01Z',befOperationId:operationId};
+   requestFinishedAt:'2026-10-30T00:00:01Z',befOperationId:operationId,
+   environmentId:'inspection-env',manifestSha256:'c'.repeat(64),applicationSourceSha256:'d'.repeat(64)};
   assert.equal(neutralChainInspectionEvidenceMatches(command,row,doc),true);
+  const health={boundary:'benchmark-environment-api',envId:doc.environmentId,manifestSha256:doc.manifestSha256,
+   applicationSourceSha256:doc.applicationSourceSha256,facilitatorAddress:'0x'+'2'.repeat(40),
+   anvil:{clientVersion:'anvil/v0.3.1',chainId:'31337',executionNetwork:'base',hardFork:'cancun',forkBlockNumber:'291',forkBlockHash:'0x'+'e'.repeat(64)},
+   sdkVersions:{core:'2.28.0',evm:'2.28.0',viem:'2.56.9'}};
+  assert.equal(Object.keys(health).length,7);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,environmentHealth:health}),true);
+  for(const [key,value] of [['envId','wrong-env'],['manifestSha256','f'.repeat(64)],['applicationSourceSha256','f'.repeat(64)],
+   ['boundary','other-boundary'],['facilitatorAddress','invalid-address'],['anvil',{...health.anvil,chainId:31337}],
+   ['sdkVersions',{...health.sdkVersions,core:7}],['unknownField',true]] as const){
+   assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,environmentHealth:{...health,[key]:value}}),false,key);
+  }
   for(const key of ['transactionHash','outcome','receiptStatus','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','recoverySource','reasonCode']){
    assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,[key]:null}),false,key);
   }

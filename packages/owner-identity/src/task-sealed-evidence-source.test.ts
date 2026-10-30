@@ -430,6 +430,53 @@ test('S1 sealed capture retains a neutral catalog prefix and rejects effectful r
   });
 });
 
+test('sealed S1 read verification accepts producer health metadata and rejects identity or optional-shape drift', () => {
+  const actionId = '81000000-0000-4000-8000-000000000028';
+  const ownerOperationId = '82000000-0000-4000-8000-000000000028';
+  const operationId = '83000000-0000-4000-8000-000000000028';
+  const command = { kind: 'inspect_catalog' as const };
+  const commandSha256 = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command });
+  const rawResponseSha256 = HASH('s1-sealed-health-response');
+  const payment = { scheme: 'exact', network: 'eip155:8453', asset: S2_ASSET, amount: '125000',
+    payTo: S2_RECIPIENT, transferMethod: 'eip3009' };
+  const response = { operationId, readHandle: { kind: 'catalog', operationId }, freeInspection: true, deliveryState: 'not_delivered',
+    catalog: [{ resourceId: 'resource-a', resourceSha256: HASH('resource-a'), contentType: 'application/json', offers: [{ id: 'standard', payment }] }] };
+  const environmentHealth = { boundary: 'benchmark-environment-api', envId: ENVIRONMENT, manifestSha256: ENV_MANIFEST_HASH,
+    applicationSourceSha256: SOURCE_HASH, facilitatorAddress: S2_RECIPIENT,
+    anvil: { clientVersion: 'anvil/v1.2.3', chainId: '8453', executionNetwork: 'base', hardFork: 'cancun',
+      forkBlockNumber: '100', forkBlockHash: `0x${'a'.repeat(64)}` },
+    sdkVersions: { core: '2.28.0', evm: '2.28.0', viem: '2.56.9' } };
+  const row = { run_id: RUN, task_index: 0, environment_id: ENVIRONMENT, generation_id: GENERATION,
+    environment_manifest_hash: ENV_MANIFEST_HASH, application_source_hash: SOURCE_HASH };
+  const operation = { operation_id: operationId, operation_kind: 'catalog', status: 'accepted', receipt_status: 'not_submitted',
+    transaction_hash: null, response_sha256: rawResponseSha256, request_sha256: HASH(JSON.stringify({ method: 'GET', path: '/catalog' })) };
+  const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+    async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
+  }, evidenceRoot: process.cwd() });
+  const validate = source as unknown as { validateSealedInspectionAction(bytes: Buffer, reference: EvidenceReference,
+    proof: unknown, row: unknown, taskId: 'S1'): void };
+  const invoke = (health: unknown) => {
+    const document = { schema: 'bef-task-action-observation-v1', actionId, runId: RUN, taskIndex: 0, actionSequence: '1',
+      ownerOperationId, actionKind: 'inspect_catalog', commandSha256, environmentId: ENVIRONMENT, generationId: GENERATION,
+      manifestSha256: ENV_MANIFEST_HASH, applicationSourceSha256: SOURCE_HASH, idempotencyKey: `task-action-${actionId}`,
+      status: 'observed', requestStartedAt: '2026-10-30T00:00:00.000Z', requestFinishedAt: '2026-10-30T00:00:01.000Z',
+      httpStatus: 200, befOperationId: operationId, rawResponseSha256, participantToolResponse: response, environmentHealth: health };
+    const bytes = Buffer.from(JSON.stringify(document));
+    const reference: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/s1-health.json`,
+      sha256: createHash('sha256').update(bytes).digest('hex'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+    const action = { actionId, actionSequence: 1, ownerOperationId, actionKind: 'inspect_catalog', commandSha256,
+      actionEvidence: reference, befOperationId: operationId };
+    validate.validateSealedInspectionAction(bytes, reference, { action, command, operation }, row, 'S1');
+  };
+
+  assert.doesNotThrow(() => invoke(environmentHealth));
+  assert.throws(() => invoke({ ...environmentHealth, envId: 'foreign-environment' }),
+    (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  assert.throws(() => invoke({ ...environmentHealth,
+    sdkVersions: { ...environmentHealth.sdkVersions, unsupported: 'unexpected' } }),
+  (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+});
+
 test('S4 sealed source retains a catalog prefix before a mutable approval', async () => {
   const participantId = '90000000-0000-4000-8000-000000000009';
   const fixtureOperationId = '90000000-0000-4000-8000-000000000010';

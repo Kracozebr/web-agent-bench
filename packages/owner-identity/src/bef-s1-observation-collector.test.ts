@@ -65,7 +65,8 @@ async function createZeroActionFixture(options: {
   operationResponseHash?: string | null;
   recoveredAction?: boolean;
   catalogInspection?: boolean;
-  catalogVariant?: 'transaction-hash' | 'payment-protocol' | 'state-change' | 'unsupported-kind' | 'environment-health-mismatch' | 'offer-inspection';
+  catalogVariant?: 'transaction-hash' | 'payment-protocol' | 'state-change' | 'unsupported-kind' | 'environment-health-mismatch' |
+    'environment-health-identity-mismatch' | 'environment-health-optional-shape' | 'offer-inspection';
   recoveryVariant?: 'valid' | 'source-proof-mismatch' | 'owner-binding-mismatch' | 'observed-event-missing' | 'http-claim-present';
   omitHttpResponseEvidence?: boolean;
 } = {}) {
@@ -353,8 +354,18 @@ async function createZeroActionFixture(options: {
     idempotencyKey: `task-action-${catalogActionId}`, status: 'observed', requestStartedAt: createdAt,
     requestFinishedAt: createdAt, httpStatus: 200, rawResponseSha256: HASH_B,
     befOperationId: catalogBefOperationId,
-    environmentHealth: { boundary: 'benchmark-environment-api', manifestSha256: catalogVariant === 'environment-health-mismatch'
-      ? '0'.repeat(64) : environmentManifestHash, applicationSourceSha256: applicationSourceHash, envId: ENVIRONMENT_ID },
+    environmentHealth: {
+      boundary: 'benchmark-environment-api',
+      manifestSha256: catalogVariant === 'environment-health-mismatch' ? '0'.repeat(64) : environmentManifestHash,
+      applicationSourceSha256: applicationSourceHash,
+      envId: catalogVariant === 'environment-health-identity-mismatch' ? 'foreign-env' : ENVIRONMENT_ID,
+      facilitatorAddress: '0x00000000000000000000000000000000000000f1',
+      anvil: { clientVersion: 'anvil/v1.2.3', chainId: '8453', executionNetwork: 'base', hardFork: 'cancun',
+        forkBlockNumber: '100', forkBlockHash: `0x${'a'.repeat(64)}` },
+      sdkVersions: catalogVariant === 'environment-health-optional-shape'
+        ? { core: '2.28.0', evm: '2.28.0', viem: '2.56.9', unexpected: 'unsupported' }
+        : { core: '2.28.0', evm: '2.28.0', viem: '2.56.9' },
+    },
     ...(catalogVariant === 'transaction-hash' ? { transactionHash: EXTRA_TX_HASH } : {}),
     ...(catalogVariant === 'payment-protocol' ? { paymentProtocol: { scheme: 'exact' } } : {}),
     participantToolResponse: catalogResponse,
@@ -669,7 +680,8 @@ test('synthetic S1 retains a verified read-only offer action before the transfer
 });
 
 test('synthetic S1 rejects read-only catalog evidence that claims effects or uses an unsupported action kind', async () => {
-  for (const catalogVariant of ['transaction-hash', 'payment-protocol', 'state-change', 'unsupported-kind', 'environment-health-mismatch'] as const) {
+  for (const catalogVariant of ['transaction-hash', 'payment-protocol', 'state-change', 'unsupported-kind', 'environment-health-mismatch',
+    'environment-health-identity-mismatch', 'environment-health-optional-shape'] as const) {
     const fixture = await createZeroActionFixture({ extraTransfer: true, admittedAction: true,
       catalogInspection: true, catalogVariant });
     try {

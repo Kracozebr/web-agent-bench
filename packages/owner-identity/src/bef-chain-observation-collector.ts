@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import { keccak256 } from 'viem';
 import { TaskActionCommandSchema, type TaskActionCommand } from './task-action-service.js';
 import { readOnlyToolResponseMatches } from './bef-task-executor.js';
+import { observationHealthMatches } from './bef-observation-health.js';
 import type { OwnerDatabase } from './db.js';
 import { recoveredActionEvidenceIsOwnerBound, recoveredOwnerLineageJoinSql, recoveredOwnerLineageSelectSql,
  recoverySourceEvidenceMatchesFacts, type RecoveredOwnerLineageRow,
@@ -360,9 +361,7 @@ export function neutralChainInspectionEvidenceMatches(command:Extract<TaskAction
  return row.receipt_status==='observed'&&row.transaction_hash===null&&
   ['transactionHash','outcome','receiptStatus','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','recoverySource','reasonCode']
    .every((key)=>!Object.hasOwn(doc,key))&&
-  (health===undefined||(isRecord(health)&&exactKeys(health,['applicationSourceSha256','boundary','envId','manifestSha256'])&&
-   health.boundary==='benchmark-environment-api'&&health.envId===doc.environmentId&&health.manifestSha256===doc.manifestSha256&&
-   health.applicationSourceSha256===doc.applicationSourceSha256))&&
+  observationHealthMatches(health,{environmentId:doc.environmentId,manifestSha256:doc.manifestSha256,applicationSourceSha256:doc.applicationSourceSha256})&&
   doc.httpStatus===200&&HASH.test(String(doc.rawResponseSha256))&&Number.isFinite(started)&&Number.isFinite(finished)&&finished>=started&&
   typeof doc.befOperationId==='string'&&UUID.test(doc.befOperationId)&&
   (isRecord(response)&&typeof response.operationId==='string'&&UUID.test(response.operationId))&&
