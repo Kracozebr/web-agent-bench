@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { collectBefChainTaskObservationCandidate } from './bef-chain-observation-collector.js';
-import { makeChainCaptureCompositeFixture, makeChainCaptureFixture } from './task-chain-capture-packet.fixture.js';
+import { makeChainCaptureCompositeFixture, makeChainCaptureFixture, prependChainInspectionFixture } from './task-chain-capture-packet.fixture.js';
 import { ChainCapturePacketError, projectTaskChainCapturePacket, validateTaskChainCapturePacket } from './task-chain-capture-packet.js';
 import { canonicalTaskJson } from './task-release.js';
 
@@ -16,6 +16,52 @@ function projection(fixture:Fixture){
 function project(taskId:'M3'|'M4'|'H2'|'H3'|'U1'){
  const fixture=taskId==='H3'||taskId==='U1'?makeChainCaptureCompositeFixture(taskId):makeChainCaptureFixture(taskId);
  return {...fixture,observations:projection(fixture)};
+}
+
+for(const taskId of ['M3','M4','H2'] as const){
+ test(`${taskId} retains the full neutral inspection prefix without adding chain or economic effects`,()=>{
+  const base=makeChainCaptureFixture(taskId),fixture=prependChainInspectionFixture(base);
+  const before=projection(base),after=projection(fixture);
+  assert.equal(fixture.packet.externalActions.length,2);
+  assert.equal(fixture.packet.closure.actionCutoffSequence,base.packet.closure.actionCutoffSequence+2);
+  for(const key of ['transfers','allowanceChanges','allowanceUses','trades','conversions','expenses'] as const){
+   assert.equal(after[key].length,before[key].length);
+   assert.ok(after[key].every((row)=>row.actionSequence>=3));
+  }
+  const census=fixture.packet.bef.before as Record<string,unknown>,baseCensus=base.packet.bef.before as Record<string,unknown>;
+  assert.equal((census.inspectionOperations as unknown[]).length,2);
+  for(const key of ['operations','costs','selectedExecutions','selectedEvents','paymentsCount','deliveriesCount'])assert.deepEqual(census[key],baseCensus[key]);
+  assert.deepEqual(fixture.packet.rpc,base.packet.rpc);
+ });
+ test(`${taskId} rejects paid/retrieve actions and effectful or unobserved inspection prefix`,()=>{
+  for(const kind of ['purchase','pay','retrieve'] as const){
+   const fixture=prependChainInspectionFixture(makeChainCaptureFixture(taskId));
+   fixture.packet.externalActions[0]!.actionKind=kind;
+   assert.throws(()=>projection(fixture),ChainCapturePacketError);
+  }
+  const effectful=prependChainInspectionFixture(makeChainCaptureFixture(taskId));
+  effectful.packet.externalActions[0]!.transactionHash='0x'+'f'.repeat(64);
+  assert.throws(()=>projection(effectful),ChainCapturePacketError);
+  const rejected=prependChainInspectionFixture(makeChainCaptureFixture(taskId));
+  rejected.packet.externalActions[0]!.receiptStatus='rejected_before_execution';
+  assert.throws(()=>projection(rejected),ChainCapturePacketError);
+ });
+ test(`${taskId} requires independently source-bound GET operations for every neutral inspection`,()=>{
+  for(const [key,value] of [['operationId','10000000-0000-4000-8000-000000000fff'],['requestSha256','f'.repeat(64)],
+   ['responseSha256','f'.repeat(64)],['idempotencyKeySha256','f'.repeat(64)],['participantId','other-participant'],
+   ['transactionHash','0x'+'f'.repeat(64)],['receiptStatus','success'],['status','settled'],['costsCount',1],
+   ['selectedExecutionsCount',1],['selectedEventsCount',1]] as const){
+   const fixture=prependChainInspectionFixture(makeChainCaptureFixture(taskId)),census=fixture.packet.bef.before as Record<string,unknown>;
+   (census.inspectionOperations as Record<string,unknown>[])[0]![key]=value;
+   fixture.packet.bef.after=structuredClone(census);
+   fixture.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(census)).digest('hex');
+   assert.throws(()=>projection(fixture),ChainCapturePacketError,key);
+  }
+  const missing=prependChainInspectionFixture(makeChainCaptureFixture(taskId)),census=missing.packet.bef.before as Record<string,unknown>;
+  census.inspectionOperations=[];missing.packet.bef.after=structuredClone(census);
+  missing.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(census)).digest('hex');
+  assert.throws(()=>projection(missing),ChainCapturePacketError);
+ });
 }
 
 test('M3 binds the USDC swap receipt, pool swap, WETH unwrap, final native balance and separate gas/DEX costs',()=>{

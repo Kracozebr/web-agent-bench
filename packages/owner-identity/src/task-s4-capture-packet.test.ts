@@ -155,8 +155,57 @@ function makeCase(withAction:boolean) {
 
 function resealPacket(packet:Record<string,unknown>,bundle:S4CaptureBundleView) {
   const bytes=Buffer.from(canonicalTaskJson(packet));
-  const observations={...bundle.observations,captureEvidence:evidence(`${CAPTURE_ROOT}s4-packet.json`,createHash('sha256').update(bytes).digest('hex'))};
+  const captureEvidence=evidence(`${CAPTURE_ROOT}s4-packet.json`,createHash('sha256').update(bytes).digest('hex'));
+  const observations={...bundle.observations,captureEvidence} as Record<string,unknown>;
+  for(const name of ['transfers','payments','stateMutations','finalStates','allowanceChanges','allowanceUses','answers','selections',
+    'deliveries','trades','conversions','expenses']){
+    const entries=observations[name];
+    if(Array.isArray(entries))for(const entry of entries)if(entry&&typeof entry==='object'&&!Array.isArray(entry)){
+      (entry as Record<string,unknown>).evidence=captureEvidence;
+    }
+  }
   return {bytes,bundle:{...bundle,observations}};
+}
+
+function addInspectionPrefix(item:ReturnType<typeof makeCase>) {
+  const packet=structuredClone(item.packet) as Record<string,unknown>;
+  const bef=packet.bef as Record<string,unknown>,census=bef.before as Record<string,unknown>;
+  const operations=census.operations as Array<Record<string,unknown>>;
+  const catalogOperation='10000000-0000-4000-8000-000000000013';
+  const offerOperation='10000000-0000-4000-8000-000000000014';
+  const catalogAction='10000000-0000-4000-8000-000000000015';
+  const offerAction='10000000-0000-4000-8000-000000000016';
+  const readOperations=[
+    {operation_id:catalogOperation,env_id:ENVIRONMENT,generation_id:GENERATION,participant_id:PARTICIPANT,
+      idempotency_key_sha256:hash(`task-action-${catalogAction}`),request_sha256:hash(JSON.stringify({method:'GET',path:'/catalog'})),
+      operation_kind:'catalog',status:'accepted',receipt_status:'not_submitted',transaction_hash:null,response_sha256:HASH_C,
+      started_at:'2026-10-28T00:00:01.000Z',completed_at:'2026-10-28T00:00:01.000Z'},
+    {operation_id:offerOperation,env_id:ENVIRONMENT,generation_id:GENERATION,participant_id:PARTICIPANT,
+      idempotency_key_sha256:hash(`task-action-${offerAction}`),request_sha256:hash(JSON.stringify({method:'GET',path:'/offer',resourceId:'s4-resource'})),
+      operation_kind:'offer',status:'accepted',receipt_status:'not_submitted',transaction_hash:null,response_sha256:HASH_D,
+      started_at:'2026-10-28T00:00:01.500Z',completed_at:'2026-10-28T00:00:01.500Z'},
+  ];
+  operations.splice(1,0,...readOperations);
+  (census.counts as Record<string,unknown>).operations=String(operations.length);
+  const actions=packet.ownerActions as Array<Record<string,unknown>>;
+  actions[0]!.actionSequence=3;
+  packet.ownerActions=[
+    {actionId:catalogAction,actionSequence:1,ownerOperationId:'10000000-0000-4000-8000-000000000017',actionKind:'inspect_catalog',commandSha256:HASH_A,
+      actionEvidence:evidence('artifacts/runs/owner-identity-bef-task-coordinator/action/catalog.json',HASH_B),befOperationId:catalogOperation,transactionHash:null},
+    {actionId:offerAction,actionSequence:2,ownerOperationId:'10000000-0000-4000-8000-000000000018',actionKind:'inspect_offer',commandSha256:HASH_C,
+      actionEvidence:evidence('artifacts/runs/owner-identity-bef-task-coordinator/action/offer.json',HASH_D),befOperationId:offerOperation,transactionHash:null},
+    ...actions,
+  ];
+  bef.after=structuredClone(census);
+  bef.censusSha256=hash(canonicalTaskJson(census));
+  (packet.closure as Record<string,unknown>).actionCutoffSequence=3;
+  (packet.closure as Record<string,unknown>).reconciledActionSequence=3;
+  const observations=structuredClone(item.bundle.observations) as Record<string,unknown>;
+  for(const name of ['finalStates','allowanceChanges','expenses']){
+    for(const entry of observations[name] as Array<Record<string,unknown>>) entry.actionSequence=3;
+  }
+  const bundle:S4CaptureBundleView={...item.bundle,closure:{...item.bundle.closure,actionCutoffSequence:3,reconciledActionSequence:3},observations};
+  return resealPacket(packet,bundle);
 }
 
 function assertPacketError(action:()=>unknown,code?:S4CapturePacketError['code']) {
@@ -171,6 +220,24 @@ test('S4 packet returns hash references and crosslinks one action to its observe
     'artifacts/runs/owner-identity-bef-task-coordinator/preparation/baseline.json',
     'artifacts/runs/owner-identity-bef-task-coordinator/action/approve.json',
   ]);
+});
+
+test('S4 packet retains both neutral inspection actions before a mutable transaction',()=>{
+  const item=addInspectionPrefix(makeCase(true));
+  const refs=verifyS4CapturePacketChildren(item.bytes,item.bundle);
+  assert.deepEqual(refs.map((ref)=>ref.path),[
+    'artifacts/runs/owner-identity-bef-task-coordinator/preparation/fixture.json',
+    'artifacts/runs/owner-identity-bef-task-coordinator/preparation/baseline.json',
+    'artifacts/runs/owner-identity-bef-task-coordinator/action/catalog.json',
+    'artifacts/runs/owner-identity-bef-task-coordinator/action/offer.json',
+    'artifacts/runs/owner-identity-bef-task-coordinator/action/approve.json',
+  ]);
+
+  const packet=JSON.parse(item.bytes.toString('utf8')) as Record<string,unknown>;
+  const actions=packet.ownerActions as Array<Record<string,unknown>>;
+  actions[0]!.transactionHash=ACTION_TX;
+  const resealed=resealPacket(packet,item.bundle);
+  assertPacketError(()=>verifyS4CapturePacketChildren(resealed.bytes,resealed.bundle));
 });
 
 test('S4 packet preserves a cutoff-zero final snapshot without inventing an action',()=>{

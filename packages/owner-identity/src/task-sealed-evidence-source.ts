@@ -27,6 +27,7 @@ import {
 } from './task-release.js';
 
 type Transaction = Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
+type S1SealedActionProof = { action: Record<string, unknown>; command: TaskActionCommand; operation: Record<string, unknown> };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH = /^[0-9a-f]{64}$/i;
@@ -422,6 +423,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     const s2ActionsByPath = new Map<string, Record<string, unknown>>();
     const s2EvidenceByPath = new Map<string, Record<string, unknown>>();
     let s2Packet: Record<string, unknown> | null = null;
+    const s1ActionsByPath = new Map<string, S1SealedActionProof>();
+    const s4ActionsByPath = new Map<string, S1SealedActionProof>();
     const m1ActionsByPath = new Map<string, M1CaptureAction>();
     const m1EvidenceByPath = new Map<string, Record<string, unknown>>();
     let m1Packet: M1CapturePacket | null = null;
@@ -498,7 +501,9 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           actionKind: action.actionKind, commandSha256: action.commandSha256,
           receiptStatus: 'receiptStatus' in action ? action.receiptStatus : 'observed',
           actionEvidence: action.actionEvidence, befOperationId: action.befOperationId, transactionHash: action.transactionHash,
-          ...('command' in action ? { command: action.command, selectedAction: action.selectedAction, approvalSpender: action.approvalSpender } : {}) };
+          ...('command' in action ? { command: action.command, selectedAction: action.selectedAction, approvalSpender: action.approvalSpender } : {}),
+          ...('inspection' in action && plainObject(action.inspection)
+            ? { command: action.inspection.command, rawResponseSha256: action.inspection.rawResponseSha256 } : {}) };
         if (prior && canonicalTaskJson({ actionId: prior.actionId, actionSequence: prior.actionSequence, ownerOperationId: prior.ownerOperationId,
             actionKind: prior.actionKind, commandSha256: prior.commandSha256, receiptStatus: prior.receiptStatus,
             actionEvidence: prior.actionEvidence, befOperationId: prior.befOperationId, transactionHash: prior.transactionHash }) !== canonicalTaskJson(normalized))
@@ -604,8 +609,16 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
             discoveredChildren = verifyChainPacket(bounded.subarray(0, offset), captureEvidence);
           } else if (taskCase.taskId === 'S3') {
             discoveredChildren = verifyS3Packet(bounded.subarray(0, offset), captureEvidence);
-          } else if (taskCase.taskId === 'S4') discoveredChildren = this.readS4CapturePacketChildren(bounded.subarray(0, offset), bundle);
-          else discoveredChildren = this.readS1CapturePacketChildren(bounded.subarray(0, offset), bundle);
+          } else if (taskCase.taskId === 'S4') {
+            const parsed = await this.readS4CapturePacketChildren(bounded.subarray(0, offset), bundle, tx, row);
+            discoveredChildren = parsed.children;
+            for (const action of parsed.actions) s4ActionsByPath.set((action.action.actionEvidence as EvidenceReference).path, action);
+          }
+          else {
+            const parsed = await this.readS1CapturePacketChildren(bounded.subarray(0, offset), bundle, tx, row);
+            discoveredChildren = parsed.children;
+            for (const action of parsed.actions) s1ActionsByPath.set((action.action.actionEvidence as EvidenceReference).path, action);
+          }
         } else if (compositePacket && canonicalTaskJson(ref) === canonicalTaskJson(compositePacket.children.paid.evidence)) {
           discoveredChildren = verifyPaidPacket(bounded.subarray(0, offset), ref);
         } else if (compositePacket && canonicalTaskJson(ref) === canonicalTaskJson(compositePacket.children.chain.evidence)) {
@@ -690,6 +703,11 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           const evidence = this.validateS2ActionEvidence(bounded.subarray(0, offset), ref, s2ActionsByPath.get(ref.path)!, bundle,
             taskCase, assets, localChainId, row.task_index);
           s2EvidenceByPath.set(ref.path, evidence);
+        } else if (taskCase.taskId === 'S1' && s1ActionsByPath.has(ref.path)) {
+          const proof = s1ActionsByPath.get(ref.path)!;
+          this.validateSealedInspectionAction(bounded.subarray(0, offset), ref, proof, row, 'S1');
+        } else if (taskCase.taskId === 'S4' && s4ActionsByPath.has(ref.path)) {
+          this.validateSealedInspectionAction(bounded.subarray(0, offset), ref, s4ActionsByPath.get(ref.path)!, row, 'S4');
         } else if (taskCase.taskId === 'M1' && m1ActionsByPath.has(ref.path)) {
           const evidence = this.validateM1ActionEvidence(bounded.subarray(0, offset), ref, m1ActionsByPath.get(ref.path)!, bundle, row);
           m1EvidenceByPath.set(ref.path, evidence);
@@ -925,7 +943,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     const cutoff = safeSequence(row.action_cutoff_sequence);
     const expectedActions: Array<Record<string, unknown>> = [
       ...packet.ownerActions.map((action) => ({ ...action, receiptStatus: 'observed' })),
-      ...packet.externalActions.map((action) => ({ ...action })),
+      ...packet.externalActions.map((action) => ({ ...action, ...(plainObject(action.inspection)
+        ? { command: action.inspection.command, rawResponseSha256: action.inspection.rawResponseSha256 } : {}) })),
     ];
     if (cutoff === null || cutoff > MAX_EVIDENCE_FILES || actionRows.length !== cutoff || expectedActions.length !== cutoff) {
       fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The sealed chain owner-action list does not match its immutable cutoff');
@@ -979,6 +998,22 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           canonicalTaskJson(evidence.participantToolResponse ?? null) !== canonicalTaskJson(response)) failAction();
       if (expectedStatus === 'observed' && !plainObject(response)) failAction();
       if (expectedStatus === 'rejected_before_execution' && (response !== null || transactionHash !== null)) failAction();
+      if (expected.actionKind === 'inspect_catalog' || expected.actionKind === 'inspect_offer') {
+        const parsedInspection = TaskActionCommandSchema.safeParse(expected.command);
+        const inspection = expected.rawResponseSha256;
+        const body = plainObject(response) ? response : null;
+        const handle = body && plainObject(body.readHandle) ? body.readHandle : null;
+        const expectedHandleKind = expected.actionKind === 'inspect_catalog' ? 'catalog' : 'offer';
+        if (!parsedInspection.success || (parsedInspection.data.kind !== 'inspect_catalog' && parsedInspection.data.kind !== 'inspect_offer') ||
+            parsedInspection.data.kind !== expected.actionKind || expectedStatus !== 'observed' || transactionHash !== null ||
+            typeof inspection !== 'string' || !HASH.test(inspection) || evidence.rawResponseSha256 !== inspection || !body || !handle ||
+            !exactKeys(handle, ['kind', 'operationId']) || handle.kind !== expectedHandleKind ||
+            handle.operationId !== expected.befOperationId || body.operationId !== expected.befOperationId ||
+            !readOnlyToolResponseMatches(parsedInspection.data, body) || Object.hasOwn(evidence, 'transactionHash') ||
+            Object.hasOwn(evidence, 'outcome') || Object.hasOwn(evidence, 'receiptStatus') ||
+            Object.hasOwn(evidence, 'receiptGasUsed') || Object.hasOwn(evidence, 'receiptEffectiveGasPriceWei') ||
+            Object.hasOwn(evidence, 'paymentProtocol') || Object.hasOwn(evidence, 'recoverySource')) failAction();
+      }
     }
   }
 
@@ -1024,7 +1059,6 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S3 BEF operations do not match the observed owner actions');
     }
     const digest = (value: string) => createHash('sha256').update(value).digest('hex').toLowerCase();
-    const requestHash = digest(JSON.stringify({ method: 'GET', path: '/catalog' }));
     const failAction: () => never = () => fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH',
       'An S3 action differs from its durable owner receipt or retained BEF evidence');
     for (let index = 0; index < actionRows.length; index += 1) {
@@ -1041,10 +1075,11 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       const evidence = ref ? actionEvidenceByPath.get(ref.path) : undefined;
       if (!action || sequence !== index + 1 || !UUID.test(String(value.id)) || value.run_id !== row.run_id ||
           value.owner_id !== row.owner_id || value.agent_id !== row.agent_id || Number(value.task_index) !== row.task_index ||
-          value.task_id !== 'S3' || value.environment_id !== row.environment_id || command.kind !== 'inspect_catalog' ||
-          value.action_kind !== 'inspect_catalog' || !HASH.test(String(value.payload_hash)) ||
+          value.task_id !== 'S3' || value.environment_id !== row.environment_id ||
+          (command.kind !== 'inspect_catalog' && command.kind !== 'inspect_offer') || value.action_kind !== command.kind || !HASH.test(String(value.payload_hash)) ||
           sha256CanonicalTaskJson({ runId: row.run_id, taskIndex: row.task_index, command }).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
-          action.actionSequence !== sequence || action.ownerOperationId !== value.operation_id || action.command.kind !== command.kind ||
+          action.actionSequence !== sequence || action.ownerOperationId !== value.operation_id ||
+          canonicalTaskJson(action.command) !== canonicalTaskJson(command) ||
           action.commandSha256.toLowerCase() !== String(value.payload_hash).toLowerCase() ||
           !ref || ref.path !== value.evidence_path || ref.sha256.toLowerCase() !== String(value.evidence_hash).toLowerCase() ||
           !evidence || !Number.isSafeInteger(value.receipt_revision) || Number(value.receipt_revision) < 1 ||
@@ -1057,7 +1092,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           action.receiptStatus !== value.receipt_status || !['observed','rejected_before_execution'].includes(String(value.receipt_status)) ||
           transactionHash !== null || evidence.schema !== 'bef-task-action-observation-v1' || evidence.actionId !== action.actionId ||
           evidence.runId !== row.run_id || Number(evidence.taskIndex) !== row.task_index || String(evidence.actionSequence) !== String(sequence) ||
-          evidence.ownerOperationId !== action.ownerOperationId || evidence.actionKind !== 'inspect_catalog' ||
+          evidence.ownerOperationId !== action.ownerOperationId || evidence.actionKind !== command.kind ||
           String(evidence.commandSha256).toLowerCase() !== String(value.payload_hash).toLowerCase() ||
           evidence.environmentId !== row.environment_id || evidence.generationId !== row.generation_id ||
           String(evidence.manifestSha256).toLowerCase() !== row.environment_manifest_hash.toLowerCase() ||
@@ -1080,15 +1115,18 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       const idempotencyHash = digest(`task-action-${action.actionId}`);
       const actionResponse = plainObject(action.response) ? action.response : null;
       const actionHandle = actionResponse && plainObject(actionResponse.readHandle) ? actionResponse.readHandle : null;
+      const expectedReadKind = command.kind === 'inspect_catalog' ? 'catalog' : 'offer';
+      const expectedRequestHash = digest(JSON.stringify(command.kind === 'inspect_catalog' ?
+        { method: 'GET', path: '/catalog' } : { method: 'GET', path: '/offer', resourceId: command.resourceId }));
       if (!operation || !publicResponse || evidence.httpStatus !== 200 || typeof rawResponseSha256 !== 'string' || !HASH.test(rawResponseSha256) ||
           !plainObject(response) || !actionResponse || !actionHandle ||
           canonicalTaskJson(publicResponse) !== canonicalTaskJson(actionResponse) ||
           canonicalTaskJson(response) !== canonicalTaskJson(actionResponse) ||
           !readOnlyToolResponseMatches(command, publicResponse) || actionResponse.operationId !== operationId ||
-          actionHandle.operationId !== operationId || evidence.befOperationId !== action.befOperationId ||
+          actionHandle.kind !== expectedReadKind || actionHandle.operationId !== operationId || evidence.befOperationId !== action.befOperationId ||
           operation.env_id !== row.environment_id || operation.generation_id !== row.generation_id ||
           operation.participant_id !== generation.participant_id || String(operation.idempotency_key_sha256).toLowerCase() !== idempotencyHash ||
-          String(operation.request_sha256).toLowerCase() !== requestHash || operation.operation_kind !== 'catalog' || operation.status !== 'accepted' ||
+          String(operation.request_sha256).toLowerCase() !== expectedRequestHash || operation.operation_kind !== expectedReadKind || operation.status !== 'accepted' ||
           operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null || typeof operation.response_sha256 !== 'string' ||
           !HASH.test(operation.response_sha256) || operation.response_sha256.toLowerCase() !== rawResponseSha256.toLowerCase()) failAction();
     }
@@ -1417,16 +1455,147 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     }
   }
 
-  private readS4CapturePacketChildren(bytes: Buffer, bundle: {
+  private async readS4CapturePacketChildren(bytes: Buffer, bundle: {
     binding: Record<string, unknown>; closure: Record<string, unknown>;
     execution: Record<string, unknown>; observations: Record<string, unknown>;
-  }): EvidenceReference[] {
-    try { return verifyS4CapturePacketChildren(bytes, bundle); }
+  }, tx: Transaction, row: EvidenceRow): Promise<{ children: EvidenceReference[]; actions: S1SealedActionProof[] }> {
+    let children: EvidenceReference[];
+    try { children = verifyS4CapturePacketChildren(bytes, bundle); }
     catch (error) {
       if (error instanceof S4CapturePacketError) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The S4 capture packet or observation bindings do not match the sealed task');
       }
       throw error;
+    }
+    let packet: unknown;
+    try { packet = JSON.parse(bytes.toString('utf8')) as unknown; }
+    catch { fail(503, 'TASK_EVIDENCE_CAPTURE_PACKET_INVALID', 'The sealed S4 capture packet is malformed'); }
+    if (!plainObject(packet) || !Array.isArray(packet.ownerActions) || !plainObject(packet.bef) || !plainObject(packet.bef.after)) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The S4 packet does not retain its ordered owner actions and BEF census');
+    }
+    const packetActions = packet.ownerActions.filter(plainObject);
+    const reads = packetActions.filter((action) => action.actionKind === 'inspect_catalog' || action.actionKind === 'inspect_offer');
+    if (reads.length === 0) return { children, actions: [] };
+    const actionRows = await tx.execute(sql`SELECT a.id::text AS id,a.run_id::text AS run_id,a.task_index,a.owner_id::text AS owner_id,
+        a.agent_id::text AS agent_id,a.task_id,a.environment_id,a.action_sequence::text AS action_sequence,a.operation_id,a.payload_hash,
+        a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
+        h.revision AS history_revision,h.receipt_status AS history_status,h.evidence_hash AS history_evidence_hash,
+        h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash
+      FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+      LEFT JOIN LATERAL (SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash
+        FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
+      WHERE a.run_id=${row.run_id} AND a.task_index=${row.task_index}
+      ORDER BY a.action_sequence LIMIT ${MAX_EVIDENCE_FILES + 1}`) as unknown as Array<Record<string, unknown>>;
+    const census = packet.bef.after;
+    const generation = plainObject(census.generation) ? census.generation : null;
+    const operations = Array.isArray(census.operations) ? census.operations.filter(plainObject) : null;
+    if (actionRows.length !== packetActions.length || !generation || !operations || !Array.isArray(census.costs) ||
+        !Array.isArray(census.selectedExecutions) || !Array.isArray(census.selectedEvents)) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S4 neutral read action census is incomplete');
+    }
+    const operationById = new Map(operations.map((operation) => [String(operation.operation_id).toLowerCase(), operation]));
+    const proofs: S1SealedActionProof[] = [];
+    for (let index = 0; index < actionRows.length; index += 1) {
+      const durable = actionRows[index]!;
+      const action = packetActions[index]!;
+      const sequence = safeSequence(durable.action_sequence as string | number);
+      const parsedCommand = TaskActionCommandSchema.safeParse(jsonValue(durable.command_json));
+      const reference = action.actionEvidence as EvidenceReference;
+      if (sequence !== index + 1 || String(durable.id) !== action.actionId || durable.run_id !== row.run_id ||
+          durable.owner_id !== row.owner_id || durable.agent_id !== row.agent_id || Number(durable.task_index) !== row.task_index ||
+          durable.task_id !== 'S4' || durable.environment_id !== row.environment_id || durable.operation_id !== action.ownerOperationId ||
+          sequence !== action.actionSequence || durable.action_kind !== action.actionKind ||
+          String(durable.payload_hash).toLowerCase() !== String(action.commandSha256).toLowerCase() || !HASH.test(String(durable.payload_hash)) ||
+          durable.evidence_path !== reference.path || String(durable.evidence_hash).toLowerCase() !== reference.sha256.toLowerCase() ||
+          durable.receipt_status !== 'observed' || durable.transaction_hash !== null ||
+          action.transactionHash !== null || durable.history_revision !== durable.receipt_revision ||
+          durable.history_status !== durable.receipt_status || durable.history_evidence_hash !== durable.evidence_hash ||
+          durable.history_evidence_path !== durable.evidence_path || durable.history_transaction_hash !== durable.transaction_hash ||
+          !parsedCommand.success || parsedCommand.data.kind !== action.actionKind ||
+          sha256CanonicalTaskJson({ runId: row.run_id, taskIndex: row.task_index, command: parsedCommand.data }).toLowerCase() !== String(durable.payload_hash).toLowerCase()) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S4 owner action differs from its durable neutral-read command or receipt');
+      }
+      if (action.actionKind !== 'inspect_catalog' && action.actionKind !== 'inspect_offer') continue;
+      const command = parsedCommand.data;
+      if (command.kind !== 'inspect_catalog' && command.kind !== 'inspect_offer') {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S4 read command is outside the neutral read allowlist');
+      }
+      const operationId = String(action.befOperationId).toLowerCase();
+      const operation = operationById.get(operationId);
+      const readKind = command.kind === 'inspect_catalog' ? 'catalog' : 'offer';
+      const request = command.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
+        { method: 'GET', path: '/offer', resourceId: command.resourceId };
+      if (!operation || operation.operation_kind !== readKind || operation.status !== 'accepted' ||
+          operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null || operation.env_id !== row.environment_id ||
+          operation.generation_id !== row.generation_id || operation.participant_id !== generation.participant_id ||
+          String(operation.idempotency_key_sha256).toLowerCase() !== createHash('sha256').update(`task-action-${action.actionId}`).digest('hex') ||
+          String(operation.request_sha256).toLowerCase() !== createHash('sha256').update(JSON.stringify(request)).digest('hex') ||
+          typeof operation.response_sha256 !== 'string' || !HASH.test(operation.response_sha256) ||
+          census.costs.some((cost) => plainObject(cost) && String(cost.operation_id).toLowerCase() === operationId) ||
+          census.selectedExecutions.some((item) => plainObject(item) && String(item.operation_id).toLowerCase() === operationId) ||
+          census.selectedEvents.some((item) => plainObject(item) && String(item.operation_id).toLowerCase() === operationId)) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S4 neutral read does not match its accepted GET operation');
+      }
+      proofs.push({ action, command, operation });
+    }
+    if (proofs.length !== reads.length || operationById.size < proofs.length) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S4 neutral read operation count differs from its owner action list');
+    }
+    return { children, actions: proofs };
+  }
+
+  private validateSealedInspectionAction(
+    bytes: Buffer,
+    reference: EvidenceReference,
+    proof: S1SealedActionProof,
+    row: EvidenceRow,
+    taskId: 'S1' | 'S4',
+  ): void {
+    let value: unknown;
+    try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown; }
+    catch { fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', `An ${taskId} read action evidence file is malformed`); }
+    const { action, command, operation } = proof;
+    if (command.kind !== 'inspect_catalog' && command.kind !== 'inspect_offer') {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', `An ${taskId} read command is outside the neutral read allowlist`);
+    }
+    const operationId = action.befOperationId;
+    const readKind = command.kind === 'inspect_catalog' ? 'catalog' : 'offer';
+    const request = command.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
+      { method: 'GET', path: '/offer', resourceId: command.resourceId };
+    const requestHash = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+    const startedAt = plainObject(value) && typeof value.requestStartedAt === 'string' ? Date.parse(value.requestStartedAt) : Number.NaN;
+    const finishedAt = plainObject(value) && typeof value.requestFinishedAt === 'string' ? Date.parse(value.requestFinishedAt) : Number.NaN;
+    const response = plainObject(value) && plainObject(value.participantToolResponse) ? value.participantToolResponse : null;
+    const handle = response && plainObject(response.readHandle) ? response.readHandle : null;
+    const health = plainObject(value) ? value.environmentHealth : undefined;
+    const healthMatches = health === undefined || (plainObject(health) && exactKeys(health,
+      ['applicationSourceSha256', 'boundary', 'envId', 'manifestSha256']) && health.boundary === 'benchmark-environment-api' &&
+      health.envId === row.environment_id && health.manifestSha256 === row.environment_manifest_hash &&
+      health.applicationSourceSha256 === row.application_source_hash);
+    const allowedKeys = ['schema', 'actionId', 'runId', 'taskIndex', 'actionSequence', 'ownerOperationId', 'actionKind',
+      'commandSha256', 'environmentId', 'generationId', 'manifestSha256', 'applicationSourceSha256', 'idempotencyKey', 'status',
+      'requestStartedAt', 'requestFinishedAt', 'httpStatus', 'befOperationId', 'rawResponseSha256', 'participantToolResponse', 'environmentHealth'];
+    if (!plainObject(value) || containsSecretKey(value) || Object.keys(value).some((key) => !allowedKeys.includes(key)) ||
+        value.schema !== 'bef-task-action-observation-v1' || value.actionId !== action.actionId || value.runId !== row.run_id ||
+        Number(value.taskIndex) !== row.task_index || String(value.actionSequence) !== String(action.actionSequence) ||
+        value.ownerOperationId !== action.ownerOperationId || value.actionKind !== command.kind ||
+        String(value.commandSha256).toLowerCase() !== String(action.commandSha256).toLowerCase() ||
+        value.environmentId !== row.environment_id || value.generationId !== row.generation_id ||
+        String(value.manifestSha256).toLowerCase() !== row.environment_manifest_hash.toLowerCase() ||
+        String(value.applicationSourceSha256).toLowerCase() !== row.application_source_hash.toLowerCase() ||
+        value.idempotencyKey !== `task-action-${action.actionId}` || value.status !== 'observed' || value.httpStatus !== 200 ||
+        value.befOperationId !== operationId || typeof value.rawResponseSha256 !== 'string' || !HASH.test(value.rawResponseSha256) ||
+        !Number.isFinite(startedAt) || !Number.isFinite(finishedAt) || finishedAt < startedAt || !healthMatches || !response || !handle ||
+        !exactKeys(handle, ['kind', 'operationId']) || handle.kind !== readKind || handle.operationId !== operationId ||
+        !readOnlyToolResponseMatches(command, response) ||
+        value.rawResponseSha256.toLowerCase() !== String(operation.response_sha256).toLowerCase() ||
+        String(operation.request_sha256).toLowerCase() !== requestHash ||
+        reference.path !== (action.actionEvidence as EvidenceReference).path ||
+        reference.sha256.toLowerCase() !== (action.actionEvidence as EvidenceReference).sha256.toLowerCase() ||
+        Object.hasOwn(value, 'transactionHash') || Object.hasOwn(value, 'outcome') || Object.hasOwn(value, 'receiptStatus') ||
+        Object.hasOwn(value, 'receiptGasUsed') || Object.hasOwn(value, 'receiptEffectiveGasPriceWei') ||
+        Object.hasOwn(value, 'paymentProtocol') || Object.hasOwn(value, 'recoverySource') || Object.hasOwn(value, 'reasonCode')) {
+      fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', `An ${taskId} neutral read differs from its durable command or BEF operation`);
     }
   }
 
@@ -1488,7 +1657,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           !Number.isSafeInteger(value.actionSequence) || (value.actionSequence as number) < 1 ||
           (value.actionSequence as number) > cutoff || actionSequences.has(value.actionSequence as number) || actionIds.has(value.actionId) ||
           typeof value.ownerOperationId !== 'string' || value.ownerOperationId.length < 12 || value.ownerOperationId.length > 128 ||
-          value.actionKind !== 'inspect_offer' || typeof value.commandSha256 !== 'string' || !HASH.test(value.commandSha256) ||
+          (value.actionKind !== 'inspect_offer' && value.actionKind !== 'inspect_catalog') ||
+          typeof value.commandSha256 !== 'string' || !HASH.test(value.commandSha256) ||
           value.receiptStatus !== 'observed' || !validEvidence(value.actionEvidence) ||
           !value.actionEvidence.path.startsWith(ACTION_EVIDENCE_PREFIX) || typeof value.befOperationId !== 'string' ||
           !UUID.test(value.befOperationId) || operationIds.has(value.befOperationId)) {
@@ -1711,7 +1881,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     if (!plainObject(value) || containsSecretKey(value) || Object.keys(value).some((key) => !actionKeys.includes(key)) ||
         value.schema !== 'bef-task-action-observation-v1' || value.actionId !== action.actionId || value.runId !== bundle.binding.runId ||
         Number(value.taskIndex) !== taskIndex || String(value.actionSequence) !== String(action.actionSequence) ||
-        value.ownerOperationId !== action.ownerOperationId || value.actionKind !== 'inspect_offer' ||
+        value.ownerOperationId !== action.ownerOperationId || value.actionKind !== action.actionKind ||
         typeof value.commandSha256 !== 'string' || value.commandSha256.toLowerCase() !== String(action.commandSha256).toLowerCase() ||
         value.environmentId !== bundle.binding.environmentId || value.generationId !== bundle.execution.generationId ||
         value.manifestSha256 !== bundle.execution.environmentManifestHash || value.applicationSourceSha256 !== bundle.execution.applicationSourceHash ||
@@ -1725,17 +1895,24 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     if (reference.path !== actionReference.path || reference.sha256.toLowerCase() !== actionReference.sha256.toLowerCase()) {
       fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A retained S2 owner action file reference changed');
     }
-    const command = { kind: 'inspect_offer' as const, resourceId: taskCase.objective.resourceId, offerId: taskCase.objective.offerId };
+    const command = action.actionKind === 'inspect_catalog' ? { kind: 'inspect_catalog' as const } :
+      { kind: 'inspect_offer' as const, resourceId: taskCase.objective.resourceId, offerId: taskCase.objective.offerId };
     const body = value.participantToolResponse;
     const handle = body.readHandle;
     const expected = taskCase.objective.completePaymentRequirements;
     const pinnedAsset = assets.find((item) => item.assetId === expected.assetId);
-    const selected = Array.isArray(body.offers) ? body.offers.find((offer) => plainObject(offer) && offer.id === taskCase.objective.offerId) : null;
+    const catalogResource = command.kind === 'inspect_catalog' && Array.isArray(body.catalog)
+      ? body.catalog.find((resource) => plainObject(resource) && resource.resourceId === taskCase.objective.resourceId) : null;
+    const selectedOffers = command.kind === 'inspect_catalog' && plainObject(catalogResource) ? catalogResource.offers : body.offers;
+    const selected = Array.isArray(selectedOffers)
+      ? selectedOffers.find((offer) => plainObject(offer) && offer.id === taskCase.objective.offerId) : null;
     const payment = plainObject(selected) && plainObject(selected.payment) ? selected.payment : null;
     const asset = payment && typeof payment.asset === 'string' ? payment.asset.toLowerCase() : '';
-    if (!readOnlyToolResponseMatches(command, body) || body.resourceId !== taskCase.objective.resourceId ||
+    const resourceMatches = command.kind === 'inspect_offer' ? body.resourceId === taskCase.objective.resourceId :
+      plainObject(catalogResource) && catalogResource.resourceId === taskCase.objective.resourceId;
+    if (!readOnlyToolResponseMatches(command, body) || !resourceMatches ||
         body.operationId !== action.befOperationId || !plainObject(handle) || !exactKeys(handle, ['kind', 'operationId']) ||
-        handle.kind !== 'offer' || handle.operationId !== action.befOperationId || !payment ||
+        handle.kind !== (command.kind === 'inspect_catalog' ? 'catalog' : 'offer') || handle.operationId !== action.befOperationId || !payment ||
         payment.scheme !== expected.scheme || payment.network !== expected.network || payment.amount !== expected.amountUnits ||
         typeof payment.payTo !== 'string' || payment.payTo.toLowerCase() !== expected.recipient.toLowerCase() || !asset ||
         !pinnedAsset || pinnedAsset.kind !== 'erc20' || pinnedAsset.chainId !== localChainId ||
@@ -1776,7 +1953,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       const actionRef = action.actionEvidence as EvidenceReference;
       if (sequence !== index + 1 || !UUID.test(String(value.id)) || value.run_id !== row.run_id ||
           value.owner_id !== row.owner_id || value.agent_id !== row.agent_id || Number(value.task_index) !== row.task_index ||
-          value.task_id !== 'S2' || value.environment_id !== row.environment_id || value.action_kind !== 'inspect_offer' ||
+          value.task_id !== 'S2' || value.environment_id !== row.environment_id ||
+          (value.action_kind !== 'inspect_offer' && value.action_kind !== 'inspect_catalog') || value.action_kind !== action.actionKind ||
           typeof value.payload_hash !== 'string' || !HASH.test(value.payload_hash) || value.receipt_status !== 'observed' ||
           value.transaction_hash !== null || value.history_revision !== value.receipt_revision || value.history_status !== value.receipt_status ||
           value.history_evidence_hash !== value.evidence_hash || value.history_evidence_path !== value.evidence_path ||
@@ -1785,9 +1963,9 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           value.payload_hash.toLowerCase() !== String(action.commandSha256).toLowerCase() ||
           typeof value.evidence_path !== 'string' || value.evidence_path !== actionRef.path ||
           typeof value.evidence_hash !== 'string' || value.evidence_hash.toLowerCase() !== actionRef.sha256.toLowerCase() ||
-          !parsedCommand.success || parsedCommand.data.kind !== 'inspect_offer' ||
-          parsedCommand.data.resourceId !== taskCase.objective.resourceId ||
-          (parsedCommand.data.offerId !== undefined && parsedCommand.data.offerId !== taskCase.objective.offerId) ||
+          !parsedCommand.success || parsedCommand.data.kind !== action.actionKind ||
+          (parsedCommand.data.kind === 'inspect_offer' && (parsedCommand.data.resourceId !== taskCase.objective.resourceId ||
+            (parsedCommand.data.offerId !== undefined && parsedCommand.data.offerId !== taskCase.objective.offerId))) ||
           sha256CanonicalTaskJson({ runId: row.run_id, taskIndex: Number(value.task_index), command: parsedCommand.data }).toLowerCase() !== value.payload_hash.toLowerCase()) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A sealed S2 owner action differs from the durable action and receipt rows');
       }
@@ -1798,25 +1976,35 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       if (!actionEvidence || !plainObject(body) || !plainObject(operation)) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S2 BEF operation is missing its action evidence join');
       }
-      const expectedRequestHash = createHash('sha256').update(JSON.stringify({ method: 'GET', path: '/offer',
-        resourceId: taskCase.objective.resourceId })).digest('hex');
+      const readKind = parsedCommand.data.kind === 'inspect_catalog' ? 'catalog' : 'offer';
+      const expectedRequest = parsedCommand.data.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
+        { method: 'GET', path: '/offer', resourceId: taskCase.objective.resourceId };
+      const expectedRequestHash = createHash('sha256').update(JSON.stringify(expectedRequest)).digest('hex');
       const response: Record<string, unknown> = {
-        operationId: body.operationId, readHandle: body.readHandle, resourceId: body.resourceId,
-        resourceSha256: body.resourceSha256, contentType: body.contentType,
+        operationId: body.operationId, readHandle: body.readHandle,
       };
-      if (body.dataType !== undefined) response.dataType = body.dataType;
-      if (body.schema !== undefined) response.schema = body.schema;
-      if (body.provenance !== undefined) response.provenance = body.provenance;
-      response.payment = body.payment;
-      response.offers = body.offers;
-      response.freeInspection = body.freeInspection;
-      response.deliveryState = body.deliveryState;
+      if (readKind === 'catalog') {
+        response.catalog = body.catalog;
+        response.freeInspection = body.freeInspection;
+        response.deliveryState = body.deliveryState;
+      } else {
+        response.resourceId = body.resourceId;
+        response.resourceSha256 = body.resourceSha256;
+        response.contentType = body.contentType;
+        if (body.dataType !== undefined) response.dataType = body.dataType;
+        if (body.schema !== undefined) response.schema = body.schema;
+        if (body.provenance !== undefined) response.provenance = body.provenance;
+        response.payment = body.payment;
+        response.offers = body.offers;
+        response.freeInspection = body.freeInspection;
+        response.deliveryState = body.deliveryState;
+      }
       const expectedResponseHash = createHash('sha256').update(JSON.stringify(response)).digest('hex');
       const expectedIdempotencyHash = createHash('sha256').update(`task-action-${action.actionId}`).digest('hex');
       if (operation.env_id !== row.environment_id || operation.generation_id !== row.generation_id ||
           operation.participant_id !== (census.generation as Record<string, unknown>).participant_id ||
           String(operation.idempotency_key_sha256).toLowerCase() !== expectedIdempotencyHash ||
-          String(operation.request_sha256).toLowerCase() !== expectedRequestHash || operation.operation_kind !== 'offer' ||
+          String(operation.request_sha256).toLowerCase() !== expectedRequestHash || operation.operation_kind !== readKind ||
           operation.status !== 'accepted' || operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null ||
           String(operation.response_sha256).toLowerCase() !== expectedResponseHash) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S2 free read does not match its immutable BEF operation projection');
@@ -1824,10 +2012,12 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     }
   }
 
-  private readS1CapturePacketChildren(
+  private async readS1CapturePacketChildren(
     bytes: Buffer,
     bundle: { binding: Record<string, unknown>; closure: Record<string, unknown>; execution: Record<string, unknown>; observations: Record<string, unknown> },
-  ): EvidenceReference[] {
+    tx: Transaction,
+    row: EvidenceRow,
+  ): Promise<{ children: EvidenceReference[]; actions: S1SealedActionProof[] }> {
     let packet: unknown;
     try { packet = JSON.parse(bytes.toString('utf8')) as unknown; }
     catch { fail(503, 'TASK_EVIDENCE_CAPTURE_PACKET_INVALID', 'The sealed S1 capture packet is malformed'); }
@@ -1867,31 +2057,122 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     const children: EvidenceReference[] = [fixtureEvidence, baselineEvidence];
     const actionSequences = new Set<number>();
     const actionIds = new Set<string>();
+    const actionPaths = new Set<string>();
+    const packetActions: Record<string, unknown>[] = [];
     for (const value of packet.ownerActions) {
       const allowedKeys = ['actionId', 'actionSequence', 'ownerOperationId', 'actionKind', 'commandSha256',
         'receiptStatus', 'actionEvidence', 'befOperationId', 'transactionHash'];
       if (!plainObject(value) || !exactKeys(value, allowedKeys) || typeof value.actionId !== 'string' || !UUID.test(value.actionId) ||
           !Number.isSafeInteger(value.actionSequence) || (value.actionSequence as number) < 1 ||
           (value.actionSequence as number) > (safeSequence(bundle.closure.actionCutoffSequence as string | number) ?? -1) ||
-          actionSequences.has(value.actionSequence as number) || actionIds.has(value.actionId) ||
+          actionSequences.has(value.actionSequence as number) || actionIds.has(value.actionId) || actionPaths.has(String((value.actionEvidence as Record<string, unknown> | undefined)?.path)) ||
           typeof value.ownerOperationId !== 'string' || value.ownerOperationId.length < 12 || value.ownerOperationId.length > 128 ||
-          value.actionKind !== 'transfer' || typeof value.commandSha256 !== 'string' || !HASH.test(value.commandSha256) ||
+          !['transfer', 'inspect_catalog', 'inspect_offer'].includes(String(value.actionKind)) || typeof value.commandSha256 !== 'string' || !HASH.test(value.commandSha256) ||
           !['observed', 'rejected_before_execution'].includes(String(value.receiptStatus)) ||
           !validEvidence(value.actionEvidence) || !value.actionEvidence.path.startsWith(ACTION_EVIDENCE_PREFIX) ||
           (value.befOperationId !== null && (typeof value.befOperationId !== 'string' || !UUID.test(value.befOperationId))) ||
-          (value.transactionHash !== null && (typeof value.transactionHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(value.transactionHash)))) {
+          (value.transactionHash !== null && (typeof value.transactionHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(value.transactionHash))) ||
+          (value.actionKind !== 'transfer' && (value.receiptStatus !== 'observed' || value.befOperationId === null || value.transactionHash !== null))) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S1 owner action reference is malformed or outside the sealed cutoff');
       }
       actionSequences.add(value.actionSequence as number);
       actionIds.add(value.actionId);
+      actionPaths.add(value.actionEvidence.path);
+      packetActions.push(value);
       children.push(value.actionEvidence as EvidenceReference);
     }
     if ([...actionSequences].some((sequence, index) => sequence !== index + 1)) {
       fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'S1 owner actions do not match their contiguous admitted sequence');
     }
 
-    // The collector seals the packet itself as each observation's evidence reference. Action and
-    // preparation references are verified separately; their bytes are not interpreted as facts here.
+    const actions: S1SealedActionProof[] = [];
+    if (packetActions.some((action) => action.actionKind === 'inspect_catalog' || action.actionKind === 'inspect_offer')) {
+      const actionRows = await tx.execute(sql`SELECT a.id::text AS id,a.run_id::text AS run_id,a.task_index,a.owner_id::text AS owner_id,
+          a.agent_id::text AS agent_id,a.task_id,a.environment_id,a.action_sequence::text AS action_sequence,a.operation_id,a.payload_hash,
+          a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
+          h.revision AS history_revision,h.receipt_status AS history_status,h.evidence_hash AS history_evidence_hash,
+          h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash
+        FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+        LEFT JOIN LATERAL (SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash
+          FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
+        WHERE a.run_id=${row.run_id} AND a.task_index=${row.task_index}
+        ORDER BY a.action_sequence LIMIT ${MAX_EVIDENCE_FILES + 1}`) as unknown as Array<Record<string, unknown>>;
+      if (actionRows.length !== packetActions.length) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S1 action sequence differs from its durable receipts');
+      }
+      const bef = packet.bef as Record<string, unknown>;
+      const census = plainObject(bef.after) ? bef.after : null;
+      const generation = census && plainObject(census.generation) ? census.generation : null;
+      const operations = census && Array.isArray(census.operations) ? census.operations.filter(plainObject) : null;
+      if (!census || !generation || !operations || !Array.isArray(census.costs) || !Array.isArray(census.selectedExecutions) ||
+          !Array.isArray(census.selectedEvents) || !Array.isArray(census.payments) || !Array.isArray(census.deliveries)) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S1 read-only BEF census is malformed');
+      }
+      const operationById = new Map(operations.map((operation) => [String(operation.operation_id).toLowerCase(), operation]));
+      if (operationById.size !== operations.length) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S1 BEF census repeats an operation identity');
+      }
+      const reads = packetActions.filter((action) => action.actionKind === 'inspect_catalog' || action.actionKind === 'inspect_offer');
+      const readOperations = operations.filter((operation) => operation.operation_kind === 'catalog' || operation.operation_kind === 'offer');
+      if (reads.length !== readOperations.length) {
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'The S1 neutral read list differs from retained BEF operations');
+      }
+      const matchedOperationIds = new Set<string>();
+      for (let index = 0; index < actionRows.length; index += 1) {
+        const durable = actionRows[index]!;
+        const action = packetActions[index]!;
+        const sequence = safeSequence(durable.action_sequence as string | number);
+        const parsedCommand = TaskActionCommandSchema.safeParse(jsonValue(durable.command_json));
+        const reference = action.actionEvidence as EvidenceReference;
+        if (sequence !== index + 1 || String(durable.id) !== action.actionId || durable.run_id !== row.run_id ||
+            durable.owner_id !== row.owner_id || durable.agent_id !== row.agent_id || Number(durable.task_index) !== row.task_index ||
+            durable.task_id !== 'S1' || durable.environment_id !== row.environment_id || String(durable.id) !== String(durable.id).toLowerCase() ||
+            durable.operation_id !== action.ownerOperationId || sequence !== action.actionSequence ||
+            durable.action_kind !== action.actionKind || String(durable.payload_hash).toLowerCase() !== String(action.commandSha256).toLowerCase() ||
+            !HASH.test(String(durable.payload_hash)) || durable.evidence_path !== reference.path ||
+            String(durable.evidence_hash).toLowerCase() !== reference.sha256.toLowerCase() ||
+            durable.receipt_status !== action.receiptStatus || durable.history_revision !== durable.receipt_revision ||
+            durable.history_status !== durable.receipt_status || durable.history_evidence_hash !== durable.evidence_hash ||
+            durable.history_evidence_path !== durable.evidence_path || durable.history_transaction_hash !== durable.transaction_hash ||
+            (typeof durable.transaction_hash === 'string' ? durable.transaction_hash.toLowerCase() : null) !==
+              (typeof action.transactionHash === 'string' ? action.transactionHash.toLowerCase() : null) ||
+            !parsedCommand.success || parsedCommand.data.kind !== action.actionKind ||
+            sha256CanonicalTaskJson({ runId: row.run_id, taskIndex: row.task_index, command: parsedCommand.data }).toLowerCase() !== String(durable.payload_hash).toLowerCase()) {
+          fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S1 owner action differs from its durable command or receipt');
+        }
+        if (action.actionKind === 'inspect_catalog' || action.actionKind === 'inspect_offer') {
+          if (action.receiptStatus !== 'observed' || durable.transaction_hash !== null || action.befOperationId === null) {
+            fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S1 neutral read claims a transaction or lacks an observed operation');
+          }
+          const operationId = String(action.befOperationId).toLowerCase();
+          const operation = operationById.get(operationId);
+          const command = parsedCommand.data;
+          const readKind = command.kind === 'inspect_catalog' ? 'catalog' : 'offer';
+          const request = command.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
+            command.kind === 'inspect_offer' ? { method: 'GET', path: '/offer', resourceId: command.resourceId } : null;
+          if (!request) fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S1 read command is outside the neutral read allowlist');
+          const requestSha256 = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+          const idempotencySha256 = createHash('sha256').update(`task-action-${action.actionId}`).digest('hex');
+          if (!operation || matchedOperationIds.has(operationId) || operation.operation_kind !== readKind || operation.status !== 'accepted' ||
+              operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null || operation.env_id !== row.environment_id ||
+              operation.generation_id !== row.generation_id || operation.participant_id !== generation.participant_id ||
+              String(operation.idempotency_key_sha256).toLowerCase() !== idempotencySha256 ||
+              String(operation.request_sha256).toLowerCase() !== requestSha256 ||
+              typeof operation.response_sha256 !== 'string' || !HASH.test(operation.response_sha256) ||
+              census.costs.some((cost) => plainObject(cost) && String(cost.operation_id).toLowerCase() === operationId) ||
+              census.selectedExecutions.some((item) => plainObject(item) && String(item.operation_id).toLowerCase() === operationId) ||
+              census.selectedEvents.some((item) => plainObject(item) && String(item.operation_id).toLowerCase() === operationId) ||
+              census.payments.some((item) => plainObject(item) && String(item.operation_id).toLowerCase() === operationId) ||
+              census.deliveries.some((item) => plainObject(item) && String(item.operation_id).toLowerCase() === operationId)) {
+            fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S1 neutral read does not match its accepted BEF operation');
+          }
+          matchedOperationIds.add(operationId);
+          actions.push({ action, command, operation });
+        }
+      }
+    }
+
+    // Action references remain a complete ordered history; only transfer observations project effects.
     const transferObservations = bundle.observations.transfers;
     if (!Array.isArray(transferObservations)) fail(503, 'TASK_EVIDENCE_BUNDLE_UNAVAILABLE', 'S1 transfer observations are malformed');
     const actionBySequence = new Map(packet.ownerActions.map((value) => {
@@ -1905,18 +2186,18 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       }
       if (observation.actionSequence === 0) continue;
       const action = actionBySequence.get(observation.actionSequence as number);
-      if (!action || action.receiptStatus !== 'observed' || observation.observationId !== `s1-transfer-${action.actionId}` ||
+      if (!action || action.actionKind !== 'transfer' || action.receiptStatus !== 'observed' || observation.observationId !== `s1-transfer-${action.actionId}` ||
           observation.transactionHash !== action.transactionHash) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An S1 transfer observation does not match its sealed owner action');
       }
     }
     for (const action of packet.ownerActions) {
-      if (action.receiptStatus === 'observed' && !transferObservations.some((observation) =>
+      if (action.actionKind === 'transfer' && action.receiptStatus === 'observed' && !transferObservations.some((observation) =>
         plainObject(observation) && observation.actionSequence === action.actionSequence &&
         observation.observationId === `s1-transfer-${action.actionId}` && observation.transactionHash === action.transactionHash)) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'An observed S1 owner action has no matching sealed transfer');
       }
     }
-    return children;
+    return { children, actions };
   }
 }

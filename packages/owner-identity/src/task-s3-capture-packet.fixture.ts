@@ -25,12 +25,23 @@ const OBSERVATION_ROOT = 'artifacts/runs/owner-identity-bef-task-coordinator/obs
 
 function rawSha(value: string): string { return createHash('sha256').update(value).digest('hex'); }
 function reference(path: string, sha256 = HASH): EvidenceReference { return { path, sha256, boundary: BOUNDARY }; }
-function operationResponseSha(body: Record<string, unknown>): string {
-  return rawSha(JSON.stringify({ operationId: body.operationId, readHandle: body.readHandle, catalog: body.catalog,
+function operationResponseSha(body: Record<string, unknown>, kind: 'inspect_catalog' | 'inspect_offer'): string {
+  if (kind === 'inspect_catalog') return rawSha(JSON.stringify({ operationId: body.operationId, readHandle: body.readHandle, catalog: body.catalog,
     freeInspection: body.freeInspection, deliveryState: body.deliveryState }));
+  const response: Record<string, unknown> = { operationId: body.operationId, readHandle: body.readHandle, resourceId: body.resourceId,
+    resourceSha256: body.resourceSha256, contentType: body.contentType };
+  if (body.dataType !== undefined) response.dataType = body.dataType;
+  if (body.schema !== undefined) response.schema = body.schema;
+  if (body.provenance !== undefined) response.provenance = body.provenance;
+  response.payment = body.payment;
+  response.offers = body.offers;
+  response.freeInspection = body.freeInspection;
+  response.deliveryState = body.deliveryState;
+  return rawSha(JSON.stringify(response));
 }
 
-export function createS3CapturePacketFixture(): { packet: S3CapturePacket; binding: TaskEvidenceBinding; taskCase: S3TaskCase } {
+export function createS3CapturePacketFixture(kind: 'inspect_catalog' | 'inspect_offer' = 'inspect_catalog'):
+  { packet: S3CapturePacket; binding: TaskEvidenceBinding; taskCase: S3TaskCase } {
   const state = { balances: [{ account: 'participant', assetId: 'USDC', amountUnits: '5000000' }], allowances: [],
     deliveredComponentIds: [] as string[], fulfilledObligationIds: [] as string[] };
   const stateSha = sha256CanonicalTaskJson(state);
@@ -61,22 +72,29 @@ export function createS3CapturePacketFixture(): { packet: S3CapturePacket; bindi
     releaseIdentity: 's3-release', manifestHash: HASH, caseId: taskCase.caseId, caseHash: taskCase.caseHash,
     rubricHash: taskCase.rubricHash, taskId: 'S3' };
   const payment = { scheme: 'exact', network: 'eip155:8453', asset: TOKEN, amount: '125000', payTo: RECIPIENT, transferMethod: 'eip3009' };
-  const response = { operationId: OPERATION, readHandle: { kind: 'catalog', operationId: OPERATION }, catalog: [
+  const catalogResponse = { operationId: OPERATION, readHandle: { kind: 'catalog', operationId: OPERATION }, catalog: [
     { resourceId: 's3-resource', resourceSha256: HASH, contentType: 'application/json', dataType: 'weather.current',
       offers: [{ id: 'selected', payment }] },
     { resourceId: 'other-resource', resourceSha256: 'f'.repeat(64), contentType: 'application/json', dataType: 'weather.archive',
       offers: [{ id: 'other', payment: { ...payment, amount: '900000' } }] },
   ], freeInspection: true, deliveryState: 'not_delivered' };
-  const command = { kind: 'inspect_catalog' as const };
+  const command = kind === 'inspect_catalog' ? { kind: 'inspect_catalog' as const } :
+    { kind: 'inspect_offer' as const, resourceId: 's3-resource', offerId: 'selected' };
+  const response: Record<string, unknown> = kind === 'inspect_catalog' ? catalogResponse : {
+    operationId: OPERATION, readHandle: { kind: 'offer', operationId: OPERATION }, resourceId: 's3-resource',
+    resourceSha256: HASH, contentType: 'application/json', dataType: 'weather.current',
+    payment, offers: [{ id: 'selected', payment }], freeInspection: true, deliveryState: 'not_delivered',
+  };
   const commandSha = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command });
   const census = { generation: { generation_id: GENERATION, env_id: ENVIRONMENT, participant_id: PARTICIPANT_ID,
     payer_address: PARTICIPANT, manifest_sha256: HASH, status: 'active', resource_variant: 'canonical', fixture_transaction_hash: null,
     fixture_block_hash: null, fixture_token_delta_units: null, fixture_native_balance_wei: null, expires_at: '2026-10-28T12:00:00.000Z',
     fenced_at: null, chain_id: '8453', node_identity: 'anvil-synthetic', environment_manifest_sha256: HASH },
     operations: [{ operation_id: OPERATION, env_id: ENVIRONMENT, generation_id: GENERATION, participant_id: PARTICIPANT_ID,
-      idempotency_key_sha256: rawSha(`task-action-${ACTION}`), request_sha256: rawSha(JSON.stringify({ method: 'GET', path: '/catalog' })),
-      operation_kind: 'catalog', status: 'accepted', receipt_status: 'not_submitted', transaction_hash: null,
-      response_sha256: operationResponseSha(response), started_at: '2026-10-28T09:00:00.000Z', completed_at: '2026-10-28T09:00:00.000Z' }],
+      idempotency_key_sha256: rawSha(`task-action-${ACTION}`), request_sha256: rawSha(JSON.stringify(kind === 'inspect_catalog'
+        ? { method: 'GET', path: '/catalog' } : { method: 'GET', path: '/offer', resourceId: 's3-resource' })),
+      operation_kind: kind === 'inspect_catalog' ? 'catalog' : 'offer', status: 'accepted', receipt_status: 'not_submitted', transaction_hash: null,
+      response_sha256: operationResponseSha(response, kind), started_at: '2026-10-28T09:00:00.000Z', completed_at: '2026-10-28T09:00:00.000Z' }],
     selectedExecutions: [], selectedEvents: [], payments: [], deliveries: [], costs: [],
     denials: [], x402Observations: [], rpcObservations: [], evidenceArtifacts: [] };
   const answer = { offerId: 'selected' };

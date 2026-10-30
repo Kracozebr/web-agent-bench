@@ -14,6 +14,7 @@ import { keccak256 } from 'viem';
 import { TaskActionCommandSchema } from './task-action-service.js';
 import type { TaskActionCommand } from './task-action-service.js';
 import type { OwnerDatabase } from './db.js';
+import { readOnlyToolResponseMatches } from './bef-task-executor.js';
 import { recoveredActionEvidenceIsOwnerBound, recoveredOwnerLineageJoinSql, recoveredOwnerLineageSelectSql,
   recoverySourceEvidenceMatchesFacts, type RecoveredOwnerLineageRow,
   type RecoverySourceFacts } from './bef-recovery-observation.js';
@@ -89,7 +90,7 @@ export type BefS4RunObservationPacket = {
   };
   ownerActions: Array<{
     actionId: string; actionSequence: number; ownerOperationId: string; actionKind: string;
-    commandSha256: string; actionEvidence: EvidenceReference; befOperationId: string; transactionHash: string;
+    commandSha256: string; actionEvidence: EvidenceReference; befOperationId: string; transactionHash: string | null;
   }>;
   bef: { session: JsonRecord; before: S4Census; after: S4Census; censusSha256: string };
   rpc: {
@@ -182,13 +183,18 @@ type ActionRow = {
   history_revision: number | null; history_status: string | null; history_evidence_hash: string | null;
   history_evidence_path: string | null; history_transaction_hash: string | null;
 } & RecoveredOwnerLineageRow;
-type LoadedAction = { row: ActionRow; sequence: number; command: Extract<TaskActionCommand, { kind: 'approve' | 'transfer' }>;
+type MutableCommand = Extract<TaskActionCommand, { kind: 'approve' | 'transfer' }>;
+type ReadCommand = Extract<TaskActionCommand, { kind: 'inspect_catalog' | 'inspect_offer' }>;
+type LoadedMutableAction = { category: 'mutable'; row: ActionRow; sequence: number; command: MutableCommand;
   evidence: RecoveryActionEvidence; evidenceReference: EvidenceRef };
+type LoadedReadAction = { category: 'read'; row: ActionRow; sequence: number; command: ReadCommand;
+  evidence: JsonRecord; evidenceReference: EvidenceRef };
+type LoadedAction = LoadedMutableAction | LoadedReadAction;
 type FixtureProof = { operationId: string; transactionHash: string; blockNumber: bigint; blockHash: string; parentHash: string;
   amountUnits: bigint; spender: string; tokenAddress: string; idempotencyKeySha256: string; proofSha256: string; reference: EvidenceRef;
   baselineReference: EvidenceRef; baselineNumber: bigint; baselineHash: string;
   preState: { blockNumber: bigint; blockHash: string; projection: JsonRecord } };
-type TransferSource = { op: JsonRecord; selected: JsonRecord; action: LoadedAction | null; tx: S4Transaction;
+type TransferSource = { op: JsonRecord; selected: JsonRecord; action: LoadedMutableAction | null; tx: S4Transaction;
   receipt: S4Receipt; selectedAction: JsonRecord; actionSequence: number };
 
 export type S4AllowanceHistoryInput = {
@@ -979,12 +985,12 @@ async function loadActions(root:string,run:RunTaskRow,prep:PreparationRow,runId:
     const evidenceRef=row.evidence_path&&row.evidence_hash?ref({path:row.evidence_path,sha256:row.evidence_hash,boundary:EVIDENCE_BOUNDARY}):null;
     if (seq!==index+1||row.id!==row.id.toLowerCase()||!UUID.test(row.id)||row.run_id!==runId||row.task_index!==taskIndex||
         row.owner_id!==run.owner_id||row.agent_id!==run.agent_id||row.task_id!=='S4'||row.environment_id!==prep.environment_id||
-        !['approve','transfer'].includes(row.action_kind)||!HASH.test(row.payload_hash)||!evidenceRef||!HASH.test(row.evidence_hash??'')||
+        !['approve','transfer','inspect_catalog','inspect_offer'].includes(row.action_kind)||!HASH.test(row.payload_hash)||!evidenceRef||!HASH.test(row.evidence_hash??'')||
         row.receipt_revision!==row.history_revision||row.receipt_status!==row.history_status||row.history_evidence_hash!==row.evidence_hash||
         row.history_evidence_path!==row.evidence_path||(row.history_transaction_hash?.toLowerCase()??null)!==(row.transaction_hash?.toLowerCase()??null)||
         row.receipt_status!=='observed') throw new CollectionUnavailable('action_evidence_unavailable');
     const command=TaskActionCommandSchema.safeParse(row.command_json);
-    if (!command.success||!['approve','transfer'].includes(command.data.kind)||
+    if (!command.success||!['approve','transfer','inspect_catalog','inspect_offer'].includes(command.data.kind)||
         sha256CanonicalTaskJson({runId,taskIndex,command:command.data}).toLowerCase()!==row.payload_hash.toLowerCase()||command.data.kind!==row.action_kind) {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
@@ -994,8 +1000,19 @@ async function loadActions(root:string,run:RunTaskRow,prep:PreparationRow,runId:
     if (!exactActionKeys(doc)||doc.schema!=='bef-task-action-observation-v1'||doc.actionId!==row.id||doc.runId!==runId||doc.taskIndex!==taskIndex||
         doc.actionSequence!==String(seq)||doc.ownerOperationId!==row.operation_id||doc.actionKind!==row.action_kind||doc.commandSha256!==row.payload_hash.toLowerCase()||
         doc.environmentId!==prep.environment_id||doc.generationId!==prep.generation_id||doc.manifestSha256!==prep.environment_manifest_sha256.toLowerCase()||
-        doc.applicationSourceSha256!==prep.application_source_hash.toLowerCase()||doc.idempotencyKey!==`task-action-${row.id}`||doc.status!=='observed'||
-        (recoverySourceBacked ? (!recoveredActionEvidenceIsOwnerBound(doc,row,{actionId:row.id,runId,ownerId:run.owner_id,
+        doc.applicationSourceSha256!==prep.application_source_hash.toLowerCase()||doc.idempotencyKey!==`task-action-${row.id}`||doc.status!=='observed') {
+      throw new CollectionUnavailable('action_evidence_unavailable');
+    }
+    if (command.data.kind==='inspect_catalog'||command.data.kind==='inspect_offer') {
+      if (recoverySourceBacked||row.transaction_hash!==null||typeof doc.rawResponseSha256!=='string'||!HASH.test(doc.rawResponseSha256)||
+          doc.httpStatus!==200||typeof doc.befOperationId!=='string'||!UUID.test(doc.befOperationId)||
+          doc.transactionHash!==undefined||doc.outcome!==undefined||doc.receiptStatus!==undefined||doc.receiptGasUsed!==undefined||
+          doc.receiptEffectiveGasPriceWei!==undefined||doc.paymentProtocol!==undefined||!isRecord(doc.participantToolResponse)||
+          !isS4ReadResponse(command.data,doc.participantToolResponse,doc.befOperationId)) throw new CollectionUnavailable('action_evidence_unavailable');
+      loaded.push({category:'read',row,sequence:seq,command:command.data as ReadCommand,evidence:doc,evidenceReference:evidenceRef});
+      continue;
+    }
+    if ((recoverySourceBacked ? (!recoveredActionEvidenceIsOwnerBound(doc,row,{actionId:row.id,runId,ownerId:run.owner_id,
             agentId:run.agent_id,taskIndex,environmentId:prep.environment_id,operationId:row.operation_id,payloadHash:row.payload_hash,
             evidenceHash:row.evidence_hash!})) : (typeof doc.rawResponseSha256!=='string'||!HASH.test(doc.rawResponseSha256)||doc.httpStatus!==200))||
         typeof doc.befOperationId!=='string'||!UUID.test(doc.befOperationId)||typeof doc.transactionHash!=='string'||!TX_HASH.test(doc.transactionHash)||
@@ -1020,9 +1037,64 @@ async function loadActions(root:string,run:RunTaskRow,prep:PreparationRow,runId:
         String(response.receipt.gasUsed)!==String(doc.receiptGasUsed)||String(response.receipt.effectiveGasPrice)!==String(doc.receiptEffectiveGasPriceWei)) {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
-    loaded.push({row,sequence:seq,command:command.data as LoadedAction['command'],evidence:doc as unknown as RecoveryActionEvidence,evidenceReference:evidenceRef});
+    loaded.push({category:'mutable',row,sequence:seq,command:command.data as MutableCommand,
+      evidence:doc as unknown as RecoveryActionEvidence,evidenceReference:evidenceRef});
   }
   return loaded;
+}
+
+function isS4ReadResponse(command:ReadCommand,body:JsonRecord,operationId:string):boolean {
+  const handle=body.readHandle;
+  if(!readOnlyToolResponseMatches(command,body)||body.operationId!==operationId||!isRecord(handle)||
+      Object.keys(handle).sort().join(',')!=='kind,operationId'||handle.kind!==(command.kind==='inspect_catalog'?'catalog':'offer')||
+      handle.operationId!==operationId) return false;
+  if(command.kind==='inspect_catalog') {
+    return Object.keys(body).sort().join(',')==='catalog,deliveryState,freeInspection,operationId,readHandle';
+  }
+  const required=['operationId','readHandle','resourceId','resourceSha256','contentType','payment','offers','freeInspection','deliveryState'];
+  const allowed=new Set([...required,'dataType','schema','provenance']);
+  return !Object.keys(body).some((key)=>!allowed.has(key))&&required.every((key)=>key in body)&&body.resourceId===command.resourceId&&
+    (body.dataType===undefined||typeof body.dataType==='string')&&(body.schema===undefined||typeof body.schema==='string')&&
+    (body.provenance===undefined||isRecord(body.provenance));
+}
+
+function expectedS4ReadRequestHash(command:ReadCommand):string {
+  const request=command.kind==='inspect_catalog'?{method:'GET',path:'/catalog'}:{method:'GET',path:'/offer',resourceId:command.resourceId};
+  return sha256(JSON.stringify(request)).toLowerCase();
+}
+function expectedS4ReadResponseHash(command:ReadCommand,body:JsonRecord):string {
+  if(command.kind==='inspect_catalog') return sha256(JSON.stringify({operationId:body.operationId,readHandle:body.readHandle,catalog:body.catalog,
+    freeInspection:body.freeInspection,deliveryState:body.deliveryState})).toLowerCase();
+  const response:JsonRecord={operationId:body.operationId,readHandle:body.readHandle,resourceId:body.resourceId,
+    resourceSha256:body.resourceSha256,contentType:body.contentType};
+  if(body.dataType!==undefined)response.dataType=body.dataType;
+  if(body.schema!==undefined)response.schema=body.schema;
+  if(body.provenance!==undefined)response.provenance=body.provenance;
+  response.payment=body.payment;response.offers=body.offers;response.freeInspection=body.freeInspection;response.deliveryState=body.deliveryState;
+  return sha256(JSON.stringify(response)).toLowerCase();
+}
+
+function validateS4ReadOperations(census:Census,actions:LoadedAction[],environmentId:string,generationId:string,participantId:string):Set<string> {
+  const reads=actions.filter((action):action is LoadedReadAction=>action.category==='read');
+  const ids=new Set<string>();
+  for(const action of reads){
+    const id=String(action.evidence.befOperationId).toLowerCase();
+    const operation=census.operations.find((item)=>String(item.operation_id).toLowerCase()===id);
+    if(ids.has(id)||!operation||operation.env_id!==environmentId||String(operation.generation_id).toLowerCase()!==generationId.toLowerCase()||
+        operation.participant_id!==participantId||String(operation.idempotency_key_sha256).toLowerCase()!==sha256(`task-action-${action.row.id}`).toLowerCase()||
+        String(operation.request_sha256).toLowerCase()!==expectedS4ReadRequestHash(action.command)||
+        operation.operation_kind!==(action.command.kind==='inspect_catalog'?'catalog':'offer')||operation.status!=='accepted'||
+        operation.receipt_status!=='not_submitted'||operation.transaction_hash!==null||!action.evidence.participantToolResponse||
+        String(operation.response_sha256).toLowerCase()!==expectedS4ReadResponseHash(action.command,action.evidence.participantToolResponse as JsonRecord)) {
+      throw new CollectionUnavailable('rpc_mapping_incomplete');
+    }
+    ids.add(id);
+  }
+  if(ids.size!==reads.length||ids.size!==census.operations.filter((item)=>['catalog','offer'].includes(String(item.operation_kind))).length||
+      census.selectedExecutions.some((item)=>ids.has(String(item.operation_id).toLowerCase()))||
+      census.selectedEvents.some((item)=>ids.has(String(item.operationId).toLowerCase()))||
+      census.costs.some((item)=>ids.has(String(item.operation_id).toLowerCase()))) throw new CollectionUnavailable('rpc_mapping_incomplete');
+  return ids;
 }
 
 function verifyFixtureOperation(census:Census,fixture:FixtureProof,prep:PreparationRow,payer:string,
@@ -1232,8 +1304,12 @@ async function collectLocked(deps:BefS4ObservationCollectorDependencies,target:{
       before.census.paymentsCount!=='0'||before.census.deliveriesCount!=='0')return unavailable('rpc_mapping_incomplete');
   let fixtureRows:{operation:JsonRecord;selected:JsonRecord;events:JsonRecord[]};
   try{fixtureRows=verifyFixtureOperation(before.census,fixture,prep,payer,tokenAddresses,router);}catch(error){if(error instanceof CollectionUnavailable)return unavailable(error.reasonCode);throw error;}
-  const actionByBefId=new Map<string,LoadedAction>();
-  for(const action of actions){const id=String(action.evidence.befOperationId).toLowerCase();if(actionByBefId.has(id))return unavailable('action_evidence_unavailable');actionByBefId.set(id,action);}
+  const actionByBefId=new Map<string,LoadedMutableAction>();
+  let readOperationIds:Set<string>;
+  try{readOperationIds=validateS4ReadOperations(before.census,actions,prep.environment_id,prep.generation_id,participantId!);}
+  catch(error){if(error instanceof CollectionUnavailable)return unavailable(error.reasonCode);throw error;}
+  for(const action of actions){if(action.category!=='mutable')continue;const id=String(action.evidence.befOperationId).toLowerCase();
+    if(actionByBefId.has(id))return unavailable('action_evidence_unavailable');actionByBefId.set(id,action);}
   let rpc=new RpcRecorder(rpcPort),chainId:bigint,baseline:S4Checkpoint,final:S4Checkpoint,blocks:BefS4RunObservationPacket['rpc']['intervalBlocks'],approvals:S4ApprovalLog[],transfers:S4TransferLog[],receipts:S4Receipt[];
   try{
     const chain=hexUint(await rpc.request('eth_chainId',[]));if(chain===null||chain!==BigInt(identity.localChainId))return unavailable('rpc_identity_mismatch');chainId=chain;
@@ -1285,8 +1361,10 @@ async function collectLocked(deps:BefS4ObservationCollectorDependencies,target:{
     if(afterNonce<beforeNonce||afterNonce-beforeNonce!==BigInt(participants.length))throw new CollectionUnavailable('rpc_mapping_incomplete');
     const nonces=participants.map((item)=>BigInt(item.nonce)).sort((a,b)=>a<b?-1:a>b?1:0);
     if(nonces.some((nonce,index)=>nonce!==beforeNonce+BigInt(index)))throw new CollectionUnavailable('rpc_mapping_incomplete');
-    const operationTxs=before.census.operations.filter((op)=>op.operation_id!==fixture.operationId);
-    if(operationTxs.length!==participants.length||operationTxs.some((op)=>!normalizeHash(op.transaction_hash)||!participants.some((p)=>p.hash===op.transaction_hash)))throw new CollectionUnavailable('rpc_mapping_incomplete');
+    const operationTxs=before.census.operations.filter((op)=>op.operation_id!==fixture.operationId&&
+      !readOperationIds.has(String(op.operation_id).toLowerCase()));
+    if(operationTxs.length!==actions.filter((action)=>action.category==='mutable').length||operationTxs.length!==participants.length||
+        operationTxs.some((op)=>!normalizeHash(op.transaction_hash)||!participants.some((p)=>p.hash===op.transaction_hash)))throw new CollectionUnavailable('rpc_mapping_incomplete');
     const fixtureBlockRaw=await rpc.request('eth_getBlockByNumber',[`0x${fixture.blockNumber.toString(16)}`,true]);
     const fixtureBlock=blockHeader(fixtureBlockRaw,fixture.blockNumber);
     if(!isRecord(fixtureBlockRaw)||!Array.isArray(fixtureBlockRaw.transactions)||fixtureBlock.hash!==fixture.blockHash||
@@ -1361,7 +1439,8 @@ async function collectLocked(deps:BefS4ObservationCollectorDependencies,target:{
       if(!action&&op.operation_id===fixture.operationId)throw new CollectionUnavailable('rpc_mapping_incomplete');
       sourceByTx.set(txHash,{op,selected,action:action??null,tx:txValue,receipt,selectedAction:selectedPublic,actionSequence:action?.sequence??0});
     }
-    if(sourceByTx.size!==taskTransactions.length||actions.some((item)=>!sourceByTx.has(String(item.evidence.transactionHash).toLowerCase())))throw new CollectionUnavailable('rpc_mapping_incomplete');
+    if(sourceByTx.size!==taskTransactions.length||actions.some((item)=>item.category==='mutable'&&
+        !sourceByTx.has(String(item.evidence.transactionHash).toLowerCase())))throw new CollectionUnavailable('rpc_mapping_incomplete');
     const expectedCosts:Array<{operationId:string;receipt:S4Receipt;parentHash:string}>=[
       {operationId:fixture.operationId,receipt:fixtureReceipt,parentHash:fixture.parentHash},
     ];
@@ -1450,7 +1529,7 @@ async function collectLocked(deps:BefS4ObservationCollectorDependencies,target:{
         fixtureOperationId:fixture.operationId,fixtureTransactionHash:fixture.transactionHash,fixtureBlockNumber:fixture.blockNumber.toString(),fixtureBlockHash:fixture.blockHash,fixtureProofSha256:fixture.proofSha256},
       ownerActions:actions.map((action)=>({actionId:action.row.id,actionSequence:action.sequence,ownerOperationId:action.row.operation_id,actionKind:action.row.action_kind,
         commandSha256:action.row.payload_hash.toLowerCase(),actionEvidence:action.evidenceReference,befOperationId:String(action.evidence.befOperationId).toLowerCase(),
-        transactionHash:String(action.evidence.transactionHash).toLowerCase()})),
+        transactionHash:action.category==='mutable'?String(action.evidence.transactionHash).toLowerCase():null})),
       bef:{session:before.session,before:before.census,after:after.census,censusSha256:sha256CanonicalTaskJson(before.census).toLowerCase()},
       rpc:{localChainId:chainId.toString(),baseline,final,intervalBlocks:blocks,approvals,transfers,receipts,responseHashes:rpc.responseHashes}};
     if(hasSecret(packetBase)||Buffer.byteLength(canonicalTaskJson(packetBase),'utf8')>MAX_PACKET_BYTES)return unavailable('capture_evidence_unavailable');

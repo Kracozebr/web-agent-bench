@@ -46,7 +46,8 @@ function ref(path: string, bytes: Buffer): EvidenceReference { return { path, sh
 function simpleRef(path: string): EvidenceReference { return { path, sha256: 'd'.repeat(64), boundary: BOUNDARY }; }
 function word(value: bigint): string { return `0x${value.toString(16).padStart(64, '0')}`; }
 
-type FixtureOptions = { withAction?: boolean; answer?: Record<string, unknown> | null; nonceChanged?: boolean };
+type FixtureOptions = { withAction?: boolean; actionKinds?: Array<'inspect_catalog' | 'inspect_offer'>;
+  answer?: Record<string, unknown> | null; nonceChanged?: boolean };
 
 async function fixture(options: FixtureOptions = {}) {
   const root = await mkdtemp(join(tmpdir(), 'bef-s2-observation-'));
@@ -134,12 +135,13 @@ async function fixture(options: FixtureOptions = {}) {
     lease_state: 'leased', observation_status: 'ready', generation_id: GENERATION, participant_id: PARTICIPANT_ID,
     payer_address: PARTICIPANT, baseline_state_sha256: initialStateSha, fixture_evidence: fixtureEvidence, baseline_evidence: baselineEvidence };
   const answer = options.answer === undefined ? null : options.answer;
+  const actionKinds = options.actionKinds ?? (options.withAction ? ['inspect_offer'] : []);
   const closurePayloadHash = sha256CanonicalTaskJson({ action: 'task_finish', runId: RUN, taskIndex: 0, answer: answer ?? null });
   const runRow = { owner_id: OWNER, agent_id: AGENT, mode: 'training', task_ids: ['S2'], release_identity: releaseIdentity,
     manifest_hash: RUN_MANIFEST_HASH, task_id: 'S2', closure_status: 'closed', closure_id: CLOSURE,
     closure_operation_id: answer === null ? 'finish-empty-answer-1' : 'finish-answer-op-001', closure_payload_hash: closurePayloadHash,
-    closure_reason: 'agent_finish', action_cutoff_sequence: options.withAction ? '1' : '0',
-    reconciled_action_sequence: options.withAction ? '1' : '0' };
+    closure_reason: 'agent_finish', action_cutoff_sequence: String(actionKinds.length),
+    reconciled_action_sequence: String(actionKinds.length) };
   const closureRow = { id: CLOSURE, operation_id: runRow.closure_operation_id, payload_hash: closurePayloadHash,
     reason: 'agent_finish', action_cutoff_sequence: runRow.action_cutoff_sequence, owner_id: OWNER, agent_id: AGENT, answer_json: answer };
 
@@ -151,32 +153,47 @@ async function fixture(options: FixtureOptions = {}) {
   };
   let actionRows: unknown[] = [];
   let operationRows: unknown[] = [];
-  if (options.withAction) {
-    const command = { kind: 'inspect_offer', resourceId, offerId };
+  for (let index = 0; index < actionKinds.length; index += 1) {
+    const actionKind = actionKinds[index]!;
+    const actionId = index === 0 ? ACTION : '10000000-0000-4000-8000-000000000011';
+    const befOperationId = index === 0 ? BEF_OPERATION : '10000000-0000-4000-8000-000000000012';
+    const ownerOperationId = `owner-read-operation-${String(index + 1).padStart(3, '0')}`;
+    const command = actionKind === 'inspect_catalog' ? { kind: 'inspect_catalog' as const } :
+      { kind: 'inspect_offer' as const, resourceId, offerId };
+    const participantToolResponse: Record<string, unknown> = actionKind === 'inspect_offer'
+      ? { ...body, operationId: befOperationId, readHandle: { kind: 'offer', operationId: befOperationId } }
+      : { operationId: befOperationId, readHandle: { kind: 'catalog', operationId: befOperationId },
+        catalog: [{ resourceId, resourceSha256: '7'.repeat(64), contentType: 'application/json', dataType: 'weather.current',
+          offers: [{ id: offerId, payment }] }], freeInspection: true, deliveryState: 'not_delivered' };
     const payloadHash = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command });
     const evidence = {
-      schema: 'bef-task-action-observation-v1', actionId: ACTION, runId: RUN, taskIndex: 0, actionSequence: '1',
-      ownerOperationId: 'owner-read-operation-001', actionKind: 'inspect_offer', commandSha256: payloadHash,
+      schema: 'bef-task-action-observation-v1', actionId, runId: RUN, taskIndex: 0, actionSequence: String(index + 1),
+      ownerOperationId, actionKind, commandSha256: payloadHash,
       environmentId: ENVIRONMENT, generationId: GENERATION, manifestSha256: ENV_HASH, applicationSourceSha256: APP_HASH,
-      idempotencyKey: `task-action-${ACTION}`, status: 'observed', httpStatus: 200, befOperationId: BEF_OPERATION,
-      rawResponseSha256: '8'.repeat(64), participantToolResponse: body,
+      idempotencyKey: `task-action-${actionId}`, status: 'observed', httpStatus: 200, befOperationId,
+      rawResponseSha256: sha(JSON.stringify(participantToolResponse)), participantToolResponse,
     };
     const evidenceBytes = Buffer.from(JSON.stringify(evidence));
-    const evidencePath = 'artifacts/runs/owner-identity-bef-task-coordinator/action/action.json';
+    const evidencePath = `artifacts/runs/owner-identity-bef-task-coordinator/action/action-${index + 1}.json`;
     await writeFile(join(root, evidencePath), evidenceBytes);
     const evidenceHash = sha(evidenceBytes.toString('utf8'));
-    actionRows = [{ id: ACTION, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'S2',
-      environment_id: ENVIRONMENT, action_sequence: '1', operation_id: 'owner-read-operation-001', payload_hash: payloadHash,
-      action_kind: 'inspect_offer', command_json: command, receipt_revision: 1, receipt_status: 'observed', evidence_hash: evidenceHash,
+    actionRows.push({ id: actionId, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'S2',
+      environment_id: ENVIRONMENT, action_sequence: String(index + 1), operation_id: ownerOperationId, payload_hash: payloadHash,
+      action_kind: actionKind, command_json: command, receipt_revision: 1, receipt_status: 'observed', evidence_hash: evidenceHash,
       evidence_path: evidencePath, transaction_hash: null, history_revision: 1, history_status: 'observed',
-      history_evidence_hash: evidenceHash, history_evidence_path: evidencePath, history_transaction_hash: null }];
-    const responseBody = { operationId: BEF_OPERATION, readHandle: body.readHandle, resourceId, resourceSha256: body.resourceSha256,
-      contentType: body.contentType, payment: body.payment, offers: body.offers, freeInspection: true, deliveryState: 'not_delivered' };
-    operationRows = [{ operation_id: BEF_OPERATION, env_id: ENVIRONMENT, generation_id: GENERATION, participant_id: PARTICIPANT_ID,
-      idempotency_key_sha256: sha(`task-action-${ACTION}`),
-      request_sha256: sha(JSON.stringify({ method: 'GET', path: '/offer', resourceId })), operation_kind: 'offer', status: 'accepted',
-      receipt_status: 'not_submitted', transaction_hash: null,
-      response_sha256: sha(JSON.stringify(responseBody)), started_at: '2026-10-27T12:01:00.000Z', completed_at: '2026-10-27T12:01:00.000Z' }];
+      history_evidence_hash: evidenceHash, history_evidence_path: evidencePath, history_transaction_hash: null });
+    const responseBody = actionKind === 'inspect_catalog'
+      ? participantToolResponse
+      : { operationId: befOperationId, readHandle: participantToolResponse.readHandle, resourceId,
+        resourceSha256: participantToolResponse.resourceSha256, contentType: participantToolResponse.contentType,
+        payment: participantToolResponse.payment, offers: participantToolResponse.offers,
+        freeInspection: true, deliveryState: 'not_delivered' };
+    const request = actionKind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } : { method: 'GET', path: '/offer', resourceId };
+    operationRows.push({ operation_id: befOperationId, env_id: ENVIRONMENT, generation_id: GENERATION, participant_id: PARTICIPANT_ID,
+      idempotency_key_sha256: sha(`task-action-${actionId}`), request_sha256: sha(JSON.stringify(request)),
+      operation_kind: actionKind === 'inspect_catalog' ? 'catalog' : 'offer', status: 'accepted',
+      receipt_status: 'not_submitted', transaction_hash: null, response_sha256: sha(JSON.stringify(responseBody)),
+      started_at: '2026-10-27T12:01:00.000Z', completed_at: '2026-10-27T12:01:00.000Z' });
   }
 
   const generation = { generation_id: GENERATION, env_id: ENVIRONMENT, participant_id: PARTICIPANT_ID, payer_address: PARTICIPANT,
@@ -287,6 +304,23 @@ test('S2 accepts the preparation producer envelope and captures one free read wi
       transfers: 'complete', payments: 'complete', stateMutations: 'complete', balances: 'complete',
       allowances: 'complete', deliveries: 'complete', answers: 'complete',
     });
+  } finally { await f.cleanup(); }
+});
+
+test('S2 retains a valid catalog inspection before the offer inspection in the closed action prefix', async () => {
+  const f = await fixture({ actionKinds: ['inspect_catalog', 'inspect_offer'], answer: correctAnswer });
+  try {
+    const result = await collectBefS2TaskObservationCandidate(f.deps, { runId: RUN, taskIndex: 0 });
+    assert.equal(result.status, 'candidate', `${JSON.stringify(result)} RPC=${f.rpcCalls.join('|')}`);
+    if (result.status !== 'candidate') return;
+    assert.deepEqual(f.packets[0]!.ownerActions.map((action) => [action.actionSequence, action.actionKind]), [
+      [1, 'inspect_catalog'], [2, 'inspect_offer'],
+    ]);
+    assert.equal(f.packets[0]!.closure.actionCutoffSequence, 2);
+    assert.deepEqual(f.packets[0]!.bef.before.operations.map((operation) => operation.operation_kind), ['catalog', 'offer']);
+    assert.equal(result.candidate.observations?.coveredThroughSequence, 2);
+    assert.deepEqual(result.candidate.observations?.transfers, []);
+    assert.deepEqual(result.candidate.observations?.payments, []);
   } finally { await f.cleanup(); }
 });
 

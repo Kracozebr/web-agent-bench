@@ -137,7 +137,7 @@ export type BefS2RunObservationPacket = {
     baselineBlockNumber: string; baselineBlockHash: string;
   };
   ownerActions: Array<{
-    actionId: string; actionSequence: number; ownerOperationId: string; actionKind: 'inspect_offer';
+    actionId: string; actionSequence: number; ownerOperationId: string; actionKind: 'inspect_catalog' | 'inspect_offer';
     commandSha256: string; receiptStatus: 'observed'; actionEvidence: EvidenceReference;
     befOperationId: string;
   }>;
@@ -180,7 +180,9 @@ type ActionRow = {
   history_evidence_path: string | null; history_transaction_hash: string | null;
 };
 
-type LoadedAction = { row: ActionRow; sequence: number; command: Extract<TaskActionCommand, { kind: 'inspect_offer' }>; evidence: JsonRecord; reference: EvidenceReference; body: JsonRecord };
+type LoadedAction = { row: ActionRow; sequence: number;
+  command: Extract<TaskActionCommand, { kind: 'inspect_catalog' | 'inspect_offer' }>;
+  evidence: JsonRecord; reference: EvidenceReference; body: JsonRecord };
 
 class Unavailable extends Error {
   constructor(readonly reasonCode: BefS2UnavailableCode) { super(reasonCode); }
@@ -365,23 +367,28 @@ async function loadActions(root: string, run: RunRow, prep: PreparationRow, runI
     }) : null;
     if (actionSequence !== index + 1 || !UUID.test(row.id) || row.id !== row.id.toLowerCase() ||
         row.run_id !== runId || row.task_index !== taskIndex || row.owner_id !== run.owner_id || row.agent_id !== run.agent_id ||
-        row.task_id !== 'S2' || row.environment_id !== prep.environment_id || row.action_kind !== 'inspect_offer' ||
+        row.task_id !== 'S2' || row.environment_id !== prep.environment_id ||
+        !['inspect_catalog', 'inspect_offer'].includes(row.action_kind) ||
         !HASH.test(row.payload_hash) || !ref || !HASH.test(row.evidence_hash ?? '') ||
         row.history_revision !== row.receipt_revision || row.history_status !== row.receipt_status ||
         row.history_evidence_hash !== row.evidence_hash || row.history_evidence_path !== row.evidence_path ||
         (row.history_transaction_hash?.toLowerCase() ?? null) !== (row.transaction_hash?.toLowerCase() ?? null) ||
         row.receipt_status !== 'observed' || row.transaction_hash !== null) throw new Unavailable('action_evidence_unavailable');
     const parsedCommand = TaskActionCommandSchema.safeParse(parseJson(row.command_json, 'action_evidence_unavailable'));
-    if (!parsedCommand.success || parsedCommand.data.kind !== 'inspect_offer' || parsedCommand.data.resourceId !== taskCase.objective.resourceId ||
-        (parsedCommand.data.offerId !== undefined && parsedCommand.data.offerId !== taskCase.objective.offerId) ||
-        sha256CanonicalTaskJson({ runId, taskIndex, command: parsedCommand.data }).toLowerCase() !== row.payload_hash.toLowerCase()) {
+    if (!parsedCommand.success) throw new Unavailable('action_evidence_unavailable');
+    const readCommand = parsedCommand.data;
+    if ((readCommand.kind !== 'inspect_catalog' && readCommand.kind !== 'inspect_offer') ||
+        (readCommand.kind === 'inspect_offer' && (readCommand.resourceId !== taskCase.objective.resourceId ||
+          (readCommand.offerId !== undefined && readCommand.offerId !== taskCase.objective.offerId))) ||
+        readCommand.kind !== row.action_kind ||
+        sha256CanonicalTaskJson({ runId, taskIndex, command: readCommand }).toLowerCase() !== row.payload_hash.toLowerCase()) {
       throw new Unavailable('action_evidence_unavailable');
     }
     const evidence = parseSafeJson(await readEvidence(root, ref, ACTION_ROOT, 'action_evidence_unavailable'), 'action_evidence_unavailable');
     if (Object.keys(evidence).some((key) => !ACTION_KEYS.has(key)) || evidence.schema !== 'bef-task-action-observation-v1' ||
         evidence.actionId !== row.id || evidence.runId !== runId || evidence.taskIndex !== taskIndex ||
         evidence.actionSequence !== String(actionSequence) || evidence.ownerOperationId !== row.operation_id ||
-        evidence.actionKind !== 'inspect_offer' || evidence.commandSha256 !== row.payload_hash.toLowerCase() ||
+        evidence.actionKind !== readCommand.kind || evidence.commandSha256 !== row.payload_hash.toLowerCase() ||
         evidence.environmentId !== prep.environment_id || evidence.generationId !== prep.generation_id ||
         evidence.manifestSha256 !== prep.environment_manifest_sha256.toLowerCase() ||
         evidence.applicationSourceSha256 !== prep.application_source_hash.toLowerCase() ||
@@ -391,17 +398,33 @@ async function loadActions(root: string, run: RunRow, prep: PreparationRow, runI
         evidence.transactionHash !== undefined || evidence.receiptStatus !== undefined || evidence.outcome !== undefined ||
         !isRecord(evidence.participantToolResponse)) throw new Unavailable('action_evidence_unavailable');
     const body = evidence.participantToolResponse;
-    if (!readOnlyToolResponseMatches(parsedCommand.data, body) || body.resourceId !== taskCase.objective.resourceId ||
-        body.operationId !== evidence.befOperationId || !validatePublicOffer(taskCase, body, assetAddress)) {
+    if (!readOnlyToolResponseMatches(readCommand, body) || body.operationId !== evidence.befOperationId ||
+        !validatePublicRead(taskCase, readCommand, body, assetAddress)) {
       throw new Unavailable('action_evidence_unavailable');
     }
-    loaded.push({ row, sequence: actionSequence, command: parsedCommand.data, evidence, reference: ref, body });
+    loaded.push({ row, sequence: actionSequence, command: readCommand, evidence, reference: ref, body });
   }
   return loaded;
 }
 
-function validatePublicOffer(taskCase: Extract<TaskCase, { taskId: 'S2' }>, body: JsonRecord, assetAddress: string): boolean {
+function validatePublicRead(taskCase: Extract<TaskCase, { taskId: 'S2' }>,
+  command: Extract<TaskActionCommand, { kind: 'inspect_catalog' | 'inspect_offer' }>, body: JsonRecord, assetAddress: string): boolean {
   const handle = body.readHandle;
+  if (command.kind === 'inspect_catalog') {
+    if (Object.keys(body).sort().join(',') !== 'catalog,deliveryState,freeInspection,operationId,readHandle' ||
+        body.freeInspection !== true || body.deliveryState !== 'not_delivered' || !isRecord(handle) ||
+        Object.keys(handle).sort().join(',') !== 'kind,operationId' || handle.kind !== 'catalog' ||
+        handle.operationId !== body.operationId || !Array.isArray(body.catalog) || body.catalog.length < 1 || body.catalog.length > 128) return false;
+    const targetResource = body.catalog.find((item) => isRecord(item) && item.resourceId === taskCase.objective.resourceId);
+    if (!isRecord(targetResource) || !Array.isArray(targetResource.offers)) return false;
+    const targetOffer = targetResource.offers.find((item) => isRecord(item) && item.id === taskCase.objective.offerId);
+    if (!isRecord(targetOffer) || !isRecord(targetOffer.payment)) return false;
+    const payment = targetOffer.payment;
+    const expected = taskCase.objective.completePaymentRequirements;
+    return payment.scheme === expected.scheme && payment.network === expected.network && payment.amount === expected.amountUnits &&
+      String(payment.asset).toLowerCase() === assetAddress && String(payment.payTo).toLowerCase() === expected.recipient.toLowerCase() &&
+      payment.transferMethod === expected.authFields.find((field) => field.name === 'assetTransferMethod')?.value;
+  }
   if (body.resourceId !== taskCase.objective.resourceId || typeof body.resourceSha256 !== 'string' || !HASH.test(body.resourceSha256) ||
       typeof body.contentType !== 'string' || body.contentType.length < 1 || body.contentType.length > 128 ||
       body.freeInspection !== true || body.deliveryState !== 'not_delivered' || !isRecord(handle) ||
@@ -721,10 +744,18 @@ function assertNoEffects(census: Census, actions: LoadedAction[], environmentId:
   }
 }
 
-function expectedRequestHash(resourceId: string): string {
-  return createHash('sha256').update(JSON.stringify({ method: 'GET', path: '/offer', resourceId })).digest('hex');
+function expectedRequestHash(command: LoadedAction['command']): string {
+  const request = command.kind === 'inspect_catalog'
+    ? { method: 'GET', path: '/catalog' }
+    : { method: 'GET', path: '/offer', resourceId: command.resourceId };
+  return createHash('sha256').update(JSON.stringify(request)).digest('hex');
 }
-function expectedResponseHash(body: JsonRecord): string {
+function expectedResponseHash(command: LoadedAction['command'], body: JsonRecord): string {
+  if (command.kind === 'inspect_catalog') {
+    const response = { operationId: body.operationId, readHandle: body.readHandle, catalog: body.catalog,
+      freeInspection: body.freeInspection, deliveryState: body.deliveryState };
+    return createHash('sha256').update(Buffer.from(JSON.stringify(response))).digest('hex');
+  }
   // The action evidence stores the allowlisted projection, whose top-level
   // property order differs from the BEF's offerResponse object. Reconstruct
   // that public response shape and insertion order before checking the BEF
@@ -755,9 +786,10 @@ function operationForAction(census: Census, actions: LoadedAction[], environment
     const expectedIdempotency = createHash('sha256').update(`task-action-${action.row.id}`).digest('hex');
     if (!operation || consumed.has(id) || operation.env_id !== environmentId || operation.generation_id !== generationId ||
         operation.participant_id !== participantId || String(operation.idempotency_key_sha256).toLowerCase() !== expectedIdempotency ||
-        String(operation.request_sha256).toLowerCase() !== expectedRequestHash(action.command.resourceId) ||
-        operation.operation_kind !== 'offer' || operation.status !== 'accepted' || operation.receipt_status !== 'not_submitted' ||
-        operation.transaction_hash !== null || String(operation.response_sha256).toLowerCase() !== expectedResponseHash(action.body)) {
+        String(operation.request_sha256).toLowerCase() !== expectedRequestHash(action.command) ||
+        operation.operation_kind !== (action.command.kind === 'inspect_catalog' ? 'catalog' : 'offer') ||
+        operation.status !== 'accepted' || operation.receipt_status !== 'not_submitted' ||
+        operation.transaction_hash !== null || String(operation.response_sha256).toLowerCase() !== expectedResponseHash(action.command, action.body)) {
       throw new Unavailable('rpc_mapping_incomplete');
     }
     consumed.add(id);
@@ -931,7 +963,7 @@ async function collectLocked(deps: BefS2ObservationCollectorDependencies, target
     preparation: { fixtureEvidence: prepEvidence.fixture, baselineEvidence: prepEvidence.baseline,
       baselineBlockNumber: prepEvidence.blockNumber.toString(), baselineBlockHash: prepEvidence.blockHash },
     ownerActions: actions.map((action) => ({ actionId: action.row.id, actionSequence: action.sequence,
-      ownerOperationId: action.row.operation_id, actionKind: 'inspect_offer', commandSha256: action.row.payload_hash.toLowerCase(),
+      ownerOperationId: action.row.operation_id, actionKind: action.command.kind, commandSha256: action.row.payload_hash.toLowerCase(),
       receiptStatus: 'observed', actionEvidence: action.reference, befOperationId: String(action.evidence.befOperationId).toLowerCase() })),
     bef: { session: befBefore.session, before: befBefore.census, after: befAfter.census,
       censusSha256: sha256CanonicalTaskJson(befBefore.census).toLowerCase() },

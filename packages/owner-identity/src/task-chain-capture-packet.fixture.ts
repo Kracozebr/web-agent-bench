@@ -24,6 +24,29 @@ const evidence=(path:string,seed:string):EvidenceReference=>({path,sha256:sha(se
 type Command=Record<string,unknown>&{kind:'approve'|'transfer'|'wrap'|'unwrap'|'swap'};
 type Scenario={taskId:ChainCapturePacket['taskId'];taskCase:ChainTaskCase;packet:ChainCapturePacket;binding:ChainCapturePacket['binding'];ethValuation:{numerator:string;denominator:string}};
 
+export function prependChainInspectionFixture(fixture:Scenario):Scenario{
+ const copy=structuredClone(fixture),packet=copy.packet;
+ packet.ownerActions.forEach((action)=>{action.actionSequence+=2;});
+ packet.externalActions=['inspect_catalog','inspect_offer'].map((kind,index)=>({
+  actionId:id(200+index),actionSequence:index+1,ownerOperationId:`owner-inspection-${index}`,
+  actionKind:kind as 'inspect_catalog'|'inspect_offer',commandSha256:sha(`inspection-${index}`),receiptStatus:'observed',
+  actionEvidence:evidence(`artifacts/runs/owner-identity-bef-task-coordinator/action/${id(200+index)}.json`,`inspection-${index}`),
+  befOperationId:id(210+index),transactionHash:null,
+  inspection:{command:kind==='inspect_catalog'?{kind}:{kind,resourceId:'resource-a'},rawResponseSha256:sha(`inspection-response-${index}`)},
+ }));
+ const census=packet.bef.before as ChainJson,generation=census.generation as ChainJson;
+ census.inspectionOperations=packet.externalActions.map((action)=>({operationId:action.befOperationId,environmentId:packet.binding.environmentId,
+  generationId:packet.execution.generationId,participantId:generation.participant_id,
+  idempotencyKeySha256:sha(`task-action-${action.actionId}`),
+  requestSha256:sha(JSON.stringify(action.actionKind==='inspect_catalog'?{method:'GET',path:'/catalog'}:{method:'GET',path:'/offer',resourceId:'resource-a'})),
+  actionKind:action.actionKind==='inspect_catalog'?'catalog':'offer',status:'accepted',receiptStatus:'not_submitted',transactionHash:null,
+  responseSha256:action.inspection!.rawResponseSha256,startedAt:'2026-10-30T00:00:00Z',completedAt:'2026-10-30T00:00:01Z',
+  selectedExecutionsCount:0,selectedEventsCount:0,costsCount:0}));
+ packet.bef.after=structuredClone(census);packet.bef.censusSha256=sha(canonicalTaskJson(census));
+ packet.closure.actionCutoffSequence+=2;packet.closure.reconciledActionSequence+=2;
+ return copy;
+}
+
 function selected(command:Command):ChainJson{
  if(command.kind==='approve')return {kind:command.kind,tokenAssetId:command.tokenAssetId,amountUnits:command.amountUnits,gasLimit:command.gasLimit};
  if(command.kind==='transfer')return {kind:command.kind,amountUnits:command.amountUnits,recipient:command.recipient,gasLimit:command.gasLimit};
@@ -170,7 +193,7 @@ export function makeChainCaptureFixture(taskId:'M3'|'M4'|'H2'):Scenario{
    modeledGasFeeUsdcUnits:'1',manifestSha256:manifestSha,selectedPrincipalAsset:principal[0],selectedPrincipalUnits:principal[1],observedPrincipalUnits:principal[1]});
  }
  const census:CensusFixture={generation:{generation_id:generationId,env_id:environmentId,participant_id:participantId,payer_address:participant,manifest_sha256:manifestSha,
-   status:'active',chain_id:'31337',environment_manifest_sha256:manifestSha},operations,externalPaymentOperations:[],selectedExecutions,selectedEvents,costs,paymentsCount:'0',deliveriesCount:'0',
+   status:'active',chain_id:'31337',environment_manifest_sha256:manifestSha},operations,inspectionOperations:[],externalPaymentOperations:[],selectedExecutions,selectedEvents,costs,paymentsCount:'0',deliveriesCount:'0',
   counts:{operations:String(operations.length),externalPaymentOperations:'0',selectedExecutions:String(selectedExecutions.length),selectedEvents:String(selectedEvents.length),costs:String(costs.length)}};
  const finalBlock=Number(intervalBlocks.at(-1)?.number??100),finalHash=intervalBlocks.at(-1)?.hash??baselineBlockHash;
  const baseCheckpoint={blockNumber:'100',blockHash:baselineBlockHash,parentHash:baselineParent,balances:baselineBalances,allowances:baselineAllowances,participantTransactionCount:initialCount};
@@ -211,6 +234,7 @@ export function makeChainCaptureCompositeFixture(taskId:'H3'|'U1'):Scenario{
  const taskCase={...base.taskCase,taskId,objective} as unknown as ChainTaskCase;
  const binding={...base.binding,taskId};
  packet.taskId=taskId;packet.binding=binding;
+ delete (packet.bef.before as ChainJson).inspectionOperations;
  packet.ownerActions.forEach((action,index)=>{action.actionSequence=(taskId==='H3'?[4,6,7]:[5,6,7])[index]!;});
  const externalPaymentId=id(taskId==='H3'?70:71),paymentHash=hash(`payment-${taskId}`);
  const externalActions:ChainCaptureExternalAction[]=[
@@ -251,7 +275,7 @@ export function makeChainCaptureCompositeFixture(taskId:'H3'|'U1'):Scenario{
  packet.bef.after=structuredClone(census);packet.bef.censusSha256=sha(canonicalTaskJson(census));
  return {taskId,taskCase,packet,binding,ethValuation:base.ethValuation};
 }
-type CensusFixture={generation:ChainJson;operations:ChainJson[];externalPaymentOperations:ChainJson[];selectedExecutions:ChainJson[];selectedEvents:ChainJson[];costs:ChainJson[];
+type CensusFixture={generation:ChainJson;operations:ChainJson[];inspectionOperations:ChainJson[];externalPaymentOperations:ChainJson[];selectedExecutions:ChainJson[];selectedEvents:ChainJson[];costs:ChainJson[];
  paymentsCount:string;deliveriesCount:string;counts:ChainJson};
 const TRANSFER='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const APPROVAL='0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';

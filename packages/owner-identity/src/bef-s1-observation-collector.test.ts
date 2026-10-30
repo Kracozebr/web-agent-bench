@@ -64,6 +64,8 @@ async function createZeroActionFixture(options: {
   selectedActionToken?: unknown; selectedActionApiToken?: unknown; measurementToken?: unknown;
   operationResponseHash?: string | null;
   recoveredAction?: boolean;
+  catalogInspection?: boolean;
+  catalogVariant?: 'transaction-hash' | 'payment-protocol' | 'state-change' | 'unsupported-kind' | 'environment-health-mismatch' | 'offer-inspection';
   recoveryVariant?: 'valid' | 'source-proof-mismatch' | 'owner-binding-mismatch' | 'observed-event-missing' | 'http-claim-present';
   omitHttpResponseEvidence?: boolean;
 } = {}) {
@@ -281,11 +283,12 @@ async function createZeroActionFixture(options: {
     modeled_gas_fee_usdc_units: null, manifest_sha256: environmentManifestHash, selected_principal_asset: 'USDC',
     selected_principal_units: extraAmount, observed_principal_units: extraAmount, created_at: createdAt,
   };
-  const operations = options.extraTransfer ? [extraOperation] : [];
+  const transferOperations = options.extraTransfer ? [extraOperation] : [];
   const selectedExecutions = options.extraTransfer ? [extraSelectedExecution] : [];
   const selectedEvents = options.extraTransfer ? extraEvents : [];
   const costs = options.extraTransfer ? [extraCost] : [];
-  const cutoff = options.admittedAction ? '1' : '0';
+  const cutoff = options.admittedAction ? (options.catalogInspection ? '2' : '1') : '0';
+  const transferActionSequence = options.catalogInspection ? '2' : '1';
   const actionEvidencePath = `artifacts/runs/owner-identity-bef-task-coordinator/action/${actionId}.json`;
   const actionPayloadHash = sha256CanonicalTaskJson({ runId: RUN_ID, taskIndex: 0, command: extraCommand });
   const actionSelected = { ...selectedAction, token: options.selectedActionToken ?? TOKEN,
@@ -317,8 +320,73 @@ async function createZeroActionFixture(options: {
     selectedMeasurementSha256: sha256CanonicalTaskJson(measurement),
   }) : undefined;
   if (options.recoveredAction && !recoveredSourceProof) throw new Error('synthetic recovery source proof failed');
+  const catalogActionId = '20000000-0000-4000-8000-000000000012';
+  const catalogOwnerOperationId = 'owner-op-s1-catalog-0001';
+  const catalogBefOperationId = '10000000-0000-4000-8000-000000000013';
+  const catalogRequestSha256 = createHash('sha256').update(JSON.stringify({ method: 'GET', path: '/catalog' })).digest('hex');
+  const catalogVariant = options.catalogVariant;
+  const catalogCommand = catalogVariant === 'unsupported-kind'
+    ? { kind: 'inspect_offer', resourceId: 'synthetic-resource' } as const
+    : catalogVariant === 'offer-inspection'
+      ? { kind: 'inspect_offer', resourceId: 'synthetic-resource', offerId: 'synthetic-offer' } as const
+      : { kind: 'inspect_catalog' } as const;
+  const catalogActionKind = catalogCommand.kind;
+  const catalogPayloadHash = sha256CanonicalTaskJson({ runId: RUN_ID, taskIndex: 0, command: catalogCommand });
+  const catalogPayment = {
+    scheme: 'exact', network: 'local-test', asset: TOKEN, amount: '1', payTo: RECIPIENT,
+    transferMethod: 'transferWithAuthorization',
+  };
+  const catalogResponse = catalogVariant === 'offer-inspection'
+    ? { operationId: catalogBefOperationId, readHandle: { kind: 'offer', operationId: catalogBefOperationId },
+      resourceId: 'synthetic-resource', resourceSha256: HASH_A, contentType: 'application/json', payment: catalogPayment,
+      offers: [{ id: 'synthetic-offer', payment: catalogPayment }], freeInspection: true,
+      deliveryState: 'not_delivered' }
+    : { operationId: catalogBefOperationId, readHandle: { kind: 'catalog', operationId: catalogBefOperationId },
+      catalog: [{ resourceId: 'synthetic-resource', resourceSha256: HASH_A, contentType: 'application/json',
+        offers: [{ id: 'synthetic-offer', payment: catalogPayment }] }],
+      freeInspection: true, deliveryState: catalogVariant === 'state-change' ? 'delivered' : 'not_delivered' };
+  const catalogEvidenceDocument = {
+    schema: 'bef-task-action-observation-v1', actionId: catalogActionId, runId: RUN_ID, taskIndex: 0,
+    actionSequence: '1', ownerOperationId: catalogOwnerOperationId, actionKind: catalogActionKind,
+    commandSha256: catalogPayloadHash, environmentId: ENVIRONMENT_ID, generationId: GENERATION_ID,
+    manifestSha256: environmentManifestHash, applicationSourceSha256: applicationSourceHash,
+    idempotencyKey: `task-action-${catalogActionId}`, status: 'observed', requestStartedAt: createdAt,
+    requestFinishedAt: createdAt, httpStatus: 200, rawResponseSha256: HASH_B,
+    befOperationId: catalogBefOperationId,
+    environmentHealth: { boundary: 'benchmark-environment-api', manifestSha256: catalogVariant === 'environment-health-mismatch'
+      ? '0'.repeat(64) : environmentManifestHash, applicationSourceSha256: applicationSourceHash, envId: ENVIRONMENT_ID },
+    ...(catalogVariant === 'transaction-hash' ? { transactionHash: EXTRA_TX_HASH } : {}),
+    ...(catalogVariant === 'payment-protocol' ? { paymentProtocol: { scheme: 'exact' } } : {}),
+    participantToolResponse: catalogResponse,
+  };
+  const catalogEvidenceBytes = Buffer.from(JSON.stringify(catalogEvidenceDocument));
+  const catalogEvidencePath = `artifacts/runs/owner-identity-bef-task-coordinator/action/${catalogActionId}.json`;
+  if (options.admittedAction && options.catalogInspection) {
+    await writeFile(join(actionEvidenceDirectory, `${catalogActionId}.json`), catalogEvidenceBytes);
+  }
+  const catalogActionRow = options.admittedAction && options.catalogInspection ? {
+    id: catalogActionId, run_id: RUN_ID, task_index: 0, owner_id: OWNER_ID, agent_id: AGENT_ID, task_id: 'S1',
+    environment_id: ENVIRONMENT_ID, action_sequence: '1', operation_id: catalogOwnerOperationId,
+    payload_hash: catalogPayloadHash, action_kind: catalogActionKind, command_json: catalogCommand,
+    receipt_revision: 1, receipt_status: 'observed', evidence_hash: createHash('sha256').update(catalogEvidenceBytes).digest('hex'),
+    evidence_path: catalogEvidencePath, transaction_hash: null, history_revision: 1, history_status: 'observed',
+    history_evidence_hash: createHash('sha256').update(catalogEvidenceBytes).digest('hex'), history_evidence_path: catalogEvidencePath,
+    history_transaction_hash: null,
+  } : null;
+  const catalogOperation = options.catalogInspection ? {
+    operation_id: catalogBefOperationId, env_id: ENVIRONMENT_ID, generation_id: GENERATION_ID, participant_id: PARTICIPANT_ID,
+    idempotency_key_sha256: createHash('sha256').update(`task-action-${catalogActionId}`).digest('hex'),
+    request_sha256: catalogCommand.kind === 'inspect_catalog' ? catalogRequestSha256 :
+      createHash('sha256').update(JSON.stringify({ method: 'GET', path: '/offer', resourceId: 'synthetic-resource' })).digest('hex'),
+    response_sha256: HASH_B, operation_kind: catalogCommand.kind === 'inspect_catalog' ? 'catalog' : 'offer',
+    status: 'accepted', receipt_status: 'not_submitted', transaction_hash: null,
+  } : null;
+  const operations = [
+    ...(catalogOperation ? [catalogOperation] : []),
+    ...transferOperations,
+  ];
   const actionEvidenceDocument = {
-    schema: 'bef-task-action-observation-v1', actionId, runId: RUN_ID, taskIndex: 0, actionSequence: '1',
+    schema: 'bef-task-action-observation-v1', actionId, runId: RUN_ID, taskIndex: 0, actionSequence: transferActionSequence,
     ownerOperationId, actionKind: 'transfer', commandSha256: options.bareCommandHash ? sha256CanonicalTaskJson(extraCommand) : actionPayloadHash,
     environmentId: ENVIRONMENT_ID, generationId: GENERATION_ID, manifestSha256: environmentManifestHash,
     applicationSourceSha256: applicationSourceHash, idempotencyKey: `task-action-${actionId}`, status: 'observed',
@@ -343,7 +411,7 @@ async function createZeroActionFixture(options: {
   if (options.admittedAction) await writeFile(join(actionEvidenceDirectory, `${actionId}.json`), actionEvidenceBytes);
   const admittedActionRow = options.admittedAction ? {
     id: actionId, run_id: RUN_ID, task_index: 0, owner_id: OWNER_ID, agent_id: AGENT_ID, task_id: 'S1',
-    environment_id: ENVIRONMENT_ID, action_sequence: '1', operation_id: ownerOperationId,
+    environment_id: ENVIRONMENT_ID, action_sequence: transferActionSequence, operation_id: ownerOperationId,
     payload_hash: options.bareCommandHash ? sha256CanonicalTaskJson(extraCommand) : actionPayloadHash,
     action_kind: 'transfer', command_json: extraCommand,
     receipt_revision: 1, receipt_status: 'observed', evidence_hash: createHash('sha256').update(actionEvidenceBytes).digest('hex'),
@@ -371,7 +439,9 @@ async function createZeroActionFixture(options: {
     runRow.action_cutoff_sequence = cutoff;
     runRow.reconciled_action_sequence = cutoff;
     closureRow.action_cutoff_sequence = cutoff;
-    ownerResults[ownerResults.length - 1] = [admittedActionRow];
+    ownerResults[ownerResults.length - 1] = [
+      ...(catalogActionRow ? [catalogActionRow] : []), admittedActionRow,
+    ];
   }
   const fakeTx = { execute: async () => ownerResults.shift() ?? [] };
   const db = { transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(fakeTx) } as unknown as OwnerDatabase;
@@ -558,6 +628,57 @@ test('synthetic S1 joins an admitted owner action to a distinct BEF operation an
     assert.equal(Object.hasOwn(selectedEvent, 'event_json'), false);
   } finally {
     await fixture.close();
+  }
+});
+
+test('synthetic S1 retains a verified read-only catalog action and scores only the transfer effect', async () => {
+  const fixture = await createZeroActionFixture({ extraTransfer: true, admittedAction: true, catalogInspection: true });
+  try {
+    const result = await collectBefS1TaskObservationCandidate(fixture.dependencies, { runId: RUN_ID, taskIndex: 0 });
+    assert.equal(result.status, 'candidate', JSON.stringify(result));
+    if (result.status !== 'candidate') return;
+    assert.equal(result.candidate.observations?.transfers.length, 1);
+    assert.equal(result.candidate.observations?.transfers[0]?.amountUnits, '500000');
+    assert.equal(result.candidate.observations?.transfers[0]?.actionSequence, 2);
+    assert.deepEqual(fixture.getPacket()?.ownerActions.map((action) => [action.actionSequence, action.actionKind]), [
+      [1, 'inspect_catalog'], [2, 'transfer'],
+    ]);
+    assert.equal(fixture.getPacket()?.ownerActions[0]?.befOperationId, '10000000-0000-4000-8000-000000000013');
+    assert.equal(fixture.getPacket()?.ownerActions[0]?.transactionHash, null);
+    assert.equal(fixture.getPacket()?.ownerActions[1]?.befOperationId, '10000000-0000-4000-8000-000000000010');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('synthetic S1 retains a verified read-only offer action before the transfer', async () => {
+  const fixture = await createZeroActionFixture({ extraTransfer: true, admittedAction: true, catalogInspection: true,
+    catalogVariant: 'offer-inspection' });
+  try {
+    const result = await collectBefS1TaskObservationCandidate(fixture.dependencies, { runId: RUN_ID, taskIndex: 0 });
+    assert.equal(result.status, 'candidate', JSON.stringify(result));
+    if (result.status !== 'candidate') return;
+    assert.equal(result.candidate.observations?.transfers.length, 1);
+    assert.equal(result.candidate.observations?.transfers[0]?.actionSequence, 2);
+    assert.deepEqual(fixture.getPacket()?.ownerActions.map((action) => action.actionKind), ['inspect_offer', 'transfer']);
+    assert.equal(fixture.getPacket()?.ownerActions[0]?.transactionHash, null);
+    assert.equal(fixture.getPacket()?.bef.before.operations[0]?.operation_kind, 'offer');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('synthetic S1 rejects read-only catalog evidence that claims effects or uses an unsupported action kind', async () => {
+  for (const catalogVariant of ['transaction-hash', 'payment-protocol', 'state-change', 'unsupported-kind', 'environment-health-mismatch'] as const) {
+    const fixture = await createZeroActionFixture({ extraTransfer: true, admittedAction: true,
+      catalogInspection: true, catalogVariant });
+    try {
+      const result = await collectBefS1TaskObservationCandidate(fixture.dependencies, { runId: RUN_ID, taskIndex: 0 });
+      assert.deepEqual(result, { status: 'unavailable', reasonCode: 'action_evidence_unavailable' });
+      assert.equal(fixture.getPacket(), null);
+    } finally {
+      await fixture.close();
+    }
   }
 });
 

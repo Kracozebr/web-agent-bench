@@ -12,6 +12,7 @@ import type {
 
 export type S3TaskCase = Extract<TaskCase, { taskId: 'S3' }>;
 export type S3Json = Record<string, unknown>;
+export type S3ReadCommand = { kind: 'inspect_catalog' } | { kind: 'inspect_offer'; resourceId: string; offerId?: string };
 const HASH = /^[0-9a-f]{64}$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
@@ -30,7 +31,7 @@ export type S3CaptureAction = {
   actionSequence: number;
   ownerOperationId: string;
   commandSha256: string;
-  command: { kind: 'inspect_catalog' };
+  command: S3ReadCommand;
   receiptStatus: 'observed' | 'rejected_before_execution';
   reasonCode: string | null;
   actionEvidence: EvidenceReference;
@@ -186,12 +187,53 @@ function validCatalogResponse(taskCase: S3TaskCase, value: S3Json): boolean {
   }
   return seenResources.size === expected.size;
 }
+function validOfferResponse(taskCase: S3TaskCase, command: Extract<S3ReadCommand, { kind: 'inspect_offer' }>, value: S3Json,
+  operationId: string): boolean {
+  const required = ['operationId','readHandle','resourceId','resourceSha256','contentType','payment','offers','freeInspection','deliveryState'];
+  const allowed = new Set([...required,'dataType','schema','provenance']);
+  const handle = value.readHandle;
+  if (Object.keys(value).some((key) => !allowed.has(key)) || required.some((key) => !(key in value)) ||
+      value.operationId !== operationId || value.resourceId !== command.resourceId || typeof value.resourceSha256 !== 'string' ||
+      !HASH.test(value.resourceSha256) || typeof value.contentType !== 'string' || value.contentType.length < 1 || value.contentType.length > 128 ||
+      (value.dataType !== undefined && typeof value.dataType !== 'string') || (value.schema !== undefined && typeof value.schema !== 'string') ||
+      (value.provenance !== undefined && !isRecord(value.provenance)) || value.freeInspection !== true || value.deliveryState !== 'not_delivered' ||
+      !isRecord(handle) || !exactKeys(handle, ['kind','operationId']) || handle.kind !== 'offer' || handle.operationId !== operationId ||
+      !isRecord(value.payment) || !Array.isArray(value.offers)) return false;
+  const pinned = taskCase.objective.catalog.filter((offer) => offer.resourceId === command.resourceId);
+  if (!pinned.length || (command.offerId !== undefined && !pinned.some((offer) => offer.offerId === command.offerId)) ||
+      value.offers.length !== pinned.length || (value.dataType !== undefined && value.dataType !== pinned[0]!.dataType)) return false;
+  const expectedById = new Map(pinned.map((offer) => [offer.offerId, offer]));
+  const seen = new Set<string>();
+  for (const candidate of value.offers) {
+    if (!isRecord(candidate) || !exactKeys(candidate, ['id','payment']) || typeof candidate.id !== 'string' ||
+        seen.has(candidate.id) || !isRecord(candidate.payment) || !exactKeys(candidate.payment,
+          ['scheme','network','asset','amount','payTo','transferMethod'])) return false;
+    const expected = expectedById.get(candidate.id), payment = candidate.payment;
+    if (!expected || typeof payment.asset !== 'string' || !ADDRESS.test(payment.asset) ||
+        payment.scheme !== expected.paymentRequirements.scheme || payment.network !== expected.paymentRequirements.network ||
+        payment.amount !== expected.paymentRequirements.amountUnits || String(payment.payTo).toLowerCase() !== expected.recipient.toLowerCase() ||
+        payment.transferMethod !== expected.paymentRequirements.authFields.find((field) => field.name === 'assetTransferMethod')?.value) return false;
+    seen.add(candidate.id);
+  }
+  const first = value.offers[0];
+  if (!isRecord(first) || !isRecord(first.payment)) return false;
+  return seen.size === expectedById.size && same(value.payment, first.payment);
+}
 function validAction(value: unknown, runId: string, taskIndex: number, taskCase: S3TaskCase): value is S3CaptureAction {
   if (!isRecord(value) || !exactKeys(value, ['actionId','actionSequence','ownerOperationId','commandSha256','command','receiptStatus','reasonCode','actionEvidence','befOperationId','response']) ||
       typeof value.actionId !== 'string' || !UUID.test(value.actionId) || !Number.isSafeInteger(value.actionSequence) ||
       (value.actionSequence as number) < 1 || typeof value.ownerOperationId !== 'string' || value.ownerOperationId.length < 12 ||
-      typeof value.commandSha256 !== 'string' || !HASH.test(value.commandSha256) || !isRecord(value.command) || !exactKeys(value.command, ['kind']) ||
-      value.command.kind !== 'inspect_catalog' || !validRef(value.actionEvidence, ACTION_ROOT)) return false;
+      typeof value.commandSha256 !== 'string' || !HASH.test(value.commandSha256) || !isRecord(value.command) ||
+      !validRef(value.actionEvidence, ACTION_ROOT)) return false;
+  if (value.command.kind === 'inspect_catalog') {
+    if (!exactKeys(value.command, ['kind'])) return false;
+  } else if (value.command.kind === 'inspect_offer') {
+    if (!(exactKeys(value.command, ['kind','resourceId']) || exactKeys(value.command, ['kind','resourceId','offerId'])) ||
+        typeof value.command.resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.command.resourceId) ||
+        (value.command.offerId !== undefined && (typeof value.command.offerId !== 'string' ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.command.offerId)))) return false;
+  } else return false;
+  const command = value.command as S3ReadCommand;
   if (sha256CanonicalTaskJson({ runId, taskIndex, command: value.command }).toLowerCase() !== value.commandSha256.toLowerCase()) return false;
   if (value.receiptStatus === 'rejected_before_execution') {
     return typeof value.reasonCode === 'string' && value.reasonCode.length > 0 && value.reasonCode.length <= 128 &&
@@ -199,9 +241,11 @@ function validAction(value: unknown, runId: string, taskIndex: number, taskCase:
   }
   if (value.receiptStatus !== 'observed' || value.reasonCode !== null || typeof value.befOperationId !== 'string' || !UUID.test(value.befOperationId) || !isRecord(value.response)) return false;
   const body = value.response;
-  return body.operationId === value.befOperationId && isRecord(body.readHandle) && body.readHandle.kind === 'catalog' &&
+  return body.operationId === value.befOperationId && isRecord(body.readHandle) && body.readHandle.kind === command.kind.replace('inspect_', '') &&
     body.readHandle.operationId === value.befOperationId && body.freeInspection === true && body.deliveryState === 'not_delivered' &&
-    Array.isArray(body.catalog) && body.catalog.length > 0 && validCatalogResponse(taskCase, body);
+    (command.kind === 'inspect_catalog'
+      ? Array.isArray(body.catalog) && body.catalog.length > 0 && validCatalogResponse(taskCase, body)
+      : validOfferResponse(taskCase, command, body, value.befOperationId));
 }
 function validCensus(value: unknown): value is S3CaptureCensus {
   if (!isRecord(value) || !exactKeys(value, ['generation','operations','selectedExecutions','selectedEvents','payments','deliveries','costs',
@@ -281,13 +325,16 @@ export function validateS3CapturePacket(value: unknown): asserts value is S3Capt
   }
   for (const action of observedActions) {
     const op = operations.find((item) => String(item.operation_id).toLowerCase() === action.befOperationId!.toLowerCase());
-    const expectedRequest = sha(JSON.stringify({ method: 'GET', path: '/catalog' }));
+    const expectedRequest = sha(JSON.stringify(action.command.kind === 'inspect_catalog'
+      ? { method: 'GET', path: '/catalog' }
+      : { method: 'GET', path: '/offer', resourceId: action.command.resourceId }));
     if (!op || !exactKeys(op, ['operation_id','env_id','generation_id','participant_id','idempotency_key_sha256','request_sha256','operation_kind',
         'status','receipt_status','transaction_hash','response_sha256','started_at','completed_at']) ||
         String(op.idempotency_key_sha256).toLowerCase() !== sha(`task-action-${action.actionId}`) ||
         op.env_id !== value.binding.environmentId || op.generation_id !== execution.generationId ||
-        op.participant_id !== generation.participant_id || op.operation_kind !== 'catalog' || op.status !== 'accepted' ||
+        op.participant_id !== generation.participant_id || op.operation_kind !== (action.command.kind === 'inspect_catalog' ? 'catalog' : 'offer') || op.status !== 'accepted' ||
         op.receipt_status !== 'not_submitted' || op.transaction_hash !== null ||
+        // Canonical packet JSON sorts nested response keys. The sealed reader binds the raw child response hash.
         String(op.request_sha256).toLowerCase() !== expectedRequest || typeof op.response_sha256 !== 'string' || !HASH.test(op.response_sha256)) fail();
   }
   const taskCase = value.taskCase as S3TaskCase;

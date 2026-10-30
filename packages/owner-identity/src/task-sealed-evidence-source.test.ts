@@ -368,6 +368,68 @@ test('sealed source binds S1 to the caller transaction and preserves incomplete 
   });
 });
 
+test('S1 sealed capture retains a neutral catalog prefix and rejects effectful read operations', async () => {
+  await withPrivateRoot(async (root) => {
+    const fixture = await makeFixture(root);
+    const packet = JSON.parse(fixture.files.get(`${COORDINATOR_EVIDENCE_ROOT}observation/capture.json`)!.toString('utf8')) as Record<string, any>;
+    const readActionId = '81000000-0000-4000-8000-000000000018';
+    const readOperationId = '91000000-0000-4000-8000-000000000019';
+    const readOwnerOperationId = 'neutral-read-owner-op-01';
+    const readCommand = { kind: 'inspect_catalog' as const };
+    const readCommandHash = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command: readCommand });
+    const readEvidence: EvidenceReference = { path: `${COORDINATOR_EVIDENCE_ROOT}action/s1-catalog-read.json`,
+      sha256: HASH('s1-catalog-read'), boundary: 'actual_tool_http_x402_local_evm_application_store' };
+    const transfer = { kind: 'transfer' as const, amountUnits: '1', recipient: S2_RECIPIENT, gasLimit: '50000' };
+    const transferCommandHash = sha256CanonicalTaskJson({ runId: RUN, taskIndex: 0, command: transfer });
+    packet.closure.actionCutoffSequence = 2;
+    packet.closure.reconciledActionSequence = 2;
+    packet.ownerActions = [
+      { actionId: readActionId, actionSequence: 1, ownerOperationId: readOwnerOperationId, actionKind: 'inspect_catalog',
+        commandSha256: readCommandHash, receiptStatus: 'observed', actionEvidence: readEvidence,
+        befOperationId: readOperationId, transactionHash: null },
+      { ...packet.ownerActions[0], actionSequence: 2, commandSha256: transferCommandHash },
+    ];
+    const readResponseHash = HASH('s1-catalog-response');
+    const readOperation = { operation_id: readOperationId, env_id: ENVIRONMENT, generation_id: GENERATION,
+      participant_id: 'synthetic-bef-participant', idempotency_key_sha256: HASH(`task-action-${readActionId}`),
+      request_sha256: HASH(JSON.stringify({ method: 'GET', path: '/catalog' })), response_sha256: readResponseHash,
+      operation_kind: 'catalog', status: 'accepted', receipt_status: 'not_submitted', transaction_hash: null };
+    packet.bef.after = { generation: { participant_id: 'synthetic-bef-participant' }, operations: [readOperation],
+      costs: [], selectedExecutions: [], selectedEvents: [], payments: [], deliveries: [] };
+    const bundle = { binding: fixture.bundle.binding,
+      closure: { ...fixture.bundle.closure, actionCutoffSequence: 2, reconciledActionSequence: 2 },
+      execution: { ...fixture.bundle.execution, environmentId: ENVIRONMENT },
+      observations: fixture.bundle.observations };
+    bundle.observations.transfers[0].actionSequence = 2;
+    const row = { ...fixture.row, action_cutoff_sequence: '2', reconciled_action_sequence: '2' };
+    const durableRows = [
+      { id: readActionId, run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'S1', environment_id: ENVIRONMENT,
+        action_sequence: '1', operation_id: readOwnerOperationId, payload_hash: readCommandHash, action_kind: 'inspect_catalog',
+        command_json: readCommand, receipt_revision: 1, receipt_status: 'observed', evidence_hash: readEvidence.sha256,
+        evidence_path: readEvidence.path, transaction_hash: null, history_revision: 1, history_status: 'observed',
+        history_evidence_hash: readEvidence.sha256, history_evidence_path: readEvidence.path, history_transaction_hash: null },
+      { id: '80000000-0000-4000-8000-000000000008', run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'S1', environment_id: ENVIRONMENT,
+        action_sequence: '2', operation_id: 'synthetic-owner-operation', payload_hash: transferCommandHash, action_kind: 'transfer',
+        command_json: transfer, receipt_revision: 1, receipt_status: 'observed', evidence_hash: packet.ownerActions[1].actionEvidence.sha256,
+        evidence_path: packet.ownerActions[1].actionEvidence.path, transaction_hash: packet.ownerActions[1].transactionHash,
+        history_revision: 1, history_status: 'observed', history_evidence_hash: packet.ownerActions[1].actionEvidence.sha256,
+        history_evidence_path: packet.ownerActions[1].actionEvidence.path, history_transaction_hash: packet.ownerActions[1].transactionHash },
+    ];
+    const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
+      async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
+    }, evidenceRoot: root });
+    const readPacket = source as unknown as { readS1CapturePacketChildren(bytes: Buffer, bundle: unknown, tx: unknown, row: unknown): Promise<unknown> };
+    const tx = { async execute() { return durableRows; } };
+    const parsed = await readPacket.readS1CapturePacketChildren(Buffer.from(JSON.stringify(packet)), bundle, tx, row);
+    assert.equal((parsed as { actions: Array<{ command: { kind: string } }> }).actions[0]?.command.kind, 'inspect_catalog');
+
+    const effectful = structuredClone(packet);
+    effectful.bef.after.operations[0].transaction_hash = `0x${'9'.repeat(64)}`;
+    await assert.rejects(readPacket.readS1CapturePacketChildren(Buffer.from(JSON.stringify(effectful)), bundle, tx, row),
+      (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  });
+});
+
 test('sealed source rejects changed raw bytes even when the DB bundle hash is valid', async () => {
   await withPrivateRoot(async (root) => {
     const fixture = await makeFixture(root);
@@ -767,8 +829,9 @@ test('paid sealed replay binds owner command, durable receipt history, actual re
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
 });
 
-test('S3 sealed replay binds durable owner receipt and BEF hash to original raw response evidence', async () => {
-  const { packet } = createS3CapturePacketFixture();
+test('S3 sealed replay binds catalog and offer reads to durable owner receipts and BEF hashes', async () => {
+  for (const kind of ['inspect_catalog', 'inspect_offer'] as const) {
+  const { packet } = createS3CapturePacketFixture(kind);
   const action = packet.ownerActions[0]!;
   assert.equal(action.receiptStatus, 'observed');
   assert.ok(action.response);
@@ -777,7 +840,7 @@ test('S3 sealed replay binds durable owner receipt and BEF hash to original raw 
   const rawResponseSha256 = packet.bef.before.operations[0]!.response_sha256!;
   const actionEvidenceValue: Record<string, unknown> = {
     schema: 'bef-task-action-observation-v1', actionId: action.actionId, runId: packet.binding.runId, taskIndex: 0, actionSequence: '1',
-    ownerOperationId: action.ownerOperationId, actionKind: 'inspect_catalog', commandSha256: action.commandSha256,
+    ownerOperationId: action.ownerOperationId, actionKind: action.command.kind, commandSha256: action.commandSha256,
     environmentId: packet.binding.environmentId, generationId: packet.execution.generationId,
     manifestSha256: packet.execution.environmentManifestHash, applicationSourceSha256: packet.execution.applicationSourceHash,
     idempotencyKey: `task-action-${action.actionId}`, status: 'observed', httpStatus: 200,
@@ -786,7 +849,7 @@ test('S3 sealed replay binds durable owner receipt and BEF hash to original raw 
   const dbAction: Record<string, unknown> = {
     id: action.actionId, run_id: packet.binding.runId, task_index: 0, owner_id: packet.binding.ownerId, agent_id: packet.binding.agentId, task_id: 'S3',
     environment_id: packet.binding.environmentId, action_sequence: '1', operation_id: action.ownerOperationId,
-    payload_hash: action.commandSha256, action_kind: 'inspect_catalog', command_json: action.command,
+    payload_hash: action.commandSha256, action_kind: action.command.kind, command_json: action.command,
     receipt_revision: 1, receipt_status: 'observed', evidence_hash: action.actionEvidence.sha256,
     evidence_path: action.actionEvidence.path, transaction_hash: null, tool_response_json: response,
     tool_response_hash: sha256CanonicalTaskJson(response), history_revision: 1, history_status: 'observed',
@@ -817,6 +880,7 @@ test('S3 sealed replay binds durable owner receipt and BEF hash to original raw 
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
   await assert.rejects(invoke(packet, actionEvidenceValue, { ...dbAction, operation_id: 'different-owner-operation' }),
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  }
 });
 const pgEnabled = process.env.OID_TASK_SEALED_EVIDENCE_SOURCE_PG_TEST === '1';
 

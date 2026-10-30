@@ -1,6 +1,68 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { collectBefChainTaskObservationCandidate, matchesReleaseCodeHash, observedRuntimeCodeHash, type BefChainObservationCollectorDependencies } from './bef-chain-observation-collector.js';
+import { captureBefChainCensus, collectBefChainTaskObservationCandidate, matchesReleaseCodeHash, observedRuntimeCodeHash, neutralChainInspectionEvidenceMatches, type BefChainObservationCollectorDependencies } from './bef-chain-observation-collector.js';
+import { makeChainCaptureFixture, prependChainInspectionFixture } from './task-chain-capture-packet.fixture.js';
+import { validateTaskChainCapturePacket } from './task-chain-capture-packet.js';
+import { createHash } from 'node:crypto';
+import { canonicalTaskJson } from './task-release.js';
+
+test('read-only BEF census retains source GET rows and rejects any read cost/selected/event evidence before projection',async()=>{
+ const fixture=prependChainInspectionFixture(makeChainCaptureFixture('M3'));
+ const source=fixture.packet.bef.before as Record<string,unknown>,generation=source.generation as Record<string,unknown>;
+ const readRows=(source.inspectionOperations as Record<string,unknown>[]).map((op)=>({operation_id:op.operationId,env_id:op.environmentId,
+  generation_id:op.generationId,participant_id:op.participantId,idempotency_key_sha256:op.idempotencyKeySha256,request_sha256:op.requestSha256,
+  operation_kind:op.actionKind,status:op.status,receipt_status:op.receiptStatus,transaction_hash:op.transactionHash,response_sha256:op.responseSha256,
+  started_at:op.startedAt,completed_at:op.completedAt}));
+ async function capture(effect:'none'|'cost'|'selected'|'event'){
+  const effects=effect==='none'?[]:[{operation_id:readRows[0]!.operation_id}];
+  const results:unknown[][]=[
+   [{current_user:'bef_observer',session_user:'bef_observer',database_name:'bef',transaction_read_only:'on',transaction_isolation:'repeatable read',rolsuper:false,rolbypassrls:false,schema_create:false}],
+   ['bef_environment','bef_generation','bef_operation','bef_selected_execution','bef_selected_execution_event','bef_transaction_cost'].map((table_name)=>({table_name,can_select:true,can_insert:false,can_update:false,can_delete:false,can_truncate:false})),
+   [generation],readRows,effect==='selected'?effects:[],effect==='event'?effects:[],effect==='cost'?effects:[],[{payments:'0',deliveries:'0'}],
+   [{operations:'2',selected_executions:effect==='selected'?'1':'0',selected_events:effect==='event'?'1':'0',costs:effect==='cost'?'1':'0'}],
+  ];
+  return captureBefChainCensus({environmentId:String(generation.env_id),withRepeatableRead:async(callback)=>callback(async()=>results.shift()!)},
+   String(generation.env_id),String(generation.generation_id),true);
+ }
+ const captured=await capture('none');
+ assert.deepEqual(captured.census.inspectionOperations,source.inspectionOperations);
+ fixture.packet.bef.before={...source,inspectionOperations:captured.census.inspectionOperations};
+ fixture.packet.bef.after=structuredClone(fixture.packet.bef.before);
+ fixture.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(fixture.packet.bef.before)).digest('hex');
+ assert.doesNotThrow(()=>validateTaskChainCapturePacket(fixture.packet,fixture.taskCase));
+ for(const effect of ['cost','selected','event'] as const)await assert.rejects(()=>capture(effect));
+});
+
+test('neutral chain inspection requires a pinned free GET response and no claimed effects',()=>{
+ const payment={scheme:'exact',network:'base',asset:'0x'+'1'.repeat(40),amount:'2500',payTo:'0x'+'2'.repeat(40),transferMethod:'transferWithAuthorization'};
+ const offer={id:'offer-a',payment};
+ const resource={resourceId:'resource-a',resourceSha256:'a'.repeat(64),contentType:'application/json',offers:[offer]};
+ const operationId='01234567-89ab-4cde-8fab-0123456789ab';
+ const row={receipt_status:'observed',transaction_hash:null};
+ const documents=[
+  {command:{kind:'inspect_catalog'} as const,response:{catalog:[resource],operationId,freeInspection:true,deliveryState:'not_delivered'}},
+  {command:{kind:'inspect_offer',resourceId:'resource-a',offerId:'offer-a'} as const,
+   response:{...resource,operationId,payment,freeInspection:true,deliveryState:'not_delivered'}},
+ ];
+ for(const {command,response} of documents){
+  const doc={participantToolResponse:response,httpStatus:200,rawResponseSha256:'b'.repeat(64),requestStartedAt:'2026-10-30T00:00:00Z',
+   requestFinishedAt:'2026-10-30T00:00:01Z',befOperationId:operationId};
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,doc),true);
+  for(const key of ['transactionHash','outcome','receiptStatus','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','recoverySource','reasonCode']){
+   assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,[key]:null}),false,key);
+  }
+  assert.equal(neutralChainInspectionEvidenceMatches(command,{...row,receipt_status:'rejected_before_execution'},doc),false);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,participantToolResponse:{...response,deliveryState:'delivered'}}),false);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,participantToolResponse:{...response,transaction:{hash:'0x'+'f'.repeat(64)}}}),false);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,befOperationId:'01234567-89ab-4cde-8fab-0123456789ac'}),false);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,befOperationId:17}),false);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,participantToolResponse:{...response,operationId:17}}),false);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,httpStatus:201}),false);
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,{...doc,rawResponseSha256:'invalid'}),false);
+  const missing=structuredClone(doc) as Record<string,unknown>;delete missing.befOperationId;
+  assert.equal(neutralChainInspectionEvidenceMatches(command,row,missing),false);
+ }
+});
 
 test('retained public runtime code hashes match the naked hash pinned in the release',()=>{
  const publicCode='0x6000';

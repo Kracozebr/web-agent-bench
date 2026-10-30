@@ -24,7 +24,7 @@ import type { TaskObservationBundleCandidate } from './task-observation-store.js
 import { m1PreparationHealthMatches, parseM1PreparationEvidence } from './bef-m1-observation-collector.js';
 import {
   projectS3PacketObservations, validateS3CapturePacket,
-  type S3CapturePacket,
+  type S3CapturePacket, type S3ReadCommand,
 } from './task-s3-capture-packet.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -159,8 +159,9 @@ type ActionRow = {
   history_evidence_path: string | null; history_transaction_hash: string | null;
 };
 
+type ReadCommand = Extract<TaskActionCommand, { kind: 'inspect_catalog' | 'inspect_offer' }>;
 type LoadedAction = {
-  row: ActionRow; sequence: number; command: TaskActionCommand; evidence: JsonRecord; reference: EvidenceReference;
+  row: ActionRow; sequence: number; command: ReadCommand; evidence: JsonRecord; reference: EvidenceReference;
   body: JsonRecord | null; befOperationId: string | null; receiptStatus: 'observed' | 'rejected_before_execution'; reasonCode: string | null;
 };
 
@@ -169,6 +170,12 @@ class Unavailable extends Error {
 }
 
 function unavailable(reasonCode: BefS3UnavailableCode): BefS3CollectionResult { return { status: 'unavailable', reasonCode }; }
+function captureReadCommand(command: ReadCommand): S3ReadCommand {
+  if (command.kind === 'inspect_catalog') return { kind: 'inspect_catalog' };
+  return command.offerId === undefined
+    ? { kind: 'inspect_offer', resourceId: command.resourceId }
+    : { kind: 'inspect_offer', resourceId: command.resourceId, offerId: command.offerId };
+}
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) &&
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null));
@@ -353,22 +360,30 @@ async function loadActions(root: string, run: RunRow, prep: PreparationRow, runI
     }) : null;
     if (actionSequence !== index + 1 || !UUID.test(row.id) || row.id !== row.id.toLowerCase() ||
         row.run_id !== runId || row.task_index !== taskIndex || row.owner_id !== run.owner_id || row.agent_id !== run.agent_id ||
-        row.task_id !== 'S3' || row.environment_id !== prep.environment_id || row.action_kind !== 'inspect_catalog' ||
+        row.task_id !== 'S3' || row.environment_id !== prep.environment_id ||
+        !['inspect_catalog', 'inspect_offer'].includes(row.action_kind) ||
         !HASH.test(row.payload_hash) || !ref || !HASH.test(row.evidence_hash ?? '') ||
         row.history_revision !== row.receipt_revision || row.history_status !== row.receipt_status ||
         row.history_evidence_hash !== row.evidence_hash || row.history_evidence_path !== row.evidence_path ||
         (row.history_transaction_hash?.toLowerCase() ?? null) !== (row.transaction_hash?.toLowerCase() ?? null) ||
         !['observed', 'rejected_before_execution'].includes(row.receipt_status) || row.transaction_hash !== null) throw new Unavailable('action_evidence_unavailable');
     const parsedCommand = TaskActionCommandSchema.safeParse(parseJson(row.command_json, 'action_evidence_unavailable'));
-    if (!parsedCommand.success || parsedCommand.data.kind !== 'inspect_catalog' || Object.keys(parsedCommand.data).length !== 1 ||
-        sha256CanonicalTaskJson({ runId, taskIndex, command: parsedCommand.data }).toLowerCase() !== row.payload_hash.toLowerCase()) {
+    if (!parsedCommand.success) throw new Unavailable('action_evidence_unavailable');
+    const readCommand = parsedCommand.data;
+    if ((readCommand.kind !== 'inspect_catalog' && readCommand.kind !== 'inspect_offer') ||
+        (readCommand.kind === 'inspect_catalog' && Object.keys(readCommand).length !== 1) ||
+        (readCommand.kind === 'inspect_offer' &&
+          !taskCase.objective.catalog.some((offer) => offer.resourceId === readCommand.resourceId &&
+            (readCommand.offerId === undefined || offer.offerId === readCommand.offerId))) ||
+        readCommand.kind !== row.action_kind ||
+        sha256CanonicalTaskJson({ runId, taskIndex, command: readCommand }).toLowerCase() !== row.payload_hash.toLowerCase()) {
       throw new Unavailable('action_evidence_unavailable');
     }
     const evidence = parseSafeJson(await readEvidence(root, ref, ACTION_ROOT, 'action_evidence_unavailable'), 'action_evidence_unavailable');
     if (Object.keys(evidence).some((key) => !ACTION_KEYS.has(key)) || evidence.schema !== 'bef-task-action-observation-v1' ||
         evidence.actionId !== row.id || evidence.runId !== runId || evidence.taskIndex !== taskIndex ||
         evidence.actionSequence !== String(actionSequence) || evidence.ownerOperationId !== row.operation_id ||
-        evidence.actionKind !== 'inspect_catalog' || evidence.commandSha256 !== row.payload_hash.toLowerCase() ||
+        evidence.actionKind !== readCommand.kind || evidence.commandSha256 !== row.payload_hash.toLowerCase() ||
         evidence.environmentId !== prep.environment_id || evidence.generationId !== prep.generation_id ||
         evidence.manifestSha256 !== prep.environment_manifest_sha256.toLowerCase() ||
         evidence.applicationSourceSha256 !== prep.application_source_hash.toLowerCase() ||
@@ -381,7 +396,7 @@ async function loadActions(root: string, run: RunRow, prep: PreparationRow, runI
           evidence.httpStatus !== undefined || evidence.requestStartedAt !== undefined || evidence.requestFinishedAt !== undefined ||
           evidence.rawResponseSha256 !== undefined || evidence.befOperationId !== undefined || evidence.participantToolResponse !== undefined ||
           evidence.paymentProtocol !== undefined) throw new Unavailable('action_evidence_unavailable');
-      loaded.push({ row, sequence: actionSequence, command: parsedCommand.data, evidence, reference: ref, body: null,
+      loaded.push({ row, sequence: actionSequence, command: readCommand as ReadCommand, evidence, reference: ref, body: null,
         befOperationId: null, receiptStatus: 'rejected_before_execution', reasonCode: evidence.reasonCode });
       continue;
     }
@@ -390,12 +405,57 @@ async function loadActions(root: string, run: RunRow, prep: PreparationRow, runI
       throw new Unavailable('action_evidence_unavailable');
     }
     const body = evidence.participantToolResponse;
-    if (!readOnlyToolResponseMatches(parsedCommand.data, body) || body.operationId !== evidence.befOperationId ||
-        !validatePublicCatalog(taskCase, body, assetAddresses)) throw new Unavailable('action_evidence_unavailable');
-    loaded.push({ row, sequence: actionSequence, command: parsedCommand.data, evidence, reference: ref, body,
+    if (!readOnlyToolResponseMatches(readCommand, body) || body.operationId !== evidence.befOperationId ||
+        !validatePublicRead(taskCase, readCommand, body, assetAddresses)) throw new Unavailable('action_evidence_unavailable');
+    loaded.push({ row, sequence: actionSequence, command: readCommand as ReadCommand, evidence, reference: ref, body,
       befOperationId: evidence.befOperationId, receiptStatus: 'observed', reasonCode: null });
   }
   return loaded;
+}
+
+function validatePublicRead(taskCase: Extract<TaskCase, { taskId: 'S3' }>, command: ReadCommand, body: JsonRecord,
+  assetAddresses: ReadonlyMap<string, string>): boolean {
+  if (command.kind === 'inspect_catalog') return validatePublicCatalog(taskCase, body, assetAddresses);
+  return validatePublicOffer(taskCase, command, body, assetAddresses);
+}
+
+function validatePublicOffer(taskCase: Extract<TaskCase, { taskId: 'S3' }>, command: Extract<ReadCommand, { kind: 'inspect_offer' }>,
+  body: JsonRecord, assetAddresses: ReadonlyMap<string, string>): boolean {
+  const required = ['operationId','readHandle','resourceId','resourceSha256','contentType','payment','offers','freeInspection','deliveryState'];
+  const allowed = new Set([...required,'dataType','schema','provenance']);
+  const handle = body.readHandle;
+  if (Object.keys(body).some((key) => !allowed.has(key)) || required.some((key) => !(key in body)) ||
+      body.resourceId !== command.resourceId || typeof body.resourceSha256 !== 'string' || !HASH.test(body.resourceSha256) ||
+      typeof body.contentType !== 'string' || body.contentType.length < 1 || body.contentType.length > 128 ||
+      (body.dataType !== undefined && typeof body.dataType !== 'string') || (body.schema !== undefined && typeof body.schema !== 'string') ||
+      (body.provenance !== undefined && !isRecord(body.provenance)) || body.freeInspection !== true || body.deliveryState !== 'not_delivered' ||
+      !isRecord(handle) || Object.keys(handle).sort().join(',') !== 'kind,operationId' || handle.kind !== 'offer' ||
+      handle.operationId !== body.operationId || !Array.isArray(body.offers) || !isRecord(body.payment)) return false;
+  const pinned = taskCase.objective.catalog.filter((offer) => offer.resourceId === command.resourceId);
+  if (!pinned.length || (command.offerId !== undefined && !pinned.some((offer) => offer.offerId === command.offerId)) ||
+      body.offers.length !== pinned.length || body.dataType !== undefined && body.dataType !== pinned[0]!.dataType) return false;
+  const byId = new Map(pinned.map((offer) => [offer.offerId, offer]));
+  const seen = new Set<string>();
+  for (const value of body.offers) {
+    if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'id,payment' || typeof value.id !== 'string' ||
+        seen.has(value.id) || !isRecord(value.payment)) return false;
+    const offer = byId.get(value.id), payment = value.payment;
+    const assetAddress = offer ? assetAddresses.get(offer.assetId)?.toLowerCase() : null;
+    const transferMethod = offer?.paymentRequirements.authFields.find((field) => field.name === 'assetTransferMethod')?.value;
+    if (!offer || !assetAddress || !transferMethod || payment.scheme !== offer.paymentRequirements.scheme ||
+        payment.network !== offer.paymentRequirements.network || payment.amount !== offer.paymentRequirements.amountUnits ||
+        String(payment.asset).toLowerCase() !== assetAddress || String(payment.payTo).toLowerCase() !== offer.recipient.toLowerCase() ||
+        payment.transferMethod !== transferMethod) return false;
+    seen.add(value.id);
+  }
+  const first = body.offers[0];
+  if (!isRecord(first) || !isRecord(first.payment)) return false;
+  const rootPayment = body.payment;
+  const offerPayment = first.payment;
+  return rootPayment.scheme === offerPayment.scheme && rootPayment.network === offerPayment.network &&
+    rootPayment.amount === offerPayment.amount && String(rootPayment.asset).toLowerCase() === String(offerPayment.asset).toLowerCase() &&
+    String(rootPayment.payTo).toLowerCase() === String(offerPayment.payTo).toLowerCase() &&
+    rootPayment.transferMethod === offerPayment.transferMethod && seen.size === byId.size;
 }
 
 function validatePublicCatalog(taskCase: Extract<TaskCase, { taskId: 'S3' }>, body: JsonRecord,
@@ -745,10 +805,25 @@ function assertNoEffects(census: Census, actions: LoadedAction[], environmentId:
   }
 }
 
-function expectedRequestHash(): string {
-  return createHash('sha256').update(JSON.stringify({ method: 'GET', path: '/catalog' })).digest('hex');
+function expectedRequestHash(command: ReadCommand): string {
+  const request = command.kind === 'inspect_catalog'
+    ? { method: 'GET', path: '/catalog' }
+    : { method: 'GET', path: '/offer', resourceId: command.resourceId };
+  return createHash('sha256').update(JSON.stringify(request)).digest('hex');
 }
-function expectedResponseHash(body: JsonRecord): string {
+function expectedResponseHash(command: ReadCommand, body: JsonRecord): string {
+  if (command.kind === 'inspect_offer') {
+    const response: JsonRecord = { operationId: body.operationId, readHandle: body.readHandle, resourceId: body.resourceId,
+      resourceSha256: body.resourceSha256, contentType: body.contentType };
+    if (body.dataType !== undefined) response.dataType = body.dataType;
+    if (body.schema !== undefined) response.schema = body.schema;
+    if (body.provenance !== undefined) response.provenance = body.provenance;
+    response.payment = body.payment;
+    response.offers = body.offers;
+    response.freeInspection = body.freeInspection;
+    response.deliveryState = body.deliveryState;
+    return createHash('sha256').update(Buffer.from(JSON.stringify(response))).digest('hex');
+  }
   const response: JsonRecord = { operationId: body.operationId, readHandle: body.readHandle, catalog: body.catalog,
     freeInspection: body.freeInspection, deliveryState: body.deliveryState };
   return createHash('sha256').update(Buffer.from(JSON.stringify(response))).digest('hex');
@@ -769,10 +844,11 @@ function operationForAction(census: Census, actions: LoadedAction[], environment
     const operation = operationsById.get(id);
     if (!operation || consumed.has(id) || operation.env_id !== environmentId || operation.generation_id !== generationId ||
         operation.participant_id !== participantId || String(operation.idempotency_key_sha256).toLowerCase() !== expectedIdempotency ||
-        String(operation.request_sha256).toLowerCase() !== expectedRequestHash() ||
-        operation.operation_kind !== 'catalog' || operation.status !== 'accepted' || operation.receipt_status !== 'not_submitted' ||
+        String(operation.request_sha256).toLowerCase() !== expectedRequestHash(action.command) ||
+        operation.operation_kind !== (action.command.kind === 'inspect_catalog' ? 'catalog' : 'offer') ||
+        operation.status !== 'accepted' || operation.receipt_status !== 'not_submitted' ||
         operation.transaction_hash !== null || !action.body ||
-        String(operation.response_sha256).toLowerCase() !== expectedResponseHash(action.body) ||
+        String(operation.response_sha256).toLowerCase() !== expectedResponseHash(action.command, action.body) ||
         String(operation.response_sha256).toLowerCase() !== String(action.evidence.rawResponseSha256).toLowerCase()) {
       throw new Unavailable('rpc_mapping_incomplete');
     }
@@ -951,7 +1027,7 @@ async function collectLocked(deps: BefS3ObservationCollectorDependencies, target
     preparation: { fixtureEvidence: prepEvidence.fixture, baselineEvidence: prepEvidence.baseline,
       baselineBlockNumber: prepEvidence.blockNumber.toString(), baselineBlockHash: prepEvidence.blockHash },
     ownerActions: actions.map((action) => ({ actionId: action.row.id, actionSequence: action.sequence,
-      ownerOperationId: action.row.operation_id, commandSha256: action.row.payload_hash.toLowerCase(), command: { kind: 'inspect_catalog' as const },
+      ownerOperationId: action.row.operation_id, commandSha256: action.row.payload_hash.toLowerCase(), command: captureReadCommand(action.command),
       receiptStatus: action.receiptStatus, reasonCode: action.reasonCode, actionEvidence: action.reference,
       befOperationId: action.befOperationId, response: action.body })),
     bef: { session: befBefore.session, before: befBefore.census, after: befAfter.census,

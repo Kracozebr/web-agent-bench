@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { TaskActionCommandSchema } from './task-action-service.js';
 import {
   canonicalTaskJson,
   type EvidenceReference,
@@ -71,6 +72,7 @@ export type ChainCaptureExternalAction = {
   actionEvidence: EvidenceReference;
   befOperationId: string | null;
   transactionHash: string | null;
+  inspection?: { command: ChainJson; rawResponseSha256: string };
 };
 
 export type ChainCaptureTransaction = {
@@ -327,7 +329,7 @@ function validateCheckpoint(value: unknown): ChainCheckpoint {
 }
 function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
   const census = requireRecord(value, ['generation', 'operations', 'externalPaymentOperations', 'selectedExecutions', 'selectedEvents', 'costs',
-    'paymentsCount', 'deliveriesCount', 'counts']);
+    'paymentsCount', 'deliveriesCount', 'counts', ...(!['H3','U1'].includes(taskId)?['inspectionOperations']:[])]);
   const generation = requireRecord(census.generation, ['generation_id', 'env_id', 'participant_id', 'payer_address', 'manifest_sha256',
     'status', 'chain_id', 'environment_manifest_sha256']);
   if (typeof generation.generation_id !== 'string' || typeof generation.env_id !== 'string' || typeof generation.participant_id !== 'string' ||
@@ -339,6 +341,7 @@ function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
       !dec(census.paymentsCount) || !dec(census.deliveriesCount) ||
       (!['H3', 'U1'].includes(taskId) && (census.paymentsCount !== '0' || census.deliveriesCount !== '0'))) fail('packet_invalid');
   const counts = requireRecord(census.counts, ['operations', 'externalPaymentOperations', 'selectedExecutions', 'selectedEvents', 'costs']);
+  if (!['H3','U1'].includes(taskId) && (!Array.isArray(census.inspectionOperations) || census.inspectionOperations.length > MAX_ACTIONS)) fail('packet_invalid');
   if (counts.operations !== String(census.operations.length) || counts.selectedExecutions !== String(census.selectedExecutions.length) ||
       counts.externalPaymentOperations !== String(census.externalPaymentOperations.length) ||
       counts.selectedEvents !== String(census.selectedEvents.length) || counts.costs !== String(census.costs.length)) fail('packet_invalid');
@@ -482,8 +485,7 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
       !normTx(preparation.baselineBlockHash)) fail('packet_invalid');
   if (!Array.isArray(packet.ownerActions) || !Array.isArray(packet.externalActions) ||
       packet.ownerActions.length + packet.externalActions.length !== closure.actionCutoffSequence ||
-      packet.ownerActions.length + packet.externalActions.length > MAX_ACTIONS ||
-      (packet.externalActions.length > 0 && !['H3', 'U1'].includes(taskId))) fail('packet_invalid');
+      packet.ownerActions.length + packet.externalActions.length > MAX_ACTIONS) fail('packet_invalid');
   const actionIds = new Set<string>();
   const ownerOps = new Set<string>();
   const befOps = new Set<string>();
@@ -507,7 +509,7 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
   }
   for (const item of packet.externalActions) {
     const action = requireRecord(item, ['actionId', 'actionSequence', 'ownerOperationId', 'actionKind', 'commandSha256', 'receiptStatus',
-      'actionEvidence', 'befOperationId', 'transactionHash']);
+      'actionEvidence', 'befOperationId', 'transactionHash', ...(!['H3','U1'].includes(taskId)?['inspection']:[])]);
     const kind = String(action.actionKind);
     const tx = action.transactionHash === null ? null : normTx(action.transactionHash);
     const befId = action.befOperationId === null ? null : String(action.befOperationId);
@@ -515,6 +517,7 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
         (action.actionSequence as number) < 1 || (action.actionSequence as number) > closure.actionCutoffSequence ||
         !/^[A-Za-z0-9_-]{12,128}$/.test(String(action.ownerOperationId)) ||
         !['inspect_catalog', 'inspect_offer', 'purchase', 'pay', 'retrieve'].includes(kind) ||
+        (!['H3', 'U1'].includes(taskId) && (!['inspect_catalog', 'inspect_offer'].includes(kind) || action.receiptStatus !== 'observed')) ||
         !HASH.test(String(action.commandSha256)) || !validRef(action.actionEvidence, ACTION_PREFIX) ||
         !['observed', 'rejected_before_execution'].includes(String(action.receiptStatus)) ||
         (befId !== null && !/^[0-9a-f-]{36}$/i.test(befId)) ||
@@ -533,6 +536,34 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
   const before = validateCensus(bef.before, taskId);
   const after = validateCensus(bef.after, taskId);
   if (!same(before, after) || String(bef.censusSha256).toLowerCase() !== createHash('sha256').update(canonicalTaskJson(before)).digest('hex')) fail('packet_invalid');
+  if (!['H3','U1'].includes(taskId)) {
+    const sourceOperations = before.inspectionOperations as unknown[];
+    const reads = packet.externalActions as ChainCaptureExternalAction[];
+    if (sourceOperations.length !== reads.length) fail('packet_invalid');
+    const matched = new Set<string>();
+    for (const action of reads) {
+      const proof = requireRecord(action.inspection, ['command','rawResponseSha256']);
+      const command = TaskActionCommandSchema.safeParse(proof.command);
+      if (!command.success || command.data.kind !== action.actionKind ||
+          (command.data.kind !== 'inspect_catalog' && command.data.kind !== 'inspect_offer') ||
+          !HASH.test(String(proof.rawResponseSha256)) || !action.befOperationId || matched.has(action.befOperationId) || befOps.has(action.befOperationId)) fail('packet_invalid');
+      const op = requireRecord(sourceOperations.find((row)=>isRecord(row)&&row.operationId===action.befOperationId),
+        ['operationId','environmentId','generationId','participantId','idempotencyKeySha256','requestSha256','actionKind','status','receiptStatus',
+          'transactionHash','responseSha256','startedAt','completedAt','selectedExecutionsCount','selectedEventsCount','costsCount']);
+      const generation = before.generation as ChainJson;
+      const request = command.data.kind === 'inspect_catalog' ? {method:'GET',path:'/catalog'} :
+        {method:'GET',path:'/offer',resourceId:command.data.resourceId};
+      if (op.environmentId !== binding.environmentId || op.generationId !== execution.generationId || op.participantId !== generation.participant_id ||
+          op.idempotencyKeySha256 !== createHash('sha256').update(`task-action-${action.actionId}`).digest('hex') ||
+          op.requestSha256 !== createHash('sha256').update(JSON.stringify(request)).digest('hex') ||
+          op.actionKind !== (command.data.kind === 'inspect_catalog' ? 'catalog':'offer') || op.status !== 'accepted' ||
+          op.receiptStatus !== 'not_submitted' || op.transactionHash !== null || op.responseSha256 !== proof.rawResponseSha256 ||
+          op.selectedExecutionsCount !== 0 || op.selectedEventsCount !== 0 || op.costsCount !== 0 ||
+          typeof op.startedAt !== 'string' || typeof op.completedAt !== 'string' ||
+          !Number.isFinite(Date.parse(op.startedAt)) || !Number.isFinite(Date.parse(op.completedAt)) || Date.parse(op.completedAt)<Date.parse(op.startedAt)) fail('packet_invalid');
+      matched.add(action.befOperationId);
+    }
+  }
   const rpc = requireRecord(packet.rpc, ['localChainId', 'participant', 'assets', 'contracts', 'routes', 'identityCodeHashes', 'baseline',
     'final', 'intervalBlocks', 'transactions', 'transferLogs', 'approvalLogs', 'swapLogs', 'wethLogs', 'responseHashes']);
   if (!dec(rpc.localChainId) || !normAddress(rpc.participant) || !Array.isArray(rpc.assets) || !Array.isArray(rpc.contracts) ||

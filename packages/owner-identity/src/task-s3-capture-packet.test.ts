@@ -22,13 +22,30 @@ test('S3 packet validates, parses, and projects only the structured finish answe
   assert.equal(observations.captureEvidence.path.endsWith('/s3.json'), true);
 });
 
-test('S3 requires a well-formed durable BEF response hash without reconstructing wire JSON', () => {
+test('S3 packet binds an offer inspection command, read handle, and neutral BEF operation', () => {
+  const { packet } = createS3CapturePacketFixture('inspect_offer');
+  validateS3CapturePacket(packet);
+  assert.deepEqual(packet.ownerActions[0]!.command, { kind: 'inspect_offer', resourceId: 's3-resource', offerId: 'selected' });
+  assert.equal(packet.bef.before.operations[0]!.operation_kind, 'offer');
+
+  const wrongHandle = structuredClone(packet);
+  (wrongHandle.ownerActions[0]!.response!.readHandle as Record<string, unknown>).kind = 'catalog';
+  assert.throws(() => validateS3CapturePacket(wrongHandle));
+
+  const wrongRequest = structuredClone(packet);
+  wrongRequest.bef.before.operations[0]!.request_sha256 = '0'.repeat(64);
+  wrongRequest.bef.after = structuredClone(wrongRequest.bef.before);
+  wrongRequest.bef.censusSha256 = sha256CanonicalTaskJson(wrongRequest.bef.before);
+  assert.throws(() => validateS3CapturePacket(wrongRequest));
+});
+
+test('S3 packet requires a well-formed BEF response hash and binds the read request', () => {
   const { packet } = createS3CapturePacketFixture();
-  const invalidHash = structuredClone(packet);
-  invalidHash.bef.before.operations[0]!.response_sha256 = 'not-a-sha256';
-  invalidHash.bef.after = structuredClone(invalidHash.bef.before);
-  invalidHash.bef.censusSha256 = sha256CanonicalTaskJson(invalidHash.bef.before);
-  assert.throws(() => validateS3CapturePacket(invalidHash));
+  const missingHash = structuredClone(packet);
+  missingHash.bef.before.operations[0]!.response_sha256 = null;
+  missingHash.bef.after = structuredClone(missingHash.bef.before);
+  missingHash.bef.censusSha256 = sha256CanonicalTaskJson(missingHash.bef.before);
+  assert.throws(() => validateS3CapturePacket(missingHash));
 });
 test('S3 rejects unbound mode, altered finish data, and action/census contradictions', () => {
   const { packet } = createS3CapturePacketFixture();

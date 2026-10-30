@@ -188,16 +188,18 @@ function validatePacketShape(packet:JsonRecord):{
       census.selectedEvents.length>MAX_ROWS||census.costs.length>MAX_ROWS||census.paymentsCount!=='0'||census.deliveriesCount!=='0')fail('packet_invalid');
   const counts=requireRecord(census.counts,['operations','selectedExecutions','selectedEvents','costs']);
   if(counts.operations!==String(census.operations.length)||counts.selectedExecutions!==String(census.selectedExecutions.length)||
-      counts.selectedEvents!==String(census.selectedEvents.length)||counts.costs!==String(census.costs.length)||
-      census.selectedExecutions.length!==census.operations.length)fail('packet_invalid');
+      counts.selectedEvents!==String(census.selectedEvents.length)||counts.costs!==String(census.costs.length))fail('packet_invalid');
   const operations=new Map<string,JsonRecord>();
   for(const value of census.operations){
     const op=requireRecord(value,['operation_id','env_id','generation_id','participant_id','idempotency_key_sha256','request_sha256','operation_kind','status',
       'receipt_status','transaction_hash','response_sha256','started_at','completed_at']);
+    const readKind=['catalog','offer'].includes(String(op.operation_kind));
     if(!UUID.test(String(op.operation_id))||operations.has(String(op.operation_id))||op.env_id!==binding.environmentId||op.generation_id!==execution.generationId||
         op.participant_id!==generation.participant_id||!validHash(op.idempotency_key_sha256)||!validHash(op.request_sha256)||
-        !['approve','transfer'].includes(String(op.operation_kind))||!['settled','reverted'].includes(String(op.status))||
-        !['success','reverted'].includes(String(op.receipt_status))||!validTx(op.transaction_hash)||
+        (!['approve','transfer','catalog','offer'].includes(String(op.operation_kind)))||
+        (readKind?(op.status!=='accepted'||op.receipt_status!=='not_submitted'||op.transaction_hash!==null||
+            typeof op.response_sha256!=='string'||!validHash(op.response_sha256)):
+          (!['settled','reverted'].includes(String(op.status))||!['success','reverted'].includes(String(op.receipt_status))||!validTx(op.transaction_hash)))||
         (op.response_sha256!==null&&!validHash(op.response_sha256))||typeof op.started_at!=='string'||typeof op.completed_at!=='string')fail('packet_invalid');
     operations.set(String(op.operation_id),op);
   }
@@ -212,7 +214,9 @@ function validatePacketShape(packet:JsonRecord):{
         (selected.reason_code!==null&&typeof selected.reason_code!=='string')||typeof selected.completed_at!=='string')fail('packet_invalid');
     selectedByOperation.set(String(selected.operation_id),selected);
   }
-  if([...operations.keys()].some((id)=>!selectedByOperation.has(id)))fail('packet_invalid');
+  const mutableOperationIds=new Set([...operations].filter(([,op])=>['approve','transfer'].includes(String(op.operation_kind))).map(([id])=>id));
+  if(selectedByOperation.size!==mutableOperationIds.size||[...mutableOperationIds].some((id)=>!selectedByOperation.has(id))||
+      [...operations].some(([id,op])=>['catalog','offer'].includes(String(op.operation_kind))&&selectedByOperation.has(id)))fail('packet_invalid');
   const eventKinds=new Map<string,string[]>();
   const eventsByOperation=new Map<string,JsonRecord[]>();
   const eventIds=new Set<string>();
@@ -220,7 +224,7 @@ function validatePacketShape(packet:JsonRecord):{
   for(const value of census.selectedEvents){
     const event=requireRecord(value,['eventId','eventSequence','operationId','eventKind','transactionHash','eventJsonSha256','eventPayload']);
     const id=String(event.operationId),kind=String(event.eventKind),op=operations.get(id);
-    if(!op||!UUID.test(String(event.eventId))||eventIds.has(String(event.eventId))||!DECIMAL.test(String(event.eventSequence))||
+    if(!op||!['approve','transfer'].includes(String(op.operation_kind))||!UUID.test(String(event.eventId))||eventIds.has(String(event.eventId))||!DECIMAL.test(String(event.eventSequence))||
         eventSequences.has(String(event.eventSequence))||!['selected_action_bound','prestate_observed','original_tx_hash_bound','receipt_finalized'].includes(kind)||
         (event.transactionHash!==null&&!validTx(event.transactionHash))||!validHash(event.eventJsonSha256)||!isRecord(event.eventPayload))fail('packet_invalid');
     eventIds.add(String(event.eventId));eventSequences.add(String(event.eventSequence));
@@ -228,6 +232,7 @@ function validatePacketShape(packet:JsonRecord):{
     const owned=eventsByOperation.get(id)??[];owned.push(event);eventsByOperation.set(id,owned);
   }
   for(const id of operations.keys()){
+    if(!mutableOperationIds.has(id))continue;
     const owned=eventsByOperation.get(id)??[];
     owned.sort((left,right)=>BigInt(String(left.eventSequence))<BigInt(String(right.eventSequence))?-1:
       BigInt(String(left.eventSequence))>BigInt(String(right.eventSequence))?1:0);
@@ -259,15 +264,16 @@ function validatePacketShape(packet:JsonRecord):{
     'manifest_sha256','selected_principal_asset','selected_principal_units','observed_principal_units','created_at'] as const;
   for(const value of census.costs){
     const cost=requireRecord(value,costKeys),opId=String(cost.operation_id);
-    if(!operations.has(opId)||costs.has(opId)||cost.env_id!==binding.environmentId||cost.generation_id!==execution.generationId||
+    if(!operations.has(opId)||!mutableOperationIds.has(opId)||costs.has(opId)||cost.env_id!==binding.environmentId||cost.generation_id!==execution.generationId||
         !validTx(cost.transaction_hash)||!validAddress(cost.payer_address)||!['participant','facilitator'].includes(String(cost.payer_role))||
         !['success','reverted'].includes(String(cost.receipt_status))||!validAddress(cost.transaction_from)||!validAddress(cost.receipt_from)||
         !DECIMAL.test(String(cost.receipt_block_number))||!validTx(cost.receipt_block_hash)||!validTx(cost.receipt_block_parent_hash)||
         !uint(cost.gas_used)||!uint(cost.effective_gas_price_wei)||!uint(cost.gas_cost_wei)||!validHash(cost.manifest_sha256)||typeof cost.created_at!=='string')fail('packet_invalid');
     costs.set(opId,cost);
   }
-  if(costs.size!==operations.size)fail('packet_invalid');
+  if(costs.size!==mutableOperationIds.size)fail('packet_invalid');
   for(const [id,op] of operations){
+    if(!mutableOperationIds.has(id))continue;
     const selected=selectedByOperation.get(id)!;
     const cost=costs.get(id)!;
     if(selected.transaction_hash!==op.transaction_hash||selected.action_kind!==op.operation_kind||
@@ -316,9 +322,9 @@ function validatePacketShape(packet:JsonRecord):{
   }}
   if(receiptSet.size!==receipts.size||[...receipts.keys()].some((hash)=>!receiptSet.has(hash)))fail('packet_invalid');
   const fixtureHash=String(preparation.fixtureTransactionHash).toLowerCase();
-  if(receipts.has(fixtureHash)||operations.size!==receipts.size+1||intervalTxCount!==receipts.size)fail('packet_invalid');
+  if(receipts.has(fixtureHash)||mutableOperationIds.size!==receipts.size+1||intervalTxCount!==receipts.size)fail('packet_invalid');
   for(const [id,op] of operations){
-    if(id===String(preparation.fixtureOperationId))continue;
+    if(id===String(preparation.fixtureOperationId)||!mutableOperationIds.has(id))continue;
     const receipt=receipts.get(String(op.transaction_hash).toLowerCase());
     const selected=selectedByOperation.get(id)!;
     if(!receipt||receipt.status!==op.receipt_status||selected.outcome!==receipt.status||
@@ -380,25 +386,35 @@ export function verifyS4CapturePacketChildren(bytes:Buffer,bundle:S4CaptureBundl
   const paths=new Map<string,string>(children.map((item)=>[item.path,item.sha256.toLowerCase()]));
   const actionIds=new Set<string>(),ownerOperations=new Set<string>(),befOperations=new Set<string>();
   for(const action of shape.actions){
+    const readAction=['inspect_catalog','inspect_offer'].includes(String(action.actionKind));
     const allowed=['actionId','actionSequence','ownerOperationId','actionKind','commandSha256','actionEvidence','befOperationId','transactionHash'];
     if(!isRecord(action)||!exactKeys(action,allowed)||!UUID.test(String(action.actionId))||!Number.isSafeInteger(action.actionSequence)||
-        (action.actionSequence as number)<1||(action.actionSequence as number)>cutoff||!['approve','transfer'].includes(String(action.actionKind))||
+        (action.actionSequence as number)<1||(action.actionSequence as number)>cutoff||!['approve','transfer','inspect_catalog','inspect_offer'].includes(String(action.actionKind))||
         !UUID.test(String(action.ownerOperationId))||
-        !validHash(action.commandSha256)||!UUID.test(String(action.befOperationId))||!validTx(action.transactionHash)||
+        !validHash(action.commandSha256)||!UUID.test(String(action.befOperationId))||
+        (readAction?action.transactionHash!==null:!validTx(action.transactionHash))||
         !validEvidence(action.actionEvidence,ACTION_PREFIX))fail('child_reference_invalid');
     if(actionIds.has(String(action.actionId))||ownerOperations.has(String(action.ownerOperationId))||befOperations.has(String(action.befOperationId))||
         String(action.befOperationId)===String(shape.preparation.fixtureOperationId))fail('child_reference_invalid');
     actionIds.add(String(action.actionId));ownerOperations.add(String(action.ownerOperationId));befOperations.add(String(action.befOperationId));
     const op=shape.operations.get(String(action.befOperationId));
     const selected=shape.selectedByOperation.get(String(action.befOperationId));
-    if(!op||!selected||op.operation_kind!==action.actionKind||selected.action_kind!==action.actionKind||
+    if(!op||op.idempotency_key_sha256!==createHash('sha256').update(`task-action-${String(action.actionId)}`).digest('hex'))fail('child_reference_invalid');
+    if(readAction){
+      const expectedKind=action.actionKind==='inspect_catalog'?'catalog':'offer';
+      if(selected||op.operation_kind!==expectedKind||op.status!=='accepted'||op.receipt_status!=='not_submitted'||op.transaction_hash!==null||
+          !validHash(op.response_sha256)||
+          (action.actionKind==='inspect_catalog'&&String(op.request_sha256).toLowerCase()!==createHash('sha256').update(JSON.stringify({method:'GET',path:'/catalog'})).digest('hex')))
+        fail('child_reference_invalid');
+    }else if(!selected||op.operation_kind!==action.actionKind||selected.action_kind!==action.actionKind||
         String(op.transaction_hash).toLowerCase()!==String(action.transactionHash).toLowerCase()||
-        String(selected.transaction_hash).toLowerCase()!==String(action.transactionHash).toLowerCase()||
-        op.idempotency_key_sha256!==createHash('sha256').update(`task-action-${String(action.actionId)}`).digest('hex'))fail('child_reference_invalid');
+        String(selected.transaction_hash).toLowerCase()!==String(action.transactionHash).toLowerCase())fail('child_reference_invalid');
     const ref=action.actionEvidence as EvidenceReference;
     const existing=paths.get(ref.path);if(existing&&existing!==ref.sha256.toLowerCase())fail('child_reference_invalid');
     if(existing)fail('child_reference_invalid');paths.set(ref.path,ref.sha256.toLowerCase());children.push(ref);
   }
+  const taskOperationIds=[...shape.operations.keys()].filter((id)=>id!==String(shape.preparation.fixtureOperationId));
+  if(befOperations.size!==taskOperationIds.length||taskOperationIds.some((id)=>!befOperations.has(id)))fail('child_reference_invalid');
   const sequenceList=shape.actions.map((item)=>item.actionSequence as number).sort((a,b)=>a-b);
   if(sequenceList.some((item,index)=>item!==index+1)||children.length>MAX_ACTIONS+2)fail('child_reference_invalid');
   validateS4Observations(bundle.observations,packet,shape,capture,cutoff);
@@ -429,6 +445,7 @@ function validateS4Observations(observations:JsonRecord,packet:JsonRecord,shape:
     if(actionBySequence.has(seq))fail('observation_mismatch');actionBySequence.set(seq,action);
   }
   for(const [id,op] of shape.operations){
+    if(['catalog','offer'].includes(String(op.operation_kind)))continue;
     const tx=String(op.transaction_hash).toLowerCase();if(operationByHash.has(tx))fail('packet_invalid');operationByHash.set(tx,op);
     const selected=shape.selectedByOperation.get(id)!;
     const events=(shape.bef.before as JsonRecord).selectedEvents as JsonRecord[];
@@ -527,6 +544,13 @@ function validateS4Observations(observations:JsonRecord,packet:JsonRecord,shape:
   const expenseByTx=new Map(expenseObs.map((item)=>[String(item.transactionHash),item]));
   if(expenseByTx.size!==expenseObs.length||expenseByTx.size!==receipts.size||[...receipts.keys()].some((hashValue)=>!expenseByTx.has(hashValue)))fail('observation_mismatch');
   for(const action of shape.actions){
+    if(['inspect_catalog','inspect_offer'].includes(String(action.actionKind))){
+      const op=shape.operations.get(String(action.befOperationId));
+      if(!op||op.idempotency_key_sha256!==createHash('sha256').update(`task-action-${action.actionId}`).digest('hex')||
+          op.operation_kind!==(action.actionKind==='inspect_catalog'?'catalog':'offer')||op.status!=='accepted'||
+          op.receipt_status!=='not_submitted'||op.transaction_hash!==null)fail('observation_mismatch');
+      continue;
+    }
     const actionSeq=action.actionSequence as number,hashValue=String(action.transactionHash).toLowerCase(),op=operationByHash.get(hashValue);
     if(!op||op.operation_id!==action.befOperationId||op.idempotency_key_sha256!==createHash('sha256').update(`task-action-${action.actionId}`).digest('hex'))fail('observation_mismatch');
     const matchingAllowance=allowanceObs.filter((item)=>item.actionSequence===actionSeq&&item.transactionHash===hashValue);

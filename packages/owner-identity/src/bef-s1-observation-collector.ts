@@ -11,7 +11,7 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { keccak256 } from 'viem';
-import { safeMeasurementProjection as safeParticipantToolResponseProjection } from './bef-task-executor.js';
+import { readOnlyToolResponseMatches, safeMeasurementProjection as safeParticipantToolResponseProjection } from './bef-task-executor.js';
 import { TaskActionCommandSchema } from './task-action-service.js';
 import type { TaskActionCommand } from './task-action-service.js';
 import type { OwnerDatabase } from './db.js';
@@ -283,7 +283,7 @@ type ActionRow = {
 type LoadedAction = {
   row: ActionRow;
   sequence: number;
-  command: Extract<TaskActionCommand, { kind: 'transfer' }>;
+  command: TaskActionCommand;
   evidence: RecoveryActionEvidence;
   evidenceReference: EvidenceReference;
 };
@@ -541,6 +541,38 @@ function exactActionEvidenceKeys(value: JsonRecord): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
+function validReadOnlyInspectionEvidence(row: ActionRow, document: JsonRecord,
+  command: Extract<TaskActionCommand, { kind: 'inspect_catalog' | 'inspect_offer' }>): boolean {
+  const response = document.participantToolResponse;
+  const startedAt = typeof document.requestStartedAt === 'string' ? Date.parse(document.requestStartedAt) : Number.NaN;
+  const finishedAt = typeof document.requestFinishedAt === 'string' ? Date.parse(document.requestFinishedAt) : Number.NaN;
+  const responseOperationId = isRecord(response) && typeof response.operationId === 'string' ? response.operationId : null;
+  const evidenceOperationId = typeof document.befOperationId === 'string' ? document.befOperationId : null;
+  const claimedEffectFields = [
+    'transactionHash', 'outcome', 'receiptStatus', 'receiptGasUsed', 'receiptEffectiveGasPriceWei',
+    'paymentProtocol', 'recoverySource', 'reasonCode',
+  ];
+  const environmentHealth = document.environmentHealth;
+  const healthMatches = environmentHealth === undefined || (isRecord(environmentHealth) &&
+    Object.keys(environmentHealth).sort().join(',') === 'applicationSourceSha256,boundary,envId,manifestSha256' &&
+    environmentHealth.boundary === 'benchmark-environment-api' &&
+    environmentHealth.manifestSha256 === document.manifestSha256 &&
+    environmentHealth.applicationSourceSha256 === document.applicationSourceSha256 &&
+    environmentHealth.envId === document.environmentId);
+  return row.receipt_status === 'observed' && row.transaction_hash === null &&
+    claimedEffectFields.every((key) => !Object.hasOwn(document, key)) &&
+    healthMatches &&
+    document.httpStatus === 200 && typeof document.rawResponseSha256 === 'string' && HASH.test(document.rawResponseSha256) &&
+    Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt >= startedAt &&
+    evidenceOperationId === responseOperationId &&
+    evidenceOperationId !== null && UUID.test(evidenceOperationId) &&
+    isRecord(response) && isRecord(response.readHandle) &&
+    Object.keys(response.readHandle).sort().join(',') === 'kind,operationId' &&
+    response.readHandle.kind === (command.kind === 'inspect_catalog' ? 'catalog' : 'offer') &&
+    response.readHandle.operationId === evidenceOperationId &&
+    readOnlyToolResponseMatches(command, response);
+}
+
 function recoverySourceShape(value: unknown): boolean {
   if (!isRecord(value) || Object.keys(value).sort().join(',') !==
       'schema,selectedMeasurementSha256,sourceResponseSha256,sourceSnapshotSha256') return false;
@@ -590,12 +622,13 @@ async function loadActions(
   const loaded: LoadedAction[] = [];
   for (let index = 0; index < actionRows.length; index += 1) {
     const row = actionRows[index]!;
+    const supportedActionKind = row.action_kind === 'transfer' || row.action_kind === 'inspect_catalog' || row.action_kind === 'inspect_offer';
     const actionSequence = decimalSequence(row.action_sequence);
     const evidenceReferenceValue = row.evidence_path && row.evidence_hash
       ? evidenceReference({ path: row.evidence_path, sha256: row.evidence_hash.toLowerCase(), boundary: EVIDENCE_BOUNDARY }) : null;
     if (actionSequence !== index + 1 || row.id !== row.id.toLowerCase() || !UUID.test(row.id) ||
         row.run_id !== runId || row.task_index !== taskIndex || row.owner_id !== run.owner_id || row.agent_id !== run.agent_id ||
-        row.task_id !== 'S1' || row.environment_id !== preparation.environment_id || row.action_kind !== 'transfer' ||
+        row.task_id !== 'S1' || row.environment_id !== preparation.environment_id || !supportedActionKind ||
         !HASH.test(row.payload_hash) || !evidenceReferenceValue || !HASH.test(row.evidence_hash ?? '') ||
         row.history_revision !== row.receipt_revision || row.history_status !== row.receipt_status ||
         row.history_evidence_hash !== row.evidence_hash || row.history_evidence_path !== row.evidence_path ||
@@ -605,7 +638,7 @@ async function loadActions(
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
     const parsedCommand = TaskActionCommandSchema.safeParse(row.command_json);
-    if (!parsedCommand.success || parsedCommand.data.kind !== 'transfer' ||
+    if (!parsedCommand.success || parsedCommand.data.kind !== row.action_kind ||
         sha256CanonicalTaskJson({ runId, taskIndex, command: parsedCommand.data }).toLowerCase() !== row.payload_hash.toLowerCase()) {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
@@ -614,7 +647,7 @@ async function loadActions(
     if (!exactActionEvidenceKeys(document) || document.schema !== 'bef-task-action-observation-v1' ||
         document.actionId !== row.id || document.runId !== runId || document.taskIndex !== taskIndex ||
         document.actionSequence !== String(actionSequence) || document.ownerOperationId !== row.operation_id ||
-        document.actionKind !== 'transfer' || document.commandSha256 !== row.payload_hash.toLowerCase() ||
+        document.actionKind !== row.action_kind || document.commandSha256 !== row.payload_hash.toLowerCase() ||
         document.environmentId !== preparation.environment_id || document.generationId !== preparation.generation_id ||
         document.manifestSha256 !== preparation.environment_manifest_sha256.toLowerCase() ||
         document.applicationSourceSha256 !== preparation.application_source_hash.toLowerCase() ||
@@ -622,6 +655,15 @@ async function loadActions(
         (typeof document.rawResponseSha256 === 'string' && !HASH.test(document.rawResponseSha256))) {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
+    if (parsedCommand.data.kind === 'inspect_catalog' || parsedCommand.data.kind === 'inspect_offer') {
+      if (!validReadOnlyInspectionEvidence(row, document, parsedCommand.data)) {
+        throw new CollectionUnavailable('action_evidence_unavailable');
+      }
+      loaded.push({ row, sequence: actionSequence, command: parsedCommand.data,
+        evidence: document as unknown as RecoveryActionEvidence, evidenceReference: evidenceReferenceValue });
+      continue;
+    }
+    if (parsedCommand.data.kind !== 'transfer') throw new CollectionUnavailable('action_evidence_unavailable');
     if (document.recoverySource !== undefined && !hasExactRecoveredOwnerLineage(row, run, runId, document)) {
       throw new CollectionUnavailable('action_evidence_unavailable');
     }
@@ -1455,8 +1497,11 @@ function bindOperationsToActions(
   participantId: string,
   pinnedUsdcAddress: string,
 ): Map<string, S1ExpectedTransfer> {
+  const transferOperations = census.operations.filter((operation) => operation.operation_kind === 'transfer');
+  const readOperations = census.operations.filter((operation) => operation.operation_kind === 'catalog' || operation.operation_kind === 'offer');
   if (census.payments.length || census.deliveries.length ||
-      census.selectedExecutions.length !== census.operations.length) throw new CollectionUnavailable('rpc_mapping_incomplete');
+      transferOperations.length + readOperations.length !== census.operations.length ||
+      census.selectedExecutions.length !== transferOperations.length) throw new CollectionUnavailable('rpc_mapping_incomplete');
   const byIdempotency = new Map<string, JsonRecord>();
   const operationById = new Map<string, JsonRecord>();
   for (const operation of census.operations) {
@@ -1469,8 +1514,39 @@ function bindOperationsToActions(
     byIdempotency.set(operation.idempotency_key_sha256.toLowerCase(), operation);
     operationById.set(operation.operation_id.toLowerCase(), operation);
   }
+  const inspectionActions = actions.filter((action) => action.command.kind === 'inspect_catalog' || action.command.kind === 'inspect_offer');
+  const matchedInspectionOperationIds = new Set<string>();
+  for (const action of inspectionActions) {
+    const operationId = typeof action.evidence.befOperationId === 'string'
+      ? action.evidence.befOperationId.toLowerCase() : null;
+    const operation = operationId ? operationById.get(operationId) : undefined;
+    const responseSha256 = typeof action.evidence.rawResponseSha256 === 'string'
+      ? action.evidence.rawResponseSha256.toLowerCase() : null;
+    const actionIdempotencyHash = createHash('sha256').update(`task-action-${action.row.id}`).digest('hex');
+    const command = action.command;
+    if (command.kind !== 'inspect_catalog' && command.kind !== 'inspect_offer') {
+      throw new CollectionUnavailable('rpc_mapping_incomplete');
+    }
+    const readKind = command.kind === 'inspect_catalog' ? 'catalog' : 'offer';
+    const request = command.kind === 'inspect_catalog' ? { method: 'GET', path: '/catalog' } :
+      { method: 'GET', path: '/offer', resourceId: command.resourceId };
+    const expectedRequestSha256 = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+    if (!operationId || !UUID.test(operationId) || !operation || matchedInspectionOperationIds.has(operationId) ||
+        operation.operation_kind !== readKind || operation.status !== 'accepted' ||
+        operation.receipt_status !== 'not_submitted' || operation.transaction_hash !== null ||
+        operation.idempotency_key_sha256 !== actionIdempotencyHash || operation.request_sha256 !== expectedRequestSha256 ||
+        !responseSha256 || operation.response_sha256 !== responseSha256) {
+      throw new CollectionUnavailable('rpc_mapping_incomplete');
+    }
+    matchedInspectionOperationIds.add(operationId);
+  }
+  if (matchedInspectionOperationIds.size !== readOperations.length ||
+      census.costs.some((cost) => matchedInspectionOperationIds.has(String(cost.operation_id ?? '').toLowerCase()))) {
+    throw new CollectionUnavailable('rpc_mapping_incomplete');
+  }
   const ownerActionsByOperation = new Map<string, LoadedAction>();
   for (const action of actions) {
+    if (action.command.kind !== 'transfer') continue;
     const idempotencyHash = createHash('sha256').update(`task-action-${action.row.id}`).digest('hex');
     const operation = byIdempotency.get(idempotencyHash);
     const evidenceOperationId = typeof action.evidence.befOperationId === 'string' ? action.evidence.befOperationId.toLowerCase() : null;
@@ -1573,6 +1649,7 @@ function bindOperationsToActions(
   }
   const transfers = new Map<string, S1ExpectedTransfer>();
   for (const [operationId, operation] of operationById) {
+    if (operation.operation_kind !== 'transfer') continue;
     const selected = selectedByOperation.get(operationId);
     const events = eventsByOperation.get(operationId) ?? [];
     const kinds = events.map((event) => String(event.event_kind));
@@ -1677,7 +1754,8 @@ function bindOperationsToActions(
     }
   }
   for (const action of actions) {
-    if (action.evidence.status === 'observed' && !ownerActionsByOperation.has(String(action.evidence.befOperationId).toLowerCase())) {
+    if (action.command.kind === 'transfer' && action.evidence.status === 'observed' &&
+        !ownerActionsByOperation.has(String(action.evidence.befOperationId).toLowerCase())) {
       throw new CollectionUnavailable('rpc_mapping_incomplete');
     }
   }

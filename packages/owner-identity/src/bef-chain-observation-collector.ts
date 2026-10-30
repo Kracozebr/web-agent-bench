@@ -5,6 +5,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { keccak256 } from 'viem';
 import { TaskActionCommandSchema, type TaskActionCommand } from './task-action-service.js';
+import { readOnlyToolResponseMatches } from './bef-task-executor.js';
 import type { OwnerDatabase } from './db.js';
 import { recoveredActionEvidenceIsOwnerBound, recoveredOwnerLineageJoinSql, recoveredOwnerLineageSelectSql,
  recoverySourceEvidenceMatchesFacts, type RecoveredOwnerLineageRow,
@@ -32,7 +33,7 @@ const CHAIN_KINDS=new Set(['approve','transfer','wrap','unwrap','swap']);
 type J=Record<string,unknown>;
 type OwnerTx=Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
 type ReadQuery=(statement:string,parameters?:readonly unknown[])=>Promise<unknown>;
-type Census={generation:J;operations:J[];externalPaymentOperations:J[];selectedExecutions:J[];selectedEvents:J[];costs:J[];paymentsCount:string;deliveriesCount:string;counts:J};
+type Census={generation:J;operations:J[];inspectionOperations?:J[];externalPaymentOperations:J[];selectedExecutions:J[];selectedEvents:J[];costs:J[];paymentsCount:string;deliveriesCount:string;counts:J};
 type PreparationRow={preparation_id:string;claim_id:string;lease_id:string;environment_id:string;release_identity:string;manifest_hash:string;task_id:string;
  case_id:string;case_hash:string;initial_state_sha256:string;execution_identity_hash:string;environment_manifest_sha256:string;application_source_hash:string;
  created_at:Date|string;lease_state:string;observation_status:string;generation_id:string|null;participant_id:string|null;payer_address:string|null;
@@ -196,7 +197,7 @@ function eventPayload(row:J,execution:J,operation:J):J|null{
  }
  return null;
 }
-async function captureCensus(port:BefChainReadOnlyPostgresPort,envId:string,generationId:string):Promise<{session:J;census:Census}>{
+export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,envId:string,generationId:string,strictInspections=false):Promise<{session:J;census:Census}>{
  if(port.environmentId!==envId)fail('source_not_configured');
  try{return await port.withRepeatableRead(async(query)=>{
   const session=await validateObserverSession(query);
@@ -226,12 +227,17 @@ async function captureCensus(port:BefChainReadOnlyPostgresPort,envId:string,gene
   const count=counts[0]!;if(String(count.operations)!==String(rawOps.length)||String(count.selected_executions)!==String(rawSelected.length)||
    String(count.selected_events)!==String(rawEvents.length)||String(count.costs)!==String(rawCosts.length))fail('observer_census_unavailable');
   const chainRows=rawOps.filter((row)=>CHAIN_KINDS.has(String(row.operation_kind)));
+  const readRows=rawOps.filter((row)=>row.operation_kind==='catalog'||row.operation_kind==='offer');
+  const readIds=new Set(readRows.map((row)=>String(row.operation_id).toLowerCase()));
+  if(strictInspections&&(rawOps.length!==chainRows.length+readRows.length||
+   [...rawSelected,...rawEvents,...rawCosts].some((row)=>readIds.has(String(row.operation_id).toLowerCase()))))fail('observer_census_unavailable');
   const chainIds=new Set(chainRows.map((row)=>String(row.operation_id).toLowerCase()));
   const paymentOperations=rawOps.filter((row)=>(row.operation_kind==='pay'||row.operation_kind==='purchase')&&row.transaction_hash!==null).map((row)=>({
    operationId:String(row.operation_id).toLowerCase(),status:String(row.status),receiptStatus:String(row.receipt_status),transactionHash:txHash(row.transaction_hash)}));
   const selectedRows=rawSelected.filter((row)=>chainIds.has(String(row.operation_id).toLowerCase()));
   const eventRows=rawEvents.filter((row)=>chainIds.has(String(row.operation_id).toLowerCase()));
   const costRows=rawCosts.filter((row)=>chainIds.has(String(row.operation_id).toLowerCase()));
+  if(strictInspections&&(selectedRows.length!==rawSelected.length||eventRows.length!==rawEvents.length||costRows.length!==rawCosts.length))fail('observer_census_unavailable');
   const operations=chainRows.map((r)=>({operationId:String(r.operation_id).toLowerCase(),environmentId:r.env_id,generationId:String(r.generation_id).toLowerCase(),
    participantId:r.participant_id,idempotencyKeySha256:r.idempotency_key_sha256===null?null:String(r.idempotency_key_sha256).toLowerCase(),
    requestSha256:String(r.request_sha256).toLowerCase(),actionKind:r.operation_kind,status:r.status,receiptStatus:r.receipt_status,
@@ -276,6 +282,13 @@ async function captureCensus(port:BefChainReadOnlyPostgresPort,envId:string,gene
    payer_address:addr(g[0]!.payer_address),manifest_sha256:String(g[0]!.manifest_sha256).toLowerCase(),status:g[0]!.status,chain_id:String(g[0]!.chain_id),
    environment_manifest_sha256:String(g[0]!.environment_manifest_sha256).toLowerCase()},operations,externalPaymentOperations:paymentOperations,
     selectedExecutions,selectedEvents:eventKinds,costs,paymentsCount:String(ancillary[0]!.payments),deliveriesCount:String(ancillary[0]!.deliveries),
+    ...(strictInspections?{inspectionOperations:readRows.map((r)=>({operationId:String(r.operation_id).toLowerCase(),environmentId:r.env_id,
+     generationId:String(r.generation_id).toLowerCase(),participantId:r.participant_id,idempotencyKeySha256:r.idempotency_key_sha256,
+     requestSha256:r.request_sha256,actionKind:r.operation_kind,status:r.status,receiptStatus:r.receipt_status,transactionHash:r.transaction_hash,
+     responseSha256:r.response_sha256,startedAt:r.started_at,completedAt:r.completed_at,
+     selectedExecutionsCount:rawSelected.filter((row)=>String(row.operation_id).toLowerCase()===String(r.operation_id).toLowerCase()).length,
+     selectedEventsCount:rawEvents.filter((row)=>String(row.operation_id).toLowerCase()===String(r.operation_id).toLowerCase()).length,
+     costsCount:rawCosts.filter((row)=>String(row.operation_id).toLowerCase()===String(r.operation_id).toLowerCase()).length}))}:{}),
     counts:{operations:String(operations.length),externalPaymentOperations:String(paymentOperations.length),selectedExecutions:String(selectedExecutions.length),
      selectedEvents:String(eventKinds.length),costs:String(costs.length)}};
   if(hasSecret(census)||Buffer.byteLength(canonicalTaskJson(census),'utf8')>MAX_PACKET_BYTES)fail('observer_census_unavailable');
@@ -334,6 +347,28 @@ export function sameActionEnvelope(raw:J,selected:J,command:TaskActionCommand,ta
   (route.feeTier!==3000||(addr(raw.poolAddress)===pool?.toLowerCase()&&matchesReleaseCodeHash(raw.poolCodeHash,contracts.find((c)=>c.contractId===route.poolContractId)?.codeHash)))&&
   rawAmount===command.amountInUnits&&rawMinimum===command.amountOutMinimumUnits&&addr(raw.recipient)===command.recipient.toLowerCase()&&raw.gasLimit===command.gasLimit;
 }
+export function neutralChainInspectionEvidenceMatches(command:Extract<TaskActionCommand,{kind:'inspect_catalog'|'inspect_offer'}>,
+ row:{receipt_status:string;transaction_hash:string|null},doc:J):boolean{
+ const response=doc.participantToolResponse;
+ const started=typeof doc.requestStartedAt==='string'?Date.parse(doc.requestStartedAt):NaN;
+ const finished=typeof doc.requestFinishedAt==='string'?Date.parse(doc.requestFinishedAt):NaN;
+ const operationId=isRecord(response)&&typeof response.operationId==='string'?response.operationId:null;
+ const evidenceOperationId=typeof doc.befOperationId==='string'?doc.befOperationId:null;
+ const responseKeys=command.kind==='inspect_catalog'?['catalog','operationId','readHandle','freeInspection','deliveryState']:
+  ['resourceId','resourceSha256','contentType','schema','dataType','provenance','payment','offers','operationId','readHandle','freeInspection','deliveryState'];
+ const health=doc.environmentHealth;
+ return row.receipt_status==='observed'&&row.transaction_hash===null&&
+  ['transactionHash','outcome','receiptStatus','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','recoverySource','reasonCode']
+   .every((key)=>!Object.hasOwn(doc,key))&&
+  (health===undefined||(isRecord(health)&&exactKeys(health,['applicationSourceSha256','boundary','envId','manifestSha256'])&&
+   health.boundary==='benchmark-environment-api'&&health.envId===doc.environmentId&&health.manifestSha256===doc.manifestSha256&&
+   health.applicationSourceSha256===doc.applicationSourceSha256))&&
+  doc.httpStatus===200&&HASH.test(String(doc.rawResponseSha256))&&Number.isFinite(started)&&Number.isFinite(finished)&&finished>=started&&
+  typeof doc.befOperationId==='string'&&UUID.test(doc.befOperationId)&&
+  (isRecord(response)&&typeof response.operationId==='string'&&UUID.test(response.operationId))&&
+  evidenceOperationId===operationId&&(evidenceOperationId===null||UUID.test(evidenceOperationId))&&
+  isRecord(response)&&Object.keys(response).every((key)=>responseKeys.includes(key))&&readOnlyToolResponseMatches(command,response);
+}
 async function loadActions(root:string,runId:string,index:number,run:J,prep:PreparationRow,cutoff:number,rowsIn:ActionRow[],taskCase:ChainTaskCase,
  assets:Array<{assetId:string;address:string|null}>,contracts:Array<{contractId:string;address:string;codeHash:string}>):Promise<LoadedActions>{
  if(cutoff>MAX_ACTIONS||rowsIn.length!==cutoff)fail('owner_cutoff_mismatch');const chain:Loaded[]=[],external:ChainCaptureExternalAction[]=[],ownerOps=new Set<string>();
@@ -352,7 +387,8 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
    sha256CanonicalTaskJson({runId,taskIndex:index,command:parsed.data}).toLowerCase()!==row.payload_hash.toLowerCase())fail('action_evidence_unavailable');
   const chainAction=CHAIN_KINDS.has(parsed.data.kind);
   const externalAction=['inspect_catalog','inspect_offer','purchase','pay','retrieve'].includes(parsed.data.kind);
-  if((chainAction&&row.receipt_status!=='observed')||(!chainAction&&(!externalAction||!['H3','U1'].includes(taskCase.taskId))))fail('action_evidence_unavailable');
+  const neutralInspection=parsed.data.kind==='inspect_catalog'||parsed.data.kind==='inspect_offer';
+  if((chainAction&&row.receipt_status!=='observed')||(!chainAction&&(!externalAction||(!neutralInspection&&!['H3','U1'].includes(taskCase.taskId)))))fail('action_evidence_unavailable');
   const bytes=await readEvidence(root,ref,ACTION_ROOT,'action_evidence_unavailable');let doc:unknown;
   try{doc=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown}catch{fail('action_evidence_unavailable')}
   const evidence=isRecord(doc)?doc:null,recoverySourceBacked=evidence?.recoverySource!==undefined;
@@ -373,6 +409,8 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
   if(hasSecret(scrub))fail('action_evidence_unavailable');
   if(externalAction){
    const command=parsed.data;
+   if(!['H3','U1'].includes(taskCase.taskId)&&
+    ((command.kind!=='inspect_catalog'&&command.kind!=='inspect_offer')||!neutralChainInspectionEvidenceMatches(command,row,doc)))fail('action_evidence_unavailable');
    const response=isRecord(doc.participantToolResponse)?doc.participantToolResponse:null;
    const protocol=isRecord(doc.paymentProtocol)?doc.paymentProtocol:null;
    const befId=typeof doc.befOperationId==='string'&&UUID.test(doc.befOperationId)?doc.befOperationId.toLowerCase():null;
@@ -389,7 +427,8 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
    if(row.receipt_status==='observed'&&(['inspect_catalog','inspect_offer'].includes(command.kind)&&(!response||protocol!==null)))fail('action_evidence_unavailable');
    external.push({actionId:row.id,actionSequence,ownerOperationId:String(row.operation_id),actionKind:command.kind as ChainCaptureExternalAction['actionKind'],
     commandSha256:row.payload_hash.toLowerCase(),receiptStatus:row.receipt_status as ChainCaptureExternalAction['receiptStatus'],actionEvidence:ref,
-    befOperationId:befId,transactionHash:ownerHash});
+    befOperationId:befId,transactionHash:ownerHash,...(!['H3','U1'].includes(taskCase.taskId)?{
+     inspection:{command:parsed.data,rawResponseSha256:String(doc.rawResponseSha256).toLowerCase()}}:{})});
    continue;
   }
   if(!isRecord(doc.participantToolResponse)||!isRecord(doc.participantToolResponse.selectedAction)||!isRecord(doc.participantToolResponse.transaction)||
@@ -644,7 +683,7 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
  const actions=loaded.chain,externalActions=loaded.external;
  const pg=deps.postgresByEnvironment[prep.environment_id],rpcPort=deps.rpcByEnvironment[prep.environment_id];
  if(!pg||!rpcPort||rpcPort.environmentId!==prep.environment_id)return unavailable('source_not_configured');
- const before=await captureCensus(pg,prep.environment_id,prep.generation_id);const generation=before.census.generation;
+ const before=await captureBefChainCensus(pg,prep.environment_id,prep.generation_id,!['H3','U1'].includes(taskId));const generation=before.census.generation;
  if(generation.env_id!==prep.environment_id||generation.generation_id!==prep.generation_id.toLowerCase()||generation.participant_id!==prep.participant_id||
   generation.payer_address!==participant||generation.chain_id!==String(identity.localChainId)||generation.status!=='active'||
   generation.manifest_sha256!==prep.environment_manifest_sha256.toLowerCase()||generation.environment_manifest_sha256!==prep.environment_manifest_sha256.toLowerCase()||
@@ -799,7 +838,7 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
   const intervalBlocks=blockMap.map(({number,hash,parentHash,transactionCount,participantTransactions,externalTransactions})=>
    ({number,hash,parentHash,transactionCount,participantTransactions,externalTransactions}));
  const categorized=relevantLogs(transactions,assets);
- const after=await captureCensus(pg,prep.environment_id,prep.generation_id);
+ const after=await captureBefChainCensus(pg,prep.environment_id,prep.generation_id,!['H3','U1'].includes(taskId));
  if(!same(before.census,after.census)||after.census.generation.status!=='active')return unavailable('observer_census_changed');
  const packet:ChainCapturePacket={schemaVersion:'bts-chain-task-observation-capture/v1',classification:'run_bound_observations_candidate_not_grade',taskId,
   binding:evidenceBinding,closure:{closureId:String(closure.id),actionCutoffSequence:cutoff,reconciledActionSequence:reconciled},

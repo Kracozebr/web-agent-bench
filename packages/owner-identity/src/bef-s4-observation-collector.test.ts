@@ -266,7 +266,7 @@ test('S4 transaction intents accept producer decimal block fields and reject hex
   assert.throws(()=>projectProducerAction(compact,full,'approve',USDC,{}, {transactionIndex:'0x0'}));
 });
 
-async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=false, recoveredAction=false) {
+async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=false, recoveredAction=false, withInspectionPrefix=false) {
   if (recoveredAction && !withAction) throw new Error('recovered action fixture requires an owner action');
   const ownerId='30000000-0000-4000-8000-000000000001';
   const agentId='30000000-0000-4000-8000-000000000002';
@@ -475,7 +475,8 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
       eventJsonSha256:String(selectedActionBoundEvent.eventJsonSha256)}],
   }):null;
   if(recoveredAction&&!recoverySource)throw new Error('synthetic S4 recovered source proof could not be constructed');
-  const actionEvidence={schema:'bef-task-action-observation-v1',actionId,runId,taskIndex:0,actionSequence:'1',ownerOperationId,
+  const taskActionSequence=withInspectionPrefix?'3':'1';
+  const actionEvidence={schema:'bef-task-action-observation-v1',actionId,runId,taskIndex:0,actionSequence:taskActionSequence,ownerOperationId,
     actionKind:'approve',commandSha256,environmentId,generationId,manifestSha256:environmentManifestHash,
     applicationSourceSha256:applicationSourceHash,idempotencyKey:`task-action-${actionId}`,status:'observed',
     ...(recoveredAction?{reasonCode:'platform_recovery_original_operation_terminal',recoverySource}:{httpStatus:200,rawResponseSha256:'7'.repeat(64)}),
@@ -485,7 +486,7 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
   const actionPath='artifacts/runs/owner-identity-bef-task-coordinator/action/full-s4-action.json';
   const actionEvidenceHash=createHash('sha256').update(actionBytes).digest('hex');
   const actionRow={id:actionId,run_id:runId,task_index:0,owner_id:ownerId,agent_id:agentId,task_id:'S4',environment_id:environmentId,
-    action_sequence:'1',operation_id:ownerOperationId,payload_hash:commandSha256,action_kind:'approve',command_json:command,
+    action_sequence:taskActionSequence,operation_id:ownerOperationId,payload_hash:commandSha256,action_kind:'approve',command_json:command,
     receipt_revision:1,receipt_status:'observed',evidence_hash:actionEvidenceHash,evidence_path:actionPath,transaction_hash:actionTxHash,
     history_revision:1,history_status:'observed',history_evidence_hash:actionEvidenceHash,history_evidence_path:actionPath,
     history_transaction_hash:actionTxHash,
@@ -496,10 +497,54 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
       recovery_observation_count:1,recovery_observation_clock_excluded_ms:'1000',
       recovery_matching_observation_at:new Date(createdAt.getTime()+1_000),recovery_observed_evidence_matches:true,
       recovery_started_event_matches:true,recovery_observed_event_matches:true}:{})};
-  if(withAction){
-    runRow.action_cutoff_sequence='1';runRow.reconciled_action_sequence='1';closureRow.action_cutoff_sequence='1';
+  const readActionRows:Record<string,unknown>[]=[];
+  const readOperationRows:Record<string,unknown>[]=[];
+  const readActionFiles:Array<{path:string;bytes:Buffer}>=[];
+  if(withInspectionPrefix){
+    const readPayment={scheme:'exact',network:'eip155:31337',asset:USDC,amount:'1',payTo:PARTICIPANT,transferMethod:'eip3009'};
+    const reads=[
+      {actionId:'30000000-0000-4000-8000-000000000019',ownerOperationId:'30000000-0000-4000-8000-000000000020',
+        operationId:'30000000-0000-4000-8000-000000000021',command:{kind:'inspect_catalog' as const},
+        response:{operationId:'30000000-0000-4000-8000-000000000021',readHandle:{kind:'catalog',operationId:'30000000-0000-4000-8000-000000000021'},
+          catalog:[{resourceId:'s4-resource',resourceSha256:'a'.repeat(64),contentType:'application/json',
+            offers:[{id:'s4-offer',payment:readPayment}]}],freeInspection:true,deliveryState:'not_delivered'}},
+      {actionId:'30000000-0000-4000-8000-000000000022',ownerOperationId:'30000000-0000-4000-8000-000000000023',
+        operationId:'30000000-0000-4000-8000-000000000024',command:{kind:'inspect_offer' as const,resourceId:'s4-resource',offerId:'s4-offer'},
+        response:{operationId:'30000000-0000-4000-8000-000000000024',readHandle:{kind:'offer',operationId:'30000000-0000-4000-8000-000000000024'},
+          resourceId:'s4-resource',resourceSha256:'a'.repeat(64),contentType:'application/json',payment:readPayment,
+          offers:[{id:'s4-offer',payment:readPayment}],freeInspection:true,deliveryState:'not_delivered'}},
+    ];
+    for(let index=0;index<reads.length;index++){
+      const item=reads[index]!,actionSequence=String(index+1),commandSha=sha256CanonicalTaskJson({runId,taskIndex:0,command:item.command});
+      const evidence={schema:'bef-task-action-observation-v1',actionId:item.actionId,runId,taskIndex:0,actionSequence,
+        ownerOperationId:item.ownerOperationId,actionKind:item.command.kind,commandSha256:commandSha,environmentId,generationId,
+        manifestSha256:environmentManifestHash,applicationSourceSha256:applicationSourceHash,idempotencyKey:`task-action-${item.actionId}`,
+        status:'observed',httpStatus:200,befOperationId:item.operationId,
+        rawResponseSha256:createHash('sha256').update(JSON.stringify(item.response)).digest('hex'),participantToolResponse:item.response};
+      const bytes=Buffer.from(JSON.stringify(evidence));
+      const path=`artifacts/runs/owner-identity-bef-task-coordinator/action/s4-read-${index+1}.json`;
+      const evidenceHash=createHash('sha256').update(bytes).digest('hex');
+      readActionFiles.push({path,bytes});
+      readActionRows.push({id:item.actionId,run_id:runId,task_index:0,owner_id:ownerId,agent_id:agentId,task_id:'S4',environment_id:environmentId,
+        action_sequence:actionSequence,operation_id:item.ownerOperationId,payload_hash:commandSha,action_kind:item.command.kind,command_json:item.command,
+        receipt_revision:1,receipt_status:'observed',evidence_hash:evidenceHash,evidence_path:path,transaction_hash:null,
+        history_revision:1,history_status:'observed',history_evidence_hash:evidenceHash,history_evidence_path:path,history_transaction_hash:null});
+      const request=item.command.kind==='inspect_catalog'?{method:'GET',path:'/catalog'}:{method:'GET',path:'/offer',resourceId:item.command.resourceId};
+      readOperationRows.push({operation_id:item.operationId,env_id:environmentId,generation_id:generationId,participant_id:participantId,
+        idempotency_key_sha256:createHash('sha256').update(`task-action-${item.actionId}`).digest('hex'),
+        request_sha256:createHash('sha256').update(JSON.stringify(request)).digest('hex'),
+        operation_kind:item.command.kind==='inspect_catalog'?'catalog':'offer',status:'accepted',receipt_status:'not_submitted',transaction_hash:null,
+        response_sha256:createHash('sha256').update(JSON.stringify(item.response)).digest('hex'),
+        started_at:new Date(createdAt.getTime()+index+1).toISOString(),completed_at:new Date(createdAt.getTime()+index+1).toISOString()});
+    }
+  }
+  const taskActionCutoff=(withInspectionPrefix?2:0)+(withAction?1:0);
+  if(taskActionCutoff>0){
+    runRow.action_cutoff_sequence=String(taskActionCutoff);runRow.reconciled_action_sequence=String(taskActionCutoff);
+    closureRow.action_cutoff_sequence=String(taskActionCutoff);
     await mkdir(join(repositoryRoot,'artifacts','runs','owner-identity-bef-task-coordinator','action'),{recursive:true});
-    await writeFile(join(repositoryRoot,actionPath),actionBytes);
+    for(const item of readActionFiles)await writeFile(join(repositoryRoot,item.path),item.bytes);
+    if(withAction)await writeFile(join(repositoryRoot,actionPath),actionBytes);
   }
 
   const rpcTransaction={hash:transactionHash,type:'0x2',chainId:'0x7a69',from:PARTICIPANT,to:USDC,nonce:'0x0',value:'0x0',gas:'0x186a0',
@@ -546,8 +591,9 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
     if(statement.includes('has_table_privilege'))return ['bef_generation','bef_operation','bef_selected_execution','bef_selected_execution_event','bef_payment','bef_delivery','bef_transaction_cost']
       .map((table_name)=>({table_name,can_select:true,can_insert:false,can_update:false,can_delete:false,can_truncate:false}));
     if(statement.includes('FROM public.bef_generation g'))return [generationRow];
-    if(statement.includes('FROM public.bef_operation')&&statement.includes('ORDER BY started_at'))return withAction?[fixtureOperation,actionOperation]:[fixtureOperation];
-    if(statement.includes('SELECT count(*)::text FROM public.bef_operation'))return [{operations:withAction?'2':'1',selected_executions:withAction?'2':'1',selected_events:withAction?'8':'4',costs:withAction?'2':'1'}];
+    if(statement.includes('FROM public.bef_operation')&&statement.includes('ORDER BY started_at'))return [fixtureOperation,...readOperationRows,...(withAction?[actionOperation]:[])];
+    if(statement.includes('SELECT count(*)::text FROM public.bef_operation'))return [{operations:String(1+readOperationRows.length+(withAction?1:0)),
+      selected_executions:withAction?'2':'1',selected_events:withAction?'8':'4',costs:withAction?'2':'1'}];
     if(statement.includes('FROM public.bef_selected_execution_event'))return withAction?[...fixtureEventRows,...actionEvents]:fixtureEventRows;
     if(statement.includes('FROM public.bef_selected_execution')&&statement.includes('ORDER BY created_at'))return withAction?[selectedExecution,actionSelected]:[selectedExecution];
     if(statement.includes('FROM public.bef_transaction_cost')&&statement.includes('ORDER BY transaction_hash'))return withAction?[costRow,actionCost]:[costRow];
@@ -562,7 +608,8 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
       sha256:createHash('sha256').update(bytes).digest('hex'),boundary:'actual_tool_http_x402_local_evm_application_store'};
   }};
   const db={transaction:async<T>(callback:(tx:unknown)=>Promise<T>)=>{
-    const ownerResults:unknown[][]=[[{owner_id:ownerId,agent_id:agentId}],[],[],[runRow],[closureRow],[prep],[executionRow],withAction?[actionRow]:[]];
+    const ownerResults:unknown[][]=[[{owner_id:ownerId,agent_id:agentId}],[],[],[runRow],[closureRow],[prep],[executionRow],
+      [...readActionRows,...(withAction?[actionRow]:[])]];
     const tx={execute:async()=>ownerResults.shift()??[]};
     return callback(tx);
   }} as unknown as OwnerDatabase;
@@ -581,9 +628,12 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
     assert.deepEqual(firstPacketValue.preparation.fixtureEvidence,fixtureRef);
     assert.equal(firstPacketValue.preparation.fixtureBlockNumber,'17');
     assert.equal(firstPacketValue.preparation.baselineBlockNumber,'17');
-    assert.equal(firstPacketValue.ownerActions.length,withAction?1:0);
-    assert.equal(firstPacketValue.bef.before.operations.length,withAction?2:1);
+    assert.equal(firstPacketValue.ownerActions.length,taskActionCutoff);
+    assert.equal(firstPacketValue.bef.before.operations.length,1+taskActionCutoff);
     assert.equal(firstPacketValue.bef.before.operations[0]!.operation_id,fixtureOperationId);
+    if(withInspectionPrefix)assert.deepEqual(firstPacketValue.ownerActions.map((action)=>[action.actionSequence,action.actionKind,action.transactionHash]),[
+      [1,'inspect_catalog',null],[2,'inspect_offer',null],[3,'approve',actionTxHash],
+    ]);
     assert.equal(firstPacketValue.rpc.baseline.blockHash,HASH_B);
     assert.equal(firstPacketValue.rpc.final.blockHash,withAction?actionBlockHash:HASH_B);
     assert.equal(firstPacketValue.rpc.receipts.length,withAction?1:0);
@@ -593,17 +643,17 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
       const changes=observations.allowanceChanges;
       assert.ok(changes);
       assert.equal(changes[0]?.amountAfterUnits,'0');
-      assert.equal(changes[0]?.actionSequence,1);
+      assert.equal(changes[0]?.actionSequence,taskActionCutoff);
     }
     if(first.status==='candidate'){
       const children=verifyS4CapturePacketChildren(Buffer.from(canonicalTaskJson(firstPacketValue)),{
         binding:firstPacketValue.binding as unknown as Record<string,unknown>,
         closure:{closureId,operationId:null,payloadHash:runRow.closure_payload_hash,reason:'agent_finish',
-          actionCutoffSequence:withAction?1:0,reconciledActionSequence:withAction?1:0},
+          actionCutoffSequence:taskActionCutoff,reconciledActionSequence:taskActionCutoff},
         execution:{preparationId,leaseId,generationId,environmentManifestHash,applicationSourceHash,executionIdentityHash,initialStateSha256},
         observations:first.candidate.observations as unknown as Record<string,unknown>,
       });
-      assert.equal(children.length,withAction?3:2);
+      assert.equal(children.length,2+taskActionCutoff);
     }
     const firstPacket=canonicalTaskJson(firstPacketValue);
     const replay=await collectBefS4TaskObservationCandidate(dependencies,{runId,taskIndex:0});
@@ -618,3 +668,5 @@ test('full synthetic S4 collector binds a pending approval intent to its mined p
 test('full synthetic S4 collector rejects a mined transaction that contradicts its original nonce',()=>exerciseFullS4Collector(true,true));
 test('full synthetic S4 collector verifies a recovered action from the immutable BEF operation and exact owner recovery lineage',()=>
   exerciseFullS4Collector(true,false,true));
+test('full synthetic S4 collector retains both neutral inspections before its mutable action',()=>
+  exerciseFullS4Collector(true,false,false,true));
