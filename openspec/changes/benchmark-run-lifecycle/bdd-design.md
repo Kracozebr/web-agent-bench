@@ -41,8 +41,8 @@ The shared adapter is a planned HTTP/real-boundary adapter, not an in-memory mod
 
 | Requirement ID | Scenario ID | Scenario title | Given / When / Then | Gate | Mandatory | Named mapper | Adapter | Harness contract | Evidence | Why this test is required |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| BRL-REQ-001 | BRL-SC-001 | Queue admission preserves the quoted price and run identity | Isolated declared acceptance deployment / an authorized agent queues ranked and training requests against the active catalog and an administrator later changes prices including zero to paid or activates a new benchmark version before queued start or same-request retry / each admitted run SHALL retain its original price selection exposure open-weight denominator pinned benchmark/environment declared version policy and UTC reservation identity without queued charging or execution time; new training quotes SHALL use only open IDs and denominator 15 while activation alone neither cancels nor retargets admitted work and identical authorized retries recover original snapshots | environment | yes | test_brl_sc_001 | benchmark_run_lifecycle_http_adapter; admission_api_postgres | bdd-harness-proposal.json#BRL-SC-001 | artifacts/runs/acceptance/BRL-SC-001/manifest.json; committed state/observations | Protects the selected fixed-price and reproducible-identity contract. |
-| BRL-REQ-001 | BRL-SC-002 | Admission rejects an unauthorized agent or invalid task selection | Isolated declared acceptance deployment / a caller uses missing foreign or insufficient-scope credentials requests an invalid selection including any closed training ID alone or mixed with open IDs or requests a new nonactive-version run while admission races activation / admission SHALL reject the request without creating a run, reservation or readable foreign run data | environment | yes | test_brl_sc_002 | benchmark_run_lifecycle_http_adapter; admission_api_postgres | bdd-harness-proposal.json#BRL-SC-002 | artifacts/runs/acceptance/BRL-SC-002/manifest.json; committed state/observations | Protects owner isolation and complete ranked inventory. |
+| BRL-REQ-001 | BRL-SC-001 | Queue admission preserves the quoted price and run identity | Isolated declared acceptance deployment / an authorized agent queues ranked and training requests against the active catalog and an administrator later changes prices including zero to paid or activates a new benchmark version before queued start or same-request retry / each admitted run SHALL retain its original price selection exposure Training eligibility denominator pinned benchmark/environment declared version policy and UTC reservation identity without queued charging or execution time; current Training quotes SHALL use only S1/M1/H1 weights 1/2/3 and denominator 6 with whole-request integer rounding and activation alone neither cancels nor retargets admitted work and identical authorized retries recover original snapshots | environment | yes | test_brl_sc_001 | benchmark_run_lifecycle_http_adapter; admission_api_postgres | bdd-harness-proposal.json#BRL-SC-001 | artifacts/runs/acceptance/BRL-SC-001/manifest.json; committed state/observations | Protects the selected fixed-price and reproducible-identity contract. |
+| BRL-REQ-001 | BRL-SC-002 | Admission rejects an unauthorized agent or invalid task selection | Isolated declared acceptance deployment / a caller uses missing foreign or insufficient-scope credentials requests an invalid selection including any version-ineligible Training ID alone or mixed with eligible IDs or requests a new nonactive-version run while admission races activation / admission SHALL reject the request without creating a run, reservation or readable foreign run data | environment | yes | test_brl_sc_002 | benchmark_run_lifecycle_http_adapter; admission_api_postgres | bdd-harness-proposal.json#BRL-SC-002 | artifacts/runs/acceptance/BRL-SC-002/manifest.json; committed state/observations | Protects owner isolation and complete ranked inventory. |
 | BRL-REQ-002 | BRL-SC-003 | Admission retries preserve one operation and reject conflicting payloads | Isolated declared acceptance deployment / the same admission key is retried after a lost response and process restart and is then reused with a different selection or mode / the original request SHALL return the same run and reservation while the conflicting request is rejected without another financial effect | environment | yes | test_brl_sc_003 | benchmark_run_lifecycle_http_adapter; admission_api_postgres | bdd-harness-proposal.json#BRL-SC-003 | artifacts/runs/acceptance/BRL-SC-003/manifest.json; committed state/observations | Protects retry safety for chargeable agent commands. |
 | BRL-REQ-002 | BRL-SC-004 | Concurrent admissions cannot overdraw shared funds or agent caps | Isolated declared acceptance deployment / two agent requests race for the same owner funds or an operation, UTC daily or benchmark category limit is exhausted / only admissible reservations SHALL commit and no committed combination may exceed shared available funds or the applicable agent limits | environment | yes | test_brl_sc_004 | benchmark_run_lifecycle_http_adapter; admission_api_postgres | bdd-harness-proposal.json#BRL-SC-004 | artifacts/runs/acceptance/BRL-SC-004/manifest.json; committed state/observations | Protects the selected shared balance and individual budget limits. |
 | BRL-REQ-003 | BRL-SC-005 | Start atomically charges once and activates the first task | Isolated declared acceptance deployment / a queued run has a prepared execution environment and duplicate start deliveries occur before, at or after its persisted queue deadline around a coordinator restart / only a ready run with an unexpired queue deadline SHALL commit one debit and one first-task activation with the execution start time; unready preparation SHALL remain uncharged and untimed, and an unstarted request at or after its queue deadline SHALL expire with source-preserving cash/bonus hold release and no first task or automatic resubmit even if the expiry job was delayed | environment | yes | test_brl_sc_005 | benchmark_run_lifecycle_http_adapter; coordinator_postgres_executor | bdd-harness-proposal.json#BRL-SC-005 | artifacts/runs/acceptance/BRL-SC-005/manifest.json; committed state/observations | Protects the selected charge-at-start boundary. |
@@ -179,3 +179,49 @@ as eligible ranked terminal state/handoff; other outcomes do not create it.
 BLP-SC-016/017 separately exercise actual forum/lifecycle/profile transactions and
 public-route/cache projections. Planning correction authorization does not mark
 any task complete or grant full executable scenario/implementation approval.
+
+## Approved current Training amendment — 2026-10-30
+
+The latest owner instruction removes the parallel catalog-version and legacy
+migration proposal. Existing BRL-SC-001/002/003/008/016/018/023/024/025 carry the
+current-catalog variants below; all 25 IDs, mappers, mandatory flags and gate
+classes stay stable. Recorded gate status is unchanged; amendment variants are
+not_run. Bounded implementation and matching tests/BDD are human-approved;
+team planning review precedes apply without a new human approval requirement.
+
+- BRL-SC-001/002/003: real isolated HTTP/MCP and PostgreSQL use the single current
+  immutable manifest. Admit every nonempty unique S1/M1/H1 subset in canonical
+  order, weights 1/2/3, denominator 6, full default 500000 six-decimal units.
+  Observe singles 83334/166667/250000, S1+M1=250000 and full 500000 with one
+  request-level rounding and configured zero. Negative variants: denominator 15
+  or ranked 26, client weights/eligibility, per-task rounding, duplicate/empty IDs,
+  each of nine excluded tasks alone/mixed, including open S2/S4/M3/M4/H2. Reject
+  without run/reservation/budget hold/slot/timer/debit and never silently filter.
+  Replace current denominator 15 observation with `new_training_quote_over_6`;
+  executable mirrors/contracts are a later apply step.
+- BRL-SC-001/008/018: retain generic future immutable run snapshots, retry
+  identity, canonical selected-task order and source/evidence hashes. Ranked
+  stays twelve tasks, price 1000000 and score weight 26. No parallel catalog,
+  legacy migration, old-test replay or history compatibility gate is required
+  by this amendment. Separate permitted old local test-run/result cleanup must
+  preserve accounts, agents, auth, codes, ledger and reports.
+- BRL-SC-023/024: normal stale quote/selection, cash ceiling and permission
+  checks reject changed pending intents without financial effects, silently
+  trimmed selection or repricing. Matching admitted retries keep their original
+  identity under generic lifecycle rules. No special legacy-intent migration
+  adapter is required.
+- BRL-SC-016/025: actual browser selection and quote/handoff clicks cross the
+  running backend to independently inspected PostgreSQL state. Observe only
+  three Training choices, exact quote and funding estimate/cash ceiling, backend
+  rejection of forged excluded selections and fresh confirmation of stale input.
+  Preserve feedback timing and ranked privacy. HTTP-only checks do not satisfy
+  the browser boundary; missing selected-client capability stays blocked under
+  the existing gate. No historical test-catalog UI is required.
+
+Evidence binds fresh immutable manifest hash and validation/release proof,
+request/selection/quote snapshots, admitted/rejected outcome, before/after
+run/ledger/budget/intent/slot rows and source/event hashes. Existing reports and
+acceptance records are not rewritten to claim new passes. Use isolated synthetic
+identities later. No additional real-user fees, grants, model runs or credential
+operations beyond the explicit budget; this planning revision performs no
+source mutation, DB cleanup or executable test changes.

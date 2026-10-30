@@ -22,11 +22,11 @@ variants, model compatibility tests, replay UI, autonomy guarantees or PvP.
 
 ### 1. Inventory and ownership
 
-Fixed order: S1,S2,S3,S4,M1,M2,M3,M4,H1,H2,H3,U1. Training is the ordered
-intersection of a nonempty unique request with open IDs. Closed IDs are
-S3/M2/H3/U1; open IDs S1/S2/S4/M1/M3/M4/H1/H2. Weights are 1/2/3/5 by level;
-ranked denominator 26 and open-training denominator 15. Training cannot silently
-drop a requested closed ID and charge for a different subset.
+Fixed ranked order remains S1,S2,S3,S4,M1,M2,M3,M4,H1,H2,H3,U1. The one current
+training inventory is S1/M1/H1 in that order with weights 1/2/3 and denominator
+6. The other nine IDs are training-closed. Ranked retains all twelve tasks,
+weights 1/2/3/5, denominator 26, rubrics and price. Training cannot silently drop
+a closed or invalid ID and charge for a different subset.
 
 This module owns rubrics/evidence/credit/exposure. Lifecycle owns admission,
 timers/closure/cancellation/refunds; shared billing owns source allocation;
@@ -171,21 +171,24 @@ from the relevant row, all exposed to the active agent before it can act.
 Public metadata shows skill, difficulty/weight, scoring policy and availability;
 it does not ship full closed cases, parameters or reference solutions. The active
 scoped agent receives every necessary condition at task issuance. Training uses
-distinct open cases. No closed ID via training API/direct URL/cache; no mixed
-selection silently reduced to an open subset. No raw journal or public replay.
+only the current three open cases. No closed ID via training API/direct URL/cache;
+no mixed selection silently reduced to an open subset. No raw journal or public
+replay.
 
-Full ranked price 1 USDC; full open training 0.5. A new training quote uses
-ceil(P_micro * selected_open_weight / 15) once for the whole request; configured
-zero stays zero. More generally use the version's open weight sum, validated
-against inventory. Existing admitted snapshots are not repriced. Bonus/cash
-source policy, current permissions and budget reservations stay shared.
+Full ranked price remains 1 USDC; the full training bundle remains 0.5 USDC.
+Each training quote uses ceil(P_micro * selected_open_weight / open_weight_sum)
+once for the whole request with denominator 6. Singleton quotes are
+83334/166667/250000 micro-USDC for S1/M1/H1; the full bundle is 500000.
+Configured zero stays zero. Existing admitted snapshots are not repriced. Bonus/
+cash source policy, current permissions and budget reservations stay shared.
 
 Training explanations after each open task can show its achieved/missed
-conditions and observed training values. Ranked feedback only after termination:
-open score/reasons without coaching; closed score plus allowlisted reason
-category (goal unmet, budget/reserve/permission/scope violation, time exhausted,
-evidence unknown) with no exact case parameters, expected answer or solution.
-Each reason has a deterministic evidence-bound rule and release projection.
+conditions and observed training values for S1/M1/H1. Ranked feedback only after
+termination: open score/reasons without coaching; closed score plus allowlisted
+reason category (goal unmet,
+budget/reserve/permission/scope violation, time exhausted, evidence unknown) with
+no exact case parameters, expected answer or solution. Each reason has a
+deterministic evidence-bound rule and release projection.
 Public agent/board retains overall plus four difficulty indicators, not new
 open/closed boards. Private response bodies, HTML/hydration and caches must
 enforce the same projection; required normal task tool responses remain immediate.
@@ -212,12 +215,47 @@ actions, rewriting scores or triggering refunds. Signed/scoped graded outcomes
 are consumed exactly once by actual lifecycle and leaderboard services. Their
 own rules still decide complete-run eligibility and best-result publication.
 
+### 7. Current catalog and immutable release evidence
+
+Keep one current training contract: S1/M1/H1, weights 1/2/3 and denominator 6.
+Do not add parallel catalog versions or parser/feedback branches. Retain the
+existing manifest `schemaVersion` string if it remains the simplest unambiguous
+representation of this single current inventory. Each newly validated release
+still needs a distinct immutable identity and manifest hash.
+
+The existing 20-case candidate and its four pinned inputs remain historical
+validation evidence. Do not overwrite those files. Build new case-candidate,
+release-candidate, minimum-action-review and semantic-reference artifacts for the
+current 15-case inventory under new output paths. Update the assembly and offline
+validator to check the 15-case inventory and current source-pin set; do not require
+the old candidate to satisfy the new catalog. Include catalog, quote/admission and
+release-validation modules in the new source inventory. Artifact validation is
+offline evidence and does not activate a release.
+
+New intents use the current catalog. The existing immutable intent/run snapshots
+continue to bind admitted work under the shared lifecycle rules; no additional
+historical training-catalog execution or replay compatibility path is required.
+Prior local test runs may be removed through separately controlled cleanup. This
+change does not delete database rows or files and does not rewrite captured
+evidence.
+
+Project exposure in the catalog response as ordered open task IDs, corresponding
+weights and their sum (planned `openTaskIds`, `openTaskWeights` and `openWeightSum`
+fields). Keep the ranked task list and public rubrics unchanged. The launch panel
+derives training choices and one-ceiling integer quotes from the current catalog
+response rather than duplicated static training constants. Training feedback
+uses the same current open/closed set; there is no historical-version filter.
+
 ## Risks / Trade-offs
 
 - Fixed cases and repeated best scores can be learned; external agents expose
   inputs locally. Compact feedback and embargo reduce disclosure, not guarantee secrecy.
-- Closed U1 means no full ultra training; selected intentionally, components
-  remain open. Closed weight is 11/26, not an extra coefficient.
+- Closing nine tasks from training is an exposure choice and does not change
+  ranked weights or rubrics. Existing local test runs use an older catalog but do
+  not require a parallel compatibility contract.
+- The catalog must be consistent across admission, UI, issuance and feedback.
+  Derive all four from the same current task set and verify the closed-task
+  denials before any reservation.
 - Exact fee evidence and realistic route thresholds depend on feasibility.
   Missing prerequisites block release/task gates, not justify a toy-market pass.
 - Short deadlines can penalize clients/approvals. Measure before pinning finite
@@ -227,18 +265,22 @@ own rules still decide complete-run eligibility and best-result publication.
 
 ## Migration Plan
 
-Add manifest/evaluator ports and the graded-outcome store after scoped approval.
-Register active-delta harness support before executing new gates; preserve main
-WB/PV baseline. Bind real environment evidence, construct/validate sealed cases,
-run every mandatory task/integration/projection gate, then activate one pinned
-version. Rollback stops new admissions, preserves admitted snapshots/evidence and
-uses existing reconciliation; do not recalculate old results under new rubrics.
+Update the current catalog/manifest validator and catalog response, produce new
+case, release, minimum-action and semantic-reference artifacts for the 15-case
+inventory, and pin their complete source inventories. Keep the existing 20-case
+candidate and its four input artifacts as historical evidence under their current
+paths. Register the updated existing BTS scenario contract during apply; preserve
+all 34 scenario IDs and the main WB/PV baseline. Bind real environment evidence,
+validate the current inventory, run every mandatory task/integration/projection
+gate, then activate a new immutable release. Rollback stops new admissions or
+changes only the active pointer under the existing admission lock; it preserves
+admitted snapshots and evidence and uses existing reconciliation.
 
 ## Open Questions
 
-Rubric credit splits and the exact mandatory-predicate lists require review.
-Runtime block/contracts, concrete case values, educational rate, fees, timeouts
-and reference path lengths must be resolved/measured before release. None are
-claimed verified here. Founder-only admin/bootstrap, general recovery/ledger and
-quick-start/privacy contracts remain in their respective planning work, not
-silently implemented by this task suite.
+The owner has approved the current training set and price; no product choice
+remains open in this amendment. Runtime block/contracts, concrete case values, educational
+rate, fees, timeouts and reference path lengths must still be resolved/measured
+before release. None are claimed verified here. Founder-only admin/bootstrap,
+general recovery/ledger and quick-start/privacy contracts remain in their
+respective planning work, not silently implemented by this task suite.

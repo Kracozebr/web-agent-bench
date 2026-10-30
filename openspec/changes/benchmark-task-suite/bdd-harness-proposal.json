@@ -3,11 +3,11 @@
   "review_status": "approved",
   "runtime_manifest": "tests/bdd/changes/benchmark-task-suite/harness-contracts.json",
   "normative_delta": "specs/benchmark-task-suite/spec.md",
-  "note": "Approved unchanged inventory; approval.md records scope. Runtime registration and evidence are separate.",
+  "note": "Approved current-catalog exposure and pricing scope is recorded in approval.md; scenario IDs are unchanged. Runtime registration and evidence are separate.",
   "protected_scenarios": {
     "BTS-SC-001": {
       "requirement_id": "BTS-REQ-001",
-      "title": "Actual manifests bind the fixed inventory and source evidence",
+      "title": "Current manifest binds the catalog and source evidence",
       "gate": "environment",
       "mandatory": true,
       "named_mapper": "test_bts_sc_001",
@@ -15,6 +15,10 @@
       "boundary": "environment",
       "boundary_detail": "actual_manifest_validator_environment_store",
       "required_observations": [
+        "training_ids_and_weights",
+        "release_identity",
+        "manifest_hash",
+        "case_count",
         "release_hash",
         "case_hashes",
         "source_environment_hash",
@@ -25,6 +29,10 @@
         "raw_paths_hashes"
       ],
       "negative_variants": [
+        "training_set_mismatch",
+        "training_weight_or_sum_mismatch",
+        "ranked_or_training_case_count_mismatch",
+        "release_identity_reuse",
         "placeholder",
         "wrong_block_or_code",
         "unsolvable_or_initially_solved",
@@ -38,7 +46,7 @@
     },
     "BTS-SC-002": {
       "requirement_id": "BTS-REQ-001",
-      "title": "Incomplete substituted or unsolvable releases cannot activate",
+      "title": "Invalid current inventories cannot activate",
       "gate": "environment",
       "mandatory": true,
       "named_mapper": "test_bts_sc_002",
@@ -63,6 +71,10 @@
         "initially_satisfied_u1_allocation_blocks_release_before_admission_or_charge"
       ],
       "negative_variants": [
+        "training_set_mismatch",
+        "training_weight_or_sum_mismatch",
+        "ranked_or_training_case_count_mismatch",
+        "release_identity_reuse",
         "placeholder",
         "wrong_block_or_code",
         "unsolvable_or_initially_solved",
@@ -82,7 +94,7 @@
     },
     "BTS-SC-003": {
       "requirement_id": "BTS-REQ-002",
-      "title": "Open selections quote one whole-request price with denominator fifteen",
+      "title": "Current selections quote once at the fixed bundle price",
       "gate": "environment",
       "mandatory": true,
       "named_mapper": "test_bts_sc_003",
@@ -93,6 +105,8 @@
         "selected_ids",
         "open_weight_sum",
         "integer_quote",
+        "singleton_quotes_micro_usdc",
+        "full_bundle_quote_micro_usdc",
         "reservation_identity",
         "source_allocation",
         "closed_payload_absent",
@@ -101,6 +115,10 @@
         "raw_paths_hashes"
       ],
       "negative_variants": [
+        "denominator_15_used",
+        "denominator_mismatch",
+        "per_task_rounding",
+        "wrong_singleton_quote",
         "mixed_closed_selection",
         "duplicate_id",
         "zero_price",
@@ -134,6 +152,8 @@
         "raw_paths_hashes"
       ],
       "negative_variants": [
+        "any_non_s1_m1_h1_training_id",
+        "stale_training_link_or_catalog",
         "mixed_closed_selection",
         "duplicate_id",
         "zero_price",
@@ -220,7 +240,7 @@
     },
     "BTS-SC-007": {
       "requirement_id": "BTS-REQ-004",
-      "title": "Issuance and post-run projections disclose only authorized fields",
+      "title": "Issuance and post-run projections disclose only authorized current-catalog fields",
       "gate": "environment",
       "mandatory": true,
       "named_mapper": "test_bts_sc_007",
@@ -230,6 +250,8 @@
       "required_observations": [
         "issued_conditions",
         "feedback_release_state",
+        "current_open_training_ids",
+        "current_closed_training_ids",
         "owner_binding",
         "projection_fields",
         "rendered_payload",
@@ -240,6 +262,8 @@
         "raw_paths_hashes"
       ],
       "negative_variants": [
+        "closed_training_condition_leak",
+        "feedback_includes_training_closed_task",
         "running_ranked_result",
         "foreign_owner",
         "guessed_id",

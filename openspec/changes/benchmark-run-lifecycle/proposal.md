@@ -7,7 +7,8 @@ can influence charges or leaderboard eligibility.
 
 Status: approved for incremental implementation on 2026-10-25, with the bounded
 local Codex profile addendum dated 2026-10-28; see [approval](approval.md).
-Runtime acceptance remains separate. Lifecycle rules and defaults are unchanged.
+Runtime acceptance remains separate. The 2026-10-30 Training amendment below
+changes the single current catalog's Training availability and quote inputs.
 
 ## What Changes
 
@@ -112,10 +113,23 @@ insufficient. No new tests, product code or main-spec edits are part of proposal
 generation. Authoring this packet first does not change the proposed delivery
 order: environment feasibility remains the first implementation slice.
 
-Task-suite refinement: confirmed open training S1/S2/S4/M1/M3/M4/H1/H2 costs
-0.5 USDC full or selected weight over 15; closed S3/M2/H3/U1 is ranked-only.
-Ranked remains twelve tasks for 1 USDC, score weight sum 26. Closed post-ranked
-feedback is score plus reason category without exact case parameters/solution.
-The benchmark-task-suite packet owns the detailed real-evidence rubrics; this
-coordinator keeps admission/quote/clock/eligibility authority. Earlier admitted
-snapshots are preserved. These planning revisions remain pending for execution.
+Task-suite refinement, amended 2026-10-30: the single current catalog offers
+Training only for S1/M1/H1, weights 1/2/3, full price 0.5 USDC and subset
+denominator 6. The other nine tasks are ranked-only. Training eligibility is
+independent of task exposure. Ranked remains twelve tasks for 1 USDC, score
+weight sum 26. Closed post-ranked feedback remains score plus reason category
+without exact case parameters/solution. The benchmark-task-suite packet owns
+rubrics; this coordinator keeps admission/quote/clock/eligibility authority.
+
+The owner's latest override removes the parallel catalog-version and legacy
+migration requirements for this amendment: old local test runs/results may be
+deleted by the separately assigned cleanup. Preserve accounts, agents, auth,
+codes, ledger and reports. This packet performs no deletion. Fresh immutable
+manifest hashes and validation proof remain required for the current catalog.
+The generic immutable admitted-snapshot and retry rules remain for future runs;
+this amendment requires no old-test compatibility or replay gate. UI selection,
+quote and intent snapshots must agree on the current three-task selection and
+exact quote. Bounded implementation, matching tests/BDD and fresh release proof
+are human-approved; staged team review precedes apply. No additional real-user
+fees, grants, model runs or credential operations are authorized beyond the
+explicit budget. This revision itself edits planning only.

@@ -53,7 +53,7 @@ scope without adding a needed user journey.
 | AAP | private agent card, permissions, credential replacement/revoke, scoped authorization; BPC-SC-007–012 | general OAuth clients or every historic client edition |
 | TBB | immutable source lots, exact units, permissions/limits, conservation and source-linked refunds; BPC-SC-003–006/014–017 | cash shortfalls, forum billing, paid conversion |
 | BRL | intent/admission, queue/start/debit, per-agent slot, deadlines, independent tasks, finish/recovery/fencing, private feedback; BPC-SC-005/008–017/021/025 | full historic handoff UX matrix |
-| BTS | same pinned release, eight open/twelve ranked IDs, validators/rubrics, sealed independent effects and unknowns; BPC-SC-013–015 | redesigning difficulty, weights, new tasks |
+| BTS | one current Training roster S1/M1/H1, unchanged twelve-task Ranked12 definitions, validators/rubrics, sealed independent effects and unknowns; BPC-SC-013–015 | changing Ranked12 order/weights/price/rubric, redesigning difficulty, adding tasks |
 | BEF main | pinned read-only source fork, synthetic assets, chosen actions, observation and reset/isolation; BPC-SC-013/021/022 | live user funds and mainnet execution |
 | OPS active | bounded admission, process/data persistence and verified recovery; BPC-SC-016/021/022 | full high availability, off-host disaster recovery/SLA |
 | BLP active | shared publication marker, coherent exact best/tiers and public allowlist; BPC-SC-025 | full historical boards and forum links |
@@ -73,8 +73,8 @@ cannot become disqualification, charge forfeiture or an administrator score edit
 ### 2. Validated non-secret beta manifest before any external gate
 
 Proposed profile IDs: execution `beta-bef-v1`, transport `beta-remote-v1`.
-The manifest pins schema/profile versions; source commit/build hashes; HTTPS
-origin, proxy trust and private listeners; Google issuer/client ID/callback and
+The manifest pins the current Training roster and its selection/pricing contract;
+source commit/build hashes; HTTPS origin, proxy trust and private listeners; Google issuer/client ID/callback and
 configured founder subject; exact task release/manifest/rubric/asset/source-block
 hashes; worker/queue/timer policy; artifact paths/retention; and a declared
 entry per enabled client family (edition/version/platform/protocol/auth/redirect).
@@ -103,7 +103,9 @@ agent, at most two unstarted accepted runs per owner and eight globally, pending
 intents capped separately at two per owner/thirty globally. Snapshot an 86400-second
 queue deadline, preserving original expiry on retry/restart, and a 180-second
 successor-preparation bound. Preserve published task timers and initial prices
-(ranked 1; all-open training 0.5 internal USDC) and existing agent UTC limits.
+(Ranked12 remains 1 internal USDC; the current S1/M1/H1 training bundle is
+0.5 internal USDC) and existing agent UTC limits. Training uses the single
+current S1/M1/H1 roster, weights 1/2/3 and denominator 6.
 These are beta configuration bounds, not measured capacity. Host tests
 must validate them; increasing concurrency requires a new pinned measured policy.
 Report defaults: title 160 characters, body 4000, request body 16 KiB maximum,
@@ -438,6 +440,38 @@ not a second public flag or a raw private API response. Test anonymous/foreign A
 HTML/hydration/cache reads before and after marker commit, retries, ties, partial
 scores and unknown/incomplete exclusions. BPC-SC-025 owns this small read surface.
 
+### 11. Current Training selection and pricing
+
+The latest 30 October user decision selects one current Training roster:
+S1, M1 and H1 in canonical order with weights 1/2/3, a fixed denominator of 6
+and a bundle price of 0.5 internal USDC (500,000 micro-USDC). Price each valid
+selection once as `ceil(500000 × selected-weight-sum / 6)` micro-USDC. A
+single-task selection costs 83,334 / 166,667 / 250,000 for S1 / M1 / H1
+respectively, and the full trio costs exactly 500,000. Do not add individually
+rounded single-task prices to compute a multi-task request.
+
+Quotes and admitted run snapshots SHALL bind the current roster, exact selected
+IDs/order, weights, denominator, rounding policy, quote and charge, rubric pins,
+and source/evidence hashes. UI and API admissions reject closed or non-current
+IDs, mixed/duplicate/empty selections, stale or cross-selection quotes and
+caller-supplied grades. Rejected requests produce no run, preparation,
+reservation/debit, task action or BEF effect. The catalog is not split into
+versioned current/legacy branches. Ranked12 keeps the existing twelve IDs and
+order, 1/2/3/5 weights and total 26, 1-USDC price, rubric, grading and unknown
+rules unchanged.
+
+BPC-SC-014 retains its stable ID, mapper and adapter. It covers current Training
+selection and price through a real UI start and bound agent actions, plus
+direct-API, stale/cross-selection quote, invalid-ID and invalid-selection
+rejection with durable no-effect evidence. New validation evidence uses fresh
+paths; frozen repository proof artifacts remain unchanged. The separate
+root-owned cleanup targets exactly five local qualification runs and their
+dependent results while retaining accounts, agents, auth, codes, ledger and
+reports. This amendment authorizes bounded implementation and executable BDD
+changes after root review, but no additional real model runs, credit
+grants/spend or credential operations beyond the previously consumed 3.1
+single attempt.
+
 ## Risks / Trade-offs
 
 - External transport or worker requires more than the current local reuse → day-2
@@ -456,21 +490,30 @@ scores and unknown/incomplete exclusions. BPC-SC-025 owns this small read surfac
   and days 11–14 buffer; elapsed agent time is not an evidence-based delivery SLA.
 - Shared file/infrastructure changes conflict between agents → one integrator,
   up to three scoped workers, serialized migrations/build/capture on one stand.
+- A stale quote or changed selection could alter training charges → quotes bind
+  the submitted current selection and one per-request rounding result; invalid
+  requests have no effects, and Ranked12 pins remain identical.
 
 ## Migration Plan
 
-1. Approve this exact BPC scope; pin beta manifest/prerequisites and map included
-   domain invariants to gates. Add adapters/mirrors alongside implementation.
+1. Preserve the 28 October BPC approval and apply the latest 30 October
+   single-roster Training amendment. At root review, confirm the S1/M1/H1
+   roster, weights, denominator, pricing and amended BPC-SC-014 boundary before
+   implementation. Keep existing gate and task statuses unchanged; no
+   additional real model run or credit spend is authorized.
 2. Add code/report schemas and uniqueness/audit/indexes with additive migrations;
-   preserve owners/grants/releases/results. Deploy flags off and rehearse backup.
+   retain accounts, agents, auth, codes, ledger, reports and unrelated records.
+   Root separately owns deletion of exactly five local qualification runs and
+   their dependent results. Deploy flags off and rehearse backup.
 3. Implement isolated beta runtime and one external journey before code/report
    work is considered releasable. No fixture identity or response provider in beta.
 4. Implement codes, reports and client matrix in parallel; serialize shared seams.
 5. Run scoped gates, freeze evidence, restore rehearsal, then 3–5-person trial;
    only the reviewed green target build is admitted to the expanded cohort.
 6. Rollback pauses admissions and new writes as appropriate, drains/fences workers,
-   restores a compatible application over retained additive data. Do not reverse
-   financial/evidence migrations destructively, reset user DB or replay task effects.
+   and restores a compatible application over retained additive data. Do not
+   introduce a legacy Training catalog branch, reverse financial/evidence
+   migrations destructively or reset the user DB.
    Reconciliation precedes any restored write enablement.
 7. Sync/archive only the completed beta capability after its own mandatory gates;
    old active packages remain open. Existing local evidence paths stay readable.
@@ -493,10 +536,19 @@ these accesses early; screenshots consume some integration/acceptance buffer.
 Missing clients do not become a successful or optional gate.
 
 Code behavior, queue caps with 24-hour wait, screenshot inclusion, all-client
-release and same-host backup are user-confirmed product decisions. Detailed
-screenshot bounds and remaining engineering defaults are proposed as part of
-the revised package. Full executable-scope approval remains pending review of
-these changes. No unanswered external value is treated as a successful check.
+release and same-host backup are user-confirmed product decisions. The latest
+30 October user override approves one current Training roster, S1/M1/H1 at
+weights 1/2/3, denominator 6 and the 0.5-USDC bundle, with no versioned catalog
+or backward-compatibility branch; Ranked12 remains unchanged. Root owns deletion
+of exactly five local qualification runs and dependent results, retaining
+accounts, agents, auth, codes, ledger and reports. This planning change leaves
+frozen repository proof artifacts untouched and uses fresh paths for new
+validation evidence. Bounded implementation and executable BDD changes may
+proceed after root review. No additional real model runs, credit grants/spend
+or credential operations are authorized beyond the previously consumed 3.1
+single attempt. The original broader implementation approval remains as
+recorded on 28 October. No unanswered external value is treated as a successful
+check.
 
 ## Acceptance design and approval
 

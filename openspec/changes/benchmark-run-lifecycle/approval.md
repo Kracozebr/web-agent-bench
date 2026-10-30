@@ -47,3 +47,34 @@ This selects a client configuration for existing BRL-SC-023/024/025 implementati
 and acceptance; it adds or changes no scenario IDs, assertions, negative variants
 or contracts. Approval does not pass a gate. The full launch, browser and 12-task
 runtime evidence remains required independently.
+
+## Scoped amendment: single current Training selection and quote
+
+Date: 2026-10-30 (Europe/Moscow); latest owner override supersedes the earlier
+parallel-version proposal: “Версионированный каталог не нужен, старые раны можно
+удалить, это все тестовое”.
+
+The owner approved bounded implementation and matching BDD/tests for Training
+S1/M1/H1 only, weights 1/2/3, full price 0.5 USDC and proportional denominator 6.
+Six-decimal single-task quotes are 83334/166667/250000 base units using existing
+whole-request upward rounding. Ranked remains twelve tasks, 1 USDC and weight 26.
+Training eligibility is separate from open/closed exposure.
+
+Use one current catalog with fresh immutable manifest hashes and validation
+proof; no parallel catalog-version, legacy migration, old-test replay or
+historical Training-rendering requirement applies to this amendment. The owner
+permits deleting old local test runs/results. Root owns the separately reviewed
+cleanup; preserve accounts, agents, auth, codes, ledger and reports. This edit
+performs no deletion or financial mutation. Generic immutable admitted snapshots
+and authorized retry rules remain unchanged for future runs.
+
+Existing BRL-SC-001/002/003/008/016/018/023/024/025 receive the bounded current
+selection/quote variants. All stable requirement/scenario IDs, mandatory flags
+and gate classes remain unchanged. The related BTS/BPC packets own matching
+catalog/release and UI policy changes. Planning review then apply is the team
+sequence, not a request for renewed human approval of the approved code scope.
+Implementation, matching isolated BDD and actual browser-to-backend-to-DB quote
+acceptance remain to be performed. No additional real-user fees, grants, model
+runs or credential operations are authorized beyond the explicit budget.
+Approval passes no gate: prior status stays recorded, amendment variants are
+not_run until independently exercised, and no sync/archive occurs here.

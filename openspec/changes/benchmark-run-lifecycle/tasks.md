@@ -19,7 +19,7 @@
 
 ## 4. Admission and charging
 
-- [ ] 4.1 Implement authenticated active-version-only new training/ranked admission serialized with activation and open-only training admission (S1/S2/S4/M1/M3/M4/H1/H2, denominator 15) and integer fixed-price quotes, including zero-price authorization; preserve queued old-version snapshots/start eligibility and distinguish same-request retries from new archived-version requests without retargeting or effects on rejection. Gate: environment BRL-SC-001/002.
+- [ ] 4.1 Implement authenticated active-version-only new training/ranked admission serialized with activation and current Training admission (S1/M1/H1 weights 1/2/3, denominator 6) and integer fixed-price quotes, including zero-price authorization; preserve queued old-version snapshots/start eligibility and distinguish same-request retries from new archived-version requests without retargeting or effects on rejection. Gate: environment BRL-SC-001/002.
 - [ ] 4.2 Implement same-key replay/conflict handling and serialized shared-owner/agent-cap reservations. Gate: environment BRL-SC-003/004.
 - [ ] 4.3 Implement prepared-environment admission and atomic debit/first-task/deadline/outbox transition, requiring an unexpired persisted queue deadline; serialize start, cancellation and expiry under duplicate delivery/restart and retain one financial outcome. Gate: environment BRL-SC-005/006.
 - [ ] 4.4 Implement approved UTC rollover, pre-start budget/permission recheck, original-quote preservation, refund-bucket linkage and next-reset read model. Gate: environment BRL-SC-007.
@@ -27,9 +27,9 @@
 
 - [ ] 4.6 Implement owner-account rotation and oldest-currently-eligible ordering inside each owner with durable serialized dispatch/claim identity across workers/restart, busy-agent head skipping, no preemption and spare-capacity use for a sole eligible owner; preserve original waiting deadlines, per-agent slots and current budget/expiry/access rules. Gate: environment BRL-SC-019.
 
-- [ ] 4.7 Add bounded private owner launch-intent creation/status/cancellation with immutable quote, active benchmark, cash ceiling and expiry; no holds, queue slot, timer or publication before matching-agent acceptance. Gate: BRL-SC-023/024.
+- [ ] 4.7 Add bounded private owner launch-intent creation/status/cancellation with immutable current eligible selection/weights/denominator/quote, active benchmark, cash ceiling and expiry; no holds, queue slot, timer or publication before matching-agent acceptance. Gate: BRL-SC-023/024.
 - [ ] 4.8 Integrate atomic matching-agent HTTP/MCP acceptance with one server-derived admission identity/run binding; serialize stale-policy/price/version/cash checks, expiry/cancel and authorized admitted retries. Gate: BRL-SC-023/024.
-- [ ] 4.9 Add real private browser handoff/status flow and actual pinned compatible-client repeat/fallback evidence, with safe nonauthorizing links/prompts and honest action counts. Gate: BRL-SC-025.
+- [ ] 4.9 Add current private browser quote/selection/handoff/status flow (three Training options), actual backend/PostgreSQL quote observations and actual pinned compatible-client repeat/fallback evidence, with safe nonauthorizing links/prompts and honest action counts. Gate: BRL-SC-025.
 
 ## 5. Task lifecycle and time
 
@@ -59,3 +59,15 @@
 - [ ] 8.2 Record limitations explicitly: no mainnet signing, Base fixture fidelity, full rubrics, Google/MCP client, public leaderboard or full UI acceptance is claimed. Gate: artifact boundary/provenance review.
 - [ ] 8.3 After all required work/gates pass, sync only the new capability to main, preserve existing specs, retarget mirrors/contracts and repeat required source/acceptance checks. Gate: artifact/main-source coherence and mandatory environment evidence.
 - [ ] 8.4 Archive only after sync and closeout verify no executable references to the active change path. Gate: artifact archive and post-move traceability.
+
+## 9. Approved 2026-10-30 current Training amendment (pending implementation)
+
+- [ ] 9.1 Update the single current catalog to Training S1/M1/H1 weights 1/2/3, full 0.5 USDC, denominator 6; ranked twelve/1 USDC/26 stays unchanged. Produce fresh immutable manifest hashes and validation proof without parallel catalog versions. Gate: artifact review plus BRL-SC-001/002/018 current-catalog evidence.
+- [ ] 9.2 Update admission/quote/intent/run snapshots and UI projections together; retain generic future immutable snapshots/idempotency and normal stale-quote/selection checks. Do not add legacy test-catalog migration/history gates. Root separately owns permitted old local test-run/result cleanup, preserving accounts/agents/auth/codes/ledger/reports. Gate: BRL-SC-001/003/008/018/023/024 and independently observed DB/evidence inputs.
+- [ ] 9.3 Update existing mirrors, named observations and isolated adapters for whole-request six-decimal quotes (singles 83334/166667/250000, S1+M1 250000, full 500000, zero), all excluded/mixed/forged selections and stale quote conflicts; preserve 25 stable IDs and existing gate status. Gate: semantic audit then mandatory isolated BDD, amendment variants initially not_run.
+- [ ] 9.4 Exercise actual browser current quote/selection and stale-intent handling through the real backend with independent PostgreSQL reads; separately retain actual selected-client requirements and blocked states. Gate: BRL-SC-016/025. No additional real-user fees/grants/model runs/credential operations beyond the explicit budget.
+
+Existing checkbox and gate results above remain unchanged. Human approval covers
+bounded implementation and matching tests/BDD; await root's team review and apply
+assignment. This planning revision performs no code/test/source-artifact write,
+DB mutation or deletion.

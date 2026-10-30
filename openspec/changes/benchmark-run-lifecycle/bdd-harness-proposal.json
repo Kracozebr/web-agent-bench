@@ -3,7 +3,7 @@
   "review_status": "approved",
   "runtime_manifest": "tests/bdd/changes/benchmark-run-lifecycle/harness-contracts.json",
   "normative_delta": "specs/benchmark-run-lifecycle/spec.md",
-  "note": "Approved unchanged inventory; approval.md records scope. Runtime registration and evidence are separate.",
+  "note": "Approved inventory with scoped 2026-10-30 single current Training amendment; approval.md records latest owner override. No parallel catalog or old-test compatibility gates. Runtime registration/evidence are separate; amended variants are not_run.",
   "protected_scenarios": {
     "BRL-SC-001": {
       "requirement_id": "BRL-REQ-001",
@@ -26,8 +26,13 @@
         "activation_alone_no_cancel_or_retarget",
         "pinned_exposure",
         "pinned_open_weight_denominator",
-        "new_training_quote_over_15",
-        "old_admission_snapshot_preserved"
+        "new_training_quote_over_6",
+        "old_admission_snapshot_preserved",
+        "training_eligibility_s1_m1_h1",
+        "training_quote_over_6",
+        "single_quotes_83334_166667_250000",
+        "whole_request_rounding",
+        "ranked_twelve_price_and_weights_unchanged"
       ],
       "negative_variants": [
         "price_changes_after_queue",
@@ -37,7 +42,11 @@
         "lost_response_retry_after_activation",
         "activation_during_preparation",
         "closed_training_selection",
-        "old_admission_not_repriced"
+        "old_admission_not_repriced",
+        "client_supplied_denominator_or_weights",
+        "invalid_denominator_15",
+        "ranked_denominator_26",
+        "sum_of_rounded_single_quotes"
       ],
       "durable_effects": [
         "run_record",
@@ -85,7 +94,10 @@
         "closed_training_id",
         "mixed_open_closed",
         "forged_exposure",
-        "zero_price_closed_request"
+        "zero_price_closed_request",
+        "each_of_nine_ineligible_ids_alone_and_mixed",
+        "open_but_training_ineligible",
+        "forged_training_eligibility"
       ],
       "durable_effects": [
         "rejection_audit_without_sensitive_payload",
@@ -907,7 +919,9 @@
         "native_selected_client_action_evidence",
         "fallback_setup_approvals_counted_separately",
         "no_secret_in_link_or_prompt",
-        "no_hosted_model_invocation"
+        "no_hosted_model_invocation",
+        "actual_browser_current_three_task_selection_and_quote",
+        "actual_backend_postgres_current_quote_binding"
       ],
       "negative_variants": [
         "client_never_responds",

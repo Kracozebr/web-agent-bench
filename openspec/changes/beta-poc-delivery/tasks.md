@@ -1,14 +1,18 @@
 # Beta PoC implementation tasks
 
-Status: approved for implementation/acceptance on 28 October 2026; runtime gates remain separate.
+Status: the original scope was approved for implementation/acceptance on 28 October 2026. The latest 30 October user override approves the single current Training roster S1/M1/H1 at weights 1/2/3, denominator 6 and 0.5-USDC bundle, with no versioned catalog or backward-compatibility branch. Implementation and BDD changes may proceed after root review. Runtime gates remain separate and unchanged.
 The 10–14-day target and parallel work map are in [delivery plan](../../../docs/poc-delivery-plan.md).
 Gate IDs below refer to the exact [BDD packet](bdd-design.md); environment gates
-must use real UI/client/backend/database/BEF boundaries. Keep all boxes unchecked
-until their named result exists, and implementation separate from gate completion.
+must use real UI/client/backend/database/BEF boundaries. Preserve current checkbox
+states and check only when the named result exists; keep implementation separate
+from gate completion.
+Progress remains 3/45 tasks complete; this amendment changes no checkbox or gate result.
+It authorizes no additional real model runs, credit grants/spend or credential operations
+beyond the previously consumed 3.1 single attempt.
 
 ## 1. Scope, manifest and first external slice (P0–P3; days 1–2)
 
-- [x] 1.1 Obtain approval of BPC-REQ-001–015, BPC-SC-001–026, their negative variants/defaults and external beta extension; record the decision in approval.md (artifact gate).
+- [x] 1.1 Record the original BPC-REQ-001–015 / BPC-SC-001–026 approval and the latest 30 October single-roster Training override in approval.md; keep all scenario IDs and gate results unchanged (artifact gate).
 - [ ] 1.2 Select the not-yet-chosen server/domain and arrange access; create/configure the absent Google OAuth project, verify the owner-selected admin account subject; arrange missing Claude Code/Desktop/Hermes access and pin all four editions/model access and qualification/release manifest states and schema/secret references; validate missing/invalid profile inputs fail closed (BPC-SC-001/008/013).
 - [x] 1.3 Add review-approved BPC runtime contracts, named mappers/adapters and Gherkin mirrors using existing active-delta tooling; missing producer/observation must be blocked (artifact traceability; BPC-SC-023).
 - [ ] 1.4 Factor reusable local worker/readiness dependencies into an explicit beta entry/profile without relaxing local-mode guards; validate release/environment and exclude fixtures (BPC-SC-013).
@@ -34,7 +38,7 @@ until their named result exists, and implementation separate from gate completio
 
 ## 4. Training, full12 and real models (P8–P9)
 
-- [ ] 4.1 Extend real training capture coverage to single, multi and all-eight open selections; keep closed/mixed/duplicate rejection and exact denominator/rounding/quote (BPC-SC-014).
+- [ ] 4.1 Implement and capture BPC-SC-014 only after root review: one current Training roster S1/M1/H1 with weights 1/2/3, denominator 6 and 0.5-USDC bundle; verify one-request ceiling and single-task prices 83,334/166,667/250,000 micro-USDC; reject stale/cross-selection quotes, invalid and non-current IDs through UI/API with no durable effects; write fresh validation evidence without changing frozen repository proof artifacts. Keep Ranked12 unchanged. Root separately owns cleanup of exactly five local qualification runs and dependent results.
 - [ ] 4.2 Verify beta task actions, independent observations/sealing/grading, mandatory zeroing, continuation and full12 aggregate against the pinned release with no recipe/grade substitution (BPC-SC-013/015).
 - [ ] 4.3 Integrate private run history and authorized mode-specific feedback; verify ranked withholding and closed-category-only disclosure (BPC-SC-015).
 - [ ] 4.4 Capture actual Codex model training/full12, solution failures, reconnect and final independent readback (BPC-SC-009).

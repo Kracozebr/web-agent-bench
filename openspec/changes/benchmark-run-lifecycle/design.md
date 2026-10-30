@@ -2,7 +2,8 @@
 
 Status: approved for incremental implementation on 2026-10-25, with the bounded
 local Codex profile addendum dated 2026-10-28; see [approval](approval.md).
-Runtime acceptance remains separate. Lifecycle rules and defaults are unchanged.
+Runtime acceptance remains separate. The scoped 2026-10-30 amendment changes
+current Training availability/quotes as recorded below.
 
 ## Goals / Non-Goals
 
@@ -17,14 +18,53 @@ forum, PvP or full UI. The later cabinet consumes the coordinator read model.
 ### Confirmed task-suite integration
 
 The benchmark-task-suite packet supplies immutable exposure/rubric and actual
-outcomes. Admit open-only training S1/S2/S4/M1/M3/M4/H1/H2, full price 0.5 USDC,
-subset denominator 15; reject mixed closed selections before reservation. Ranked
-still has all twelve, price 1 USDC and score weight 26. Snapshot exposure and open
-weight with the quote; preserve previously admitted versions. Closed S3/M2/H3/U1
+outcomes. For the single current catalog, admit only Training S1/M1/H1, weights 1/2/3, full price
+0.5 USDC, subset denominator 6; reject any ineligible or mixed selection before
+reservation without filtering. Training eligibility is separate from exposure. Ranked
+still has all twelve, price 1 USDC and score weight 26. Snapshot exposure, eligible
+weight and Training eligibility with the quote; preserve previously admitted
+run snapshots under the generic lifecycle rules. Closed S3/M2/H3/U1
 feedback after termination is score plus allowlisted reason category with no
 exact case parameters/answer. Scoped task issuance and normal tool errors remain
 complete and immediate. Do not add a second grader or publish internal evidence.
 Detailed credit fractions and actual gates remain pending review.
+
+### Single current Training catalog amendment: 2026-10-30
+
+The latest owner instruction is: “Версионированный каталог не нужен, старые раны
+можно удалить, это все тестовое”. Use one current catalog; do not introduce
+parallel catalog versions, legacy Training migration or old-test replay gates.
+Fresh immutable manifest hashes and independent validation/release proof are
+still required. Separate cleanup may remove old local test runs/results while
+preserving accounts, agents, auth, codes, ledger and reports; this planning
+packet authorizes no direct deletion by its editing agent. Generic immutable
+admitted-snapshot rules below remain unchanged for future runs.
+
+The ranked twelve-task inventory, weights, rubrics and 1 USDC price are unchanged.
+Selection and quote validation consume the same current manifest. Snapshot the
+ordered eligible IDs, selected weights, full eligible denominator, token
+precision, tariff/benchmark identity and exact integer quote through intent,
+reservation, run and start. Open exposure alone grants no Training access.
+At six decimals the default formula is `ceil(500000 * selectedWeight / 6)` once
+per request. S1, M1 and H1 alone cost 83334, 166667 and 250000 base units; all
+three cost 500000. S1+M1 costs 250000, not the sum of independently rounded
+singles. Configured zero remains zero. Reject denominator 15, ranked weight 26
+or client-supplied quote/eligibility substitutions.
+
+The private UI shows only S1/M1/H1 Training choices, their exact quote and the
+cash ceiling. The backend rejects every excluded or forged selection, never
+silently filters. Retain normal stale-quote/selection/permission checks and
+require a fresh reviewed intent when those inputs change. No historical
+Training rendering or dual-version activation test is needed for this change.
+Generic future admission idempotency and financial-source rules remain intact.
+
+Matching isolated BDD exercises the real quote/admission boundary; actual UI
+acceptance starts with a browser selection/click and independently inspects the
+backend/PostgreSQL result. No gate result is promoted by planning validation.
+The owner approved bounded implementation and matching tests/BDD; team review
+then apply is the work sequence, not a new human-permission requirement.
+Additional real-user fees, grants, model runs or credential operations remain
+outside the explicit budget. No source or DB mutation occurs in this revision.
 
 ## Decisions
 
