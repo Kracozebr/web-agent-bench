@@ -35,3 +35,16 @@ test('clipboard and visible manual fallback use the same complete handoff builde
   assert(ui.includes('>{buildRunHandoffPrompt(intent)}</p>'));
   assert(!ui.includes('const prompt = `Run the free Web3 Agent Bench preflight'));
 });
+
+test('handoff requires one safe private report and receipt only for a confirmed terminal platform failure',()=>{
+ const prompt=buildRunHandoffPrompt(intent);
+ for(const clause of ['only after runs.current_task explicitly confirms run.terminal === true',
+  'coordinator_evaluation_unknown','coordinator_preparation_failed','coordinator_executor_session_lost',
+  'submit exactly one support.report','ordinary failed/partial task grade','nonterminal task: null',
+  'operationId afr_ followed by the runId with all hyphens removed','unchanged arguments for at most one',
+  'title to "Platform run failure"','support.report_receipt with that reportId','support reporting unresolved',
+  'Never include task conditions, Ranked variants, answers, raw tool payloads/responses',
+  'Do not retry as a new report operation, relaunch/reaccept a run, pay again, repeat finish_task',
+  'text report needs no screenshot, local file, shell or browser'])assert.ok(prompt.includes(clause),clause);
+ assert.ok(!prompt.includes('support.screenshot.begin'));
+});

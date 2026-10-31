@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "spp-runtime-inputs/v1",
+  "testReports": [
+    {
+      "path": "artifacts/runs/s2-public-payment-disclosure-validation/bef-tests-report.json",
+      "sha256": "9d5b318a485853cb6de2ef6047aeaf879dcd68ea396e058e36fc1ff88af1061e"
+    },
+    {
+      "path": "artifacts/runs/s2-public-payment-disclosure-validation/owner-parser-tests-report.json",
+      "sha256": "717d0349233b58cb24f6d6de9cd33d8693c619540b62fa28f51dce2c285cc4cf"
+    },
+    {
+      "path": "artifacts/runs/s2-public-payment-disclosure-validation/consumer-canonical-spp-report.json",
+      "sha256": "a6dd32a07191f39510f41bf8abf34fc418aae19175c53732e8668c507d7e2cf6"
+    },
+    {
+      "path": "artifacts/runs/s2-public-payment-disclosure-validation/fresh-reader-spp-report-b496.json",
+      "sha256": "6428f9da2182232fc02a4c8a3d4a48cebfc90112d3b1b965249952203aeaffb5"
+    }
+  ],
+  "rankedCapture": {
+    "path": "artifacts/runs/paid-delivery-cutoff-ranked/b4966d4b-ad5e-4b98-9244-9b22dc02fb69/capture.json",
+    "sha256": "954a7f08d0742156e0df75a11d06e4f9aee64faa61a9415c0043ee12ff5bb933"
+  }
+}

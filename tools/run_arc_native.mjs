@@ -3,7 +3,7 @@ import {spawn} from 'node:child_process';
 import {mkdir,readFile,writeFile,rename,lstat,realpath,unlink} from 'node:fs/promises';
 import {resolve,dirname,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {privateCaptureDirectory,sha256,ARC_NATIVE_TOOLS} from './arc-native-bridge.mjs';
+import {privateCaptureDirectory,sha256,validNativeTools} from './arc-native-bridge.mjs';
 
 export function transformNativeHelper(source) {
   const endpoint="const ENDPOINT = 'http://127.0.0.1:3000/api/agent/mcp';";
@@ -29,7 +29,7 @@ export async function runArcNativeBroker({repoRoot,captureId,codexExecutable,wai
   const until=Date.now()+waitMs;
   while(Date.now()<until){try{await validatePrivateDirectory(repoRoot,directory);job=await boundedJson(resolve(directory,'job.json'),64*1024);break;}catch(error){if(error.code!=='ENOENT')throw error;}await sleep(500);}
   if(!job)throw new Error('native_job_wait_timeout');
-  if(job.schemaVersion!=='arc-native-job/v1'||job.captureId!==captureId||!/^[a-f0-9-]{36}$/.test(job.jobId)||!/^[a-f0-9]{64}$/.test(job.promptSha256)||job.credentialFile!=='credential.txt'||job.promptFile!=='handoff.txt'||JSON.stringify(job.enabledTools)!==JSON.stringify(ARC_NATIVE_TOOLS))throw new Error('native_job_invalid');
+  if(job.schemaVersion!=='arc-native-job/v1'||job.captureId!==captureId||!/^[a-f0-9-]{36}$/.test(job.jobId)||!/^[a-f0-9]{64}$/.test(job.promptSha256)||job.credentialFile!=='credential.txt'||job.promptFile!=='handoff.txt'||!validNativeTools(job.enabledTools))throw new Error('native_job_invalid');
   const credentialPath=resolve(directory,'credential.txt'),promptPath=resolve(directory,'handoff.txt');
   await regularFile(credentialPath);await regularFile(promptPath);
   if(sha256(await readFile(promptPath))!==job.promptSha256)throw new Error('native_prompt_hash_mismatch');
@@ -42,11 +42,11 @@ export async function runArcNativeBroker({repoRoot,captureId,codexExecutable,wai
   const workspace=resolve(directory,'empty-workspace');await mkdir(workspace,{mode:0o700});
   let exited=false;
   try{
-    const child=spawn(process.execPath,[copyPath,'--private-credential-file',credentialPath,'--nonsensitive-prompt-file',promptPath,'--sanitized-output-path',outputPath,'--codex-executable',executable,'--workspace',workspace,'--enabled-mcp-tools',JSON.stringify(ARC_NATIVE_TOOLS)],{cwd:repoRoot,windowsHide:true,stdio:['ignore','ignore','ignore']});
+    const child=spawn(process.execPath,[copyPath,'--private-credential-file',credentialPath,'--nonsensitive-prompt-file',promptPath,'--sanitized-output-path',outputPath,'--codex-executable',executable,'--workspace',workspace,'--enabled-mcp-tools',JSON.stringify(job.enabledTools)],{cwd:repoRoot,windowsHide:true,stdio:['ignore','ignore','ignore']});
     const exitCode=await new Promise((done,fail)=>{child.once('error',fail);child.once('close',code=>done(code));});exited=true;
     const summary=await boundedJson(outputPath);
     if(sha256(await readFile(promptPath))!==job.promptSha256||sha256(await readFile(helperPath))!==pins.baseHelperSha256||sha256(await readFile(copyPath))!==pins.transformedHelperSha256)throw new Error('native_source_changed');
-    const native={implementation:'native_codex_cli',clientVersion:summary.cliVersion?.replace(/^codex-cli /,''),promptSha256:job.promptSha256,status:summary.status,mcpToolCalls:summary.mcpToolCallCount??0,localToolCalls:summary.localToolCallCount??null,exitCode};
+    const native={implementation:'native_codex_cli',clientVersion:summary.cliVersion?.replace(/^codex-cli /,''),promptSha256:job.promptSha256,status:summary.status,mcpToolCalls:summary.mcpToolCallCount??0,localToolCalls:summary.localToolCallCount??null,enabledTools:[...job.enabledTools],exitCode};
     const completed={schemaVersion:'arc-native-completed/v1',jobId:job.jobId,captureId,promptSha256:job.promptSha256,completedAt:new Date().toISOString(),native,sourcePins:pins,helperSummary:summary};
     await writeFile(resolve(directory,'completed.tmp'),JSON.stringify(completed),{flag:'wx',mode:0o600});await rename(resolve(directory,'completed.tmp'),resolve(directory,'completed.json'));
     return native;

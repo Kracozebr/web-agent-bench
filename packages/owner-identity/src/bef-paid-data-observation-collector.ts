@@ -1,3 +1,4 @@
+import { publicInspectionQuotesMatch, publicPaymentIdentity } from './task-public-payment-quote.js';
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
@@ -278,7 +279,7 @@ async function loadActions(root:string,run:J,p:Prep,runId:string,index:number,cu
     if(row.receipt_status==='observed'&&(!response||!rawHash))stop('action_evidence_unavailable');
     if(row.receipt_status==='rejected_before_execution'&&(response||tx||row.transaction_hash!==null))stop('action_evidence_unavailable');
     if((cmd.kind==='inspect_catalog'||cmd.kind==='inspect_offer')&&row.receipt_status==='observed'&&
-      (!response||!readOnlyToolResponseMatches(cmd,response)||protocol!==null))stop('action_evidence_unavailable');
+      (!response||!readOnlyToolResponseMatches(cmd,response)||!publicInspectionQuotesMatch(response,cmd.kind,publicPaymentIdentity(m.policy))||protocol!==null))stop('action_evidence_unavailable');
     if(cmd.kind==='pay'&&row.receipt_status==='observed'&&(!response||!protocol||!befId||
       protocol.schema!=='bef-x402-split-payment-observation-v1'||protocol.befOperationId!==befId||response.operationId!==befId||
       response.status!=='payment_confirmed'||response.deliveryHandle!==befId||!rec(response.payment)||

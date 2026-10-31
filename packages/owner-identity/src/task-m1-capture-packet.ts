@@ -1,3 +1,4 @@
+import { publicPaymentQuoteMatches, publicInspectionQuotesMatch, publicPaymentIdentity } from './task-public-payment-quote.js';
 import { createHash } from 'node:crypto';
 import { canonicalTaskJson, type DataComponentValidator, type EvidenceReference, type TaskCase } from './task-release.js';
 import type {
@@ -460,7 +461,8 @@ function validateRejectedPaymentProtocol(action: JsonRecord): void {
 }
 
 function validatePublicPaymentQuote(value: unknown): void {
-  const payment = record(value, ['scheme','network','asset','amount','payTo','transferMethod']);
+  if (!publicPaymentQuoteMatches(value)) fail('M1_CAPTURE_PACKET_INVALID');
+  const payment = value;
   if (!boundedString(payment.scheme,80) || !boundedString(payment.network,80) || typeof payment.asset !== 'string' || !ADDRESS.test(payment.asset) ||
       typeof payment.amount !== 'string' || !UINT.test(payment.amount) || typeof payment.payTo !== 'string' || !ADDRESS.test(payment.payTo) ||
       !boundedString(payment.transferMethod,80)) fail('M1_CAPTURE_PACKET_INVALID');
@@ -708,6 +710,10 @@ export function validateM1CapturePacket(value: unknown): M1CapturePacket {
     if (op && action.actionKind === 'inspect_catalog' && op.operation_kind !== 'catalog' ||
         op && action.actionKind === 'inspect_offer' && op.operation_kind !== 'offer' ||
         op && (action.actionKind === 'pay' || action.actionKind === 'retrieve') && op.operation_kind !== 'purchase') fail('M1_CAPTURE_PACKET_INVALID');
+  }
+  for (const action of actions) {
+    if (action.receiptStatus==='observed' && (action.actionKind==='inspect_catalog' || action.actionKind==='inspect_offer') &&
+        !publicInspectionQuotesMatch(action.participantToolResponse,action.actionKind,publicPaymentIdentity(policy))) fail('M1_CAPTURE_PACKET_INVALID');
   }
   const rpc = validateM1Rpc(value.rpc);
   if (String(rpc.localChainId) !== String(before.generation.chain_id)) fail('M1_CAPTURE_PACKET_INVALID');

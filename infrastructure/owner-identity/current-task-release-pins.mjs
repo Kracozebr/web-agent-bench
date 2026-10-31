@@ -65,8 +65,7 @@ function artifactRef(value, kind) {
   return { path: value.path, sha256: value.sha256 };
 }
 
-export async function loadCurrentTaskReleaseInputPins(repositoryRoot) {
-  const bytes = await configurationBytes(repositoryRoot, CURRENT_TASK_RELEASE_INPUTS_PATH, 64 * 1024);
+async function parseInputPins(bytes, path) {
   const config = JSON.parse(bytes.toString('utf8'));
   demand(exactKeys(config, ['schemaVersion', 'classification', 'cases', 'release', 'minimum', 'references'])
     && config.schemaVersion === 'bts-current-task-release-inputs/v1'
@@ -77,8 +76,19 @@ export async function loadCurrentTaskReleaseInputPins(repositoryRoot) {
     release: artifactRef(config.release, 'release'),
     minimum: artifactRef(config.minimum, 'minimum'),
     references: artifactRef(config.references, 'references'),
-    inputsConfig: Object.freeze({ path: CURRENT_TASK_RELEASE_INPUTS_PATH, sha256: sha256(bytes) }),
+    inputsConfig: Object.freeze({ path, sha256: sha256(bytes) }),
   });
+}
+
+export async function loadCurrentTaskReleaseInputPins(repositoryRoot) {
+  return parseInputPins(await configurationBytes(repositoryRoot, CURRENT_TASK_RELEASE_INPUTS_PATH, 64 * 1024), CURRENT_TASK_RELEASE_INPUTS_PATH);
+}
+
+export async function loadPinnedTaskReleaseInputPins(repositoryRoot, reference) {
+  demand(exactKeys(reference, ['path','sha256']) && HASH.test(reference.sha256) &&
+    (reference.path === CURRENT_TASK_RELEASE_INPUTS_PATH || new RegExp(`^artifacts/runs/bts-source-refresh-qualification/${UUID}/candidate-inputs\\.json$`).test(reference.path)),
+  'candidate_release_inputs_reference_invalid');
+  return parseInputPins(await pinnedBytes(repositoryRoot, reference.path, reference.sha256, 64 * 1024), reference.path);
 }
 
 export async function loadCurrentTaskReleasePins(repositoryRoot) {
@@ -115,7 +125,12 @@ export async function loadCurrentTaskReleasePins(repositoryRoot) {
   for (const pin of [pins.cases, pins.release, pins.minimum, pins.references]) {
     demand(sourcePins.get(pin.path) === pin.sha256, 'current_release_validation_artifact_binding_missing');
   }
-  demand(sourcePins.has(CURRENT_TASK_RELEASE_INPUTS_PATH), 'current_release_input_config_not_source_pinned');
+  if (sources.inputsConfig !== undefined) {
+    const selection = await loadPinnedTaskReleaseInputPins(repositoryRoot, sources.inputsConfig);
+    demand(sourcePins.get(selection.inputsConfig.path) === selection.inputsConfig.sha256 &&
+      ['cases','release','minimum','references'].every((key) => selection[key].path === pins[key].path && selection[key].sha256 === pins[key].sha256),
+    'current_release_input_config_not_source_pinned');
+  } else demand(sourcePins.has(CURRENT_TASK_RELEASE_INPUTS_PATH), 'current_release_input_config_not_source_pinned');
   demand(sourcePins.has('infrastructure/owner-identity/current-task-release-pins.mjs'),
     'current_release_pin_loader_not_source_pinned');
   return pins;

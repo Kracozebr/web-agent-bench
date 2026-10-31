@@ -9,7 +9,7 @@ import { verifyDifficultyEvidenceV2 } from '../../packages/owner-identity/src/ta
 import { verifyTaskReferenceEvidenceV2 } from '../../packages/owner-identity/src/task-reference-evidence-v2.ts';
 import { TaskCaseSchema, TaskReleaseManifestSchema, canonicalTaskJson, sha256CanonicalTaskJson,
   taskBenchmarkHash, taskPolicyHash, validateTaskReleaseCandidate } from '../../packages/owner-identity/src/task-release.ts';
-import { CURRENT_TASK_RELEASE_INPUTS_PATH, loadCurrentTaskReleaseInputPins }
+import { loadCurrentTaskReleaseInputPins, loadPinnedTaskReleaseInputPins }
   from './current-task-release-pins.mjs';
 import { assertSemanticCasePreserved, verifySourceRefreshCandidate } from './task-release-source-refresh.mjs';
 
@@ -146,8 +146,10 @@ function bindMinimumReview(manifest, minimumEvidence) {
 }
 
 async function main() {
-  demand(process.platform === 'linux' && process.cwd() === root && process.argv.length === 2, 'usage');
-  const pins = await loadCurrentTaskReleaseInputPins(root);
+  const args = process.argv.slice(2);
+  demand(process.platform === 'linux' && process.cwd() === root && (args.length === 0 ||
+    args.length === 4 && args[0] === '--inputs' && args[2] === '--sha256'), 'usage');
+  const pins = args.length ? await loadPinnedTaskReleaseInputPins(root, { path: args[1], sha256: args[3] }) : await loadCurrentTaskReleaseInputPins(root);
   const { cases: CASES, release: RELEASE, minimum: MINIMA, references: REFERENCES } = pins;
   const caseBytes = (await safeBytes(CASES.path, CASES.sha256)).bytes;
   const frozenCaseBytes = (await safeBytes(FROZEN_CANDIDATE.path, FROZEN_CANDIDATE.sha256)).bytes;
@@ -222,7 +224,7 @@ async function main() {
   allPins.set(pins.inputsConfig.path, pins.inputsConfig.sha256);
   const localSources = [
     'pnpm-lock.yaml', POLICY_PATH, 'infrastructure/owner-identity/validate-difficulty-v2-release.mjs',
-    'infrastructure/owner-identity/current-task-release-pins.mjs', CURRENT_TASK_RELEASE_INPUTS_PATH,
+    'infrastructure/owner-identity/current-task-release-pins.mjs', pins.inputsConfig.path,
     'infrastructure/owner-identity/review-difficulty-v2-minima.mjs',
     'infrastructure/owner-identity/verify-difficulty-v2-references.mjs',
     'infrastructure/owner-identity/assemble-difficulty-v2-release.mjs',
@@ -281,7 +283,7 @@ async function main() {
   const output = { schemaVersion: 'bts-difficulty-v2-offline-release-validation/v1', captureId,
     classification: success ? 'local_reference_validated_candidate_not_product_activation_or_owner_acceptance'
       : 'blocked_offline_release_candidate_validation', status: success ? 'validated_candidate' : 'blocked',
-    sourceUnchanged, sources: { caseCandidate: { ...CASES }, releaseCandidate: { ...RELEASE },
+    sourceUnchanged, sources: { inputsConfig: { ...pins.inputsConfig }, caseCandidate: { ...CASES }, releaseCandidate: { ...RELEASE },
       minimumActionReview: { ...MINIMA }, semanticReferenceReview: { ...REFERENCES },
       sourceInputsChecked: before.length },
     sourceInputs: before,

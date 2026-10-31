@@ -8,6 +8,7 @@ import type { ApplicationRuntime, RuntimeEnvironment } from './runtime.js';
 import type { PaymentProtocol } from './protocol.js';
 import { facilitatorRequestScope } from './protocol.js';
 import { mismatchedResource } from './resource.js';
+import { pinnedPaymentIdentity } from './payment-identity.js';
 import { pinnedOfferRequirementsMatch, pinnedResource, resolveOfferResourceId, selectedPinnedResourceOffer } from './offers.js';
 import {
   PayRequestSchema,
@@ -167,6 +168,7 @@ function catalogResponse(runtime: ApplicationRuntime, auth: AuthorizedRequest, o
           amount: candidate.amount,
           payTo: auth.env.facilitatorAddress,
           transferMethod: runtime.manifest.x402.assetTransferMethod,
+          ...pinnedPaymentIdentity(runtime.manifest),
         },
       })),
     };
@@ -199,6 +201,7 @@ function offerResponse(runtime: ApplicationRuntime, auth: AuthorizedRequest, ope
       amount: resourceDefinition.offers[0]!.amount,
       payTo: auth.env.facilitatorAddress,
       transferMethod: runtime.manifest.x402.assetTransferMethod,
+          ...pinnedPaymentIdentity(runtime.manifest),
     },
     offers: resourceDefinition.offers.map((candidate) => ({
       id: candidate.id,
@@ -209,6 +212,7 @@ function offerResponse(runtime: ApplicationRuntime, auth: AuthorizedRequest, ope
         amount: candidate.amount,
         payTo: auth.env.facilitatorAddress,
         transferMethod: runtime.manifest.x402.assetTransferMethod,
+          ...pinnedPaymentIdentity(runtime.manifest),
       },
     })),
     freeInspection: true,

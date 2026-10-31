@@ -16,6 +16,11 @@ const profile = { schemaVersion: 'bts-source-refresh-profile/v1',
   approvedBaseline: APPROVED_REFRESH_BASELINE, feasibilityVerification: pin, rawIntegrity: pin,
   expectedApplicationSourceSha256: '2'.repeat(64), expectedProbeSourceSha256: '3'.repeat(64), expectedManifestSha256: '4'.repeat(64) };
 
+test('S2 public identity refresh selects the same strict immutable semantic contract', () => {
+  assert.equal(parseRefreshProfile({ ...profile, reason: 's2_public_identity_disclosure' }).reason, 's2_public_identity_disclosure');
+  assert.throws(() => parseRefreshProfile({ ...profile, reason: 'arbitrary_semantic_change' }), /refresh_profile_contract_invalid/);
+});
+
 test('only six explicit source/provenance paths may change; final state, deadline and objective stay exact', () => {
   for (const original of baseline.cases) {
     const changed = structuredClone(original);

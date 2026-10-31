@@ -9,6 +9,11 @@ const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const Terms = z.object({ scheme: identifier, network: z.string().min(1).max(128),
   asset: z.string().regex(/^0x[0-9a-f]{40}$/i), amount: z.string().regex(/^[1-9][0-9]{0,77}$/),
   payTo: z.string().regex(/^0x[0-9a-f]{40}$/i), transferMethod: identifier }).strict();
+const PublicTerms = z.union([Terms, Terms.extend({
+  name: z.string().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/),
+  version: z.string().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/),
+  paymentFlow: z.literal('authorization'),
+}).strict()]);
 const ReadHandle = z.object({ kind: z.enum(['offer', 'catalog']), operationId: z.string().uuid() }).strict();
 export type SplitPaymentCommand = { kind: 'pay'; resourceId: string; offerId: string; offerReadActionId: string } |
   { kind: 'retrieve'; payActionId: string };
@@ -67,9 +72,23 @@ export async function resolveTaskPaymentReference(tx: Transaction, target: {
     reject('TASK_PAYMENT_OFFER_NOT_INSPECTED', 'The selected resource was not present in the inspected response');
   }
   const offers = (matching[0]!.offers as unknown[]).map(record).filter((value) => value?.id === command.offerId);
-  const terms = offers.length === 1 ? Terms.safeParse(offers[0]?.payment) : null;
+  const terms = offers.length === 1 ? PublicTerms.safeParse(offers[0]?.payment) : null;
   if (!terms?.success) reject('TASK_PAYMENT_OFFER_NOT_INSPECTED', 'The selected offer and exact terms must be present in the inspected response');
-  return { kind: 'pay', readHandle: handle.data, acceptedTerms: terms.data };
+  // AICODE-NOTE: The retained raw response/hash includes public domain metadata.
+  // It is not an economic consent field; project only the original six accepted terms.
+  // Where the public resource also publishes root policy, reject mixed/substituted identity.
+  if (matching[0]!.payment !== undefined) {
+    const root = PublicTerms.safeParse(matching[0]!.payment);
+    if (!root.success || ('version' in root.data) !== ('version' in terms.data) ||
+        ('version' in root.data && 'version' in terms.data &&
+          (root.data.version !== terms.data.version || root.data.name !== terms.data.name ||
+            root.data.paymentFlow !== terms.data.paymentFlow))) {
+      reject('TASK_PAYMENT_OFFER_NOT_INSPECTED', 'Public root and selected offer identity must agree');
+    }
+  }
+  const { scheme, network, asset, amount, payTo, transferMethod } = terms.data;
+  return { kind: 'pay', readHandle: handle.data,
+    acceptedTerms: { scheme, network, asset, amount, payTo, transferMethod } };
 }
 
 export async function assertTaskPaymentProtocol(tx: Transaction, runId: string,

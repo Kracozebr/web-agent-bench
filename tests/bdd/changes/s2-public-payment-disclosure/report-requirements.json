@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "spp-report-requirements/v1",
+  "runtimeInputs": {
+    "schemaVersion": "spp-runtime-inputs/v1",
+    "rankedCapture": "hash-pinned fresh PDC mixed twelve-task capture",
+    "testReports": "list of hash-pinned spp-test-report/v1 files"
+  },
+  "reportFields": [
+    "schemaVersion",
+    "exitCode",
+    "command",
+    "sourceInputs",
+    "junit"
+  ],
+  "requiredTestNames": {
+    "SPP-SC-001": [
+      "public payment identity derives only from the actual provider domain policy",
+      "HTTP inspection, /pay idempotency, cross-route conflict, and deferred delivery use durable PostgreSQL state"
+    ],
+    "SPP-SC-002": [
+      "public identity rejects partial extra substituted and mixed root offer metadata",
+      "complete public identity validates without changing the exact legacy accepted terms",
+      "payment reference accepts exact legacy or complete public identity and projects only six consent terms",
+      "payment reference rejects partial malformed unknown or conflicting public identity",
+      "payment reference verifies the original raw response hash before interpreting added public metadata"
+    ],
+    "SPP-SC-003": [
+      "test_actual_s2_public_capture_rejects_rehashed_mutation[undisclosed_identity]",
+      "test_actual_s2_public_capture_rejects_rehashed_mutation[foreign_public_response]",
+      "test_actual_s2_public_capture_rejects_rehashed_mutation[historical_pin_rewrite]"
+    ]
+  },
+  "sourcePaths": [
+    "packages/benchmark-environment/src/payment-identity.test.ts",
+    "packages/benchmark-environment/src/pay-retrieve.test.ts",
+    "packages/benchmark-environment/src/probe/task-split-resource-capture.test.ts",
+    "tests/bdd/adapters/test_s2_public_payment_disclosure.py",
+    "packages/owner-identity/src/task-payment-references.test.ts"
+  ]
+}

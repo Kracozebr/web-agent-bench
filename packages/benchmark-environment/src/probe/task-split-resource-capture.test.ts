@@ -88,3 +88,34 @@ test('split offer projection rejects a caller requested resource that was not th
     response, manifest, facilitatorAddress, resourceId: manifest.x402.catalog![1]!.resourceId,
   }), /task_split_public_offer_resource_manifest_mismatch/);
 });
+
+
+test('complete public identity validates without changing the exact legacy accepted terms', async () => {
+  const manifest = await readManifest(), resourceId = manifest.x402.catalog![0]!.resourceId;
+  const legacy = offerResponse(manifest, resourceId);
+  const withIdentity = (payment: Record<string, unknown>) => ({ ...payment, version: manifest.x402.eip712Domain.version,
+    name: manifest.x402.eip712Domain.name, paymentFlow: 'authorization' });
+  const modern = { ...legacy, payment: withIdentity(legacy.payment), offers: legacy.offers.map(offer => ({...offer,payment:withIdentity(offer.payment)})) };
+  const input = {manifest,facilitatorAddress,resourceId};
+  assert.deepEqual(projectSplitOfferRead({...input,response:modern}),projectSplitOfferRead({...input,response:legacy}));
+});
+
+test('public identity rejects partial extra substituted and mixed root offer metadata', async () => {
+  const manifest = await readManifest(), resourceId = manifest.x402.catalog![0]!.resourceId;
+  const legacy = offerResponse(manifest, resourceId);
+  const identity = { version: manifest.x402.eip712Domain.version, name: manifest.x402.eip712Domain.name, paymentFlow: 'authorization' };
+  for (const edit of ['missing-name','missing-version','missing-flow','foreign-name','foreign-version','foreign-flow','extra','mixed-root','mixed-offer']) {
+    const response = structuredClone({ ...legacy, payment: { ...legacy.payment,...identity }, offers: legacy.offers.map(offer => ({...offer,payment:{...offer.payment,...identity}})) });
+    const payment = response.offers[0]!.payment as Record<string,unknown>;
+    if (edit === 'missing-name') delete payment.name;
+    else if (edit === 'missing-version') delete payment.version;
+    else if (edit === 'missing-flow') delete payment.paymentFlow;
+    else if (edit === 'foreign-name') payment.name = 'Foreign Token';
+    else if (edit === 'foreign-version') payment.version = '999';
+    else if (edit === 'foreign-flow') payment.paymentFlow = 'foreign-flow';
+    else if (edit === 'extra') payment.taskAnswer = 'not allowed';
+    else if (edit === 'mixed-root') response.payment = legacy.payment as typeof response.payment;
+    else response.offers[0]!.payment = legacy.offers[0]!.payment as typeof response.payment;
+    assert.throws(() => projectSplitOfferRead({response,manifest,facilitatorAddress,resourceId}), /task_split_public_(?:payment_terms_manifest_mismatch|offer_identity_layout_mismatch)/, edit);
+  }
+});

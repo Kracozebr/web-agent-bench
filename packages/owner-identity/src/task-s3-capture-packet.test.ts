@@ -101,3 +101,20 @@ test('S3 rejects incomplete block intervals even when the endpoint state is unch
   incomplete.rpc.final.parentHash = incomplete.rpc.baseline.blockHash;
   assert.throws(() => validateS3CapturePacket(incomplete));
 });
+
+
+test('S3 catalog and offer accept complete public identity while rejecting partial and foreign version',()=>{
+  for(const kind of ['inspect_catalog','inspect_offer'] as const)for(const variant of ['valid','partial','foreign']){
+    const {packet}=createS3CapturePacketFixture(kind);
+    for(const offer of packet.taskCase.objective.catalog){offer.paymentRequirements.version='protocol-version';offer.paymentRequirements.authFields.push({name:'version',value:'domain-73'},{name:'name',value:'USD Coin'});}
+    const body=packet.ownerActions[0]!.response!;
+    const resources=kind==='inspect_offer'?[body]:body.catalog as Array<Record<string,unknown>>;
+    for(const resource of resources){
+      const quotes=[...(resource.payment?[resource.payment]:[]),...(resource.offers as Array<{payment:Record<string,unknown>}>).map(x=>x.payment)];
+      for(const value of quotes){const quote=value as Record<string,unknown>;Object.assign(quote,{name:'USD Coin',version:'domain-73',paymentFlow:'authorization'});
+        if(variant==='partial')delete quote.version;if(variant==='foreign')quote.version='foreign';}
+    }
+    if(variant==='valid'){assert.doesNotThrow(()=>validateS3CapturePacket(packet));assert.deepEqual(parseS3CapturePacket(canonicalTaskJson(packet)),packet);}
+    else assert.throws(()=>validateS3CapturePacket(packet));
+  }
+});

@@ -1,3 +1,4 @@
+import { publicPaymentQuoteMatches, publicInspectionQuotesMatch } from './task-public-payment-quote.js';
 import { createHash } from 'node:crypto';
 import {
   canonicalTaskJson,
@@ -152,7 +153,13 @@ function validCheckpoint(value: unknown): value is S3CaptureCheckpoint {
       typeof item.owner === 'string' && typeof item.tokenAssetId === 'string' && typeof item.spender === 'string' && typeof item.amountUnits === 'string' &&
       /^(?:0|[1-9][0-9]*)$/.test(item.amountUnits));
 }
+function identityFromRequirements(requirements: S3TaskCase['objective']['catalog'][number]['paymentRequirements']) {
+  const fields = new Map(requirements.authFields.map(field=>[field.name,field.value]));
+  const name=fields.get('name'),version=fields.get('version');
+  return {...(name===undefined?{}:{name}),...(version===undefined?{}:{version}),paymentFlow:fields.get('paymentFlow')??'authorization'};
+}
 function validCatalogResponse(taskCase: S3TaskCase, value: S3Json): boolean {
+  if(!publicInspectionQuotesMatch(value,'inspect_catalog'))return false;
   if (!exactKeys(value, ['operationId','readHandle','catalog','freeInspection','deliveryState']) || !Array.isArray(value.catalog)) return false;
   const expected = new Map<string, typeof taskCase.objective.catalog>();
   for (const offer of taskCase.objective.catalog) expected.set(offer.resourceId, [...(expected.get(offer.resourceId) ?? []), offer]);
@@ -172,7 +179,7 @@ function validCatalogResponse(taskCase: S3TaskCase, value: S3Json): boolean {
     for (const offerValue of item.offers) {
       if (!isRecord(offerValue) || !exactKeys(offerValue, ['id','payment']) || typeof offerValue.id !== 'string' || !isRecord(offerValue.payment)) return false;
       const pinnedOffer = byId.get(offerValue.id), payment = offerValue.payment;
-      if (!pinnedOffer || seenOffers.has(offerValue.id) || !exactKeys(payment, ['scheme','network','asset','amount','payTo','transferMethod']) ||
+      if (!pinnedOffer || seenOffers.has(offerValue.id) || !publicPaymentQuoteMatches(payment, identityFromRequirements(pinnedOffer.paymentRequirements)) ||
           payment.scheme !== pinnedOffer.paymentRequirements.scheme || payment.network !== pinnedOffer.paymentRequirements.network ||
           payment.amount !== pinnedOffer.paymentRequirements.amountUnits || String(payment.payTo).toLowerCase() !== pinnedOffer.recipient.toLowerCase() ||
           payment.transferMethod !== pinnedOffer.paymentRequirements.authFields.find((field) => field.name === 'assetTransferMethod')?.value ||
@@ -189,6 +196,7 @@ function validCatalogResponse(taskCase: S3TaskCase, value: S3Json): boolean {
 }
 function validOfferResponse(taskCase: S3TaskCase, command: Extract<S3ReadCommand, { kind: 'inspect_offer' }>, value: S3Json,
   operationId: string): boolean {
+  if(!publicInspectionQuotesMatch(value,'inspect_offer'))return false;
   const required = ['operationId','readHandle','resourceId','resourceSha256','contentType','payment','offers','freeInspection','deliveryState'];
   const allowed = new Set([...required,'dataType','schema','provenance']);
   const handle = value.readHandle;
@@ -206,10 +214,9 @@ function validOfferResponse(taskCase: S3TaskCase, command: Extract<S3ReadCommand
   const seen = new Set<string>();
   for (const candidate of value.offers) {
     if (!isRecord(candidate) || !exactKeys(candidate, ['id','payment']) || typeof candidate.id !== 'string' ||
-        seen.has(candidate.id) || !isRecord(candidate.payment) || !exactKeys(candidate.payment,
-          ['scheme','network','asset','amount','payTo','transferMethod'])) return false;
+        seen.has(candidate.id) || !isRecord(candidate.payment) || !publicPaymentQuoteMatches(candidate.payment)) return false;
     const expected = expectedById.get(candidate.id), payment = candidate.payment;
-    if (!expected || typeof payment.asset !== 'string' || !ADDRESS.test(payment.asset) ||
+    if (!expected || !publicPaymentQuoteMatches(payment,identityFromRequirements(expected.paymentRequirements)) || typeof payment.asset !== 'string' || !ADDRESS.test(payment.asset) ||
         payment.scheme !== expected.paymentRequirements.scheme || payment.network !== expected.paymentRequirements.network ||
         payment.amount !== expected.paymentRequirements.amountUnits || String(payment.payTo).toLowerCase() !== expected.recipient.toLowerCase() ||
         payment.transferMethod !== expected.paymentRequirements.authFields.find((field) => field.name === 'assetTransferMethod')?.value) return false;

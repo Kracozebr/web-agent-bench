@@ -414,3 +414,23 @@ test('M1 complete no-effect packet projects empty complete evidence and scores t
   assert.equal(result.mandatoryViolation, null);
 });
 
+
+
+test('M1 packet retains complete public identity and rejects foreign or partial metadata without changing legacy bytes',()=>{
+  const legacy=validM1PaymentPacket();const bytes=canonicalTaskJson(legacy);assert.equal(canonicalTaskJson(validateM1CapturePacket(legacy)),bytes);
+  for(const variant of ['valid','foreign','partial']){
+    const packet=validM1PaymentPacket(),domain=packet.bef.resourcePin.paymentPolicy.eip712Domain;
+    for(const action of packet.ownerActions){
+      if(action.actionKind!=='inspect_offer'&&action.actionKind!=='inspect_catalog')continue;
+      const body=action.participantToolResponse!;
+      const resources=action.actionKind==='inspect_offer'?[body]:body.catalog as Array<Record<string,unknown>>;
+      for(const resource of resources){
+        const quotes=[...(resource.payment?[resource.payment]:[]),...(resource.offers as Array<{payment:Record<string,unknown>}>).map(x=>x.payment)];
+        for(const value of quotes){const quote=value as Record<string,unknown>;Object.assign(quote,{name:domain.name,version:domain.version,paymentFlow:'authorization'});
+          if(variant==='foreign')quote.name='foreign';if(variant==='partial')delete quote.version;}
+      }
+    }
+    if(variant==='valid')assert.deepEqual(validateM1CapturePacket(packet),packet);
+    else assert.throws(()=>validateM1CapturePacket(packet),M1CapturePacketError);
+  }
+});

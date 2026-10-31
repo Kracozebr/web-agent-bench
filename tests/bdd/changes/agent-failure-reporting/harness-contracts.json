@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "coverage_policy": {
+    "required_protected_scenarios": [
+      "AFR-SC-001",
+      "AFR-SC-002",
+      "AFR-SC-003"
+    ],
+    "status": "complete"
+  },
+  "protected_scenarios": {
+    "AFR-SC-001": {
+      "adapter": "agent_failure_reporting",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_browser_handoff_native_mcp_admin_ui_readonly_postgres",
+      "durable_effects": [
+        "one_private_report",
+        "one_creation_audit",
+        "no_benchmark_or_financial_mutation"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_afr_sc_001",
+      "negative_variants": [
+        "uncertain_unchanged_retry",
+        "foreign_run_task_action"
+      ],
+      "required_observations": [
+        "same_handoff_terminal_report",
+        "one_private_report_and_receipt",
+        "admin_ui_pg_binding",
+        "benchmark_finance_unchanged"
+      ],
+      "requirement_id": "AFR-REQ-001",
+      "runtime_status": "not_run",
+      "title": "Confirm one private platform failure report"
+    },
+    "AFR-SC-002": {
+      "adapter": "agent_failure_reporting",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "handoff_policy_actual_support_denial_readonly_postgres",
+      "durable_effects": [
+        "no_ordinary_bug_report",
+        "no_relaunch_payment_or_grade_change"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_afr_sc_002",
+      "negative_variants": [
+        "ordinary_failed_partial",
+        "nonterminal_null",
+        "unconfirmed_transport",
+        "report_or_receipt_denied",
+        "hidden_payload_excluded"
+      ],
+      "required_observations": [
+        "ordinary_outcomes_do_not_trigger",
+        "report_failure_preserves_run",
+        "safe_report_content"
+      ],
+      "requirement_id": "AFR-REQ-002",
+      "runtime_status": "not_run",
+      "title": "Preserve benchmark state when reporting is unnecessary or fails"
+    },
+    "AFR-SC-003": {
+      "adapter": "agent_failure_reporting",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "local_config_actual_authenticated_mcp_postgres",
+      "durable_effects": [
+        "two_tool_addition_only",
+        "no_unauthorized_report_writes"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_afr_sc_003",
+      "negative_variants": [
+        "already_patched",
+        "concurrent_config_edit",
+        "forged_principal",
+        "foreign_link",
+        "expired_grant",
+        "revoked_grant"
+      ],
+      "required_observations": [
+        "eight_tool_scope",
+        "terminal_reporting_available",
+        "revoked_expired_foreign_denied",
+        "private_config_backup"
+      ],
+      "requirement_id": "AFR-REQ-003",
+      "runtime_status": "not_run",
+      "title": "Preserve report authorization and profile scope"
+    }
+  },
+  "spec_snapshot": {
+    "requirements": 3,
+    "scenarios": 3,
+    "normative_clauses": 19,
+    "requirement_clause_counts": {
+      "AFR-REQ-001": 7,
+      "AFR-REQ-002": 5,
+      "AFR-REQ-003": 7
+    },
+    "scenario_requirement_sha256": "1942c19e982403ee56e04d3aacfd7cf227a118de5fe0f4a06fcbbd84ba794e0a",
+    "scenario_ids_sha256": "2cbb1e7d864e8696d6570672c55883cd15c0784323cd1b8f01eafe14e8aa38a2",
+    "scenario_requirement_mapping": {
+      "AFR-SC-001": "AFR-REQ-001",
+      "AFR-SC-002": "AFR-REQ-002",
+      "AFR-SC-003": "AFR-REQ-003"
+    }
+  }
+}

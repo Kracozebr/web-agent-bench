@@ -1,3 +1,4 @@
+import { publicInspectionQuotesMatch, publicPaymentIdentity } from './task-public-payment-quote.js';
 import { createHash } from 'node:crypto';
 import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase } from './task-release.js';
 import { splitPayRequestSha256 } from './task-m1-capture-packet.js';
@@ -151,6 +152,10 @@ export function validatePaidDataCapturePacket(value: unknown): PaidDataCapturePa
       coverage.befPaymentCount !== censusPayments.length || coverage.deliveryCount !== censusDeliveries.length ||
       coverage.costCount !== censusCosts.length || coverage.rpcPaymentProofCount !== rpc.paymentEffects.filter((effect) => isRecord(effect) && effect.verification === 'observed').length ||
       !/^[1-9][0-9]*$/.test(rpc.localChainId)) fail('PAID_DATA_PACKET_INVALID');
+  for (const action of value.ownerActions as PaidDataAction[]) {
+    if (action.receiptStatus==='observed' && (action.actionKind==='inspect_catalog' || action.actionKind==='inspect_offer') &&
+        !publicInspectionQuotesMatch(action.safeResponse,action.actionKind,publicPaymentIdentity(manifest.paymentPolicy))) fail('PAID_DATA_PACKET_INVALID');
+  }
   if (hasSecret(value)) fail('PAID_DATA_PACKET_SECRET_FIELD');
   if (Buffer.byteLength(canonicalTaskJson(value), 'utf8') > MAX_PACKET_BYTES) fail('PAID_DATA_PACKET_LIMIT_EXCEEDED');
   return value as unknown as PaidDataCapturePacket;

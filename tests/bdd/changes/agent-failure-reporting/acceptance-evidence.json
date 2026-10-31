@@ -1,0 +1,53 @@
+{
+  "acceptance_state": "complete",
+  "active_delta_sha256": "0529b0802840b48956cf9f6ffc91379bb7d3d0e2a93336975d3854d90d4b5cda",
+  "bef_spec_profile": "active-delta",
+  "change": "agent-failure-reporting",
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_agent_failure_reporting_bdd.py",
+    "--change",
+    "agent-failure-reporting",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/agent-failure-reporting-pytest.xml"
+  ],
+  "execution_started": true,
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-31T20:29:15.636667Z",
+  "gate": {
+    "class": "environment",
+    "mandatory": true
+  },
+  "git_commit": "f0a8c19ceda17e958301ac0c97a8e308ad40671c",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "approved_scenarios": 3,
+    "change": "agent-failure-reporting",
+    "coverage_status": "complete",
+    "errors": [],
+    "normative_source": "openspec/changes/agent-failure-reporting/specs/*/spec.md",
+    "protected_scenarios": 3,
+    "status": "passed",
+    "unprotected_scenarios": [],
+    "warnings": []
+  },
+  "harness_contract_sha256": "291ae623e88caaf3256207a63b48af98158e8af5140bf268ad295290e06de351",
+  "harness_sources_sha256": "621f4728a435c01518f5171ae58aa6fa2d846c8ea2395df14c0ba3d8378b6d79",
+  "harness_sources_sha256_after": "621f4728a435c01518f5171ae58aa6fa2d846c8ea2395df14c0ba3d8378b6d79",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/agent-failure-reporting/specs/*/spec.md",
+  "scenario_map_sha256": "c1162fc389ee0fbc51a1eefa6e5178fe2b4258610365343dff3db92338507012",
+  "scenario_results": {
+    "AFR-SC-001": "passed",
+    "AFR-SC-002": "passed",
+    "AFR-SC-003": "passed"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-31T20:29:12.652719Z"
+}

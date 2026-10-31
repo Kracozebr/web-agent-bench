@@ -5,6 +5,8 @@ import {mkdir, readFile, writeFile, rename, unlink} from 'node:fs/promises';
 import {resolve} from 'node:path';
 
 export const ARC_NATIVE_TOOLS = ['identity.preflight','runs.accept_launch_intent','runs.current_task','runs.task_action','runs.task_action_status','runs.finish_task'];
+export const ARC_NATIVE_REPORT_TOOLS = [...ARC_NATIVE_TOOLS,'support.report','support.report_receipt'];
+export const validNativeTools = tools => JSON.stringify(tools)===JSON.stringify(ARC_NATIVE_TOOLS)||JSON.stringify(tools)===JSON.stringify(ARC_NATIVE_REPORT_TOOLS);
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export function privateCaptureDirectory(repoRoot,captureId) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}$/.test(captureId)) throw new Error('invalid_capture_id');
@@ -20,17 +22,18 @@ export function projectNativeRequest(json) {
   const out=fields(json,['id','method'])??{};
   if (json?.method==='initialize') out.initialize={...fields(json.params,['protocolVersion']),clientInfo:fields(json.params?.clientInfo,['name','version','title'])};
   if (json?.method==='tools/call') {
-    out.toolName=ARC_NATIVE_TOOLS.includes(json.params?.name)?json.params.name:'unrecognized_tool';
-    out.arguments=fields(json.params?.arguments,['runId','taskIndex','operationId','actionId','intentId','agentId']);
+    out.toolName=ARC_NATIVE_REPORT_TOOLS.includes(json.params?.name)?json.params.name:'unrecognized_tool';
+    out.arguments=fields(json.params?.arguments,['runId','taskIndex','operationId','actionId','intentId','agentId','taskId','reportId']);
     out.command=fields(json.params?.arguments?.command,['kind']);
   }
   return out;
 }
 function projectPayload(value) {
-  const out=fields(value,['status','allowed','admitted','reason','actionId','closureId','actionCutoffSequence','state','retryAfterMs','runId','intentId','agentId','policyVersion','accessGeneration'])??{};
+  const out=fields(value,['status','allowed','admitted','reason','actionId','closureId','actionCutoffSequence','state','retryAfterMs','runId','intentId','agentId','policyVersion','accessGeneration','replayed'])??{};
   out.run=fields(value?.run,['runId','status','terminal','terminalReason','cancellationReason']);
   out.task=value?.task===null?null:fields(value?.task,['runId','taskIndex','taskId','participantToolProtocol']);
   out.error=fields(value?.error,['code']);
+  out.report=fields(value?.report,['id','source','status','createdAt','imageCount']);
   return out;
 }
 export function projectNativeResponse(json) {
@@ -42,7 +45,7 @@ export function projectNativeResponse(json) {
     out.content=(json.result.content??[]).slice(0,4).filter(x=>x.type==='text').map(x=>{
       try {return projectPayload(JSON.parse(x.text));} catch {return {unparsed:true};}
     });
-    if (Array.isArray(json.result.tools)) out.toolNames=json.result.tools.map(x=>x.name).filter(x=>ARC_NATIVE_TOOLS.includes(x));
+    if (Array.isArray(json.result.tools)) out.toolNames=json.result.tools.map(x=>x.name).filter(x=>ARC_NATIVE_REPORT_TOOLS.includes(x));
   }
   return out;
 }
@@ -74,16 +77,17 @@ export function projectNativeResponseBytes(bytes,contentType='application/json')
 }
 
 // AICODE-NOTE: Store projections plus raw-byte hashes only. This is not a replayable raw transcript.
-export async function startNativeProxy({publicOrigin,agentBearer,port=4500,maxBytes=1024*1024,maxPackets=4000}) {
+export async function startNativeProxy({publicOrigin,agentBearer,port=4500,maxBytes=1024*1024,maxPackets=4000,onResponseProjection}) {
   const target=new URL(publicOrigin);
   if (target.protocol!=='http:' || !['127.0.0.1','localhost'].includes(target.hostname) || target.username || target.password || target.pathname!=='/') throw new Error('invalid_native_target');
-  const trace=[]; let sequence=0;
+  const trace=[],observationErrors=[]; let sequence=0;
   const record=(direction,bytes,meta={})=>{
     if (trace.length>=maxPackets) throw new Error('native_trace_limit');
     let json;try {json=JSON.parse(bytes.toString('utf8'));} catch {json=null;}
     const projection=direction==='request'?(json?projectNativeRequest(json):{nonJson:true}):projectNativeResponseBytes(bytes,meta.contentType);
     if(JSON.stringify(projection).includes(agentBearer))throw new Error('native_projection_contains_credential');
     trace.push({sequence:++sequence,observedAt:new Date().toISOString(),direction,...meta,bytes:bytes.length,rawSha256:sha256(bytes),rawPersisted:false,projection});
+    return trace.at(-1);
   };
   const server=createServer(async(req,res)=>{
     if (req.url!=='/api/agent/mcp' || req.method!=='POST') {res.writeHead(404);res.end();return;}
@@ -92,15 +96,23 @@ export async function startNativeProxy({publicOrigin,agentBearer,port=4500,maxBy
     const chunks=[];let bytes=0;
     try {
       for await(const chunk of req) {bytes+=chunk.length;if(bytes>maxBytes) throw new Error('native_request_limit');chunks.push(chunk);}
-      const body=Buffer.concat(chunks);record('request',body);
+      const body=Buffer.concat(chunks);const requestPacket=record('request',body);
       const headers={host:target.host,'content-type':'application/json',accept:'application/json, text/event-stream',authorization:`Bearer ${agentBearer}`,'content-length':body.length};
       for (const key of ['mcp-protocol-version','mcp-session-id']) if(typeof req.headers[key]==='string') headers[key]=req.headers[key];
       const upstream=httpRequest(new URL('/api/agent/mcp',target),{method:'POST',headers},response=>{
         const received=[];let size=0;
         response.on('data',chunk=>{size+=chunk.length;if(size>maxBytes){response.destroy();upstream.destroy();res.destroy();return;}received.push(chunk);});
-        response.on('end',()=>{
+        response.on('end',async()=>{
           try {const result=Buffer.concat(received);const mediaType=response.headers['content-type']?.toLowerCase().split(';',1)[0].trim();
-            record('response',result,{httpStatus:response.statusCode,contentType:['application/json','text/event-stream'].includes(mediaType)?mediaType:'other'});
+            const responsePacket=record('response',result,{httpStatus:response.statusCode,contentType:['application/json','text/event-stream'].includes(mediaType)?mediaType:'other'});
+            const facts=[responsePacket.projection.result,...(responsePacket.projection.content??[])];
+            if(typeof onResponseProjection==='function'&&requestPacket.projection.toolName==='runs.current_task'&&facts.some(value=>value?.run?.terminal===true)){
+              // Observe only AFTER all task clocks ended. Never alter original server bytes or hide a failed observation.
+              let timer;try{await Promise.race([Promise.resolve().then(()=>onResponseProjection({request:structuredClone(requestPacket),response:structuredClone(responsePacket)})),
+                new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('observation_timeout')),2500);})]);}
+              catch{if(observationErrors.length<8)observationErrors.push({code:'native_terminal_observation_failed',responseSequence:responsePacket.sequence});}
+              finally{clearTimeout(timer);}
+            }
             const safeHeaders={'content-type':response.headers['content-type']??'application/json'};
             for(const key of ['mcp-session-id','mcp-protocol-version']) if(response.headers[key])safeHeaders[key]=response.headers[key];
             res.writeHead(response.statusCode??502,safeHeaders);res.end(result);
@@ -112,11 +124,12 @@ export async function startNativeProxy({publicOrigin,agentBearer,port=4500,maxBy
     }catch {if(!res.headersSent)res.writeHead(413);res.end();}
   });
   await new Promise((done,fail)=>{server.once('error',fail);server.listen(port,'0.0.0.0',done);});
-  return {trace,port:server.address().port,close:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}};
+  return {trace,observationErrors,port:server.address().port,close:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}};
 }
 
-export function createArcNativeIntentRunner({repoRoot,captureId,port=4500,timeoutMs=12*60*1000}) {
+export function createArcNativeIntentRunner({repoRoot,captureId,port=4500,timeoutMs=12*60*1000,enabledTools=ARC_NATIVE_TOOLS,onResponseProjection}) {
   if (!Number.isFinite(timeoutMs)||timeoutMs<=0||timeoutMs>12*60*1000) throw new Error('invalid_native_timeout');
+  if(!validNativeTools(enabledTools))throw new Error('invalid_native_tool_scope');
   let used=false;
   return async function onArcNativeIntentReady({agentBearer,agentId,intentId,handoffPrompt,publicOrigin}) {
     if(used)throw new Error('native_capture_already_used');used=true;
@@ -128,8 +141,8 @@ export function createArcNativeIntentRunner({repoRoot,captureId,port=4500,timeou
     let proxy,completed=false,published=false;
     try {
       await writeFile(promptPath,handoffPrompt,{flag:'wx',mode:0o600});
-      proxy=await startNativeProxy({publicOrigin,agentBearer,port});
-      const job={schemaVersion:'arc-native-job/v1',captureId,jobId,agentId,intentId,promptSha256,credentialFile:'credential.txt',promptFile:'handoff.txt',enabledTools:ARC_NATIVE_TOOLS,createdAt:new Date().toISOString()};
+      proxy=await startNativeProxy({publicOrigin,agentBearer,port,onResponseProjection});
+      const job={schemaVersion:'arc-native-job/v1',captureId,jobId,agentId,intentId,promptSha256,credentialFile:'credential.txt',promptFile:'handoff.txt',enabledTools:[...enabledTools],createdAt:new Date().toISOString()};
       await writeFile(resolve(directory,'job.tmp'),JSON.stringify(job),{flag:'wx',mode:0o600});await rename(resolve(directory,'job.tmp'),resolve(directory,'job.json'));
       published=true;
       const until=Date.now()+timeoutMs;
@@ -138,7 +151,7 @@ export function createArcNativeIntentRunner({repoRoot,captureId,port=4500,timeou
         if(result){
           if(result.jobId!==jobId||result.promptSha256!==promptSha256||JSON.stringify(result).includes(agentBearer))throw new Error('native_job_mismatch');
           completed=true;
-          return {...result.native,wireTrace:{schemaVersion:'arc-native-wire-projections/v1',rawPersisted:false,packets:proxy.trace},sourcePins:result.sourcePins,helperSummary:result.helperSummary};
+          return {...result.native,wireTrace:{schemaVersion:'arc-native-wire-projections/v1',rawPersisted:false,packets:proxy.trace},sourcePins:result.sourcePins,helperSummary:result.helperSummary,nativeObservationErrors:proxy.observationErrors};
         }
         await sleep(500);
       }

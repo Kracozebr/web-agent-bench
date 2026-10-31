@@ -52,6 +52,7 @@ const platformRecoveryOptIn = process.argv.includes("--platform-recovery-only");
 const agentRunContinuityOptIn = process.argv.includes("--agent-run-continuity-only");
 // AICODE-NOTE: PDC performs real deadline/payment negatives only in a fresh disposable local fixture.
 const paidDeliveryCutoffOptIn = process.argv.includes("--paid-delivery-cutoff-only");
+const agentFailureReportingOptIn = process.argv.includes('--agent-failure-reporting-only');
 // AICODE-NOTE: This explicit BER mode retains the two actual S1 recovery cases without
 // entering legacy S4/M3 Training collectors. It is subset evidence, never a full BPC/BER gate.
 const berRecoveryCoreOptIn = process.env.OID_BER_RECOVERY_CORE === "1";
@@ -65,7 +66,7 @@ if (interruptBeforeFirstRefund && !berRecoveryCoreOptIn) throw new Error("ber_fi
 // substitutes for a complete recovery/checkpoint/restore capture or a BPC gate.
 const combinedQueueOptIn = process.argv.includes("--combined-queue-only");
 const combinedRestoreOptIn = process.argv.includes("--combined-restore-only") || combinedQueueOptIn;
-const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn;
+const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn;
 const bonusFundedTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-sequence-worker-owner-run");
 const bonusFundedRankedOptIn = process.argv.includes("--genuine-bonus-funded-ranked-worker-owner-run");
 const genuineAllOpenTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-all-open-worker-owner-run");
@@ -88,7 +89,7 @@ const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || g
 const genuineTaskId = genuineWorkerTaskId ?? ["S1"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
 // AICODE-NOTE: Bonus run-admission negatives use the same guarded local policy as owner-run captures.
-const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn;
+const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn;
 const activeContract = JSON.parse(await readFile(resolve(repoRoot, "tests/bdd/changes/owner-identity-and-pilot-admission/harness-contracts.json"), "utf8"));
 const contractRows = activeContract.protected_scenarios;
 const REQUIRED = Object.fromEntries(Object.entries(contractRows).map(([scenarioId, row]) => [scenarioId, row.required_observations]));
@@ -310,7 +311,7 @@ async function waitHttp(url, predicate, label) {
 
 async function startRuntime() {
   phase = "runtime_preflight";
-  const domainOptIns = [bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn, agentRunContinuityOptIn, paidDeliveryCutoffOptIn].filter(Boolean).length;
+  const domainOptIns = [bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn, agentRunContinuityOptIn, paidDeliveryCutoffOptIn, agentFailureReportingOptIn].filter(Boolean).length;
   if (domainOptIns > 1 || (domainOptIns === 1 && process.argv.slice(2).filter((argument) => argument !== "--").length !== 1)) {
     throw Object.assign(new Error("beta_poc_domain_cli_shape_invalid"), { code: "BPC_CLI_SHAPE_INVALID" });
   }
@@ -319,7 +320,7 @@ async function startRuntime() {
     throw Object.assign(new Error("report_capture_base_requires_absolute_path_and_reports_opt_in"), { code: "BPC_REPORT_CAPTURE_BASE_INVALID" });
   }
   if (process.platform !== "linux") throw new Error("Run owner acceptance inside the pinned Linux Docker runtime");
-  if (agentRunContinuityOptIn && process.env.OID_BETA_MANIFEST_FILE) {
+  if ((agentRunContinuityOptIn || agentFailureReportingOptIn) && process.env.OID_BETA_MANIFEST_FILE) {
     throw Object.assign(new Error('arc_requires_disposable_local_manual_transport'), { code: 'ARC_LOCAL_PROFILE_REQUIRED' });
   }
   if (paidDeliveryCutoffOptIn && (process.env.OID_BETA_MANIFEST_FILE ||
@@ -336,16 +337,16 @@ async function startRuntime() {
       recoveryObserverProxy = await startBetaRecoveryObserverProxy({ upstreamHost: "host.docker.internal",
         upstreamPort: Number(process.env.BEF_DATABASE_HOST_PORT || "55432") });
     }
-    if (berUnknownGradingOptIn) {
+    if (berUnknownGradingOptIn || agentFailureReportingOptIn) {
       receiptFaultProxy = await (await import("./ber-unknown-receipt-proxy.mjs")).startBerUnknownReceiptProxy({
         upstreamOrigin: `http://host.docker.internal:${process.env.BEF_LOCAL_RPC_A_HOST_PORT || "18545"}`,
       });
     }
     await provisionGenuineS1CoordinatorConfig({ repositoryRoot: repoRoot,
-      automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn,
+      automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn,
       ...(platformRecoveryOptIn || combinedRestoreOptIn ? { apiBaseUrl: recoveryFaultProxy.origin,
         observerDatabase: { host: "127.0.0.1", port: recoveryObserverProxy.port } } : {}),
-      ...(berUnknownGradingOptIn ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
+      ...(berUnknownGradingOptIn || agentFailureReportingOptIn ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
   }
   requireLoopbackOrigin(publicOrigin, "OID_PUBLIC_ORIGIN");
   requireLoopbackOrigin(apiOrigin, "OID_ACCEPTANCE_API_ORIGIN");
@@ -383,7 +384,7 @@ async function startRuntime() {
     OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG ?? ".local/owner-identity/bef-task-coordinator.json",
     OID_LOCAL_REPORT_ACCEPTANCE_ENABLED: privateReportStorageOptIn ? "true" : "false",
     NODE_ENV: "development",
-    ...(agentRunContinuityOptIn ? { OID_MCP_TRANSPORT_PROFILE: "codex-local-manual-2025-06-18" } : {}),
+    ...(agentRunContinuityOptIn || agentFailureReportingOptIn ? { OID_MCP_TRANSPORT_PROFILE: "codex-local-manual-2025-06-18" } : {}),
     ...(paidDeliveryCutoffOptIn ? { OID_MCP_TRANSPORT_PROFILE: 'strict-2026-07-28' } : {}),
     ...(privateReportStorageOptIn ? {
       OID_PRIVATE_DATA_DIR: reportCaptureIsolation.privateDataDir,
@@ -738,6 +739,19 @@ async function collectSourceHashes() {
       resolve(repoRoot, 'tests/bdd/changes/paid-delivery-cutoff-consistency'),
       resolve(repoRoot, 'tests/bdd/features/paid_delivery_cutoff_consistency.feature'),
       resolve(repoRoot, 'tests/bdd/mappers/test_paid_delivery_cutoff_consistency_bdd.py'),
+      resolve(repoRoot, 'openspec/changes/s2-public-payment-disclosure'),
+      resolve(repoRoot, 'tests/bdd/changes/s2-public-payment-disclosure'),
+      resolve(repoRoot, 'tests/bdd/features/s2_public_payment_disclosure.feature'),
+      resolve(repoRoot, 'tests/bdd/mappers/test_s2_public_payment_disclosure_bdd.py'),
+    ] : []),
+    ...(agentFailureReportingOptIn ? [
+      resolve(repoRoot, 'openspec/changes/agent-failure-reporting'),
+      resolve(repoRoot, 'tests/bdd/changes/agent-failure-reporting'),
+      resolve(repoRoot, 'tests/bdd/features/agent_failure_reporting.feature'),
+      resolve(repoRoot, 'tests/bdd/mappers/test_agent_failure_reporting_bdd.py'),
+      resolve(repoRoot, 'tools/arc-native-bridge.mjs'),
+      resolve(repoRoot, 'tools/run_arc_native.mjs'),
+      resolve(repoRoot, 'tools/enable-agent-failure-reporting.mjs'),
     ] : []),
     ...(berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn ? [
       resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/specs"),
@@ -773,8 +787,10 @@ async function collectSourceHashes() {
       // spec/design/approval/contract. Its independent evidence reader is deliberately
       // outside this inventory and pinned by the later BDD report, never by its producer.
       // Only qualification bookkeeping can change while the retained capture is reviewed.
-      const pdcMetadata = /^(?:openspec|tests\/bdd)\/changes\/paid-delivery-cutoff-consistency\/(?:tasks\.md|runtime-inputs\.json|acceptance-evidence\.(?:md|json)|scenario-map\.md)$/;
+      const pdcMetadata = /^(?:openspec|tests\/bdd)\/changes\/(?:paid-delivery-cutoff-consistency|s2-public-payment-disclosure)\/(?:tasks\.md|runtime-inputs\.json|acceptance-evidence\.(?:md|json)|scenario-map\.md)$/;
       if (paidDeliveryCutoffOptIn && pdcMetadata.test(relativeInput)) return;
+      const afrMetadata = /^(?:openspec|tests\/bdd)\/changes\/agent-failure-reporting\/(?:tasks\.md|runtime-inputs\.json|acceptance-evidence\.(?:md|json)|scenario-map\.md)$/;
+      if (agentFailureReportingOptIn && afrMetadata.test(relativeInput)) return;
       const extension = path.slice(path.lastIndexOf("."));
       if ((extensions.has(extension) || [".dockerignore", "Dockerfile"].includes(path.slice(path.lastIndexOf(sep) + 1))) && !path.split(sep).includes("node_modules")) files.push(path);
     }
@@ -923,7 +939,7 @@ async function main() {
     const confirmed = await waitOwner(ownerLogin.page, "authenticated");
     if (confirmed.owner?.id !== ownerId || confirmed.owner?.admissionStatus !== "admitted") throw new Error("Activation did not confirm the same admitted owner in the real owner projection");
     const activationOperation = ownerLogin.capture.requests.filter((item) => item.path === "/api/admission/activate" && item.method === "POST").at(-1)?.operationId;
-    if (platformRecoveryOptIn || combinedRestoreOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn) {
+    if (platformRecoveryOptIn || combinedRestoreOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn) {
       const genuineCaptureInput = {
         captureId: runId, repoRoot, databaseUrl: process.env.OID_DATABASE_URL,
         observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL, publicOrigin,
@@ -1044,6 +1060,27 @@ async function main() {
         assertSecretFree(value, "beta operations progress");
         console.log(JSON.stringify({ event: "beta_operations_progress", ...value }));
       };
+      if (agentFailureReportingOptIn) {
+        phase = 'agent_failure_reporting_native_same_handoff';
+        const {runAgentFailureReportingOwnerCase} = await import('./agent-failure-reporting-cases.mjs');
+        const result = await runAgentFailureReportingOwnerCase({...genuineCaptureInput,receiptFaultProxy});
+        const sourceHashesAfter = await collectSourceHashes();
+        const map = rows => Object.fromEntries(rows.map(row => [row.path,row.sha256]));
+        const inputHashesBefore = map(sourceHashesBefore),inputHashesAfter = map(sourceHashesAfter);
+        const provenance = {databaseIsolation,sourceInputsBeforeCheckpoint,inputHashesBefore,inputHashesAfter,
+          sourceStableDuringRun:JSON.stringify(inputHashesBefore)===JSON.stringify(inputHashesAfter)};
+        const directory = resolve(repoRoot,'artifacts/runs/agent-failure-reporting',runId);
+        await mkdir(directory,{recursive:true,mode:0o700});
+        const capture = {schemaVersion:'agent-failure-reporting-capture/v1',captureId:runId,
+          boundary:'isolated_local_browser_backend_postgres_bef_files',result,provenance,targetHostAcceptance:'blocked_target_not_selected'};
+        assertSecretFree(capture,'agent-failure-reporting');const bytes=Buffer.from(JSON.stringify(capture,null,2)+'\n');
+        await writeFile(resolve(directory,'capture.json'),bytes,{flag:'wx',mode:0o600});betaOperationsArtifactWritten=true;
+        console.log(JSON.stringify({event:'agent_failure_reporting_capture_saved',captureId:runId,
+          path:`artifacts/runs/agent-failure-reporting/${runId}/capture.json`,sha256:sha256(bytes),
+          status:result.afr?.status??'blocked',blocker:result.blocker??null,sourceStableDuringRun:provenance.sourceStableDuringRun}));
+        if(!provenance.sourceStableDuringRun||result.afr?.status!=='verified')process.exitCode=2;
+        return;
+      }
       if (paidDeliveryCutoffOptIn) {
         const { runPaidDeliveryCutoffOwnerCase } = await import('./paid-delivery-cutoff-cases.mjs');
         // Each call provisions its own browser card, credential, funded intent and run;
@@ -1721,6 +1758,14 @@ async function main() {
 }
 
 main().catch(async (error) => {
+  if(agentFailureReportingOptIn&&!betaOperationsArtifactWritten){
+    try{const directory=resolve(repoRoot,'artifacts/runs/agent-failure-reporting',runId);await mkdir(directory,{recursive:true,mode:0o700});
+      const reasonCode=typeof error?.code==='string'&&/^[A-Za-z0-9_]{1,96}$/.test(error.code)?error.code:'afr_startup_or_owner_setup_failed';
+      const blocked={schemaVersion:'agent-failure-reporting-capture/v1',captureId:runId,boundary:'isolated_local_browser_backend_postgres_bef_files',
+        result:{status:'blocked',phase,reasonCode,afr:{status:'blocked'}},provenance:{databaseIsolation,sourceInputsBeforeCheckpoint,sourceStability:'not_verified'},targetHostAcceptance:'blocked_target_not_selected'};
+      assertSecretFree(blocked,'afr-startup-block');await writeFile(resolve(directory,'capture.json'),JSON.stringify(blocked,null,2)+'\n',{flag:'wx',mode:0o600});betaOperationsArtifactWritten=true;
+    }catch{/* Never serialize raw exception messages or participant credentials. */}
+  }
   if (paidDeliveryCutoffOptIn && !pdcSavedProfiles.some(row => row.profile === pdcActiveProfile)) {
     try {
       const directory = resolve(repoRoot, 'artifacts/runs/paid-delivery-cutoff-' + pdcActiveProfile, runId);

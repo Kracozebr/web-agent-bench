@@ -10,6 +10,7 @@ import type { PersistedTaskObservations, TaskEvidenceBinding, TrustedTaskRun } f
 import type { TaskEvaluationEvidenceSource } from './task-result-service.js';
 import { verifyS4CapturePacketChildren, S4CapturePacketError } from './task-s4-capture-packet.js';
 import { readOnlyToolResponseMatches } from './bef-task-executor.js';
+import { publicInspectionQuotesMatch, publicPaymentIdentity } from './task-public-payment-quote.js';
 import { observationHealthMatches } from './bef-observation-health.js';
 import { TaskActionCommandSchema, TaskFinishAnswerSchemas, type TaskActionCommand } from './task-action-service.js';
 import { M1CapturePacketError, parseM1CapturePacket, projectM1PacketObservations, splitPayRequestSha256, type M1CaptureAction, type M1CapturePacket } from './task-m1-capture-packet.js';
@@ -1368,8 +1369,20 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
           (child.rawResponseSha256 ?? null) !== action.rawResponseSha256) failAction();
       if (action.receiptStatus === 'observed') {
         if (!plainObject(response) || typeof action.rawResponseSha256 !== 'string') failAction();
-        if ((durableCommand.kind === 'inspect_catalog' || durableCommand.kind === 'inspect_offer') &&
-            !readOnlyToolResponseMatches(durableCommand, response)) failAction();
+        if (durableCommand.kind === 'inspect_catalog' || durableCommand.kind === 'inspect_offer') {
+          // AICODE-NOTE: Validate the retained raw response, not just the packet's
+          // reduced safeResponse. Rehashed source metadata must still match pinned policy.
+          const identity = publicPaymentIdentity(packet.manifest.paymentPolicy);
+          const resources = durableCommand.kind === 'inspect_offer' ? [response] :
+            Array.isArray(response.catalog) ? response.catalog : [];
+          const disclosed = resources.some((resource) => plainObject(resource) && Array.isArray(resource.offers) &&
+            resource.offers.some((offer) => plainObject(offer) && plainObject(offer.payment) &&
+              Object.hasOwn(offer.payment, 'version')));
+          if (!readOnlyToolResponseMatches(durableCommand, response) ||
+              (disclosed && (typeof identity.name !== 'string' || identity.name.length === 0 ||
+                typeof identity.version !== 'string' || identity.version.length === 0)) ||
+              !publicInspectionQuotesMatch(response, durableCommand.kind, identity)) failAction();
+        }
       } else if (response !== null || transactionHash !== null) failAction();
       commandById.set(action.actionId, durableCommand);
     }

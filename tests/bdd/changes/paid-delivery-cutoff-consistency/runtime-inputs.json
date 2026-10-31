@@ -2,26 +2,26 @@
   "schemaVersion": "pdc-runtime-inputs/v1",
   "captures": {
     "training": {
-      "path": "artifacts/runs/paid-delivery-cutoff-training/fbadf265-3c64-4840-bb96-59113039455f/capture.json",
-      "sha256": "ab9e158f52dd33d842a60b808318f183c5784537751a096e17e34a29ba70fcdc"
+      "path": "artifacts/runs/paid-delivery-cutoff-training/b4966d4b-ad5e-4b98-9244-9b22dc02fb69/capture.json",
+      "sha256": "1353c84b2da900901ea97708cc7d91b5282041e5a2ba892258b8751ca46b7187"
     },
     "ranked": {
-      "path": "artifacts/runs/paid-delivery-cutoff-ranked/fbadf265-3c64-4840-bb96-59113039455f/capture.json",
-      "sha256": "1692f923e8bc0dd49c054d4c87317dc0e07b8d2305c51ac6e4bde385ebdff596"
+      "path": "artifacts/runs/paid-delivery-cutoff-ranked/b4966d4b-ad5e-4b98-9244-9b22dc02fb69/capture.json",
+      "sha256": "954a7f08d0742156e0df75a11d06e4f9aee64faa61a9415c0043ee12ff5bb933"
     }
   },
   "reports": [
     {
-      "path": "artifacts/runs/paid-delivery-cutoff-validation/canonical-report.json",
-      "sha256": "f38bdb95d4937e9cc1c3a0d33c4901a61130a7f349777c9b2d059af7397a3b35"
+      "path": "artifacts/runs/s2-public-payment-disclosure-validation/consumer-canonical-pdc-report.json",
+      "sha256": "941c9c1f1bf0732e7e15dc76c199fbcfcccee7c6d68b554b62158c0b38fa86b8"
     },
     {
-      "path": "artifacts/runs/paid-delivery-cutoff-validation/reader-report.json",
-      "sha256": "51ee1bcb76be222a94bf0ef4e555628ec19ca1e46804436709cd757ba2a392bd"
+      "path": "artifacts/runs/s2-public-payment-disclosure-validation/fresh-reader-pdc-report-b496.json",
+      "sha256": "c4539f82bf1c8bd72e4284e325dae3fb37932bc6d6f93efb1eac8f156dee5cf7"
     }
   ],
   "historicalPreservation": {
-    "path": "artifacts/runs/paid-delivery-cutoff-validation/historical-preservation.json",
+    "path": "artifacts/runs/paid-delivery-cutoff-validation/historical-preservation-final.json",
     "sha256": "5a2e4ca95a49f35b2425e3cb730bf68b54b170428689164e62c866fc27494214"
   }
 }

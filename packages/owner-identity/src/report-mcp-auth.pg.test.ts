@@ -17,6 +17,7 @@ import { registerSupportReportMcpTools } from "./report-mcp.js";
 import type { ReportServiceDependencies } from "./report-service.js";
 
 const OPT_IN = process.env.OID_REPORT_MCP_SMOKE_PG === "true";
+const FAILURE_REPORTING_OPT_IN = process.env.OID_AGENT_FAILURE_REPORTING_PG_TEST === "1";
 const BASE_DATABASE = "owner_identity";
 const DATABASE_ID = /^oid_acceptance_[a-f0-9]{32}$/;
 const CAPTURE_BASE = "/local-report-captures";
@@ -936,6 +937,46 @@ test("supplementary local DB-authenticated MCP report and screenshot smoke", {
     await finishStep({ httpStatus: forged.response.status, errorCode: mcpErrorCode(forged.response), rejected: true,
       databaseUnchanged: true, filesUnchanged: true, snapshotSha256: forged.before.sha256, filesSha256: forged.filesBefore.sha256 });
 
+    if (FAILURE_REPORTING_OPT_IN) {
+      await checkpoint("afr_report_and_receipt_available_after_terminal_run");
+      const terminalArgs = { operationId: `afr_${fixtureRunId.replaceAll('-', '')}`, title: "Synthetic terminal-run report",
+        body: "Synthetic private support availability check; no automatic bug classification is claimed.",
+        runId: fixtureRunId, taskId: "S1", actionId: fixtureActionId };
+      const terminalCreated = await successfulTool(tokenA, "support.report", terminalArgs);
+      const terminalReportId = record(terminalCreated.report).id;
+      assert.equal(terminalCreated.replayed, false);
+      const terminalRetry = await successfulTool(tokenA, "support.report", terminalArgs);
+      assert.equal(terminalRetry.replayed, true);
+      assert.equal(record(terminalRetry.report).id, terminalReportId);
+      const terminalReceipt = await successfulTool(tokenA, "support.report_receipt", { reportId: terminalReportId });
+      assert.equal(record(terminalReceipt.report).id, terminalReportId);
+      const linked = await oneReadonly<{ runId: string; taskId: string; actionId: string; runStatus: string }>(observer, sql`
+        SELECT r.run_id::text AS "runId",r.task_id AS "taskId",r.action_id::text AS "actionId",b.status AS "runStatus"
+        FROM oid_support_report r JOIN oid_benchmark_run b ON b.id=r.run_id WHERE r.id=${terminalReportId as string}::uuid
+      `);
+      assert.deepEqual(linked, { runId: fixtureRunId, taskId: "S1", actionId: fixtureActionId, runStatus: "completed" });
+      await finishStep({ postTerminalReportAvailable: true, idempotent: true, receiptConfirmed: true, validatedRunTaskActionLinks: true });
+
+      await checkpoint("afr_foreign_terminal_run_link_is_denied_without_effects");
+      const foreignLink = await noEffect("afr_foreign_terminal_link", () => callTool(tokenB, "support.report", {
+        ...terminalArgs, operationId: operationId()
+      }));
+      assert.equal(mcpErrorCode(foreignLink.response), "REPORT_LINK_NOT_FOUND");
+      await finishStep({ errorCode: "REPORT_LINK_NOT_FOUND", databaseUnchanged: true, filesUnchanged: true });
+
+      await checkpoint("afr_expired_grant_is_denied_before_report_and_receipt");
+      await ownerDb.db.execute(sql`UPDATE oid_agent_access_grant SET expires_at=clock_timestamp()-interval '1 second' WHERE id=${grantB}::uuid`);
+      const expired = await noEffect("afr_expired_grant_report", () => callTool(tokenB, "support.report", {
+        operationId: operationId(), title: "Synthetic expired denial", body: "This request must not persist."
+      }));
+      assert.equal(expired.response.status, 401);
+      const expiredReceipt = await noEffect("afr_expired_grant_receipt", () => callTool(tokenB, "support.report_receipt", { reportId: terminalReportId }));
+      assert.equal(expiredReceipt.response.status, 401);
+      await finishStep({ httpStatus: 401, expiredReportDenied: true, expiredReceiptDenied: true, databaseUnchanged: true, filesUnchanged: true });
+      artifact.agentFailureReporting = { terminalLinksAvailable: true, exactRetryDeduplicated: true,
+        foreignTerminalLinkDenied: true, expiredReportAndReceiptDenied: true, terminalReportIdSha256: sha(String(terminalReportId)) };
+    }
+
     await checkpoint("revoke_persisted_manual_grant_before_reusing_bearer");
     await ownerDb.db.execute(sql`
       UPDATE oid_agent_access_grant SET revoked_at=clock_timestamp(),revocation_reason='replaced'
@@ -962,7 +1003,7 @@ test("supplementary local DB-authenticated MCP report and screenshot smoke", {
       WHERE r.id=${reportId as string}::uuid GROUP BY r.id
     `);
     assert.deepEqual(persistedReport, { source: "agent", runLinked: false, taskLinked: false, actionLinked: false, imageCount: 1 });
-    assert.equal(finalState.reports.counts.reports, 1);
+    assert.equal(finalState.reports.counts.reports, FAILURE_REPORTING_OPT_IN ? 2 : 1);
     assert.equal(finalState.reports.counts.uploads, 1);
     assert.equal(finalState.reports.counts.chunks, 0, "normalized upload should no longer retain raw chunk rows");
     assert.equal(finalState.reports.counts.usage_rows, uploadedChunkCount, "per-chunk usage receipts should remain durable after raw-byte cleanup");

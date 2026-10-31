@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "coverage_policy": {
+    "status": "complete",
+    "required_protected_scenarios": [
+      "SPP-SC-001",
+      "SPP-SC-002",
+      "SPP-SC-003"
+    ]
+  },
+  "protected_scenarios": {
+    "SPP-SC-001": {
+      "requirement_id": "SPP-REQ-001",
+      "title": "Keep free inspection and payment identity consistent",
+      "named_mapper": "test_spp_sc_001",
+      "adapter": "s2_public_payment_disclosure",
+      "boundary": "reference_model",
+      "boundary_detail": "source_bound_provider_policy_and_public_inspection",
+      "gate": "unit",
+      "mandatory": true,
+      "evidence_mode": "source_pinned_executed_junit_contract_checks",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "provider_protocol_metadata_match",
+        "all_public_payments_complete",
+        "economic_terms_unchanged"
+      ],
+      "negative_variants": [
+        "foreign_identity",
+        "signing_material_or_task_answer"
+      ],
+      "durable_effects": [
+        "no_economic_or_grading_effect"
+      ],
+      "runtime_status": "not_run"
+    },
+    "SPP-SC-002": {
+      "requirement_id": "SPP-REQ-002",
+      "title": "Reject substituted or partial public identity",
+      "named_mapper": "test_spp_sc_002",
+      "adapter": "s2_public_payment_disclosure",
+      "boundary": "reference_model",
+      "boundary_detail": "strict_public_offer_projection_and_legacy_replay",
+      "gate": "unit",
+      "mandatory": true,
+      "evidence_mode": "source_pinned_executed_junit_contract_checks",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "new_identity_strictly_validated",
+        "legacy_projection_bytes_unchanged"
+      ],
+      "negative_variants": [
+        "partial_identity",
+        "extra_field",
+        "mixed_root_offer_identity",
+        "substituted_domain"
+      ],
+      "durable_effects": [
+        "historical_capture_projection_unchanged"
+      ],
+      "runtime_status": "not_run"
+    },
+    "SPP-SC-003": {
+      "requirement_id": "SPP-REQ-003",
+      "title": "Complete Ranked S2 from actual public inspection",
+      "named_mapper": "test_spp_sc_003",
+      "adapter": "s2_public_payment_disclosure",
+      "boundary": "environment",
+      "boundary_detail": "actual_browser_mcp_worker_postgres_bef_fresh_release",
+      "gate": "environment",
+      "mandatory": true,
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "fresh_release_qualified",
+        "public_derived_s2_answer",
+        "known_s2_full_credit",
+        "full_run_finance_and_fences"
+      ],
+      "negative_variants": [
+        "undisclosed_identity",
+        "foreign_public_response",
+        "historical_pin_rewrite"
+      ],
+      "durable_effects": [
+        "one_quoted_debit_no_refund",
+        "historical_identity_preserved"
+      ],
+      "runtime_status": "not_run"
+    }
+  },
+  "spec_snapshot": {
+    "requirements": 3,
+    "scenarios": 3,
+    "normative_clauses": 7,
+    "requirement_clause_counts": {
+      "SPP-REQ-001": 2,
+      "SPP-REQ-002": 3,
+      "SPP-REQ-003": 2
+    },
+    "scenario_requirement_sha256": "4f092cf738a38bbc2fdae29384e24549a60bebc72ad235a496fbaec677f50e7f",
+    "scenario_ids_sha256": "2b712a89949affc5b74739d154c28924380fa5ab1f85762c6154ab241e4c8eb5",
+    "scenario_requirement_mapping": {
+      "SPP-SC-001": "SPP-REQ-001",
+      "SPP-SC-002": "SPP-REQ-002",
+      "SPP-SC-003": "SPP-REQ-003"
+    }
+  }
+}

@@ -4,7 +4,7 @@ import {createServer} from 'node:http';
 import {readFile,mkdtemp,mkdir,writeFile,rm,access} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {resolve} from 'node:path';
-import {startNativeProxy,projectNativeRequest,projectNativeResponse,projectNativeResponseBytes,createArcNativeIntentRunner,privateCaptureDirectory,sha256} from './arc-native-bridge.mjs';
+import {startNativeProxy,projectNativeRequest,projectNativeResponse,projectNativeResponseBytes,createArcNativeIntentRunner,privateCaptureDirectory,sha256,ARC_NATIVE_TOOLS,ARC_NATIVE_REPORT_TOOLS,validNativeTools} from './arc-native-bridge.mjs';
 import {transformNativeHelper} from './run_arc_native.mjs';
 
 test('native trace projections omit arbitrary bodies, headers, signatures and answer bytes',()=>{
@@ -23,6 +23,26 @@ test('finite native SSE projects exactly one JSON-RPC response including CRLF an
  const text=JSON.stringify(json);const comma=text.indexOf(',');
  const multiline=': keepalive\r\n\r\nevent: message\r\nid: NONSENSITIVE_IGNORED\r\ndata: '+text.slice(0,comma+1)+'\r\ndata: '+text.slice(comma+1)+'\r\n\r\n';
  assert.deepEqual(projectNativeResponseBytes(Buffer.from(multiline),'text/event-stream; charset=utf-8'),expected);
+});
+
+test('reporting tool scope adds exactly two support capabilities and projects receipts without report body',()=>{
+ assert.equal(validNativeTools(ARC_NATIVE_TOOLS),true);assert.equal(validNativeTools(ARC_NATIVE_REPORT_TOOLS),true);
+ assert.equal(validNativeTools([...ARC_NATIVE_REPORT_TOOLS,'support.screenshot.begin']),false);
+ const request=projectNativeRequest({id:1,method:'tools/call',params:{name:'support.report',arguments:{operationId:'afr_run',runId:'run-1',taskId:'H1',actionId:'action-1',title:'hidden',body:'never retain hidden body'}}});
+ assert.equal(request.toolName,'support.report');assert.equal(request.arguments.taskId,'H1');assert.ok(!JSON.stringify(request).includes('hidden'));
+ const response=projectNativeResponse({id:1,result:{structuredContent:{report:{id:'report-1',source:'agent',status:'new',imageCount:0,body:'hidden'},replayed:false}}});
+ assert.equal(response.result.report.id,'report-1');assert.equal(response.result.replayed,false);assert.ok(!JSON.stringify(response).includes('hidden'));
+});
+
+test('terminal-only observation precedes forwarding and observation failure preserves exact server bytes',async()=>{
+ const bearer='test-only-private-bearer-terminal';let terminal=false,observed=0;
+ const body=()=>JSON.stringify({jsonrpc:'2.0',id:1,result:{structuredContent:{run:{runId:'run-1',status:terminal?'cancelled':'running',terminal},task:null}}});
+ const target=createServer((req,res)=>{req.resume();res.setHeader('content-type','application/json');res.end(body());});await new Promise(done=>target.listen(0,'127.0.0.1',done));
+ const proxy=await startNativeProxy({publicOrigin:`http://127.0.0.1:${target.address().port}`,agentBearer:bearer,port:0,onResponseProjection:async()=>{observed++;throw new Error('private observer details must not leak');}});
+ try{const call=()=>fetch(`http://127.0.0.1:${proxy.port}/api/agent/mcp`,{method:'POST',headers:{authorization:`Bearer ${bearer}`},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'runs.current_task',arguments:{runId:'run-1'}}})});
+  assert.equal(await (await call()).text(),body());assert.equal(observed,0);
+  terminal=true;assert.equal(await (await call()).text(),body());assert.equal(observed,1);assert.deepEqual(proxy.observationErrors,[{code:'native_terminal_observation_failed',responseSequence:4}]);assert.ok(!JSON.stringify(proxy.observationErrors).includes('private observer'));
+ }finally{await proxy.close();await new Promise(done=>target.close(done));}
 });
 
 test('SSE multiple, malformed, incomplete and excessive frames never collapse into a terminal proof or leak raw text',()=>{

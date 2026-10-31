@@ -193,7 +193,12 @@ function manifestOffer(manifest: RuntimeManifest, resourceId: string, offerId: s
 
 function observedTerms(value: unknown, manifest: RuntimeManifest, facilitator: string, amount: string): SplitAcceptedTerms {
   const payment = record(value);
-  if (!payment || Object.keys(payment).sort().join(',') !== 'amount,asset,network,payTo,scheme,transferMethod'
+  const keys = payment && Object.keys(payment).sort().join(',');
+  const legacy = keys === 'amount,asset,network,payTo,scheme,transferMethod';
+  const disclosed = keys === 'amount,asset,name,network,payTo,paymentFlow,scheme,transferMethod,version';
+  if (!payment || (!legacy && !disclosed)
+    || (disclosed && (payment.version !== manifest.x402.eip712Domain.version
+      || payment.name !== manifest.x402.eip712Domain.name || payment.paymentFlow !== 'authorization'))
     || payment.scheme !== manifest.x402.scheme || payment.network !== manifest.x402.network
     || String(payment.asset).toLowerCase() !== manifest.x402.asset.toLowerCase()
     || payment.amount !== amount || payment.transferMethod !== manifest.x402.assetTransferMethod
@@ -272,6 +277,10 @@ export function projectSplitOfferRead(input: {
   for (const [index, rawOffer] of body.offers.entries()) {
     const item = record(rawOffer);
     const pin = resource.offers[index];
+    const rootPayment = record(body.payment), offerPayment = record(item?.payment);
+    if (rootPayment && offerPayment && Object.hasOwn(rootPayment, 'version') !== Object.hasOwn(offerPayment, 'version')) {
+      throw new Error('task_split_public_offer_identity_layout_mismatch');
+    }
     if (!item || !pin || item.id !== pin.id) throw new Error('task_split_public_offer_identity_mismatch');
     result.push({
       resourceId: resource.resourceId,

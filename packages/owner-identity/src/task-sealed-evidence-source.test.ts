@@ -1008,7 +1008,8 @@ test('paid sealed replay binds owner command, durable receipt history, actual re
   const censusOperation = { operation_id: befOperationId, env_id: ENVIRONMENT, generation_id: GENERATION, participant_id: participantId,
     idempotency_key_sha256: createHash('sha256').update(`task-action-${actionId}`).digest('hex'), request_sha256: requestHash,
     operation_kind: 'offer', status: 'accepted', receipt_status: 'not_submitted', transaction_hash: null, response_sha256: responseHash };
-  const packet = { ownerActions: [action], bef: { after: { generation: { participant_id: participantId }, operations: [censusOperation], payments: [], deliveries: [] } } };
+  const packet = { manifest: { paymentPolicy: { eip712Domain: { name: 'USD Coin', version: '2' } } },
+    ownerActions: [action], bef: { after: { generation: { participant_id: participantId }, operations: [censusOperation], payments: [], deliveries: [] } } };
   const row: Record<string, unknown> = { run_id: RUN, task_index: 0, owner_id: OWNER, agent_id: AGENT, task_id: 'H1',
     environment_id: ENVIRONMENT, generation_id: GENERATION, environment_manifest_hash: ENV_MANIFEST_HASH,
     application_source_hash: SOURCE_HASH, action_cutoff_sequence: '1' };
@@ -1018,14 +1019,16 @@ test('paid sealed replay binds owner command, durable receipt history, actual re
     tool_response_json: response, tool_response_hash: sha256CanonicalTaskJson(response), history_revision: 1, history_status: 'observed',
     history_evidence_hash: actionEvidence.sha256, history_evidence_path: actionEvidence.path, history_transaction_hash: null,
     history_tool_response_json: response, history_tool_response_hash: sha256CanonicalTaskJson(response) };
-  const callVerifier = async (candidateRow = row, candidatePacket = packet, candidateDbActions = [dbAction], composite = false) => {
+  const callVerifier = async (candidateRow = row, candidatePacket = packet,
+    candidateDbActions: Array<Record<string, unknown>> = [dbAction], composite = false,
+    candidateEvidence: Record<string, unknown> = actionEvidenceValue) => {
     const source = new TaskSealedEvidenceSource({ taskReleaseSource: {
       async getActiveAdmissionRelease() { return null; }, async getValidatedReleaseRecord() { return null; },
     }, evidenceRoot: process.cwd() });
     const tx = { async execute() { return candidateDbActions; } };
     await (source as unknown as { verifyPaidOwnerActions(tx: unknown, row: unknown, packet: unknown,
       evidence: ReadonlyMap<string, Record<string, unknown>>, composite: boolean): Promise<void> })
-      .verifyPaidOwnerActions(tx, candidateRow, candidatePacket, new Map([[actionEvidence.path, actionEvidenceValue]]), composite);
+      .verifyPaidOwnerActions(tx, candidateRow, candidatePacket, new Map([[actionEvidence.path, candidateEvidence]]), composite);
   };
   await callVerifier();
   await assert.rejects(callVerifier(row, packet, [{ ...dbAction, history_tool_response_json: { ...response, resourceId: 'tampered-resource' } }]),
@@ -1043,6 +1046,34 @@ test('paid sealed replay binds owner command, durable receipt history, actual re
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
   await assert.rejects(callVerifier(row, packet, [{ ...dbAction, tool_response_json: { ...response, resourceId: 'tampered-current-response' } }]),
     (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  // Keep every durable hash/history/census binding valid: policy must reject the
+  // raw public metadata even though the packet's safe economic projection is unchanged.
+  const legacyBytes = JSON.stringify(packet);
+  for (const variant of ['valid','wrong-name','wrong-version','wrong-flow','partial','unknown-key','missing-policy'] as const) {
+    const candidate = structuredClone(packet);
+    const quote: Record<string, unknown> = { ...payment, name: 'USD Coin', version: '2', paymentFlow: 'authorization' };
+    if (variant === 'wrong-name') quote.name = 'Foreign Coin';
+    if (variant === 'wrong-version') quote.version = '73';
+    if (variant === 'wrong-flow') quote.paymentFlow = 'transfer';
+    if (variant === 'partial') delete quote.name;
+    if (variant === 'unknown-key') quote.signature = 'untrusted';
+    if (variant === 'missing-policy') candidate.manifest.paymentPolicy.eip712Domain.name = '';
+    const raw = { ...response, payment: quote, offers: [{ id: 'stream', payment: quote }] };
+    const rawHash = HASH(JSON.stringify(raw));
+    candidate.ownerActions[0]!.rawResponseSha256 = rawHash;
+    candidate.bef.after.operations[0]!.response_sha256 = rawHash;
+    const child = { ...actionEvidenceValue, rawResponseSha256: rawHash, participantToolResponse: raw };
+    const evidenceHash = sha256CanonicalTaskJson(child);
+    candidate.ownerActions[0]!.actionEvidence.sha256 = evidenceHash;
+    const durable = { ...dbAction, evidence_hash: evidenceHash, history_evidence_hash: evidenceHash,
+      tool_response_json: raw, history_tool_response_json: raw,
+      tool_response_hash: sha256CanonicalTaskJson(raw), history_tool_response_hash: sha256CanonicalTaskJson(raw) };
+    const check = callVerifier(row, candidate, [durable], false, child);
+    if (variant === 'valid') await check;
+    else await assert.rejects(check, (error: { code?: string }) => error.code === 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH');
+  }
+  await callVerifier();
+  assert.equal(JSON.stringify(packet), legacyBytes, 'legacy capture bytes and hash inputs remain unchanged');
 });
 
 test('S3 sealed replay binds catalog and offer reads to durable owner receipts and BEF hashes', async () => {
@@ -1399,7 +1430,7 @@ function compositeOwnerReplayFixture(taskId: 'H3' | 'U1') {
     {...operation(1,payOp),operation_kind:'purchase',status:'delivered',receipt_status:'success',transaction_hash:txHash,payment_response_mode:'deferred_delivery',
       selected_resource_id:'synthetic-resource',selected_offer_id:'standard',selected_amount_units:'125000',selected_resource_sha256:resourceHash,
       request_sha256:splitPayRequestSha256(ENVIRONMENT,{resourceId:'synthetic-resource',offerId:'standard',readHandle,acceptedTerms:payment})}];
-  const paid={ownerActions:actions,bef:{after:{generation:{participant_id:participantId},operations,payments:[],deliveries:[]}}};
+  const paid={manifest:{paymentPolicy:{eip712Domain:{name:'USD Coin',version:'2'}}},ownerActions:actions,bef:{after:{generation:{participant_id:participantId},operations,payments:[],deliveries:[]}}};
   // This is the actual producer's composite external-action shape: no M3/M4/H2 inspection proof extension.
   const chain={taskId,ownerActions:[],externalActions:actions.map(({rawResponseSha256:_raw,safeResponse:_response,paymentProtocol:_protocol,retrievedContent:_content,...action})=>action)};
   return {row,actions,actionRows,children,paid,chain};

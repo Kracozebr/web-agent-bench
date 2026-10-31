@@ -57,7 +57,7 @@ export function parseRefreshProfile(value) {
   'refresh_profile_fields_invalid');
   demand(value.schemaVersion === 'bts-source-refresh-profile/v1'
     && value.classification === 'explicit_new_source_profile_not_release_acceptance'
-    && value.reason === 'ber_diagnostic_source_refresh'
+    && ['ber_diagnostic_source_refresh', 's2_public_identity_disclosure'].includes(value.reason)
     && equal(artifactPin(value.approvedBaseline), APPROVED_REFRESH_BASELINE)
     && HASH.test(value.expectedApplicationSourceSha256) && HASH.test(value.expectedProbeSourceSha256)
     && HASH.test(value.expectedManifestSha256), 'refresh_profile_contract_invalid');

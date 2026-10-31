@@ -256,6 +256,7 @@ test('HTTP inspection, /pay idempotency, cross-route conflict, and deferred deli
       network,
       asset,
       assetTransferMethod: transferMethod,
+      eip712Domain: { name: 'Test Provider Coin', version: '42' },
       amount,
     },
   } as unknown as RuntimeManifest;
@@ -341,6 +342,15 @@ test('HTTP inspection, /pay idempotency, cross-route conflict, and deferred deli
     const offerBody = offerResponse.json() as { operationId: string; readHandle: { kind: string; operationId: string } };
     operationIds.push(offerBody.operationId);
     assert.deepEqual(offerBody.readHandle, { kind: 'offer', operationId: offerBody.operationId });
+    for (const terms of [
+      (offerBody as unknown as { payment: Record<string, unknown> }).payment,
+      ...(offerBody as unknown as { offers: Array<{ payment: Record<string, unknown> }> }).offers.map((entry) => entry.payment),
+      ...(catalogBody as unknown as { catalog: Array<{ offers: Array<{ payment: Record<string, unknown> }> }> }).catalog.flatMap((entry) => entry.offers.map((offer) => offer.payment)),
+    ]) {
+      assert.deepEqual({ name: terms.name, version: terms.version, paymentFlow: terms.paymentFlow },
+        { name: 'Test Provider Coin', version: '42', paymentFlow: 'authorization' });
+      assert.equal(Object.hasOwn(terms, 'signature'), false);
+    }
     const offerRow = await pool.query<{ operation_kind: string; status: string; response_sha256: string }>(
       `SELECT operation_kind,status,response_sha256 FROM bef_operation WHERE operation_id=$1`, [offerBody.operationId],
     );

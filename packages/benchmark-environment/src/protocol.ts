@@ -4,6 +4,7 @@ import { ExactEvmScheme } from '@x402/evm/exact/server';
 import type { RuntimeEnvironment } from './runtime.js';
 import type { RuntimeManifest } from './manifest.js';
 import { selectedPinnedResourceOffer } from './offers.js';
+import { pinnedPaymentIdentity } from './payment-identity.js';
 
 export type FacilitatorRequestScope = {
   operationId: string;
@@ -60,9 +61,7 @@ export async function createPaymentProtocol(
     maxTimeoutSeconds: manifest.x402.maxTimeoutSeconds,
     extra: {
       assetTransferMethod: manifest.x402.assetTransferMethod,
-      paymentFlow: 'authorization',
-      name: manifest.x402.eip712Domain.name,
-      version: manifest.x402.eip712Domain.version,
+      ...pinnedPaymentIdentity(manifest),
     },
   };
   const resourceConfig = {

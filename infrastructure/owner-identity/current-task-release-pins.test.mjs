@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { CURRENT_TASK_RELEASE_INPUTS_PATH, CURRENT_TASK_RELEASE_POINTER_PATH,
-  loadCurrentTaskReleaseInputPins, loadCurrentTaskReleasePins } from './current-task-release-pins.mjs';
+  loadCurrentTaskReleaseInputPins, loadPinnedTaskReleaseInputPins, loadCurrentTaskReleasePins } from './current-task-release-pins.mjs';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const captureId = '11111111-1111-4111-8111-111111111111';
@@ -35,6 +35,48 @@ async function writeValidInputsConfig(root, artifactPins = pins()) {
     ...artifactPins,
   });
 }
+
+test('a separately pinned candidate selection is verified without changing either current pointer', async () => {
+  await withRoot(async (root) => {
+    await writeValidInputsConfig(root);
+    const before = await readFile(resolve(root, CURRENT_TASK_RELEASE_INPUTS_PATH));
+    const path = `artifacts/runs/bts-source-refresh-qualification/${captureId}/candidate-inputs.json`;
+    const hash = await writeJson(root, path, { schemaVersion: 'bts-current-task-release-inputs/v1',
+      classification: 'current_candidate_artifact_pinset_not_validation_or_activation', ...pins() });
+    const selected = await loadPinnedTaskReleaseInputPins(root, { path, sha256: hash });
+    assert.deepEqual(selected.cases, pins().cases);
+    assert.deepEqual(selected.inputsConfig, { path, sha256: hash });
+    assert.deepEqual(await readFile(resolve(root, CURRENT_TASK_RELEASE_INPUTS_PATH)), before);
+    await assert.rejects(loadPinnedTaskReleaseInputPins(root, { path, sha256: 'f'.repeat(64) }), /hash_or_stability_invalid/);
+    await assert.rejects(loadPinnedTaskReleaseInputPins(root, { path: '../candidate-inputs.json', sha256: hash }), /reference_invalid/);
+  });
+});
+
+test('validated candidate input selection stays bound to all four immutable release artifacts', async () => {
+  await withRoot(async (root) => {
+    const { validationPath } = await writeValidPointer(root);
+    const path = `artifacts/runs/bts-source-refresh-qualification/${captureId}/candidate-inputs.json`;
+    const value = { schemaVersion: 'bts-current-task-release-inputs/v1',
+      classification: 'current_candidate_artifact_pinset_not_validation_or_activation', ...pins() };
+    let configHash = await writeJson(root, path, value);
+    const validation = JSON.parse(await readFile(resolve(root, validationPath), 'utf8'));
+    validation.sources.inputsConfig = { path, sha256: configHash };
+    validation.sourceInputs = validation.sourceInputs.filter((row) => row.path !== CURRENT_TASK_RELEASE_INPUTS_PATH);
+    validation.sourceInputs.push(validation.sources.inputsConfig);
+    async function persist() {
+      const validationHash = await writeJson(root, validationPath, validation);
+      await writeJson(root, CURRENT_TASK_RELEASE_POINTER_PATH, { schemaVersion: 'bts-current-task-release-pointer/v1',
+        classification: 'local_current_validated_release_reference', validation: { path: validationPath, sha256: validationHash } });
+    }
+    await persist();
+    assert.deepEqual((await loadCurrentTaskReleasePins(root)).cases, pins().cases);
+    value.cases = { ...value.cases, sha256: 'f'.repeat(64) };
+    configHash = await writeJson(root, path, value);
+    validation.sources.inputsConfig.sha256 = configHash;
+    await persist();
+    await assert.rejects(loadCurrentTaskReleasePins(root), /current_release_input_config_not_source_pinned/);
+  });
+});
 
 async function writeValidPointer(root, overrides = {}) {
   const artifactPins = pins();
