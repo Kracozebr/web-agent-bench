@@ -18,6 +18,30 @@ implementation has focused local checks, but installation under a selected host
 scheduler, unattended daily operation, off-host recovery and target-host acceptance
 remain unverified.
 
+## Latest original Google state: complete local cold preservation
+
+On 2026-10-31, approved capacity increased only official file count to 8,192 in
+checkpoint and restore. Limits stay 64 MiB per file, 2 GiB official total and 16 MiB
+manifest. Nineteen focused tests passed, including actual 8,192-file restore and
+8,193-file rejection before materialization. Existing independent live verifiers
+already allowed 8,192; unrelated image scan limits were retained.
+
+Fresh capture `5550a5f7-086e-459f-a3f9-bf97df38a064` encrypted and cold-restored the
+actual latest stopped local source: 13 runs, 35 ledger entries, two reports, one
+screenshot and 4,426 official evidence files (26,627,354 bytes). All 88 source/clone
+table fingerprints matched. The 33,102-byte screenshot matched SQL, authenticated
+manifest and actual original/restored bytes. Independent checks rehashed all files
+using read-only volume mounts and confirmed default read-only plus denied fresh-owner
+writes (SQLSTATE 25006). Restore took 61.932 seconds locally. The original source was
+then restarted and its 88-table fingerprint remained unchanged; the restored API/worker
+stayed off. This is complete local latest-state byte preservation, not a rerun of all
+R37 safe-retry/expiry variants, target RPO/RTO or restored-runtime activation.
+
+See [approved capacity and proof](../openspec/changes/benchmark-execution-reliability/backup-capacity-proposal.md)
+and [qualified recovery and current blockers](../openspec/changes/benchmark-execution-reliability/implementation-progress.md).
+The failed old-limit and operator-preparation attempts remain separately recorded.
+The broader pre-migration, safe retry, unattended/off-host and target gates stay open.
+
 ## Current combined v2 provider
 
 `infrastructure/owner-identity/beta-backup-local.mjs` exposes

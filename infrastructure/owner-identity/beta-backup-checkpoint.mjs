@@ -13,7 +13,7 @@ const ENCRYPTED_DUMP_HEADER = Buffer.from('BPC-SC022-DBENC-V1\n', 'ascii');
 const DAY_SECONDS = 30 * 24 * 60 * 60;
 const CHECKPOINT_SCHEMA_V2 = 'beta-backup-inventory/v2';
 // AICODE-NOTE: Keep these limits aligned with beta-backup-restore.mjs and combined restore verifiers so a verified checkpoint is reopenable.
-const MAX_OFFICIAL_FILE_COUNT = 4096;
+const MAX_OFFICIAL_FILE_COUNT = 8192;
 const MAX_OFFICIAL_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_OFFICIAL_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_OFFICIAL_MANIFEST_BYTES = 16 * 1024 * 1024;

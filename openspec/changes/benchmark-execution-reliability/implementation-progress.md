@@ -20,10 +20,17 @@ across both H1 captures (469/469). Source-linked funding includes actual grant/c
 redemption rows, owner, balance availability and chronology; a prior authorized refund
 can fund a later run without permitting foreign or future grants.
 
-Latest unified backup is the next step. The owner approved an 8,192-file limit with
-all existing byte guards retained and a fresh complete write-disabled cold restore;
-see [approved capacity amendment](backup-capacity-proposal.md). The former 4,096-file
-rejection and older eleven-run cold restore remain separate historical observations.
+The approved backup-capacity amendment is now implemented and verified in a separate
+post-`2566b7d` tooling profile: 8,192-file bound, unchanged byte guards, 19 passing tests,
+and fresh complete local cold preservation of 13 runs/35 ledger entries/two reports/
+one screenshot/4,426 official files. All 88 source/clone tables match; clone writes are
+disabled. This is not full target, safe-business-retry or restored-runtime acceptance;
+tasks 1.3 and 3.3 stay open for their broader required boundaries. Original Google
+runtime has been restarted and its post-start 88-table fingerprint remains identical.
+See [capacity amendment and evidence](backup-capacity-proposal.md). Qualification at
+`2566b7d` remains source-bound; the capacity change creates a new inventory, so final
+combined acceptance must be repeated on the eventual frozen release, without old-source
+hash exemptions.
 Historical entries below preserve earlier captures; their source-qualified scope and
 explicit non-passing states are not superseded by a green aggregate claim.
 
@@ -704,3 +711,69 @@ remains causally unresolved even though unknown/fencing/recovery behavior is ver
 The separately approved backup-capacity infrastructure edit will create a new source
 profile: preserve this pre-amendment qualification rather than rewriting hashes or
 claiming it as a later unchanged-source beta gate.
+
+## Approved capacity amendment and latest complete local cold restore
+
+After `2566b7d` was committed/pushed, the approved count-only edit changed
+`beta-backup-checkpoint.mjs` and `beta-backup-restore.mjs` to 8,192 and updated their
+boundary tests. Per-file 64 MiB, official total 2 GiB and manifest 16 MiB remain fixed.
+The base Compose Node suite for checkpoint/restore/local/sealed-bundle returned
+19 passed, zero failed/skipped in 37.39 seconds. The actual 8,192-file restore test
+checks every output byte and receipt; 8,193 is rejected before official materialization.
+
+All intermediate failures were retained, never promoted:
+- `b415089a`: old 4,096-file bound rejected discovery at 4,097; no sealed checkpoint.
+- `f6913ddf`: correct rejection of unknown per-job relative origins in a known fifteen-
+  reference inventory, before sealing. The narrow operator fix verifies each actual
+  probe SHA/schema/task/mode and exact artifact list, then resolves paths under that
+  probe directory. Root independently checked all 15 probes and 1,601 artifact rows.
+- `8df5a68b`: complete 4,425-file discovery/staging succeeded, but a missing empty
+  broker factory directory prevented broker startup; the unchanged freshness guard
+  correctly rejected sealing. Provider requests/results and sealed/restore files were
+  absent, and source fingerprints remained unchanged. A fresh operator now creates
+  the contained empty directory and checks process liveness plus two increasing fresh
+  source heartbeats within the same 15-second startup and 10-second freshness bounds.
+These are private operator profile fixes, not relaxed evidence/path/timeout policies.
+
+Fresh successful capture `5550a5f7-086e-459f-a3f9-bf97df38a064` has tooling profile
+19 sources, SHA-256 `1b591f6ae40b974f35dd6a565bdaffb1527a876bcab12fcbc62800ef70d01706`.
+This is current checkpoint tooling identity, not historical serving-build or target
+qualification. The authenticated checkpoint and cold clone preserve 13 original runs,
+35 ledger entries, two reports, one uploaded screenshot and 4,426 official files
+(26,627,354 bytes; 4,425 discovered source files plus verified staging provenance).
+Encrypted bundle: 31,354,497 bytes, SHA-256
+`97107cb09b4f52eac9ef584aee22d48b70f965e279573f99389fc8fee0a3d906`.
+The clone is `oid_restore_867f4ead0d2d4e87a612042161f18051`; restore elapsed 61,932 ms,
+whole private cold phase 73.264 seconds. Source pause/staging/encryption are separate
+from that restore time; no target RPO/RTO is inferred.
+
+Primary observation:
+`artifacts/runs/ber-latest-google-preservation/5550a5f7-086e-459f-a3f9-bf97df38a064/observation.json`,
+SHA-256 `0aee5900d737ac047f7b1f4b7892e62feea39a0984faf9bb6de5edac91556f0c`.
+Independent verification in the same directory, SHA-256
+`5eebff9be382eeeae52cd2b9430850124af30256da7ac59e07a1b0e617dd1ef1`.
+Root repeated the verifier with only a new output directory, source and native mounts
+`:ro`; new report
+`root-second-verification-c390741f-1067-42a1-91e1-1c5a7e84075e/independent-verification.json`,
+SHA-256 `ad3625f106779072878d3cb47d2abe3b56cafbc3367e97385bb5e213ccd81f8d`.
+All 88 original and clone table fingerprints matched
+`76e981b5cddd6d3230f142a313fb9ae122cf0d2a3cadf20e3a9577f087324857`.
+The screenshot is 33,102 bytes, SHA-256
+`c54c6b5620a2f388eab3384bdc42999bff6e5b95ed099dc719e80a4188044e1b`;
+SQL, authenticated manifest, original source and restored file match. Fresh independent
+owner connections reject UPDATE WHERE false with 25006, default/transaction read-only
+on. Actual restored permissions: 4,430 files 0400, 584 directories 0500. No restored
+API, worker, credential renewal, economic action, regrading or business retry occurred.
+This covers complete latest local bytes, not all BER1.3/3.3 or BPC022/026 variants.
+
+The original source was then restarted with `google-local.ps1 -Action Start -EnableExecutor`.
+Ready at 13:11:58.323 UTC; adminConfigured/executorEnabled true. Independent observer
+at 13:14:02.137 UTC matched every one of the 88 original tables to the checkpoint,
+zero changed tables, report/image counts unchanged. Report
+`post-google-start-69aab02c-bd78-4c2f-80f4-c4d45e152dca.json` in the same capture directory,
+SHA-256 `97402bd523b18d8a8cbadeef80eee962d6dc74f3c1d92f5a9c2086d68b27f7ab`.
+API health and sign-in returned 200 inside the source container; public host
+`http://127.0.0.1:3000/sign-in` and `/api/auth/get-session` returned 200 through the
+normal web proxy. Direct host port 8784 is not this fixture's public API boundary;
+its API binds container loopback. No new OAuth sign-in or browser-admin journey is
+claimed by these health checks.

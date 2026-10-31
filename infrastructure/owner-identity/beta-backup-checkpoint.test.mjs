@@ -7,7 +7,7 @@ const GiB = 1024 * MiB;
 const hash = (character) => character.repeat(64);
 
 test('official evidence bounds accept the exact restore-supported limits without allocating payload bytes', () => {
-  assert.equal(validateOfficialEvidenceBounds({ fileCount: 4096, minFileBytes: 1, maxFileBytes: 64 * MiB,
+  assert.equal(validateOfficialEvidenceBounds({ fileCount: 8192, minFileBytes: 1, maxFileBytes: 64 * MiB,
     totalBytes: 2 * GiB, manifestBytes: 16 * MiB }), true);
   assert.equal(validateOfficialEvidenceBounds({ fileCount: 3, observedFileCount: 1,
     minFileBytes: 12, maxFileBytes: 12, totalBytes: 12 }), true);
@@ -17,7 +17,7 @@ test('official evidence bounds accept the exact restore-supported limits without
 });
 
 test('official evidence bounds reject count, empty/oversize file, total and manifest boundary violations', () => {
-  const count = (overrides = {}) => validateOfficialEvidenceBounds({ fileCount: 4097, ...overrides });
+  const count = (overrides = {}) => validateOfficialEvidenceBounds({ fileCount: 8193, ...overrides });
   assert.throws(() => count(), /beta_backup_checkpoint_official_evidence_file_count_invalid/);
   assert.throws(() => validateOfficialEvidenceBounds({ fileCount: 1, minFileBytes: 0, maxFileBytes: 0,
     totalBytes: 0 }), /beta_backup_checkpoint_official_evidence_file_size_invalid/);
