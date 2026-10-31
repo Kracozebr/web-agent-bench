@@ -57,6 +57,8 @@ export type TrustedTaskRun = TaskEvidenceBinding & {
   cutoffEvidence: EvidenceReference;
   /** Loaded from the exact validated closure/preparation or sealed bundle, never the client. */
   observationAuthority?: TaskObservationAuthority;
+  /** Exact child captures independently validated by the trusted composite loader; never client supplied. */
+  validatedDeliveryAbsenceSources?: EvidenceReference[];
 };
 
 export type TaskObservationAuthority = {
@@ -1080,8 +1082,15 @@ function knownUnrequestedDelivery(input: EvaluateTaskInput, payment: PaymentObse
   const keys = ['closureId', 'preparationId', 'leaseId', 'generationId'] as const;
   if (!keys.every((key) => typeof authority[key] === 'string' && UUID.test(authority[key]) && proof.authority[key] === authority[key])) return false;
   const expected = canonicalTaskJson(proof.captureEvidence);
-  return [input.run.cutoffEvidence, input.observations.captureEvidence, payment.evidence]
-    .every((reference) => canonicalTaskJson(reference) === expected);
+  if (canonicalTaskJson(payment.evidence) !== expected) return false;
+  const root = canonicalTaskJson(input.run.cutoffEvidence);
+  if (canonicalTaskJson(input.observations.captureEvidence) !== root) return false;
+  if (expected === root) return true;
+  // AICODE-NOTE: Composite H3/U1 paid evidence lives in a child capture. Only the
+  // trusted loader can authorize that already validated child; the proof cannot authorize itself.
+  return (input.taskCase.taskId === 'H3' || input.taskCase.taskId === 'U1') &&
+    Boolean(input.run.validatedDeliveryAbsenceSources?.some((reference) =>
+      isEvidenceReference(reference) && canonicalTaskJson(reference) === expected));
 }
 
 function missingPurchasedDeliveries(input: EvaluateTaskInput, evidence: ReturnType<typeof taskEvidence>): string[] {

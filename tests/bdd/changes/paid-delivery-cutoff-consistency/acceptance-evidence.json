@@ -1,0 +1,72 @@
+{
+  "acceptance_state": "complete",
+  "active_delta_sha256": "93a037fc617156b6f463fedbf9580deb27fa246762ca7e53f01a458cf4caffa1",
+  "bef_spec_profile": "active-delta",
+  "change": "paid-delivery-cutoff-consistency",
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_paid_delivery_cutoff_consistency_bdd.py",
+    "--change",
+    "paid-delivery-cutoff-consistency",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/paid-delivery-cutoff-consistency-pytest.xml"
+  ],
+  "execution_started": true,
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-31T17:43:17.349593Z",
+  "gate": {
+    "class": "per_scenario",
+    "mandatory": true,
+    "scenario_classes": {
+      "PDC-SC-001": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "PDC-SC-002": {
+        "class": "unit",
+        "mandatory": true
+      },
+      "PDC-SC-003": {
+        "class": "environment",
+        "mandatory": true
+      },
+      "PDC-SC-004": {
+        "class": "unit",
+        "mandatory": true
+      }
+    }
+  },
+  "git_commit": "58708708507e9ec575cc624b3f63684c5ea8ac52",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "approved_scenarios": 4,
+    "change": "paid-delivery-cutoff-consistency",
+    "coverage_status": "complete",
+    "errors": [],
+    "normative_source": "openspec/changes/paid-delivery-cutoff-consistency/specs/*/spec.md",
+    "protected_scenarios": 4,
+    "status": "passed",
+    "unprotected_scenarios": [],
+    "warnings": []
+  },
+  "harness_contract_sha256": "9cecc4fbd38c259e2f108e8856012e33d682ab8fe7464c7d331d873eca64fd88",
+  "harness_sources_sha256": "20ca7d43d525ebaccaadefd2acd1f1820b4ec4e19de3d01ead2a4e8ee402ac17",
+  "harness_sources_sha256_after": "20ca7d43d525ebaccaadefd2acd1f1820b4ec4e19de3d01ead2a4e8ee402ac17",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/paid-delivery-cutoff-consistency/specs/*/spec.md",
+  "scenario_map_sha256": "4e1255f818c9e0cb486588b8ce4f0167d0792de6b4091a9109bcbee4b3e568a5",
+  "scenario_results": {
+    "PDC-SC-001": "passed",
+    "PDC-SC-002": "passed",
+    "PDC-SC-003": "passed",
+    "PDC-SC-004": "passed"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-31T17:43:13.340463Z"
+}

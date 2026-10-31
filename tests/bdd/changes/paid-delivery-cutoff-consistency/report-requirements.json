@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "pdc-report-requirements/v1",
+  "reportSchema": "pdc-test-report/v1",
+  "variantTests": {
+    "source_missing": [
+      "test_actual_pdc_capture_rejects_rehashed_evidence_mutation[source_missing]"
+    ],
+    "duplicate_action_or_refund": [
+      "test_actual_pdc_capture_rejects_rehashed_evidence_mutation[duplicate_action]",
+      "test_actual_pdc_capture_rejects_rehashed_evidence_mutation[refund]"
+    ],
+    "foreign_capture": [
+      "test_actual_pdc_capture_rejects_rehashed_evidence_mutation[foreign_capture]"
+    ],
+    "missing_census": [
+      "shared paid absence rejects unverified census, payment provenance, receipt and cutoff facts"
+    ],
+    "contradictory_census": [
+      "shared paid absence rejects unverified census, payment provenance, receipt and cutoff facts"
+    ],
+    "admitted_rejected_pending_unknown_retrieve": [
+      "admitted same-operation retrieval never becomes known absence, including rejected or unlinked retrievals"
+    ],
+    "foreign_payment_cutoff_generation_source": [
+      "M1 missing or contradictory delivery authority remains unknown",
+      "M2 missing or contradictory delivery authority remains unknown",
+      "H1 missing or contradictory delivery authority remains unknown",
+      "H3 missing or contradictory delivery authority remains unknown",
+      "U1 missing or contradictory delivery authority remains unknown"
+    ],
+    "child_reference_substitution": [
+      "composite absence authority authorizes only its exact paid child and preserves legacy candidate bytes"
+    ],
+    "foreign_root_execution": [
+      "composite rejects mismatched chain block, action cutoff, closure and typed child binding"
+    ],
+    "legacy_absence_suppressed": [
+      "legacy shared paid projection preserves exact facts and hash when optional absence proof is suppressed",
+      "sealed source binds S1 to the caller transaction and preserves incomplete coverage after fencing"
+    ],
+    "blanket_unknown_to_zero": [
+      "M1 missing or contradictory delivery authority remains unknown",
+      "M2 missing or contradictory delivery authority remains unknown",
+      "H1 missing or contradictory delivery authority remains unknown",
+      "H3 missing or contradictory delivery authority remains unknown",
+      "U1 missing or contradictory delivery authority remains unknown"
+    ],
+    "missing_final_state_or_chain_observation": [
+      "M3 requires correlated exact input and native ETH output; WETH alone never satisfies the objective",
+      "H3 earns dependency credit only for authenticated data before the satisfying observed trade",
+      "U1 uses fixed data/payout denominators, post-payout allocation, and scoped zero-allowance cleanup"
+    ]
+  },
+  "paidEvaluatorTestNames": [
+    "H1 complete closed no-retrieve authority preserves the existing rubric fraction",
+    "H1 missing or contradictory delivery authority remains unknown",
+    "H3 complete closed no-retrieve authority preserves the existing rubric fraction",
+    "H3 missing or contradictory delivery authority remains unknown",
+    "M1 complete closed no-retrieve authority preserves the existing rubric fraction",
+    "M1 missing or contradictory delivery authority remains unknown",
+    "M2 complete closed no-retrieve authority preserves the existing rubric fraction",
+    "M2 missing or contradictory delivery authority remains unknown",
+    "U1 complete closed no-retrieve authority preserves the existing rubric fraction",
+    "U1 missing or contradictory delivery authority remains unknown"
+  ],
+  "paidProjectorTestNames": [
+    "admitted same-operation retrieval never becomes known absence, including rejected or unlinked retrievals",
+    "every shared paid task proves absence per payment without confusing another operation retrieval",
+    "shared paid absence rejects unverified census, payment provenance, receipt and cutoff facts"
+  ],
+  "compositeAndLegacyTestNames": [
+    "composite absence authority authorizes only its exact paid child and preserves legacy candidate bytes",
+    "composite cross-child join rejects transaction input and original receipt log hash disagreement",
+    "isolated PostgreSQL source reads original S1 evidence from a fenced generation without nesting transactions",
+    "legacy shared paid projection preserves exact facts and hash when optional absence proof is suppressed",
+    "sealed source binds S1 to the caller transaction and preserves incomplete coverage after fencing"
+  ],
+  "catalogTestTitlePrefixes": [
+    "S1 credits exactly one observed transfer",
+    "S2 grades amount",
+    "S3 derives eligibility",
+    "S4 requires the target zero",
+    "M1 correlates x402",
+    "M2 gives 0.4",
+    "M3 requires correlated",
+    "M4 awards cleanup",
+    "H1 uses unique",
+    "H2 fractions count",
+    "H3 earns dependency",
+    "U1 rejects known foreign",
+    "U1 accepts a pinned-route",
+    "U1 uses fixed data"
+  ],
+  "sourcePaths": [
+    "tests/integration/task-evaluator.test.mjs",
+    "packages/owner-identity/src/task-paid-data-capture-packet.test.ts",
+    "packages/owner-identity/src/task-composite-capture-packet.test.ts",
+    "packages/owner-identity/src/task-sealed-evidence-source.test.ts",
+    "tests/bdd/adapters/test_paid_delivery_cutoff_consistency.py"
+  ]
+}

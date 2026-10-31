@@ -5,7 +5,7 @@ import test from 'node:test';
 import type {TaskEvidenceBinding,PersistedTaskObservations} from './task-evaluator.js';
 import type {TaskObservationBundleCandidate} from './task-observation-store.js';
 import type {EvidenceReference} from './task-release.js';
-import {composeTaskObservationCandidates,validateCompositeCapturePacket,verifyCompositeCaptureChildren,type CompositeCapturePacket} from './task-composite-capture-packet.js';
+import {composeTaskObservationCandidates,compositeDeliveryAbsenceSources,validateCompositeCapturePacket,verifyCompositeCaptureChildren,type CompositeCapturePacket} from './task-composite-capture-packet.js';
 const ref=(name:string):EvidenceReference=>({path:'artifacts/runs/owner-identity-bef-task-coordinator/observation/'+name+'.json',sha256:name==='paid'?'a'.repeat(64):'b'.repeat(64),boundary:'actual_tool_http_x402_local_evm_application_store'});
 function fixture(){
  const binding={taskId:'H3',runId:'00000000-0000-4000-8000-000000000001',ownerId:'00000000-0000-4000-8000-000000000002',agentId:'00000000-0000-4000-8000-000000000003',environmentId:'env',releaseIdentity:'release',manifestHash:'c'.repeat(64),caseId:'case',caseHash:'d'.repeat(64),rubricHash:'e'.repeat(64)} as TaskEvidenceBinding;
@@ -58,4 +58,34 @@ test('composite cross-child join rejects transaction input and original receipt 
  assert.doesNotThrow(()=>verifyCompositeCaptureChildren(f.packet,paid,chain));
  for(const field of ['inputSha256','receiptLogsSha256','input'] as const){const altered=structuredClone(chain);(altered.rpc.transactions[0] as unknown as Record<string,unknown>)[field]=field==='input'?'0x1234':'0'.repeat(64);
  assert.throws(()=>verifyCompositeCaptureChildren(f.packet,paid,altered),/composite_observation_proof_invalid/);}
+});
+
+test('composite absence authority authorizes only its exact paid child and preserves legacy candidate bytes',()=>{
+ for(const taskId of ['H3','U1'] as const){
+  const f=fixture();f.packet.binding.taskId=taskId;f.paid.observations!.binding.taskId=taskId;f.chain.observations!.binding.taskId=taskId;
+  const legacy=composeTaskObservationCandidates(f.packet,f.paid,f.chain,f.root),before=JSON.stringify(legacy);
+  assert.deepEqual(compositeDeliveryAbsenceSources(undefined,legacy,f.root),[]);
+  assert.equal(JSON.stringify(legacy),before,'legacy candidates receive no authority or byte mutation');
+  const authority={closureId:String(f.packet.closure.closureId),preparationId:String(f.packet.execution.preparationId),leaseId:String(f.packet.execution.leaseId),generationId:String(f.packet.execution.generationId)};
+  const payment={kind:'payment',observationId:'paid-absence',sequence:5,actionSequence:2,source:'persisted_observer',binding:f.packet.binding,evidence:f.packet.children.paid.evidence,
+   deliveryRequestAbsence:{schemaVersion:'bts-delivery-request-absence/v1',status:'not_admitted_at_cutoff',paymentAttemptId:'payment-1',paymentActionSequence:2,acceptedActionCutoffSequence:9,authority,captureEvidence:f.packet.children.paid.evidence}};
+  f.paid.observations!.payments.push(payment as never);
+  const candidate=composeTaskObservationCandidates(f.packet,f.paid,f.chain,f.root),saved=JSON.stringify(candidate);
+  const refs=compositeDeliveryAbsenceSources(f.packet,candidate,f.root);assert.deepEqual(refs,[f.packet.children.paid.evidence]);assert.equal(JSON.stringify(candidate),saved);
+  refs[0]!.sha256='0'.repeat(64);assert.notEqual(refs[0]!.sha256,f.packet.children.paid.evidence.sha256,'trusted scope is detached from candidate data');
+  for(const variant of ['root','paid-hash','paid-path','chain-child','foreign-binding','closure','preparation','lease','generation','cutoff','missing-packet'] as const){
+   const altered=structuredClone(candidate),proof=altered.observations!.payments[0]!.deliveryRequestAbsence!;
+   if(variant==='root')altered.cutoffEvidence=ref('foreign');
+   if(variant==='paid-hash')proof.captureEvidence.sha256='0'.repeat(64);
+   if(variant==='paid-path')proof.captureEvidence.path=ref('foreign').path;
+   if(variant==='chain-child')proof.captureEvidence=structuredClone(f.packet.children.chain.evidence);
+   if(variant==='foreign-binding')altered.observations!.binding={...f.packet.binding,agentId:'00000000-0000-4000-8000-000000000009'};
+   if(variant==='closure')proof.authority.closureId='00000000-0000-4000-8000-000000000009';
+   if(variant==='preparation')proof.authority.preparationId='00000000-0000-4000-8000-000000000009';
+   if(variant==='lease')proof.authority.leaseId='00000000-0000-4000-8000-000000000009';
+   if(variant==='generation')proof.authority.generationId='00000000-0000-4000-8000-000000000009';
+   if(variant==='cutoff')proof.acceptedActionCutoffSequence=8;
+   assert.throws(()=>compositeDeliveryAbsenceSources(variant==='missing-packet'?undefined:f.packet,altered,f.root),/composite_observation_proof_invalid/,variant);
+  }
+ }
 });

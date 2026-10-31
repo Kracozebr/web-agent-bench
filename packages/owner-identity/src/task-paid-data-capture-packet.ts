@@ -224,7 +224,37 @@ export type PaidDataObservationProjectionContext = {
   captureEvidence: EvidenceReference;
   assets: Array<{ assetId: string; kind: 'native' | 'erc20'; chainId: number; address: string | null }>;
   actionResponses: ReadonlyMap<string, Record<string, unknown>>;
+  /** Immutable sealed bundles without this optional fact must replay without adding it. */
+  preserveLegacyDeliveryObservations?: boolean;
 };
+
+function completePaidAbsenceBoundary(packet: PaidDataCapturePacket): boolean {
+  const { session, before, after, censusSha256 } = packet.bef;
+  const generation = after.generation;
+  const ids = [packet.closure.closureId, packet.execution.preparationId, packet.execution.leaseId, packet.execution.generationId];
+  const scoped = (row: unknown) => isRecord(row) && row.env_id === packet.execution.environmentId && row.generation_id === packet.execution.generationId;
+  const census = ['operations','payments','deliveries','costs','x402Observations'].every((key) =>
+    Array.isArray(after[key]) && (after[key] as unknown[]).every(scoped));
+  return packet.coverage.status === 'observed' && packet.closure.reconciledActionSequence === packet.closure.actionCutoffSequence &&
+    ids.every((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) &&
+    session.currentUser === 'bef_observer' && session.sessionUser === 'bef_observer' && session.transactionReadOnly === 'on' &&
+    session.transactionIsolation === 'repeatable read' && typeof session.databaseName === 'string' && session.databaseName.length > 0 &&
+    session.superuser === false && session.bypassRls === false && census &&
+    canonicalTaskJson(before) === canonicalTaskJson(after) && sha256CanonicalTaskJson(after) === censusSha256.toLowerCase() &&
+    isRecord(generation) && generation.generation_id === packet.execution.generationId &&
+    generation.env_id === packet.execution.environmentId && generation.env_id === packet.binding.environmentId &&
+    generation.manifest_sha256 === packet.execution.environmentManifestHash &&
+    generation.environment_manifest_sha256 === packet.execution.environmentManifestHash &&
+    String(generation.chain_id) === packet.rpc.localChainId && generation.status === 'active' && generation.resource_variant === 'canonical';
+}
+
+function retrievalMayTargetPayment(action: PaidDataAction, operationId: string): boolean {
+  if (action.actionKind !== 'retrieve') return false;
+  const references = [action.befOperationId, action.paymentProtocol?.payOperationId, action.safeResponse?.operationId]
+    .filter((value): value is string => typeof value === 'string').map((value) => value.toLowerCase());
+  // AICODE-NOTE: Missing or contradictory linkage cannot establish a negative fact.
+  return references.length === 0 || new Set(references).size !== 1 || references[0] === operationId;
+}
 
 /** Projects only typed evaluator facts that are joined to a real owner action and retained source evidence. */
 export function projectPaidDataObservationBundle(packetValue: unknown, context: PaidDataObservationProjectionContext): TaskObservationBundleCandidate {
@@ -390,6 +420,44 @@ export function projectPaidDataObservationBundle(packetValue: unknown, context: 
   if (missingJoin) {
     for (const domain of ['payments','transfers','stateMutations','expenses'] as const)
       if (observations.coverage[domain] !== 'contradictory') observations.coverage[domain] = 'incomplete';
+  }
+  if (!context.preserveLegacyDeliveryObservations && completePaidAbsenceBoundary(packet) &&
+      (['payments','transfers','stateMutations','deliveries','expenses'] as const).every((domain) => observations.coverage[domain] === 'complete')) {
+    for (const observed of observations.payments) {
+      const matchingPayments = payments.filter((payment) => String(payment.payment_id).toLowerCase() === observed.paymentAttemptId);
+      if (matchingPayments.length !== 1 || observed.status !== 'settled') continue;
+      const payment = matchingPayments[0]!, operationId = String(payment.operation_id).toLowerCase();
+      const matchingActions = payActions.filter((action) => String(action.befOperationId).toLowerCase() === operationId);
+      const matchingOperations = operations.filter((operation) => String(operation.operation_id).toLowerCase() === operationId);
+      const matchingEffects = packet.rpc.paymentEffects.filter((effect) => String(effect.operationId).toLowerCase() === operationId);
+      if (matchingActions.length !== 1 || matchingOperations.length !== 1 || matchingEffects.length !== 1) continue;
+      const action = matchingActions[0]!, operation = matchingOperations[0]!, effect = matchingEffects[0]!;
+      const tx = String(payment.transaction_hash).toLowerCase(), response = action.safeResponse;
+      const scoped = (row: Record<string, unknown>) => row.env_id === packet.execution.environmentId && row.generation_id === packet.execution.generationId;
+      if (action.actionKind !== 'pay' || !scoped(payment) || !scoped(operation) || operation.status !== 'settled' ||
+          operation.payment_response_mode !== 'deferred_delivery' || payment.receipt_status !== 'success' ||
+          operation.receipt_status !== 'success' || !TX.test(tx) || String(action.transactionHash).toLowerCase() !== tx ||
+          String(operation.transaction_hash).toLowerCase() !== tx || effect.verification !== 'observed' ||
+          String(effect.paymentId).toLowerCase() !== observed.paymentAttemptId || String(effect.transactionHash).toLowerCase() !== tx ||
+          !isRecord(effect.transaction) || String(effect.transaction.hash).toLowerCase() !== tx || !isRecord(effect.receipt) ||
+          String(effect.receipt.transactionHash).toLowerCase() !== tx || effect.receipt.status !== 'success' ||
+          !Array.isArray(effect.sourceOwnerActionIds) || effect.sourceOwnerActionIds.length !== 1 || effect.sourceOwnerActionIds[0] !== action.actionId ||
+          response?.operationId !== action.befOperationId || response.status !== 'payment_confirmed' || response.deliveryHandle !== action.befOperationId ||
+          action.paymentProtocol?.befOperationId !== action.befOperationId ||
+          costs.filter((cost) => String(cost.operation_id).toLowerCase() === operationId && scoped(cost) && cost.receipt_status === 'success' &&
+            String(cost.transaction_hash).toLowerCase() === tx).length !== 1 ||
+          deliveries.some((delivery) => String(delivery.operation_id).toLowerCase() === operationId) ||
+          packet.ownerActions.some((candidate) => retrievalMayTargetPayment(candidate, operationId))) continue;
+      const transfers = observations.transfers.filter((transfer) => transfer.paymentAttemptId === observed.paymentAttemptId &&
+        transfer.operation === 'settlement' && transfer.receiptStatus === 'success' && transfer.transactionHash?.toLowerCase() === tx);
+      if (transfers.length !== 1 || transfers[0]!.amountUnits !== observed.requirements.amountUnits ||
+          transfers[0]!.to.toLowerCase() !== observed.requirements.recipient.toLowerCase()) continue;
+      observed.deliveryRequestAbsence = { schemaVersion: 'bts-delivery-request-absence/v1', status: 'not_admitted_at_cutoff',
+        paymentAttemptId: observed.paymentAttemptId, paymentActionSequence: action.actionSequence,
+        acceptedActionCutoffSequence: packet.closure.actionCutoffSequence,
+        authority: { closureId: packet.closure.closureId, preparationId: packet.execution.preparationId,
+          leaseId: packet.execution.leaseId, generationId: packet.execution.generationId }, captureEvidence: context.captureEvidence };
+    }
   }
   if (packet.binding.taskId === 'H3' || packet.binding.taskId === 'U1') {
     observations.coverage.trades = 'incomplete'; observations.coverage.conversions = 'incomplete';

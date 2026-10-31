@@ -1034,7 +1034,14 @@ function projectSingleM1PacketObservations(
   // closed-cutoff census can distinguish a never-admitted retrieve from lost delivery evidence.
   // Even a rejected admitted retrieve remains outside this narrow absence authority.
   if (!context.preserveLegacyDeliveryObservations && operation.status === 'settled' && operation.payment_response_mode === 'deferred_delivery' &&
-      !delivery && !packet.ownerActions.some((action) => action.actionKind === 'retrieve')) {
+      !delivery && !packet.ownerActions.some((action) => {
+        if (action.actionKind !== 'retrieve') return false;
+        const references = [action.befOperationId, action.paymentProtocol?.payOperationId, action.participantToolResponse?.operationId]
+          .filter((value): value is string => typeof value === 'string').map((value) => value.toLowerCase());
+        // AICODE-NOTE: An unrelated payment's retrieve proves nothing about this one.
+        // Missing/conflicting linkage remains ambiguous and blocks a negative observation.
+        return references.length === 0 || new Set(references).size !== 1 || references[0] === String(operation.operation_id).toLowerCase();
+      })) {
     paymentObservation.deliveryRequestAbsence = {
       schemaVersion: 'bts-delivery-request-absence/v1', status: 'not_admitted_at_cutoff',
       paymentAttemptId: paymentObservation.paymentAttemptId, paymentActionSequence: payAction.actionSequence,

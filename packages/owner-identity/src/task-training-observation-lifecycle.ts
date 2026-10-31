@@ -1,4 +1,5 @@
 import { collectBefCompositeObservationCandidate } from './bef-composite-observation-collector.js';
+import { compositeDeliveryAbsenceSources, validateCompositeCapturePacket } from './task-composite-capture-packet.js';
 import { TASK_IDS } from './task-catalog.js';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
@@ -106,6 +107,7 @@ export async function preflightAndSealKnownCandidate<T>(input: EvaluateTaskInput
 
 type CandidateResult = {
   status: 'candidate'; candidate: TaskObservationBundleCandidate; evidence: { path: string; sha256: string; boundary: 'actual_tool_http_x402_local_evm_application_store' };
+  packet?: unknown;
   classification: 'run_bound_observations_candidate_not_grade';
 };
 
@@ -255,7 +257,7 @@ function preparationMatchesSealed(preparation: TaskPreparationRecord,
 }
 
 async function loadCandidateContext(deps: TaskTrainingObservationLifecycleDependencies, target: TaskTarget,
-  candidate: TaskObservationBundleCandidate): Promise<CandidateContext | null> {
+  candidate: TaskObservationBundleCandidate, collection: CandidateResult): Promise<CandidateContext | null> {
   return deps.db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION READ ONLY`);
     const rows = await tx.execute(sql`SELECT r.owner_id,r.agent_id,r.mode,r.task_ids,r.status AS run_status,
@@ -316,6 +318,21 @@ async function loadCandidateContext(deps: TaskTrainingObservationLifecycleDepend
       releaseIdentity: row.release_identity, manifestHash: row.manifest_hash, caseId: taskCase.caseId,
       caseHash: taskCase.caseHash, rubricHash: taskCase.rubricHash, taskId: taskCase.taskId,
     };
+    let validatedDeliveryAbsenceSources: ReturnType<typeof compositeDeliveryAbsenceSources> = [];
+    if ((row.task_id === 'H3' || row.task_id === 'U1') && candidate.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)) {
+      try {
+        const packet = validateCompositeCapturePacket(collection.packet);
+        const expectedExecution = { environmentId: row.environment_id, preparationId: row.preparation_id, leaseId: row.lease_id,
+          generationId: row.generation_id, environmentManifestHash: row.environment_manifest_sha256,
+          applicationSourceHash: row.application_source_hash, executionIdentityHash: row.execution_identity_hash,
+          initialStateSha256: row.initial_state_sha256 };
+        if (!same(packet.binding, binding) || !same(packet.execution, expectedExecution) ||
+            packet.closure.closureId !== row.closure_id || packet.closure.operationId !== row.closure_operation_id ||
+            packet.closure.payloadHash !== row.closure_payload_hash || packet.closure.reason !== row.closure_reason ||
+            packet.closure.actionCutoffSequence !== actionCutoff || packet.closure.reconciledActionSequence !== reconciled) return null;
+        validatedDeliveryAbsenceSources = compositeDeliveryAbsenceSources(packet, candidate, collection.evidence);
+      } catch { return null; }
+    }
     const input: EvaluateTaskInput = {
       taskCase,
       release: release.manifest,
@@ -324,7 +341,8 @@ async function loadCandidateContext(deps: TaskTrainingObservationLifecycleDepend
         cutoffEvidence: candidate.cutoffEvidence,
         ...(candidate.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)
           ? { observationAuthority: { closureId: row.closure_id, preparationId: row.preparation_id,
-            leaseId: row.lease_id, generationId: row.generation_id } } : {}) },
+            leaseId: row.lease_id, generationId: row.generation_id } } : {}),
+        ...(validatedDeliveryAbsenceSources.length ? { validatedDeliveryAbsenceSources } : {}) },
       observations: candidate.observations,
     };
     return { taskId: row.task_id, selectedTaskCount: row.task_ids.length, taskCase, input,
@@ -452,7 +470,7 @@ export async function processClosedTrainingTask(
         return blocked(target, stage, reason, taskId);
       }
       stage = 'preflight';
-      const context = await loadCandidateContext(deps, target, collection.candidate);
+      const context = await loadCandidateContext(deps, target, collection.candidate, collection);
       await deps.assertLeaseHeld();
       if (!context) return blocked(target, stage, 'candidate_binding_or_cutoff_unavailable', taskId);
       await deps.assertLeaseHeld();

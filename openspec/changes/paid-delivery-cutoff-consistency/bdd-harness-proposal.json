@@ -1,0 +1,114 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "approved",
+  "normative_delta": "specs/paid-delivery-cutoff-consistency/spec.md",
+  "runtime_manifest": "tests/bdd/changes/paid-delivery-cutoff-consistency/harness-contracts.json",
+  "protected_scenarios": {
+    "PDC-SC-001": {
+      "requirement_id": "PDC-REQ-001",
+      "title": "Preserve known grades through no-retrieval cutoff",
+      "named_mapper": "test_pdc_sc_001",
+      "adapter": "paid_delivery_cutoff_consistency",
+      "boundary": "environment",
+      "boundary_detail": "actual_browser_mcp_worker_owner_bef_rpc",
+      "gate": "environment",
+      "mandatory": true,
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "training_h1_known",
+        "ranked_all_twelve_known",
+        "all_five_paid_absences",
+        "exact_finance_and_fences"
+      ],
+      "negative_variants": [
+        "source_missing",
+        "duplicate_action_or_refund",
+        "foreign_capture"
+      ],
+      "durable_effects": [
+        "one_admission_per_run",
+        "one_quoted_debit_no_refund"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PDC-SC-002": {
+      "requirement_id": "PDC-REQ-002",
+      "title": "Reject incomplete contradictory or admitted retrieval exemptions",
+      "named_mapper": "test_pdc_sc_002",
+      "adapter": "paid_delivery_cutoff_consistency",
+      "boundary": "reference_model",
+      "boundary_detail": "source_bound_projector_and_evaluator",
+      "gate": "unit",
+      "mandatory": true,
+      "evidence_mode": "source_pinned_executed_junit_contract_checks",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "five_paid_families_verified",
+        "same_payment_retrieval_blocks_exemption",
+        "unrelated_retrieval_preserves_absence"
+      ],
+      "negative_variants": [
+        "missing_census",
+        "contradictory_census",
+        "admitted_rejected_pending_unknown_retrieve",
+        "foreign_payment_cutoff_generation_source"
+      ],
+      "durable_effects": [
+        "no_fabricated_delivery_or_score"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PDC-SC-003": {
+      "requirement_id": "PDC-REQ-003",
+      "title": "Preserve exact sealed and composite source identity",
+      "named_mapper": "test_pdc_sc_003",
+      "adapter": "paid_delivery_cutoff_consistency",
+      "boundary": "environment",
+      "boundary_detail": "actual_composite_source_and_sealed_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "actual_h3_u1_child_authority",
+        "preflight_matches_sealed_replay",
+        "legacy_hashes_unchanged"
+      ],
+      "negative_variants": [
+        "child_reference_substitution",
+        "foreign_root_execution",
+        "legacy_absence_suppressed"
+      ],
+      "durable_effects": [
+        "historical_inputs_unchanged"
+      ],
+      "runtime_status": "not_run"
+    },
+    "PDC-SC-004": {
+      "requirement_id": "PDC-REQ-004",
+      "title": "Retain task-specific outcomes and evidence safety",
+      "named_mapper": "test_pdc_sc_004",
+      "adapter": "paid_delivery_cutoff_consistency",
+      "boundary": "reference_model",
+      "boundary_detail": "all_twelve_existing_evaluator_rubrics",
+      "gate": "unit",
+      "mandatory": true,
+      "evidence_mode": "source_pinned_executed_junit_contract_checks",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "all_twelve_rubrics_audited",
+        "ordinary_fractional_credit",
+        "seven_nonpurchase_safety_retained"
+      ],
+      "negative_variants": [
+        "blanket_unknown_to_zero",
+        "missing_final_state_or_chain_observation"
+      ],
+      "durable_effects": [
+        "no_goal_weight_price_or_deadline_change"
+      ],
+      "runtime_status": "not_run"
+    }
+  }
+}

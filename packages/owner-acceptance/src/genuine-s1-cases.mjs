@@ -2221,6 +2221,10 @@ function verifyRankedHandoffState({ output, state, run, expected, completed, pay
       sourceHash: marker.source_hash }, bestResultRunId: best.run_id, publicLeaderboardPublication: false };
 }
 async function submitLinkedTrainingAction(context, command, expectsTransaction) {
+  if (context.pdcMcpAction) {
+    demand(context.input.pdcCase === true && typeof context.pdcMcpAction === 'function', 'pdc_public_actor_transport_invalid');
+    return context.pdcMcpAction(command, expectsTransaction);
+  }
   const { input, output, record, observerPool, bearer, runId, taskIndex, taskId } = context;
   const operationId = randomUUID();
   const recoveryFault = input.platformRecoveryFault;
@@ -3031,6 +3035,10 @@ async function requestOwnerCancellation({ ownerPage, runId, observerPool, output
  */
 async function runGenuineOwnerRunCase(input) {
   const continuityCase = ['paid_without_retrieve', 'native_handoff'].includes(input.continuityCase);
+  const pdcCase = input.pdcCase === true;
+  if (pdcCase) demand(!continuityCase && ['training','ranked'].includes(input.mode) && !input.bddProbes &&
+    input.automaticWorkerEvaluation === true && typeof input.onGenuineLaunchIntentReady === 'function', 'pdc_owned_run_fixture_invalid');
+  const ownedRun = continuityCase || pdcCase;
   if (continuityCase) demand(typeof input.onGenuineLaunchIntentReady === 'function' &&
     input.automaticWorkerEvaluation === true && !input.bddProbes &&
     JSON.stringify(input.continuityTaskIds) === JSON.stringify(input.continuityCase === 'native_handoff'
@@ -3043,13 +3051,13 @@ async function runGenuineOwnerRunCase(input) {
   demand(!input.primaryClientOnly || (input.bddProbes === true && rankedMode && input.automaticWorkerEvaluation === true),
     'primary_client_profile_requires_ranked_bdd_worker');
   const trainingSequenceMode = sequenceMode && mode === 'training';
-  const taskIds = continuityCase ? [...input.continuityTaskIds] : sequenceMode
+  const taskIds = pdcCase ? (rankedMode ? [...RANKED_TASK_IDS] : [...OPEN_TASK_IDS]) : continuityCase ? [...input.continuityTaskIds] : sequenceMode
     ? rankedMode ? input.taskIds : normalizeTrainingSequenceTaskIds(input.taskIds ?? ['S1', 'M1'])
     : [input.taskId ?? 'S1'];
   demand(Array.isArray(taskIds) && taskIds.length >= 1 &&
-    (rankedMode ? sequenceMode && JSON.stringify(taskIds) === JSON.stringify(RANKED_TASK_IDS) && input.automaticWorkerEvaluation === true
+    (rankedMode ? (sequenceMode || pdcCase) && JSON.stringify(taskIds) === JSON.stringify(RANKED_TASK_IDS) && input.automaticWorkerEvaluation === true
       : taskIds.every((id) => SUPPORTED_TASKS.has(id)) &&
-        (continuityCase || (sequenceMode ? JSON.stringify(taskIds) === JSON.stringify(normalizeTrainingSequenceTaskIds(taskIds)) : taskIds.length === 1))),
+        (ownedRun || (sequenceMode ? JSON.stringify(taskIds) === JSON.stringify(normalizeTrainingSequenceTaskIds(taskIds)) : taskIds.length === 1))),
   'unsupported_genuine_task_selection');
   const taskTransitions = trainingSequenceMode ? trainingSequenceTransitions(taskIds) : [];
   const taskId = taskIds[0];
@@ -3128,7 +3136,7 @@ async function runGenuineOwnerRunCase(input) {
       'SELECT current_user AS role,current_database() AS database_name,current_setting(\'transaction_read_only\') AS readonly'))[0]);
     demand(observerIdentity?.role === 'oid_observer' && observerIdentity.readonly === 'on', 'owner_observer_role_invalid');
     output.database = { databaseName: observerIdentity.database_name, observerRole: observerIdentity.role, readOnly: true };
-    if (continuityCase) demand(/^oid_acceptance_[a-z0-9_]+$/.test(observerIdentity.database_name),
+    if (ownedRun) demand(/^oid_acceptance_[a-z0-9_]+$/.test(observerIdentity.database_name),
       'continuity_requires_isolated_acceptance_database');
 
     record(input.bonusCodeFunding ? 'owner_bonus_code_issue_redeem_and_readonly_database' : 'owner_bonus_fixture_ui_and_readonly_database', 'started');
@@ -3329,20 +3337,20 @@ async function runGenuineOwnerRunCase(input) {
       database: intentSnapshot[0] };
     record('owner_run_intent_ui_and_readonly_database', 'verified', { intentId, runUiAction: 'Create private intent' });
 
-    if (continuityCase) {
+    if (ownedRun) {
       // AICODE-NOTE: This private acceptance seam owns a real run before admission.
       // Bearer/browser/query capabilities stay in memory; existing success-only actor checks are unchanged.
       const proof = await input.onGenuineLaunchIntentReady({ ownerId: input.ownerId, agentId, intentId,
         taskIds: [...taskIds], agentBearer: actorCredential, ownerPage: input.ownerPage,
         publicOrigin: input.publicOrigin, repoRoot: input.repoRoot, quotePriceUnits: quoteUnits.toString(),
-        continuityCase: input.continuityCase, onArcNativeIntentReady: input.onArcNativeIntentReady,
+        continuityCase: input.continuityCase, onArcNativeIntentReady: input.onArcNativeIntentReady, mode,
         launchIntent: output.launchIntent, database: output.database,
         launchIntentHttp: { method: 'POST', path: new URL(intentHttp.url()).pathname,
           status: intentHttp.status(), request: intentCreatePayload, body: intentBody },
         readonlyQuery: (text, values) => readonlyTransaction(observerPool, async (query) => pgRows(await query(text, values))),
         readSnapshot: (id) => readRunSnapshot(observerPool, { runId: id }),
-        readCompletion: (id) => readOwnerRunCompletionState(observerPool, { runId: id, ownerId: input.ownerId }),
-        captureProgress: (proof) => { assertSecretFree(proof, 'arc-continuity-progress'); output.continuity = proof;
+        readCompletion: (id) => readOwnerRunCompletionState(observerPool, { runId: id, ownerId: input.ownerId, includeRanked: rankedMode }),
+        captureProgress: (proof) => { assertSecretFree(proof, 'private-owned-run-progress'); output[pdcCase ? 'pdc' : 'continuity'] = proof;
           if (UUID.test(proof.runId ?? '')) runId = proof.runId; },
         readSourceFence: async (id, execution, taskIndex) => {
           const observers = await createObserverPorts({ repositoryRoot: input.repoRoot, runId: id,
@@ -3351,14 +3359,18 @@ async function runGenuineOwnerRunCase(input) {
             preparationId: execution.preparation_id, generationId: execution.generation_id }); }
           finally { await observers.close(); }
         },
-        selectPublicOffer, offerTermsMatch });
+        selectPublicOffer, selectCatalogOffer, offerTermsMatch,
+        readEvidence: (reference) => safeBytes(input.repoRoot, reference.path, reference.sha256),
+        runPublicTask: pdcCase ? (task, mcpAction) => performGenuineActorActions({
+          input: { pdcCase: true }, output: { taskIds: [...taskIds] }, record: () => undefined,
+          runId: task.runId, taskIndex: task.taskIndex, taskId: task.taskId, pdcMcpAction: mcpAction }, task) : undefined });
       demand(proof && UUID.test(proof.runId ?? '') && proof.status === 'verified', 'continuity_owned_run_incomplete');
       assertSecretFree(proof, 'arc-continuity-owned-run');
       runId = proof.runId;
-      output.continuity = proof;
+      output[pdcCase ? 'pdc' : 'continuity'] = proof;
       output.runId = runId;
       output.runCompletion = { status: 'verified', runId };
-      output.status = 'captured_arc_continuity_run';
+      output.status = pdcCase ? 'captured_pdc_run' : 'captured_arc_continuity_run';
       output.automaticWorkerEvaluationVerified = true;
       assertSecretFree(output, 'genuine-continuity-owner-run');
       return output;

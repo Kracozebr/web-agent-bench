@@ -354,6 +354,36 @@ test('M1 duplicate settled payments stay visible for the existing mandatory zero
   assert.equal(result.mandatoryViolation?.rule, 'no_duplicate_purchase');
 });
 
+test('Training M1 absence is per payment and preserves an unrelated successful retrieval', () => {
+  const packet = validM1PaymentPacket({ duplicatePayment: true });
+  const { projected } = evaluateProjection(packet, m1Context(packet));
+  assert.equal(projected.payments[0]!.deliveryRequestAbsence, undefined);
+  assert.equal(projected.deliveries.length, 1);
+  assert.equal(projected.payments[1]!.deliveryRequestAbsence?.paymentAttemptId, projected.payments[1]!.paymentAttemptId);
+  const legacy = evaluateProjection(packet, { ...m1Context(packet), preserveLegacyDeliveryObservations: true });
+  delete projected.payments[1]!.deliveryRequestAbsence;
+  assert.equal(canonicalTaskJson(projected), canonicalTaskJson(legacy.projected));
+});
+
+test('Training M1 rejected retrieval is scoped to its precise payment and ambiguous linkage cannot prove absence', () => {
+  for (const target of ['first', 'second', 'ambiguous'] as const) {
+    const packet = validM1PaymentPacket({ duplicatePayment: true });
+    const pays = packet.ownerActions.filter((action) => action.actionKind === 'pay');
+    const original = packet.ownerActions.find((action) => action.actionKind === 'retrieve')!;
+    const sequence = packet.ownerActions.at(-1)!.actionSequence + 1;
+    const protocol = { ...original.paymentProtocol!, deliveryMatchesPinnedResource: false,
+      payOperationId: pays[target === 'second' ? 1 : 0]!.befOperationId };
+    packet.ownerActions.push({ ...original, actionId: '00000000-0000-4000-8000-000000000099', actionSequence: sequence,
+      ownerOperationId: 'synthetic-rejected-retrieve-scoped', receiptStatus: 'rejected_before_execution',
+      befOperationId: null, participantToolResponse: null, rawResponseSha256: null,
+      paymentProtocol: target === 'ambiguous' ? null : protocol });
+    packet.closure.actionCutoffSequence = sequence;
+    packet.closure.reconciledActionSequence = sequence;
+    const { projected } = evaluateProjection(packet, m1Context(packet));
+    assert.equal(projected.payments[1]!.deliveryRequestAbsence !== undefined, target === 'first', target);
+  }
+});
+
 test('M1 alternate observed offer terms reach the existing payment-scope rule', () => {
   const packet = validM1PaymentPacket({ alternateOffer: true });
   const { projected, result } = evaluateProjection(packet, m1Context(packet));

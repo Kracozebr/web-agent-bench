@@ -1,12 +1,135 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { canonicalTaskJson, type TaskCase } from './task-release.js';
+import { canonicalTaskJson, sha256CanonicalTaskJson, type TaskCase } from './task-release.js';
 import { PaidDataCapturePacketError, parsePaidDataCapturePacket, projectPaidDataCaptureCandidate, projectPaidDataObservationBundle,
   validatePaidDataCapturePacket, validatePaidDataCapturePacketPins } from './task-paid-data-capture-packet.js';
 import { fixturePayload, fixtureRetrievedResponse, paymentOperationIds, validPaidDataCapturePacket } from './task-paid-data-capture-packet.fixture.js';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
+
+function closedUnrequestedSecondPayment(taskId: 'M1'|'M2'|'H1'|'H3'|'U1' = 'H1') {
+  const packet=validPaidDataCapturePacket();
+  packet.binding.taskId=taskId;
+  packet.ownerActions=packet.ownerActions.filter((action)=>!(action.actionKind==='retrieve'&&action.befOperationId===paymentOperationIds.second));
+  packet.closure.actionCutoffSequence=4;packet.closure.reconciledActionSequence=4;packet.closure.reason='task_deadline';
+  const after=packet.bef.after as Record<string,any>;
+  for(const row of after.x402Observations)Object.assign(row,{env_id:packet.execution.environmentId,generation_id:packet.execution.generationId});
+  after.deliveries=after.deliveries.filter((delivery:Record<string,unknown>)=>delivery.operation_id!==paymentOperationIds.second);
+  after.operations.find((operation:Record<string,unknown>)=>operation.operation_id===paymentOperationIds.second).status='settled';
+  for(const effect of packet.rpc.paymentEffects)(effect.receipt as Record<string,unknown>).status='success';
+  const component={componentId:taskId==='M2'?'stream':'market-reference',resourceId:'resource-market-snapshot'};
+  packet.manifest.componentReferences=[{...component}];
+  const objective=taskId==='M1'?{component}:taskId==='H3'?{referenceComponent:component,routeObjective:{referenceField:'priceBand'}}:
+    taskId==='M2'?{catalog:[{offerId:'stream',resourceId:component.resourceId}]}:{requiredComponents:[component]};
+  const taskCase={...h1Case(packet),taskId,objective} as unknown as TaskCase;
+  const refresh=()=>{
+    packet.bef.before=structuredClone(packet.bef.after);packet.bef.censusSha256=sha256CanonicalTaskJson(packet.bef.after);
+    packet.coverage={...packet.coverage,actionCutoffSequence:packet.closure.actionCutoffSequence,
+      ownerActionCount:packet.closure.actionCutoffSequence,paidActionCount:packet.ownerActions.length,
+      deliveryCount:(packet.bef.after.deliveries as unknown[]).length,
+      rpcPaymentProofCount:packet.rpc.paymentEffects.filter((effect)=>effect.verification==='observed').length};
+  };
+  refresh();
+  const context={taskCase,binding:packet.binding as unknown as import('./task-evaluator.js').TaskEvidenceBinding,
+    captureEvidence:{path:'artifacts/runs/owner-identity-bef-task-coordinator/observation/paid-absence.json',sha256:'c'.repeat(64),
+      boundary:'actual_tool_http_x402_local_evm_application_store' as const},
+    assets:[{assetId:'USDC',kind:'erc20' as const,chainId:8453,address:'0x'+'2'.repeat(40)}],
+    actionResponses:new Map<string,Record<string,unknown>>(packet.ownerActions.filter((action)=>action.actionKind==='retrieve').map((action)=>[action.actionId,fixtureRetrievedResponse]))};
+  if(taskCase.taskId==='H3'){
+    const decoded={resourceId:component.resourceId,schema:'web-agent-bench/market-state-brief/v1',content:{priceBand:'medium'}};
+    const bytes=Buffer.from(JSON.stringify(decoded)),contentHash=hash(bytes);
+    Object.assign(packet.manifest.catalog.find((resource)=>resource.resourceId===component.resourceId)!,
+      {schema:decoded.schema,resourceSha256:contentHash,payloadSha256:contentHash,payloadByteCount:bytes.length});
+    for(const operation of after.operations)operation.selected_resource_sha256=contentHash;
+    for(const delivery of after.deliveries){delivery.content_sha256=contentHash;delivery.byte_count=String(bytes.length);}
+    const response={resourceId:component.resourceId,contentType:'application/json',contentHash,contentBytes:bytes.toString('base64'),content:decoded};
+    for(const action of packet.ownerActions.filter((item)=>item.actionKind==='retrieve')){
+      Object.assign(action.retrievedContent!,{resourceSchema:decoded.schema,contentSha256:contentHash,byteCount:bytes.length});
+      Object.assign(action.safeResponse!,{contentHash});context.actionResponses.set(action.actionId,response);
+    }
+    Object.assign(taskCase.objective.referenceComponent,{validator:{validatorVersion:'bef-route-delivery-validator/v1',
+      payloadSchemaVersion:'bef-route-delivery/v1',additionalProperties:false,requiredFields:[{name:'resourceId',type:'string'},
+        {name:'contentType',type:'string'},{name:'contentHash',type:'sha256'},{name:'contentBytes',type:'string'},{name:'priceBand',type:'string'}]}});
+    refresh();
+  }
+  return {packet,context,refresh};
+}
+
+test('every shared paid task proves absence per payment without confusing another operation retrieval',()=>{
+  for(const taskId of ['M1','M2','H1','H3','U1'] as const){
+    const {packet,context}=closedUnrequestedSecondPayment(taskId);
+    const candidate=projectPaidDataObservationBundle(packet,context);
+    const payments=candidate.observations!.payments;
+    assert.equal(payments.length,2);
+    assert.equal(payments[0]!.deliveryRequestAbsence,undefined,'delivered first payment needs no negative fact');
+    const proof=payments[1]!.deliveryRequestAbsence;
+    assert.ok(proof,taskId+' must prove the second payment was never retrieved');
+    assert.deepEqual(proof,{schemaVersion:'bts-delivery-request-absence/v1',status:'not_admitted_at_cutoff',
+      paymentAttemptId:payments[1]!.paymentAttemptId,paymentActionSequence:4,acceptedActionCutoffSequence:4,
+      authority:{closureId:packet.closure.closureId,preparationId:packet.execution.preparationId,
+        leaseId:packet.execution.leaseId,generationId:packet.execution.generationId},captureEvidence:context.captureEvidence});
+    assert.equal(candidate.observations!.deliveries.length,1,'unrelated successful retrieval is retained');
+  }
+});
+
+test('shared paid absence rejects unverified census, payment provenance, receipt and cutoff facts',()=>{
+  const variants=['hash','before','generation','observer','isolation','partial','unknown','contradictory','receipt','effect','payment-id','payment-generation',
+    'transaction','source-action','cost','existing-delivery','duplicate-payment','cutoff'] as const;
+  for(const variant of variants){
+    const {packet,context,refresh}=closedUnrequestedSecondPayment();
+    const after=packet.bef.after as Record<string,any>,effect=packet.rpc.paymentEffects[1]!;
+    if(variant==='generation')after.generation.generation_id='00000000-0000-4000-8000-000000000000';
+    if(variant==='observer')packet.bef.session.currentUser='unverified-observer';
+    if(variant==='isolation')packet.bef.session.transactionIsolation='read committed';
+    if(variant==='partial'||variant==='unknown'||variant==='contradictory')packet.coverage.status=variant;
+    if(variant==='receipt')delete effect.receipt;
+    if(variant==='effect')effect.verification='partial';
+    if(variant==='payment-id')effect.paymentId='foreign-payment';
+    if(variant==='payment-generation')after.payments[1].generation_id='00000000-0000-4000-8000-000000000000';
+    if(variant==='transaction')(effect.transaction as Record<string,unknown>).hash='0x'+'f'.repeat(64);
+    if(variant==='source-action')effect.sourceOwnerActionIds=['00000000-0000-4000-8000-000000000000'];
+    if(variant==='cost')after.costs[1].transaction_hash='0x'+'f'.repeat(64);
+    if(variant==='existing-delivery')after.deliveries.push({...after.deliveries[0],operation_id:paymentOperationIds.second});
+    if(variant==='duplicate-payment')after.payments.push(structuredClone(after.payments[1]));
+    refresh();
+    if(variant==='duplicate-payment')packet.coverage.befPaymentCount++;
+    if(variant==='hash')packet.bef.censusSha256='0'.repeat(64);
+    if(variant==='before')packet.bef.before={...packet.bef.before,unexpected:'changed'};
+    if(variant==='cutoff')packet.closure.actionCutoffSequence=3;
+    if(variant==='cutoff')assert.throws(()=>projectPaidDataObservationBundle(packet,context),PaidDataCapturePacketError);
+    else assert.equal(projectPaidDataObservationBundle(packet,context).observations!.payments.some((payment)=>payment.deliveryRequestAbsence!==undefined),false,variant);
+  }
+});
+
+test('admitted same-operation retrieval never becomes known absence, including rejected or unlinked retrievals',()=>{
+  for(const kind of ['observed','rejected','unlinked','conflicting','pending','unknown'] as const){
+    const {packet,context,refresh}=closedUnrequestedSecondPayment();
+    const retrieve=structuredClone(validPaidDataCapturePacket().ownerActions[4]!);
+    if(kind!=='observed'){
+      retrieve.receiptStatus='rejected_before_execution';retrieve.safeResponse=null;retrieve.retrievedContent=null;
+      retrieve.rawResponseSha256=null;
+    }
+    if(kind==='unlinked'){retrieve.befOperationId=null;retrieve.paymentProtocol=null;}
+    if(kind==='conflicting')retrieve.paymentProtocol={payOperationId:paymentOperationIds.first};
+    if(kind==='pending'||kind==='unknown')(retrieve as unknown as {receiptStatus:string}).receiptStatus=kind;
+    packet.ownerActions.push(retrieve);packet.closure.actionCutoffSequence=5;packet.closure.reconciledActionSequence=5;refresh();
+    if(kind==='pending'||kind==='unknown')assert.throws(()=>projectPaidDataObservationBundle(packet,context),PaidDataCapturePacketError);
+    else assert.equal(projectPaidDataObservationBundle(packet,context).observations!.payments[1]!.deliveryRequestAbsence,undefined,kind);
+  }
+});
+
+test('legacy shared paid projection preserves exact facts and hash when optional absence proof is suppressed',()=>{
+  for(const taskId of ['M1','M2','H1','H3','U1'] as const){
+    const {packet,context}=closedUnrequestedSecondPayment(taskId);
+    const current=projectPaidDataObservationBundle(packet,context);
+    const legacy=projectPaidDataObservationBundle(packet,{...context,preserveLegacyDeliveryObservations:true});
+    assert.ok(current.observations!.payments[1]!.deliveryRequestAbsence);
+    delete current.observations!.payments[1]!.deliveryRequestAbsence;
+    assert.equal(canonicalTaskJson(current),canonicalTaskJson(legacy));
+    assert.equal(sha256CanonicalTaskJson(current),sha256CanonicalTaskJson(legacy));
+  }
+});
 
 test('paid-data packet round-trips with all public catalog offers and secret-free payment projections',()=>{
   const packet=validPaidDataCapturePacket(),bytes=Buffer.from(canonicalTaskJson(packet),'utf8');

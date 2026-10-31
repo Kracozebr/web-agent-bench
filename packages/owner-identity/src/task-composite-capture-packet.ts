@@ -70,6 +70,23 @@ export function composeTaskObservationCandidates(packetValue:unknown,paid:TaskOb
  }}
  return{schemaVersion:'bts-task-observation-bundle-candidate/v1',observationCutoffSequence:cutoff,cutoffStatus:'authoritative',cutoffEvidence:root,observations:structuredClone(observations)};
 }
+
+/** Internal collector preflight only; sealed replay additionally verifies every retained raw child and durable action. */
+export function compositeDeliveryAbsenceSources(packetValue:unknown,candidate:TaskObservationBundleCandidate,root:EvidenceReference):EvidenceReference[]{
+ const observations=candidate.observations;
+ if(!observations?.payments.some(payment=>payment.deliveryRequestAbsence!==undefined))return[];
+ const packet=validateCompositeCapturePacket(packetValue);
+ if(!ref(root)||candidate.cutoffStatus!=='authoritative'||!same(candidate.cutoffEvidence,root)||
+  !same(observations.captureEvidence,root)||!same(observations.binding,packet.binding))fail();
+ const paid=packet.children.paid.evidence;
+ for(const payment of observations.payments){const proof=payment.deliveryRequestAbsence;if(proof===undefined)continue;
+  if(!same(payment.evidence,paid)||!same(proof.captureEvidence,paid)||
+   proof.authority.closureId!==packet.closure.closureId||proof.authority.preparationId!==packet.execution.preparationId||
+   proof.authority.leaseId!==packet.execution.leaseId||proof.authority.generationId!==packet.execution.generationId||
+   proof.acceptedActionCutoffSequence!==packet.closure.actionCutoffSequence)fail();
+ }
+ return[structuredClone(paid)];
+}
 /** Cross-child identity checks supplement each child's own strict parser and independent raw-file hashing. */
 export function verifyCompositeCaptureChildren(packetValue:unknown,paid:PaidDataCapturePacket,chain:ChainCapturePacket):void{
  const root=validateCompositeCapturePacket(packetValue);

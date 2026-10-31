@@ -657,3 +657,77 @@ test('U1 uses fixed data/payout denominators, post-payout allocation, and scoped
   assert.ok(unknownReserve.unknownReasons.includes('final_balance_observation_missing_or_ambiguous'));
 });
 
+
+// Exact absence authority is internal evidence, never an agent assertion or a score override.
+function paidAbsenceInput(taskId) {
+  const first = component('absence-a', 'absence-resource-a');
+  const second = component('absence-b', 'absence-resource-b');
+  let taskCase;
+  if (taskId === 'M1') taskCase = makeCase(taskId, { component: first,
+    paymentRequirements: requirements(first.resourceId, 'absence-offer-a'), expenseBudgetUsdcUnits: '10000', duplicatePurchaseIdentity: 'absence' });
+  if (taskId === 'M2') taskCase = makeCase(taskId, { catalog: [{ offerId: 'absence-offer-a', resourceId: first.resourceId,
+    dataType: 'research', advertisedTotalPriceUsdcUnits: '500', network: 'eip155:8453', assetId: 'USDC', recipient: PAYEE,
+    paymentRequirements: requirements(first.resourceId, 'absence-offer-a'), deliveryValidator: first.validator }],
+    required: { requiredDataType: 'research', maxAdvertisedTotalPriceUsdcUnits: '500', network: 'eip155:8453', assetId: 'USDC', recipient: PAYEE },
+    expenseBudgetUsdcUnits: '10000', tiePolicy: 'all_minimum_advertised_total_prices_qualify', duplicatePurchaseIdentity: 'absence' });
+  if (taskId === 'H1') taskCase = makeCase(taskId, { requiredComponents: [first, second], permittedSources: ['source-main'],
+    expenseBudgetUsdcUnits: '10000', duplicatePurchaseIdentity: 'absence' });
+  if (taskId === 'H3') taskCase = makeCase(taskId, { referenceComponent: first,
+    routeObjective: { referenceField: 'routeCode', allowedRouteIds: ['route-main'], expectedRouteByValue: [{ value: 'route-main', routeId: 'route-main' }] },
+    inputAssetId: 'USDC', exactInputUnits: '100', permittedRoutes: [{ routeId: 'route-main', routeType: 'uniswap_v3_exact_input_single',
+      tokenInAssetId: 'USDC', tokenOutAssetId: 'WETH', routerContractId: 'router-main', poolContractId: 'pool-main', feeTier: 500 }],
+    minimumOutputUnits: '100', nativeReserveWei: '10', combinedExpenseBudgetUsdcUnits: '10000' });
+  if (taskId === 'U1') taskCase = makeCase(taskId, { requiredComponents: [first], permittedSources: ['source-main'], permittedRoutes: [],
+    allocationAssets: ['USDC','WETH'].map(assetId => ({assetId, usdcBaseUnitsPerAssetBaseUnit: {numerator:'1',denominator:'1'},targetShareBps:5000,toleranceBps:0})),
+    payoutObligations: [{ obligationId: 'absence-payout', recipient: RECIPIENT_A, assetId: 'USDC', exactAmountUnits: '10' }],
+    temporarySpenderScope: [{ owner: 'participant', tokenAssetId: 'WETH', spender: ROUTER }], nativeReserveWei:'10',expenseBudgetUsdcUnits:'10000',duplicatePurchaseIdentity:'absence' });
+  const input = makeInput(taskCase);
+  paidDelivery(input, {...first, offerId:'absence-offer-a'});
+  input.observations.deliveries = [];
+  if (taskId === 'H1') paidDelivery(input, {...second, offerId:'absence-offer-b'});
+  if (taskId === 'H3') snapshot(input,{balances:[{account:'participant',assetId:'ETH',amountUnits:'10'}]});
+  if (taskId === 'U1') snapshot(input,{balances:[{account:'participant',assetId:'ETH',amountUnits:'10'},
+    {account:'participant',assetId:'USDC',amountUnits:'50'},{account:'participant',assetId:'WETH',amountUnits:'50'},
+    {account:RECIPIENT_A,assetId:'USDC',amountUnits:'0'}],allowances:[{owner:'participant',tokenAssetId:'WETH',spender:ROUTER,amountUnits:'0'}]});
+  const source=evidenceRef('closed-paid-source');
+  input.run.cutoffEvidence=source;input.observations.captureEvidence=source;
+  input.run.observationAuthority={closureId:'00000000-0000-4000-8000-000000000001',preparationId:'00000000-0000-4000-8000-000000000002',
+    leaseId:'00000000-0000-4000-8000-000000000003',generationId:'00000000-0000-4000-8000-000000000004'};
+  const payment=input.observations.payments[0];payment.evidence=source;
+  payment.deliveryRequestAbsence={schemaVersion:'bts-delivery-request-absence/v1',status:'not_admitted_at_cutoff',
+    paymentAttemptId:payment.paymentAttemptId,paymentActionSequence:payment.actionSequence,
+    acceptedActionCutoffSequence:input.run.acceptedActionCutoffSequence,authority:{...input.run.observationAuthority},captureEvidence:source};
+  return input;
+}
+
+for (const [taskId,credit] of Object.entries({M1:['0','1'],M2:['0','1'],H1:['1','2'],H3:['0','1'],U1:['9','20']})) {
+  test(`${taskId} complete closed no-retrieve authority preserves the existing rubric fraction`, () => {
+    const input=paidAbsenceInput(taskId);assertCredit(evaluateTaskRubric(input),...credit);
+    assert.equal(evaluateTaskRubric(input).mandatoryViolation,null);
+  });
+  test(`${taskId} missing or contradictory delivery authority remains unknown`, () => {
+    for (const variant of ['no_proof','no_authority','incomplete_census','contradictory_census','foreign_payment','foreign_cutoff','foreign_generation','foreign_capture','self_authorized_child']) {
+      const input=paidAbsenceInput(taskId),payment=input.observations.payments[0],proof=payment.deliveryRequestAbsence;
+      if (variant==='no_proof') delete payment.deliveryRequestAbsence;
+      else if (variant==='no_authority') delete input.run.observationAuthority;
+      else if (variant==='incomplete_census') input.observations.coverage.deliveries='incomplete';
+      else if (variant==='contradictory_census') input.observations.coverage.payments='contradictory';
+      else if (variant==='foreign_payment') proof.paymentAttemptId='foreign';
+      else if (variant==='foreign_cutoff') proof.acceptedActionCutoffSequence++;
+      else if (variant==='foreign_generation') proof.authority.generationId='00000000-0000-4000-8000-000000000005';
+      else if (variant==='foreign_capture') proof.captureEvidence=evidenceRef('foreign');
+      else {proof.captureEvidence=evidenceRef('self-authorized-child');payment.evidence=proof.captureEvidence;}
+      const result=evaluateTaskRubric(input);assert.equal(result.status,'unknown',`${variant}: ${JSON.stringify(result)}`);assert.equal(result.credit,null);
+    }
+  });
+}
+
+for (const taskId of ['H3','U1']) test(`${taskId} only trusted loader child references authorize composite absence`, () => {
+  const input=paidAbsenceInput(taskId),payment=input.observations.payments[0],child=evidenceRef('verified-paid-child');
+  payment.evidence=child;payment.deliveryRequestAbsence.captureEvidence=child;
+  assert.equal(evaluateTaskRubric(input).status,'unknown');
+  input.run.validatedDeliveryAbsenceSources=[child];
+  assertCredit(evaluateTaskRubric(input),...(taskId==='H3'?['0','1']:['9','20']));
+  input.run.validatedDeliveryAbsenceSources=[evidenceRef('foreign-child')];
+  assert.equal(evaluateTaskRubric(input).status,'unknown');
+});

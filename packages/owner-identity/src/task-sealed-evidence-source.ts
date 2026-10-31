@@ -255,7 +255,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     if (!HASH.test(row.bundle_hash) || bundleHash.toLowerCase() !== row.bundle_hash.toLowerCase()) {
       fail(409, 'TASK_EVIDENCE_BUNDLE_HASH_MISMATCH', 'The immutable sealed task evidence hash does not match its retained bundle');
     }
-    await this.verifyEvidenceFiles(bundle, taskCase, row, tx, release.manifest.executionIdentity.localChainId,
+    const validatedDeliveryAbsenceSources = await this.verifyEvidenceFiles(bundle, taskCase, row, tx, release.manifest.executionIdentity.localChainId,
       release.manifest.executionIdentity.assets, release.manifest.executionIdentity.contracts, release.manifest.costPolicy.ethValuation);
 
     const actionCutoff = safeSequence(row.action_cutoff_sequence);
@@ -284,6 +284,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       ...(bundle.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)
         ? { observationAuthority: { closureId: row.closure_id, preparationId: row.preparation_id,
           leaseId: row.lease_id, generationId: row.generation_id } } : {}),
+      ...(validatedDeliveryAbsenceSources.length ? { validatedDeliveryAbsenceSources } : {}),
     };
     return {
       taskCase,
@@ -383,7 +384,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     assets: Array<{ assetId: string; address: string | null; kind: 'native' | 'erc20'; chainId: number }>,
     contracts: Array<{ contractId: string; address: string; codeHash: string }>,
     ethValuation: { numerator: string; denominator: string },
-  ): Promise<void> {
+  ): Promise<EvidenceReference[]> {
     const references = new Map<string, EvidenceReference>();
     const addReference = (value: unknown): EvidenceReference => {
       if (!validEvidence(value)) fail(503, 'TASK_EVIDENCE_REFERENCE_INVALID', 'A sealed raw evidence reference is malformed');
@@ -760,7 +761,9 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       try {
         paidTypedCandidate = projectPaidDataObservationBundle(verifiedPaidPacket, { taskCase, binding: bundle.binding as unknown as TaskEvidenceBinding,
           captureEvidence: verifiedPaidPacketEvidence, assets: assets as Array<{ assetId: string; kind: 'native' | 'erc20'; chainId: number; address: string | null }>,
-          actionResponses: paidResponsesByActionId });
+          actionResponses: paidResponsesByActionId,
+          preserveLegacyDeliveryObservations: !(bundle.observations.payments as PersistedTaskObservations['payments'])
+            .some((payment) => payment.deliveryRequestAbsence !== undefined) });
       } catch { fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The paid-data packet cannot be independently projected'); }
       if (paidTypedCandidate.observationCutoffSequence !== verifiedPaidPacket.coverage.observationCutoffSequence) {
         fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'The paid-data child cutoff does not match its projected observations');
@@ -822,6 +825,12 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       if (!m1Packet) fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The M1 capture packet was not verified');
       await this.verifyM1OwnerActions(tx, row, taskCase, m1Packet, m1EvidenceByPath, bundle, assets, localChainId);
     }
+    // AICODE-NOTE: Authorize a paid child only after all root/child bytes, durable actions,
+    // cross-child execution/block joins and exact observations were independently verified.
+    // Older bundles keep their exact evaluator input shape and hash.
+    return verifiedCompositePacket && verifiedPaidPacketEvidence &&
+      (bundle.observations.payments as PersistedTaskObservations['payments']).some((payment) => payment.deliveryRequestAbsence !== undefined)
+      ? [verifiedPaidPacketEvidence] : [];
   }
 
   private readM1CapturePacketChildren(
