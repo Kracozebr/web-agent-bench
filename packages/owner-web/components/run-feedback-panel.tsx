@@ -8,7 +8,7 @@ type TaskFeedback = {
   status: "known" | "unknown";
   outcome: "passed" | "partial" | "failed" | "unknown";
   credit: { numerator: string; denominator: string } | null;
-  reason: "goal_unmet" | "budget_reserve_permission_scope_violation" | "time_exhausted" | "evidence_unknown" | null;
+  reason: "goal_unmet" | "budget_reserve_permission_scope_violation" | "time_exhausted" | "evidence_unknown" | "not_issued" | "not_evaluated" | null;
 };
 
 type RunFeedback = { status: "available" | "withheld_until_run_termination"; tasks: TaskFeedback[] };
@@ -18,6 +18,8 @@ const reasons = {
   budget_reserve_permission_scope_violation: "A budget, reserve or permission rule was violated.",
   time_exhausted: "The task time limit was reached.",
   evidence_unknown: "The available evidence does not establish a result.",
+  not_issued: "This task was not issued. It has no evaluation or credit.",
+  not_evaluated: "No verified evaluation was recorded. This is not a failed or zero-credit result.",
 };
 
 function isFeedback(value: unknown): value is RunFeedback {
@@ -74,7 +76,7 @@ export function RunFeedbackPanel({ runId }: { runId: string }) {
           ? <p className="fine" role="status">No task result is available yet.</p>
           : <ul className="stack-sm" data-testid={`run-feedback-tasks-${runId}`}>
             {feedback.tasks.map((task) => <li key={task.taskId} data-testid={`run-feedback-task-${runId}-${task.taskId}`}>
-              <strong>{task.taskId}</strong>: {task.status === "unknown" ? "Evidence unknown" : task.outcome}
+              <strong>{task.taskId}</strong>: {task.reason === "not_issued" ? "Not issued" : task.reason === "not_evaluated" ? "Not evaluated" : task.status === "unknown" ? "Evidence unknown" : task.outcome}
               {task.status === "known" && task.credit ? <span> · Credit {task.credit.numerator}/{task.credit.denominator}</span> : null}
               {task.reason ? <p className="fine">{reasons[task.reason]}</p> : null}
             </li>)}

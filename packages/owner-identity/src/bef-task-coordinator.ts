@@ -611,7 +611,17 @@ type ExpiredClosedUngradedTask = {
   task_status:string;closure_status:string;action_cutoff_sequence:string|number|null;
   accepted_action_sequence:string|number;reconciled_action_sequence:string|number;active_task_count:number;
   known_evaluation:boolean;unresolved_cutoff_action:boolean;active_platform_recovery:boolean;claim_slot_matches:boolean;
+  closed_at?:Date|string|null;
 };
+
+// Reuse the existing bounded observation-recovery duration, without claiming platform attribution.
+export const CLOSED_TASK_EVALUATION_RETRY_MS=180_000;
+
+export function closedTaskEvaluationRetryExpired(value:Pick<ExpiredClosedUngradedTask,'closed_at'|'observed_at'>):boolean {
+  if(value.closed_at===undefined||value.closed_at===null)return false;
+  const closed=new Date(value.closed_at).getTime(),now=new Date(value.observed_at).getTime();
+  return Number.isFinite(closed)&&Number.isFinite(now)&&now>=closed+CLOSED_TASK_EVALUATION_RETRY_MS;
+}
 
 function nonnegativeSequence(value:string|number|null):bigint|null {
   if(typeof value==='number')return Number.isSafeInteger(value)&&value>=0?BigInt(value):null;
@@ -624,16 +634,16 @@ export function isExpiredClosedUngradedTask(value:ExpiredClosedUngradedTask):boo
   const cutoff=nonnegativeSequence(value.action_cutoff_sequence),accepted=nonnegativeSequence(value.accepted_action_sequence),
     reconciled=nonnegativeSequence(value.reconciled_action_sequence);
   return UUID.test(value.run_id)&&['training','ranked'].includes(value.mode)&&value.run_status==='running'&&
-    Number.isFinite(deadline)&&Number.isFinite(now)&&now>=deadline&&value.task_status==='active'&&value.closure_status==='closed'&&
+    Number.isFinite(deadline)&&Number.isFinite(now)&&(now>=deadline||closedTaskEvaluationRetryExpired(value))&&value.task_status==='active'&&value.closure_status==='closed'&&
     cutoff!==null&&accepted===cutoff&&reconciled!==null&&reconciled>=cutoff&&value.active_task_count===1&&
     value.known_evaluation===false&&value.unresolved_cutoff_action===false&&value.active_platform_recovery===false&&
     value.claim_slot_matches===true;
 }
 
 /**
- * AICODE-NOTE: A closed task that remains ungraded past the run deadline gets one normal cancellation
- * attempt after its grading retry. This preserves unknown evidence and relies on the existing exact-fence
- * cancellation path; platform recovery and unresolved cutoff actions retain their own authority.
+ * AICODE-NOTE: A resolved cutoff gets at most 180 seconds of grading retries after durable closed_at.
+ * Exhaustion cancels/fences with evaluation_unknown, not platform attribution or a refund. Proven
+ * platform recovery retains priority and its separate clock/refund authority; retries cannot reset closed_at.
  */
 export async function cancelExpiredClosedUngradedTasks(input:{db:OwnerDatabase;assertLeaseHeld():Promise<void>;
   requestCancellation(runId:string,reason:LocalCoordinatorCancellationReason):Promise<void>;drainCancellations():Promise<void>},
@@ -641,7 +651,7 @@ export async function cancelExpiredClosedUngradedTasks(input:{db:OwnerDatabase;a
   await input.assertLeaseHeld();
   const candidates=await input.db.execute(sql`WITH expired_candidates AS (
     SELECT r.id AS run_id,r.mode,r.status AS run_status,r.overall_deadline,
-      clock_timestamp() AS observed_at,t.status AS task_status,t.closure_status,
+      clock_timestamp() AS observed_at,t.status AS task_status,t.closure_status,t.closed_at,
       t.action_cutoff_sequence::text AS action_cutoff_sequence,t.accepted_action_sequence::text AS accepted_action_sequence,
       t.reconciled_action_sequence::text AS reconciled_action_sequence,
       (SELECT count(*)::int FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active') AS active_task_count,
@@ -661,7 +671,8 @@ export async function cancelExpiredClosedUngradedTasks(input:{db:OwnerDatabase;a
     JOIN oid_run_dispatch_claim c ON c.run_id=r.id AND c.status='claimed'
     JOIN oid_run_execution_slot s ON s.run_id=r.id AND s.agent_id=r.agent_id AND s.claim_id=c.claim_id
       AND s.state='running' AND s.released_at IS NULL
-    WHERE r.status='running' AND r.mode IN ('training','ranked') AND r.overall_deadline<=clock_timestamp()
+    WHERE r.status='running' AND r.mode IN ('training','ranked')
+      AND (r.overall_deadline<=clock_timestamp() OR t.closed_at<=clock_timestamp()-interval '180 seconds')
       AND t.status='active' AND t.closure_status='closed' AND t.action_cutoff_sequence IS NOT NULL
       AND t.accepted_action_sequence=t.action_cutoff_sequence AND t.reconciled_action_sequence>=t.action_cutoff_sequence
       AND (SELECT count(*) FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active')=1
@@ -677,7 +688,8 @@ export async function cancelExpiredClosedUngradedTasks(input:{db:OwnerDatabase;a
   for(const candidate of candidates){
     if(!isExpiredClosedUngradedTask(candidate)||recoveringRunIds.has(candidate.run_id)||seen.has(candidate.run_id))continue;
     await input.assertLeaseHeld();
-    await input.requestCancellation(candidate.run_id,'coordinator_run_deadline');
+    const overallExpired=new Date(candidate.observed_at).getTime()>=new Date(candidate.overall_deadline).getTime();
+    await input.requestCancellation(candidate.run_id,overallExpired?'coordinator_run_deadline':'coordinator_evaluation_unknown');
     await input.drainCancellations();
     seen.add(candidate.run_id);cancelled++;
   }
@@ -1221,7 +1233,7 @@ async function createBefTaskCoordinatorCore(input: {
     preparedTaskStart,
     ...(input.profile === 'beta' ? BETA_BEF_RUN_SERVICE_POLICY : LOCAL_BEF_RUN_SERVICE_POLICY),
   };
-  const baseCancellationExecutor = createTaskPreparationCancellationExecutor(preparationDependencies, executor);
+  const baseCancellationExecutor = createTaskPreparationCancellationExecutor(preparationDependencies, executor,{actionEvidenceSink});
   const cancellationExecutor = {
     async fenceAndStop(value: Parameters<typeof baseCancellationExecutor.fenceAndStop>[0]) {
       await lease.assertHeld();
@@ -1628,7 +1640,8 @@ async function createBefTaskCoordinatorCore(input: {
       const progress = { schemaVersion: 'local-bef-task-observation-progress/v1',
         classification: 'internal_worker_progress_not_task_grade_or_platform_attribution',
         runId: row.run_id, taskIndex: row.task_index, status: outcome.status, stage: outcome.stage,
-        ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}) };
+        ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}),
+        ...('evaluationUnknownReasons' in outcome ? { evaluationUnknownReasons:outcome.evaluationUnknownReasons } : {}) };
       const key = sessionKey(row.run_id, row.task_index);
       const serialized = JSON.stringify(progress);
       if (observationProgress.get(key) !== serialized) {

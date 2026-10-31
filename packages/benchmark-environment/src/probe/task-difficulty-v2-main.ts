@@ -23,8 +23,9 @@ import {
   type DifficultyV2TaskCapture,
 } from './task-difficulty-v2-capture.js';
 import type { LoadedProbeRuntime } from './environment.js';
+import { referenceRecipientOption } from './task-transfer-recipient.js';
 
-type Options = { taskId: DifficultyTaskId; mode: DifficultyMode; envId: string; evidenceDirectory: string };
+type Options = { taskId: DifficultyTaskId; mode: DifficultyMode; envId: string; evidenceDirectory: string; recipient?: string };
 type SourceCheck = {
   before: { appSourceSha256: string; probeSourceSha256: string; manifestSha256: string; profileSha256: string };
   after: { appSourceSha256: string; probeSourceSha256: string; manifestSha256: string; profileSha256: string } | null;
@@ -76,12 +77,12 @@ function record(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown> : null;
 }
 
-function parseArguments(args: string[]): Options {
+export function parseDifficultyV2Arguments(args: string[]): Options {
   const values = new Map<string, string>();
   const offset = args[0] === '--' ? 1 : 0;
   for (let index = offset; index < args.length; index += 1) {
     const argument = args[index];
-    if (!['--task-id', '--mode', '--env-id', '--evidence-dir'].includes(argument ?? '')
+    if (!['--task-id', '--mode', '--env-id', '--evidence-dir', '--recipient'].includes(argument ?? '')
       || values.has(argument!)) throw new Error('task_difficulty_v2_usage');
     const value = args[++index];
     if (!value || value.startsWith('--')) throw new Error('task_difficulty_v2_usage');
@@ -101,7 +102,8 @@ function parseArguments(args: string[]): Options {
   }
   if (taskId === 'M2' && mode !== 'ranked') throw new Error('task_difficulty_v2_m2_ranked_only');
   if (taskId === 'H3' && mode !== 'ranked') throw new Error('task_difficulty_v2_h3_ranked_only');
-  return { taskId, mode, envId, evidenceDirectory };
+  const recipient = referenceRecipientOption(taskId, mode, values.get('--recipient'));
+  return { taskId, mode, envId, evidenceDirectory, ...(recipient === undefined ? {} : { recipient }) };
 }
 
 function safeErrorCode(error: unknown): string {
@@ -152,7 +154,7 @@ function profileReference(source: DifficultyProfileSource, artifactPath: string)
 async function main(): Promise<void> {
   let options: Options;
   try {
-    options = parseArguments(process.argv.slice(2));
+    options = parseDifficultyV2Arguments(process.argv.slice(2));
     process.chdir(findRepositoryRoot());
   } catch {
     process.stderr.write('task_difficulty_v2_usage: --task-id S1|S2|S3|S4|M1|M2|M3|M4|H1|H2|H3 --mode ranked|training (S3/M2/H3 ranked only) --env-id ID --evidence-dir PATH\n');
@@ -222,7 +224,8 @@ async function main(): Promise<void> {
       label: `task-difficulty-v2-${options.taskId.toLowerCase()}-local-rpc-identity`,
     });
     phase = 'task_capture';
-    captureResult = await captureDifficultyV2Task(context, { taskId: options.taskId, mode: options.mode, source });
+    captureResult = await captureDifficultyV2Task(context, { taskId: options.taskId, mode: options.mode, source,
+      ...(options.recipient === undefined ? {} : { recipient: options.recipient }) });
     validateCaptureTrace(captureResult, runtime.manifest.tools.participantProtocol);
 
     phase = 'generation_fence';

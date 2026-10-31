@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
+import { createServer } from 'node:http';
 import type { TaskCase, TaskReleaseQuerySource, ValidatedTaskReleaseRecord } from './task-release.js';
 import { sha256CanonicalTaskJson } from './task-release.js';
 import {
   BefTaskPreparationAdapter,
+  DEFAULT_BEF_PREPARATION_PUT_TIMEOUT_MS,preparationTransportCause,preparationPutFailureDetails,
   taskPreparationPublicPinsSha256,
   type BefPreparationDiagnostic,
   type BefTaskPreparationAdapterDependencies,
@@ -12,12 +14,50 @@ import {
 } from './bef-task-preparation.js';
 import type { TaskPreparationIntentPins } from './task-preparation.js';
 
+function staticDiagnosticFields(value:BefPreparationDiagnostic):Omit<BefPreparationDiagnostic,'elapsedMs'|'requestTimeoutMs'|'transportCause'> {
+ const {elapsedMs,requestTimeoutMs,transportCause,...stable}=value;
+ if(value.phase==='preparation_put'){
+  assert.equal(Number.isSafeInteger(elapsedMs),true);assert.ok(elapsedMs!>=0);
+  assert.ok(requestTimeoutMs!>=1_000&&requestTimeoutMs!<=120_000);
+  assert.ok(['timeout','abort','network','http_status','other'].includes(transportCause!));
+ }
+ return stable;
+}
+
 const preparationId = '11111111-1111-4111-8111-111111111111';
 const runId = '22222222-2222-4222-8222-222222222222';
 const claimId = '33333333-3333-4333-8333-333333333333';
 const leaseId = '44444444-4444-4444-8444-444444444444';
 const generationId = '55555555-5555-4555-8555-555555555555';
 const environmentId = 'test-env';
+
+test('preparation PUT keeps a separate finite timeout and reports transport classes without raw error text',()=>{
+ assert.equal(DEFAULT_BEF_PREPARATION_PUT_TIMEOUT_MS,45_000);
+ assert.equal(preparationTransportCause(new DOMException('RAW_SECRET_SENTINEL','TimeoutError')),'timeout');
+ assert.equal(preparationTransportCause(new DOMException('RAW_SECRET_SENTINEL','AbortError')),'abort');
+ assert.equal(preparationTransportCause(new TypeError('RAW_SECRET_SENTINEL')),'network');
+ assert.equal(preparationTransportCause({cause:{code:'ECONNRESET',message:'RAW_SECRET_SENTINEL'}}),'network');
+ assert.equal(preparationTransportCause(new Error('RAW_SECRET_SENTINEL')),'other');
+});
+
+test('private RPC diagnostic projection accepts only fixed stages/reasons and bounded numeric codes',()=>{
+ const body={error:'preparation_failed',fixtureState:'unknown',fixturePhase:'set_payer_balance',fixtureCauseClass:'AdminRpcFailure'};
+ const safe={reason:'rpc_error',stage:'readback',rpcCode:-32000};
+ assert.deepEqual(preparationPutFailureDetails({...body,fixtureAdminRpc:{...safe,message:'RAW_SECRET_SENTINEL',url:'RAW_SECRET_SENTINEL',params:['RAW_SECRET_SENTINEL']}}),
+  {fixturePhase:'set_payer_balance',fixtureCauseClass:'AdminRpcFailure',fixtureAdminRpc:safe});
+ for(const invalid of [{reason:'RAW_SECRET_SENTINEL',stage:'set'},{reason:'rpc_error',stage:'RAW_SECRET_SENTINEL'},null,[]]) {
+  assert.equal('fixtureAdminRpc' in preparationPutFailureDetails({...body,fixtureAdminRpc:invalid}),false);
+ }
+ assert.deepEqual(preparationPutFailureDetails({...body,fixtureAdminRpc:{reason:'http_status',stage:'set',httpStatus:599,rpcCode:2147483647}}).fixtureAdminRpc,
+  {reason:'http_status',stage:'set',httpStatus:599,rpcCode:2147483647});
+ for (const rpcCode of [-2147483649,2147483648,Number.MAX_SAFE_INTEGER,-3.5,'-32000']) {
+  assert.deepEqual(preparationPutFailureDetails({...body,fixtureAdminRpc:{reason:'rpc_error',stage:'set',rpcCode}}).fixtureAdminRpc,{reason:'rpc_error',stage:'set'});
+ }
+ for(const bad of [-1,600,NaN,Infinity,503.5,'503']) {
+  assert.deepEqual(preparationPutFailureDetails({...body,fixtureAdminRpc:{reason:'http_status',stage:'set',httpStatus:bad,rpcCode:bad===503.5?bad:Infinity}}).fixtureAdminRpc,
+   {reason:'http_status',stage:'set'});
+ }
+});
 const manifestHash = 'a'.repeat(64);
 const environmentManifestSha256 = 'b'.repeat(64);
 const applicationSourceHash = 'c'.repeat(64);
@@ -627,7 +667,7 @@ test('a case-pinned payment recipient must match the selected environment before
     { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
   assert.equal(wrongEnvironment.putCount, 0);
   assert.equal(evidence.length, 0);
-  assert.deepEqual(diagnostics, [{
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{
     preparationId,
     environmentId,
     phase: 'facilitator_pin',
@@ -649,14 +689,15 @@ test('preparation PUT HTTP503 preserves only the fixed producer fixture phase/cl
   const diagnostics: BefPreparationDiagnostic[] = [], evidence: SafeTaskPreparationEvidence[] = [];
   const mock = makeFetch(intent, { putFailure: { status: 503, body: {
    error: 'preparation_failed', fixtureState: 'unknown', fixturePhase: 'send_transfer', fixtureCauseClass: 'UnknownRpcError>RpcRequestError',
+   fixtureAdminRpc: {reason:'rpc_error',stage:'set',rpcCode:-32000,message:'RAW_SECRET_SENTINEL',params:['RAW_SECRET_SENTINEL']},
    runToken: 'RAW_SECRET_SENTINEL', payerPrivateKey: 'RAW_SECRET_SENTINEL', message: 'RAW_SECRET_SENTINEL',
   } } });
   const deps = testDependencies(release, mock.fetch, evidence);
   deps.preparationDiagnostic = (value) => { diagnostics.push(value); if (failingSink) throw new Error('RAW_SECRET_SENTINEL'); };
   const adapter = new BefTaskPreparationAdapter(deps);
   assert.deepEqual(await adapter.prepare({ intent, dispatchId: 'dispatch-put503' }), { status: 'unknown', reasonCode: 'adapter_outcome_unknown' });
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'preparation_put', reasonCode: 'http_503',
-   fixturePhase: 'send_transfer', fixtureCauseClass: 'UnknownRpcError>RpcRequestError' }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'preparation_put', reasonCode: 'http_503',
+   fixturePhase: 'send_transfer', fixtureCauseClass: 'UnknownRpcError>RpcRequestError',fixtureAdminRpc:{reason:'rpc_error',stage:'set',rpcCode:-32000} }]);
   assert.equal(mock.putCount, 1);assert.equal(mock.reconcilePostCount, 0);assert.equal(evidence.length, 0);
   assert.equal(mock.calls.at(-1), `GET bef.test/internal/admin/environments/${environmentId}/preparations/${preparationId}`);
   const retried = await adapter.prepare({ intent, dispatchId: 'dispatch-put503-again' });
@@ -677,7 +718,7 @@ test('preparation PUT diagnostics reject malformed, unknown and secret-bearing f
   const deps = testDependencies(release, mock.fetch, []);deps.preparationDiagnostic = (value) => { diagnostics.push(value); };
   assert.deepEqual(await new BefTaskPreparationAdapter(deps).prepare({ intent, dispatchId: 'dispatch-put-invalid-tags' }),
    { status: 'unknown', reasonCode: 'adapter_outcome_unknown' });
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'preparation_put', reasonCode: 'http_503' }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'preparation_put', reasonCode: 'http_503' }]);
   assert.equal(mock.putCount, 1);assert.equal(mock.reconcilePostCount, 0);
   assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false);
  }
@@ -691,10 +732,52 @@ test('preparation PUT request throws and malformed JSON emit bounded diagnostics
   deps.preparationDiagnostic = (value) => { diagnostics.push(value);throw new Error('RAW_SECRET_SENTINEL'); };
   assert.deepEqual(await new BefTaskPreparationAdapter(deps).prepare({ intent, dispatchId: 'dispatch-put-throw-or-malformed' }),
    { status: 'unknown', reasonCode: 'adapter_outcome_unknown' });
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'preparation_put', reasonCode: variant === 'request_throw' ? 'request_failed' : 'http_503' }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'preparation_put', reasonCode: variant === 'request_throw' ? 'request_failed' : 'http_503' }]);
   assert.equal(mock.putCount, 1);assert.equal(mock.reconcilePostCount, 0);
   assert.ok(mock.calls.at(-1)?.startsWith('GET bef.test/'));
   assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false);
+ }
+});
+
+test('real loopback slow PUT uses its own window and lost successful reply never causes a second PUT',async()=>{
+ for(const loseReply of [false,true]){
+  const {intent,release}=makeRelease();const mock=makeFetch(intent);
+  const diagnostics:BefPreparationDiagnostic[]=[];
+  const server=createServer(async(request,response)=>{
+   try{
+    const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(Buffer.from(chunk));
+    // The isolated producer commits its original result before response loss, as BEF did in the M3 capture.
+    const reply=await mock.fetch(new URL(`http://bef.test/internal/admin/environments/${environmentId}/preparations/${preparationId}`),
+     {method:'PUT',body:Buffer.concat(chunks).toString('utf8')});
+    await new Promise(resolve=>setTimeout(resolve,1_100));
+    response.writeHead(reply.status,{'content-type':'application/json'});response.end(await reply.text());
+   }catch{response.statusCode=500;response.end('{}');}
+  });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  try{
+   const address=server.address();assert.ok(address&&typeof address==='object');
+   const localOrigin=`http://127.0.0.1:${address.port}`;
+   const deps=testDependencies(release,async(input,init)=>{
+    if(new URL(String(input)).hostname==='bef.test'&&init?.method==='PUT')return fetch(localOrigin,init);
+    return mock.fetch(input,init);
+   },[]);
+   deps.requestTimeoutMs=1_000;deps.preparationRequestTimeoutMs=loseReply?1_000:2_000;
+   deps.preparationDiagnostic=value=>{diagnostics.push(value);};
+   const adapter=new BefTaskPreparationAdapter(deps);
+   const outcome=await adapter.prepare({intent,dispatchId:'one-shot-slow-put'});
+   assert.equal(mock.putCount,1);
+   if(loseReply){
+    assert.deepEqual(outcome,{status:'unknown',reasonCode:'adapter_outcome_unknown'});
+    assert.equal(diagnostics[0]?.phase,'preparation_put');assert.equal(diagnostics[0]?.transportCause,'timeout');
+    assert.ok(diagnostics[0]?.elapsedMs!>=900);assert.equal(diagnostics[0]?.requestTimeoutMs,1_000);
+    assert.equal((await adapter.prepare({intent,dispatchId:'repeat-after-lost-success'})).status,'unknown');
+    assert.equal(mock.putCount,1,'GET observation of the completed producer cannot authorize a second PUT');
+   }else{
+    assert.equal(outcome.status,'prepared','one-shot preparation may outlast ordinary read-only request timeout');
+    assert.deepEqual(diagnostics,[]);
+   }
+   assert.equal(JSON.stringify(diagnostics).includes('payerPrivateKey'),false);
+  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
  }
 });
 
@@ -705,7 +788,7 @@ test('preparation PUT HTTP categories are bounded and accept the producer null o
   const deps = testDependencies(release, mock.fetch, []);deps.preparationDiagnostic = (value) => { diagnostics.push(value); };
   assert.deepEqual(await new BefTaskPreparationAdapter(deps).prepare({ intent, dispatchId: 'dispatch-put-status-category' }),
    { status: 'unknown', reasonCode: 'adapter_outcome_unknown' });
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase:'preparation_put', reasonCode,fixturePhase:'unknown',fixtureCauseClass:null }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase:'preparation_put', reasonCode,fixturePhase:'unknown',fixtureCauseClass:null }]);
   assert.equal(mock.putCount, 1);assert.equal(mock.reconcilePostCount, 0);
  }
  const { intent, release } = makeRelease();const diagnostics: BefPreparationDiagnostic[] = [];
@@ -730,7 +813,7 @@ test('a transient pre-PUT source RPC HTTP 502 retries once, then prepares with o
   assert.equal(outcome.status, 'prepared');
   assert.equal(mock.sourceHealthBatchCount, 2);
   assert.equal(mock.putCount, 1);
-  assert.deepEqual(diagnostics, [], 'the recovered first-attempt failure is not persisted as a refusal');
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [], 'the recovered first-attempt failure is not persisted as a refusal');
 });
 
 test('two pre-PUT source RPC HTTP 502 responses remain unknown, emit only a static class, and perform zero PUTs', async () => {
@@ -746,7 +829,7 @@ test('two pre-PUT source RPC HTTP 502 responses remain unknown, emit only a stat
   assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
   assert.equal(mock.sourceHealthBatchCount, 2);
   assert.equal(mock.putCount, 0);
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'http_502' }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'http_502' }]);
   assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false);
 });
 
@@ -763,7 +846,7 @@ test('a non-retryable source RPC HTTP 500 is classified and stops before PUT', a
   assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
   assert.equal(mock.sourceHealthBatchCount, 1, 'only 502/503/504 may retry');
   assert.equal(mock.putCount, 0);
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'http_5xx' }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'http_5xx' }]);
 });
 
 test('a valid pre-PUT source RPC response with a wrong pinned block is not retried', async () => {
@@ -779,7 +862,7 @@ test('a valid pre-PUT source RPC response with a wrong pinned block is not retri
   assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
   assert.equal(mock.sourceHealthBatchCount, 1);
   assert.equal(mock.putCount, 0);
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_pin', reasonCode: 'pin_mismatch' }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'source_rpc_pin', reasonCode: 'pin_mismatch' }]);
 });
 
 test('malformed pre-PUT RPC response diagnostics omit the raw body and do not retry HTTP 200', async () => {
@@ -795,7 +878,7 @@ test('malformed pre-PUT RPC response diagnostics omit the raw body and do not re
   assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
   assert.equal(mock.sourceHealthBatchCount, 1);
   assert.equal(mock.putCount, 0);
-  assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'invalid_json' }]);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode: 'invalid_json' }]);
   assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false);
 });
 
@@ -820,7 +903,7 @@ test('HTTP 200 JSON-RPC, item-shape, batch-shape, and correlation failures use s
     assert.deepEqual(outcome, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' }, variant);
     assert.equal(mock.sourceHealthBatchCount, 1, `${variant} must not trigger a retry`);
     assert.equal(mock.putCount, 0, `${variant} must remain before PUT`);
-    assert.deepEqual(diagnostics, [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode }], variant);
+    assert.deepEqual(diagnostics.map(staticDiagnosticFields), [{ preparationId, environmentId, phase: 'source_rpc_response', reasonCode }], variant);
     assert.equal(JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'), false, variant);
   }
 });
@@ -839,7 +922,7 @@ test('a transient pre-PUT local RPC HTTP 503 retries once before the one prepara
   assert.equal(mock.sourceHealthBatchCount, 1);
   assert.equal(mock.localHealthBatchCount, 2);
   assert.equal(mock.putCount, 1);
-  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(diagnostics.map(staticDiagnosticFields), []);
 });
 
 test('cached preparation reconciliation does not retry a transient RPC failure after the original PUT', async () => {

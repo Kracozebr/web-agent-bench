@@ -117,31 +117,60 @@ export type BefPreparationDiagnostic = {
   fixturePhase?: BefPreparationFixturePhase;
   /** At most four exact safe producer class names; never an error message. */
   fixtureCauseClass?: string | null;
+  fixtureAdminRpc?: { reason: string; stage: 'request'|'set'|'readback'; httpStatus?: number; rpcCode?: number };
+  transportCause?: 'timeout'|'abort'|'network'|'http_status'|'other';
+  elapsedMs?: number;
+  requestTimeoutMs?: number;
 };
+
+export const DEFAULT_BEF_PREPARATION_PUT_TIMEOUT_MS=45_000;
+
+/** Static transport categories only; error text, URL, headers and tokens never enter evidence. */
+export function preparationTransportCause(error:unknown):NonNullable<BefPreparationDiagnostic['transportCause']> {
+  const seen=new Set<unknown>();let current=error;let aborted=false,network=false;
+  for(let depth=0;depth<4&&current!==null&&typeof current==='object'&&!seen.has(current);depth++) {
+    seen.add(current);const candidate=current as {name?:unknown;code?:unknown;cause?:unknown};
+    if(candidate.name==='TimeoutError'||candidate.code==='ETIMEDOUT'||candidate.code==='UND_ERR_CONNECT_TIMEOUT')return 'timeout';
+    if(candidate.name==='AbortError')aborted=true;
+    if(candidate.name==='TypeError'||['ECONNREFUSED','ECONNRESET','ENOTFOUND','EAI_AGAIN','UND_ERR_SOCKET'].includes(String(candidate.code)))network=true;
+    current=candidate.cause;
+  }
+  return aborted?'abort':network?'network':'other';
+}
 
 const FIXTURE_DIAGNOSTIC_PHASES = ['identity', 'read_token_before', 'validate_donor_funds', 'set_donor_balance',
   'set_payer_balance', 'impersonate', 'pin_funding_timestamp', 'reset_donor_balance', 'send_transfer',
   'persist_transaction_hash', 'stop_impersonating', 'wait_receipt', 'validate_receipt', 'read_token_after', 'validate_effects', 'unknown'] as const;
 type BefPreparationFixturePhase = typeof FIXTURE_DIAGNOSTIC_PHASES[number];
-const FIXTURE_DIAGNOSTIC_CAUSES = new Set(['AbortError', 'AggregateError', 'BaseError', 'Error', 'FixtureReceiptPollTimeoutError',
+const FIXTURE_DIAGNOSTIC_CAUSES = new Set(['AdminRpcFailure', 'AbortError', 'AggregateError', 'BaseError', 'Error', 'FixtureReceiptPollTimeoutError',
   'HttpRequestError', 'InternalRpcError', 'InvalidInputRpcError', 'MethodNotFoundRpcError', 'MethodNotSupportedRpcError',
   'RequestError', 'RpcRequestError', 'TimeoutError', 'TransactionNotFoundError', 'TransactionReceiptNotFoundError',
   'TypeError', 'UnknownRpcError', 'WaitForTransactionReceiptTimeoutError', 'OtherError']);
 
-function preparationPutFailureDetails(value: unknown): Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'> {
+export function preparationPutFailureDetails(value: unknown): Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'|'fixtureAdminRpc'> {
   const body = object(value);
   if (!body || body.error !== 'preparation_failed' || body.fixtureState !== 'unknown' ||
       typeof body.fixturePhase !== 'string' || !FIXTURE_DIAGNOSTIC_PHASES.some((phase) => phase === body.fixturePhase)) return {};
   const cause = body.fixtureCauseClass;
   if (cause !== null && (typeof cause !== 'string' || cause.length > 160 || cause.split('>').length > 4 ||
       !cause.split('>').every((name) => FIXTURE_DIAGNOSTIC_CAUSES.has(name)))) return {};
-  return { fixturePhase: body.fixturePhase as BefPreparationFixturePhase, fixtureCauseClass: cause as string | null };
+  const rpc = object(body.fixtureAdminRpc);
+  const reasons = ['transport_timeout','transport_abort','transport_network','http_status','invalid_json','invalid_rpc_envelope',
+    'rpc_error','unexpected_set_balance_ack','invalid_balance_readback','balance_mismatch'];
+  const fixtureAdminRpc: BefPreparationDiagnostic['fixtureAdminRpc'] = rpc && typeof rpc.reason === 'string' && reasons.includes(rpc.reason) &&
+    (rpc.stage === 'request' || rpc.stage === 'set' || rpc.stage === 'readback') ? {
+      reason: rpc.reason, stage: rpc.stage,
+      ...(Number.isInteger(rpc.httpStatus) && Number(rpc.httpStatus) >= 100 && Number(rpc.httpStatus) <= 599 ? {httpStatus: Number(rpc.httpStatus)} : {}),
+      ...(Number.isInteger(rpc.rpcCode) && Number(rpc.rpcCode) >= -2147483648 && Number(rpc.rpcCode) <= 2147483647 ? {rpcCode: Number(rpc.rpcCode)} : {}),
+    } : undefined;
+  return { fixturePhase: body.fixturePhase as BefPreparationFixturePhase, fixtureCauseClass: cause as string | null,
+    ...(fixtureAdminRpc ? {fixtureAdminRpc} : {}) };
 }
 
 type PreparationDiagnosticReporter = (
   phase: BefPreparationDiagnosticPhase,
   reasonCode: BefPreparationDiagnosticReasonCode,
-  details?: Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'>,
+  details?: Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'|'fixtureAdminRpc'|'transportCause'|'elapsedMs'|'requestTimeoutMs'>,
 ) => Promise<void>;
 
 export type BefTaskPreparationAdapterDependencies = {
@@ -166,6 +195,8 @@ export type BefTaskPreparationAdapterDependencies = {
   preparationDiagnostic?: (value: BefPreparationDiagnostic) => Promise<void> | void;
   fetch?: typeof fetch;
   requestTimeoutMs?: number;
+  /** One-shot reset/funding PUT may be slower than read-only health/RPC; never retried. */
+  preparationRequestTimeoutMs?: number;
 };
 
 type PinnedCase = { release: ValidatedTaskReleaseRecord; taskCase: TaskCase };
@@ -477,6 +508,7 @@ function positiveS4FixtureSpec(release: ValidatedTaskReleaseRecord, taskCase: Ta
 export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
+  private readonly preparationRequestTimeoutMs:number;
   private readonly credentials = new Map<string, CachedGeneration>();
   private readonly attempted = new Set<string>();
   private readonly fencing = new Set<string>();
@@ -486,8 +518,10 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
   constructor(private readonly deps: BefTaskPreparationAdapterDependencies) {
     this.fetchImpl = deps.fetch ?? fetch;
     this.requestTimeoutMs = deps.requestTimeoutMs ?? 15_000;
+    this.preparationRequestTimeoutMs=deps.preparationRequestTimeoutMs??Math.max(this.requestTimeoutMs,DEFAULT_BEF_PREPARATION_PUT_TIMEOUT_MS);
     if (!deps.adminKey || /[\r\n]/.test(deps.adminKey) || !Number.isSafeInteger(this.requestTimeoutMs) ||
-        this.requestTimeoutMs < 1_000 || this.requestTimeoutMs > 120_000) {
+        this.requestTimeoutMs < 1_000 || this.requestTimeoutMs > 120_000||
+        !Number.isSafeInteger(this.preparationRequestTimeoutMs)||this.preparationRequestTimeoutMs<1_000||this.preparationRequestTimeoutMs>120_000) {
       throw new Error('bef_task_preparation_configuration_invalid');
     }
   }
@@ -712,6 +746,9 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
 
       // Exactly one PUT per preparation identity. A lost response is reconciled with GET; it is never resubmitted.
       let putResponse: { status: number; body: unknown };
+      const putStartedAt=performance.now();
+      const putTiming=()=>({elapsedMs:Math.min(3_600_000,Math.max(0,Math.round(performance.now()-putStartedAt))),
+        requestTimeoutMs:this.preparationRequestTimeoutMs});
       try {
         putResponse = await this.adminRequest(apiBase, 'PUT', this.preparationPath(intent), {
           publicPinsSha256: publicPins,
@@ -719,9 +756,9 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
           payerAddress,
           resourceVariant,
           payerPrivateKey,
-        });
-      } catch {
-        await diagnose('preparation_put', 'request_failed');
+        },this.preparationRequestTimeoutMs);
+      } catch(error) {
+        await diagnose('preparation_put', 'request_failed',{...putTiming(),transportCause:preparationTransportCause(error)});
         await this.readPublicStatus(intent, apiBase).catch(() => null);
         return this.unknown('adapter_outcome_unknown');
       }
@@ -732,7 +769,7 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
           : putResponse.status === 504 ? 'http_504'
           : putResponse.status >= 400 && putResponse.status < 500 ? 'http_4xx'
           : putResponse.status >= 500 && putResponse.status < 600 ? 'http_5xx' : 'http_status_other';
-        await diagnose('preparation_put', reasonCode, preparationPutFailureDetails(putResponse.body));
+        await diagnose('preparation_put', reasonCode, {...preparationPutFailureDetails(putResponse.body),...putTiming(),transportCause:'http_status'});
         await this.readPublicStatus(intent, apiBase).catch(() => null);
         return this.unknown('adapter_outcome_unknown');
       }
@@ -1635,16 +1672,17 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
     } catch { return null; }
   }
 
-  private async adminRequest(base: URL, method: 'PUT' | 'POST', path: string, body: JsonRecord): Promise<{ status: number; body: unknown }> {
+  private async adminRequest(base: URL, method: 'PUT' | 'POST', path: string, body: JsonRecord,
+    timeoutMs=this.requestTimeoutMs): Promise<{ status: number; body: unknown }> {
     return this.httpJson(endpoint(base, path), {
       method,
       headers: { 'x-bef-admin-key': this.deps.adminKey, 'content-type': 'application/json' },
       body: JSON.stringify(body), cache: 'no-store', redirect: 'error',
-    });
+    },timeoutMs);
   }
 
-  private async httpJson(url: URL, init: RequestInit): Promise<HttpJsonResponse> {
-    const response = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(this.requestTimeoutMs) });
+  private async httpJson(url: URL, init: RequestInit,timeoutMs=this.requestTimeoutMs): Promise<HttpJsonResponse> {
+    const response = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength > MAX_JSON_BYTES) return { status: response.status, body: null, bodyFailure: 'too_large' };
     try { return { status: response.status, body: JSON.parse(new TextDecoder().decode(bytes)) as unknown }; }

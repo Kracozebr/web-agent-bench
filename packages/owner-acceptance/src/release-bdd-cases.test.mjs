@@ -5,6 +5,7 @@ import test from 'node:test';
 import { createReleaseNegativeCandidates, expectedReleaseReferenceCount } from './release-bdd-cases.mjs';
 
 const fixturePath = process.env.BTS_RELEASE_PROBE_FIXTURE;
+const currentFixturePath = process.env.BTS_RELEASE_CURRENT_FIXTURE;
 
 test('release probe expects verified reference rows for the manifest case inventory', () => {
   const manifest = {
@@ -16,6 +17,50 @@ test('release probe expects verified reference rows for the manifest case invent
   assert.equal(expectedReleaseReferenceCount(manifest), 15);
   assert.equal(expectedReleaseReferenceCount({ cases: { training: [], ranked: [] } }), 0);
   assert.equal(expectedReleaseReferenceCount({ cases: { training: [] } }), null);
+});
+
+test('current release generates real malformed catalog controls and an otherwise valid immutable-identity collision', {
+  skip: !currentFixturePath,
+}, async () => {
+  const capture = JSON.parse(await readFile(currentFixturePath, 'utf8'));
+  const source = capture?.release?.manifest;
+  const releaseApi = await import('../../owner-identity/dist/task-release.js');
+  assert.equal(releaseApi.TaskReleaseManifestSchema.safeParse(source).success, true,
+    'current-profile raw manifest is required, not a substituted synthetic catalog');
+  const probes = createReleaseNegativeCandidates(source, releaseApi);
+  assert.equal(probes.length, 21);
+  assert.equal(new Set(probes.map((probe) => probe.id)).size, 21);
+  const expectations = {
+    training_set_mismatch: ['inventory.openTrainingTaskIds.1'],
+    training_weight_or_sum_mismatch: ['inventory.openTrainingWeightSum'],
+    ranked_or_training_case_count_mismatch: ['cases.training', 'cases.ranked'],
+  };
+  for (const [id, paths] of Object.entries(expectations)) {
+    const probe = probes.find((item) => item.id === id);
+    assert.ok(probe?.candidate, id);
+    const parsed = releaseApi.TaskReleaseManifestSchema.safeParse(probe.candidate);
+    assert.equal(parsed.success, false, id);
+    const result = await releaseApi.validateTaskReleaseCandidate(probe.candidate, {
+      verifyFeasibility: async () => assert.fail('malformed catalog reached external verifier'),
+      verifyReferencePath: async () => assert.fail('malformed catalog reached external verifier'),
+      verifyDifficultyReview: async () => assert.fail('malformed catalog reached external verifier'),
+    });
+    assert.equal(result.status, 'blocked', id);
+    for (const path of paths) assert.ok(result.blockers.some((blocker) =>
+      blocker.code === 'manifest_schema_invalid' && blocker.subject === path), `${id}: ${path}`);
+    assert.equal(probe.candidate.policyHash, releaseApi.taskPolicyHash(probe.candidate));
+    assert.equal(probe.candidate.manifestHash, releaseApi.sha256CanonicalTaskJson(
+      Object.fromEntries(Object.entries(probe.candidate).filter(([key]) => key !== 'manifestHash'))));
+  }
+  const reuse = probes.find((item) => item.id === 'release_identity_reuse');
+  assert.equal(releaseApi.TaskReleaseManifestSchema.safeParse(reuse.candidate).success, true);
+  assert.equal(reuse.candidate.releaseIdentity, source.releaseIdentity);
+  assert.notEqual(reuse.candidate.manifestHash, source.manifestHash);
+  assert.deepEqual(reuse.candidate.cases, source.cases,
+    'identity reuse must reach immutable-store rejection, not a new case/reference failure');
+  assert.deepEqual(reuse.candidate.executionIdentity, source.executionIdentity);
+  assert.equal(reuse.candidate.policyHash, source.policyHash);
+  assert.equal(reuse.expected.activationErrorCode, 'release_identity_immutable_conflict');
 });
 
 test('retained release fixture produces a bounded, production-blocked initially satisfied U1 allocation', {

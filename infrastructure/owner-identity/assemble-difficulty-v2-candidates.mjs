@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { TaskCaseSchema, canonicalTaskJson, sha256CanonicalTaskJson, taskCaseHash,
   taskRubricHash, taskMandatoryRules } from '../../packages/owner-identity/src/task-release.ts';
 import { CURRENT_TRAINING_TASK_IDS, PUBLIC_TASK_CATALOG, TASK_IDS } from '../../packages/owner-identity/src/task-catalog.ts';
@@ -74,7 +75,7 @@ function budget(manifest, policy, service, gas, dex = '0') {
     ...Object.fromEntries(['headroomMultiplierNumerator', 'headroomMultiplierDenominator', 'roundUpToUsdcUnits']
       .map((key) => [key, policy.expenseBudget[key]])) });
 }
-async function buildProjection(probe, manifest, identity, policy, rawArtifact) {
+export async function buildProjection(probe, manifest, identity, policy, rawArtifact) {
   const capture = probe.capture, task = probe.taskId, router = manifest.contracts.swapRouter02.address.toLowerCase();
   const resourceInputs = [];
   const helpers = { state, participantState, assetId, budget, route, component, projectDeliveryEnvelope,
@@ -321,7 +322,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify({ outputPrefix, sha256: sha(output), cases: cases.length,
     status, releaseValidated: false })}\n`);
 }
-void main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) void main().catch((error) => {
   const code = error?.name === 'ZodError' ? 'task_case_schema_invalid'
     : error instanceof Error && /^[a-z_][a-z0-9_]{1,159}$/.test(error.message) ? error.message : 'v2_assembly_failed';
   const type = ['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'ZodError'].includes(error?.name) ? error.name : 'Error';

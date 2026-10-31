@@ -263,6 +263,7 @@ export function registerPreparationRoutes(app: FastifyInstance, runtime: Applica
               kind: 'failed' as const,
               fixturePhase,
               fixtureCauseClass,
+              fixtureAdminRpc: error instanceof GenerationFixtureFailure ? error.adminRpcDiagnostic : null,
               fixtureState: 'unknown' as const,
             };
           }
@@ -291,6 +292,7 @@ export function registerPreparationRoutes(app: FastifyInstance, runtime: Applica
             error: 'preparation_failed',
             fixturePhase: result.fixturePhase,
             fixtureCauseClass: result.fixtureCauseClass,
+            fixtureAdminRpc: result.fixtureAdminRpc,
             fixtureState: result.fixtureState,
           });
         }

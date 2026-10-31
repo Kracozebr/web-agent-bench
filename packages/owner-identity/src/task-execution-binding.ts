@@ -44,6 +44,7 @@ type TaskExecutionContextRow = {
   binding_manifest_hash: string | null; binding_application_source_hash: string | null;
   binding_participant_id: string | null; binding_payer_address: string | null;
   run_claim_id: string | null; claim_status: string | null; slot_claim_id: string | null; slot_state: string | null;
+  admitted_action_valid: boolean;
 };
 
 /**
@@ -53,11 +54,15 @@ type TaskExecutionContextRow = {
 export async function getTaskExecutionContext(
   reader: TaskExecutionBindingReader,
   target: { runId: string; taskIndex: number },
-  options: { requireActive?: boolean; requireBinding?: boolean } = {},
+  options: { requireActive?: boolean; requireBinding?: boolean; admittedActionId?: string } = {},
 ): Promise<TaskExecutionContext | null> {
   validateTarget(target);
   const requireActive = options.requireActive ?? true;
   const requireBinding = options.requireBinding ?? true;
+  const admittedActionId = options.admittedActionId?.toLowerCase() ?? null;
+  if (admittedActionId !== null && (!UUID.test(admittedActionId) || !requireActive)) {
+    throw new HttpError(400, 'INVALID_EXECUTION_BINDING', 'Admitted-action drain requires an active task and an action UUID');
+  }
   const found = await reader.execute(sql`SELECT r.id AS run_id,r.status AS run_status,r.mode,r.task_ids,r.release_identity,
       r.manifest_hash AS run_manifest_hash,r.overall_deadline>clock_timestamp() AS run_live,
       t.task_index,t.task_id,t.status AS task_status,t.closure_status,t.deadline_at>clock_timestamp() AS task_live,
@@ -72,7 +77,15 @@ export async function getTaskExecutionContext(
       eb.env_id AS binding_environment_id,eb.generation_id AS binding_generation_id,
       eb.manifest_hash AS binding_manifest_hash,eb.application_source_hash AS binding_application_source_hash,
       eb.participant_id AS binding_participant_id,eb.payer_address AS binding_payer_address,
-      c.claim_id AS run_claim_id,c.status AS claim_status,s.claim_id AS slot_claim_id,s.state AS slot_state
+      c.claim_id AS run_claim_id,c.status AS claim_status,s.claim_id AS slot_claim_id,s.state AS slot_state,
+      EXISTS (SELECT 1 FROM oid_run_task_action admitted WHERE admitted.id=${admittedActionId}
+        AND admitted.run_id=r.id AND admitted.task_index=t.task_index AND admitted.task_id=t.task_id
+        AND admitted.owner_id=r.owner_id AND admitted.agent_id=r.agent_id
+        AND admitted.access_generation=r.access_generation AND admitted.environment_id=i.environment_id
+        AND admitted.accepted_at<t.deadline_at AND admitted.accepted_at<r.overall_deadline
+        AND admitted.action_sequence<=t.accepted_action_sequence
+        AND (t.closure_status='open' OR (t.closure_status='closing'
+          AND t.action_cutoff_sequence IS NOT NULL AND admitted.action_sequence<=t.action_cutoff_sequence))) AS admitted_action_valid
     FROM oid_benchmark_run r JOIN oid_run_task t ON t.run_id=r.id AND t.task_index=${target.taskIndex}
     JOIN oid_task_preparation_intent i ON i.run_id=r.id AND i.task_index=t.task_index
     JOIN oid_task_environment_lease l ON l.preparation_id=i.preparation_id AND l.lease_id=i.lease_id
@@ -104,8 +117,13 @@ export async function getTaskExecutionContext(
         row.binding_generation_id !== row.observation_generation_id ||
         row.binding_manifest_hash !== row.environment_manifest_sha256 ||
         row.binding_application_source_hash !== row.application_source_hash))) return null;
-  if (requireActive && (row.run_status !== 'running' || !row.run_live || row.task_status !== 'active' ||
-      row.closure_status !== 'open' || !row.task_live || row.active_task_count !== 1 ||
+  // AICODE-NOTE: New admission requires live/open clocks. Dispatch of an immutable action already
+  // admitted before cutoff instead proves that exact action here; it never reopens task admission.
+  const admissionWindowValid = admittedActionId === null
+    ? row.run_live && row.task_live && row.closure_status === 'open'
+    : row.admitted_action_valid === true && ['open', 'closing'].includes(row.closure_status);
+  if (requireActive && (row.run_status !== 'running' || !admissionWindowValid || row.task_status !== 'active' ||
+      row.active_task_count !== 1 ||
       row.lease_state !== 'leased' || row.observation_status !== 'ready' ||
       row.claim_status !== 'claimed' || row.slot_state !== 'running' ||
       row.slot_claim_id !== row.run_claim_id)) return null;
@@ -180,10 +198,11 @@ function contextMatches(context: TaskExecutionContext, expected: Omit<PublicTask
     context.participantId === expected.participantId && context.payerAddress === expected.payerAddress;
 }
 /** Call under the dispatch transaction's existing owner/agent/run locks. */
-export async function assertTaskExecutionBinding(reader: TaskExecutionBindingReader, input: PublicTaskExecutionBindingInput) {
+export async function assertTaskExecutionBinding(reader: TaskExecutionBindingReader, input: PublicTaskExecutionBindingInput,
+  options: { admittedActionId?: string } = {}) {
   const expected = normalized(input);
   const binding = await getTaskExecutionBinding(reader, expected);
-  const context = await getTaskExecutionContext(reader, expected, { requireActive: true });
+  const context = await getTaskExecutionContext(reader, expected, { requireActive: true, ...options });
   if (!binding || !matches(binding, expected) || !context || !contextMatches(context, expected)) {
     throw new HttpError(409, 'TASK_EXECUTION_BINDING_MISMATCH', 'The task execution generation cannot be replaced or reused');
   }

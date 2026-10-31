@@ -86,6 +86,10 @@ CASE_OBJECTIVE_KEYS = {
     "U1": {"requiredComponents", "permittedSources", "permittedRoutes", "allocationAssets", "payoutObligations", "temporarySpenderScope", "nativeReserveWei", "expenseBudgetUsdcUnits", "duplicatePurchaseIdentity"},
 }
 RELEASE_VARIANT_REQUIREMENTS = {
+    "training_set_mismatch": ("inventory.openTrainingTaskIds", (("manifest_schema_invalid", "inventory.openTrainingTaskIds.1"),)),
+    "training_weight_or_sum_mismatch": ("inventory.openTrainingWeightSum", (("manifest_schema_invalid", "inventory.openTrainingWeightSum"),)),
+    "ranked_or_training_case_count_mismatch": ("cases.training_and_ranked.length", (("manifest_schema_invalid", "cases.training"), ("manifest_schema_invalid", "cases.ranked"))),
+    "release_identity_reuse": ("benchmarkVersion", ()),
     "placeholder": ("cases.ranked.M1.caseId", (("placeholder_or_latest_value", "ranked/M1/"),)),
     "wrong_block_identity": ("executionIdentity.sourceBlockNumber", (("missing_feasibility_evidence", "feasibilityEvidence"),)),
     "wrong_contract_code_identity": ("executionIdentity.contracts[pool].codeHash", (("missing_feasibility_evidence", "feasibilityEvidence"),)),
@@ -105,6 +109,10 @@ RELEASE_VARIANT_REQUIREMENTS = {
     "initially_satisfied_u1_allocation": ("cases.ranked.U1.initialState.balances", (("invalid_u1_fixed_sets", "ranked/U1/"),)),
 }
 SC001_NEGATIVE_MAP = {
+    "training_set_mismatch": ("training_set_mismatch",),
+    "training_weight_or_sum_mismatch": ("training_weight_or_sum_mismatch",),
+    "ranked_or_training_case_count_mismatch": ("ranked_or_training_case_count_mismatch",),
+    "release_identity_reuse": ("release_identity_reuse",),
     "placeholder": ("placeholder",),
     "wrong_block_or_code": ("wrong_block_identity", "wrong_contract_code_identity"),
     "unsolvable_or_initially_solved": ("initially_satisfied_paid_case", "initially_fulfilled_payout_obligation"),
@@ -629,7 +637,8 @@ def _verify_release_database_snapshot(snapshot: Any) -> bool:
     return snapshot.get("stateSha256") == _sha256_json(body)
 
 
-def _rehash_release_candidate(candidate: dict[str, Any], *, identity_changed: bool = False) -> None:
+def _rehash_release_candidate(candidate: dict[str, Any], *, identity_changed: bool = False,
+                              base_manifest: dict[str, Any] | None = None) -> None:
     if identity_changed:
         candidate["executionIdentityHash"] = _sha256_json(candidate["executionIdentity"])
     for mode in ("training", "ranked"):
@@ -637,6 +646,18 @@ def _rehash_release_candidate(candidate: dict[str, Any], *, identity_changed: bo
             if identity_changed:
                 task_case["executionIdentityHash"] = candidate["executionIdentityHash"]
             task_case["caseHash"] = _sha256_json(_without_key(task_case, "caseHash"))
+    if all(key in candidate for key in ("inventory", "pricing", "deadlines", "costPolicy")):
+        rubric_by_id = {row["taskId"]: row["rubricHash"]
+                       for row in (base_manifest or candidate)["cases"]["ranked"]}
+        policy = {
+            "rubricVersion": "bts-rubric/v1", "inventory": candidate["inventory"],
+            "pricing": candidate["pricing"], "deadlines": candidate["deadlines"],
+            "costPolicy": candidate["costPolicy"],
+            "rubricHashes": [{"taskId": task_id, "rubricHash": rubric_by_id[task_id]} for task_id in TASK_IDS],
+        }
+        if "participantToolProtocol" in candidate:
+            policy["participantToolProtocol"] = candidate["participantToolProtocol"]
+        candidate["policyHash"] = _sha256_json(policy)
     candidate["benchmarkHash"] = _sha256_json({
         "benchmarkVersion": candidate["benchmarkVersion"],
         "executionIdentityHash": candidate["executionIdentityHash"],
@@ -674,7 +695,16 @@ def _expected_release_candidate(base_manifest: dict[str, Any], variant_id: str) 
         return None
     identity_changed = False
     try:
-        if variant_id == "placeholder":
+        if variant_id == "training_set_mismatch":
+            candidate["inventory"]["openTrainingTaskIds"][1] = "S2"
+        elif variant_id == "training_weight_or_sum_mismatch":
+            candidate["inventory"]["openTrainingWeightSum"] = 7
+        elif variant_id == "ranked_or_training_case_count_mismatch":
+            training.pop()
+            ranked.pop()
+        elif variant_id == "release_identity_reuse":
+            candidate["benchmarkVersion"] = candidate["benchmarkVersion"][:104] + "-bdd-identity-reuse"
+        elif variant_id == "placeholder":
             row = next(row for row in ranked if row["taskId"] == "M1")
             row["caseId"] = f"{row['caseId'][:96]}-placeholder"
         elif variant_id == "wrong_block_identity":
@@ -748,7 +778,7 @@ def _expected_release_candidate(base_manifest: dict[str, Any], variant_id: str) 
                 return None
         else:
             return None
-        _rehash_release_candidate(candidate, identity_changed=identity_changed)
+        _rehash_release_candidate(candidate, identity_changed=identity_changed, base_manifest=base_manifest)
     except (KeyError, IndexError, StopIteration, TypeError, ValueError, ZeroDivisionError):
         return None
     return candidate, RELEASE_VARIANT_REQUIREMENTS[variant_id][0]
@@ -764,6 +794,8 @@ def _variant_matches(candidate: Any, variant: Any, base_manifest: dict[str, Any]
     if not expected_spec or not expected or not isinstance(candidate_manifest, dict):
         return False
     expected_candidate, expected_path = expected
+    if candidate_manifest != expected_candidate:
+        return False
     blockers = variant.get("observedBlockers")
     if not isinstance(blockers, list):
         return False
@@ -773,6 +805,35 @@ def _variant_matches(candidate: Any, variant: Any, base_manifest: dict[str, Any]
         return False
     before_hash = variant.get("databaseStateSha256Before")
     after_hash = variant.get("databaseStateSha256After")
+    if not isinstance(before_hash, str):
+        return False
+    if variant_id == "release_identity_reuse":
+        validation = variant.get("preActivationValidation")
+        validation_evidence = [
+            {"kind": "feasibility", "sha256": candidate_manifest["feasibilityEvidence"]["sha256"]},
+            *({"kind": "reference_path", "sha256": row["referencePath"]["evidence"]["sha256"]}
+              for row in candidate_manifest["cases"]["training"] + candidate_manifest["cases"]["ranked"]),
+            {"kind": "difficulty_review", "sha256": candidate_manifest["difficultyReviewEvidence"]["sha256"]},
+        ]
+        snapshot = snapshots.get(before_hash, {})
+        stored = snapshot.get("tables", {}).get("oid_task_release", {}).get("rows", [])
+        immutable_original_present = any(
+            row.get("release_identity") == base_manifest.get("releaseIdentity")
+            and row.get("manifest_hash") == base_manifest.get("manifestHash")
+            and row.get("sealed_manifest") == base_manifest for row in stored if isinstance(row, dict)
+        )
+        activation_outcome_matches = bool(
+            variant.get("activationErrorCode") == "release_identity_immutable_conflict"
+            and not blockers and isinstance(validation, dict)
+            and validation.get("status") == "validated"
+            and validation.get("manifestHash") == candidate_manifest.get("manifestHash")
+            and validation.get("validationEvidence") == validation_evidence
+            and immutable_original_present
+            and candidate_manifest.get("releaseIdentity") == base_manifest.get("releaseIdentity")
+            and candidate_manifest.get("manifestHash") != base_manifest.get("manifestHash")
+        )
+    else:
+        activation_outcome_matches = variant.get("activationErrorCode") is None
     return bool(
         variant.get("status") == "verified"
         and variant.get("candidateHash") == candidate_manifest.get("manifestHash")
@@ -781,7 +842,7 @@ def _variant_matches(candidate: Any, variant: Any, base_manifest: dict[str, Any]
         and variant.get("databaseUnchanged") is True
         and isinstance(before_hash, str) and before_hash == after_hash
         and before_hash in snapshots
-        and variant.get("activationErrorCode") is None
+        and activation_outcome_matches
     )
 
 

@@ -26,7 +26,7 @@ test('ranked persistence binds original version, publishes once, and rejects cor
   const fixture=await addFixture(client,{includeEvaluation:false});const ids={runId:fixture.runId,ownerId:fixture.ownerId,agentId:fixture.agentId};
   const cases=TASK_IDS.map((taskId,index)=>({taskId,mode:'ranked',taskWeight:PUBLIC_TASK_CATALOG[index]!.weight,caseHash:hash('case-'+taskId),rubricHash:hash('rubric-'+taskId)}));
   const release={...fixture.record.manifest,benchmarkVersion:fixture.record.benchmarkVersion,benchmarkHash:fixture.record.benchmarkHash,policyHash:fixture.record.policyHash,cases:{ranked:cases}} as unknown as TaskReleaseManifest;
-  const proofs=cases.map((c,taskIndex)=>{const result:TaskEvaluationResult={taskId:c.taskId,status:'known',outcome:'passed',credit:{numerator:'1',denominator:'1'},mandatoryViolation:null,unknownReasons:[],operatingExpenseUsdcUnits:null};
+  const proofs=cases.map((c,taskIndex)=>{const result:TaskEvaluationResult={taskId:c.taskId,status:'known',outcome:taskIndex===0?'partial':'passed',credit:{numerator:'1',denominator:taskIndex===0?'2':'1'},mandatoryViolation:null,unknownReasons:[],operatingExpenseUsdcUnits:null};
    return{taskIndex,taskId:c.taskId,caseHash:c.caseHash,rubricHash:c.rubricHash,inputHash:hash('input-'+taskIndex),resultHash:sha256CanonicalTaskJson(result),fenceEvidenceHash:hash('fence-'+taskIndex),result};});
   const aggregate=aggregateVerifiedRankedOutcomes(release,proofs);const admittedAt=new Date(Date.now()-2000).toISOString(),startedAt=new Date(Date.now()-1000).toISOString(),finishedAt=new Date().toISOString();
   await client`UPDATE oid_benchmark_run SET mode='ranked',task_ids=${TASK_IDS},status='queued',started_at=NULL WHERE id=${ids.runId}`;
@@ -47,6 +47,50 @@ test('ranked persistence binds original version, publishes once, and rejects cor
   assert.deepEqual({...counts[0]},{handoffs:1,results:1,markers:1,events:1});
   const result=await client`SELECT version_snapshot_json FROM oid_ranked_verified_result WHERE run_id=${ids.runId}`;
   assert.equal(result[0]!.version_snapshot_json.name,'Synthetic completion agent');
+  const nextRun=randomUUID(),nextIntent=randomUUID(),nextManifest=hash('different-manifest'),nextBenchmark=hash('different-benchmark');
+  await client`INSERT INTO oid_run_launch_intent SELECT (jsonb_populate_record(NULL::oid_run_launch_intent,
+    to_jsonb(i)||jsonb_build_object('id',${nextIntent}::text,'operation_id',${'different_'+nextIntent}::text,'manifest_hash',${nextManifest}::text,'benchmark_hash',${nextBenchmark}::text))).*
+    FROM oid_run_launch_intent i WHERE id=(SELECT intent_id FROM oid_benchmark_run WHERE id=${ids.runId})`;
+  await client`INSERT INTO oid_benchmark_run SELECT (jsonb_populate_record(NULL::oid_benchmark_run,
+    to_jsonb(r)||jsonb_build_object('id',${nextRun}::text,'intent_id',${nextIntent}::text,'manifest_hash',${nextManifest}::text,'benchmark_hash',${nextBenchmark}::text,
+      'status','queued','started_at',NULL,'finished_at',NULL))).* FROM oid_benchmark_run r WHERE id=${ids.runId}`;
+  const nextIds={...ids,runId:nextRun};await db.transaction(tx=>captureRankedVersionSnapshot(tx,nextIds,admittedAt));
+  await client`UPDATE oid_benchmark_run SET status='completed',started_at=${startedAt},finished_at=${finishedAt} WHERE id=${nextRun}`;
+  const nextProofs=proofs.map(p=>{const result:TaskEvaluationResult={...p.result,outcome:'passed',credit:{numerator:'1',denominator:'1'}};return{...p,result,resultHash:sha256CanonicalTaskJson(result)};});
+  const nextAggregate=aggregateVerifiedRankedOutcomes({...release,manifestHash:nextManifest,benchmarkHash:nextBenchmark},nextProofs);
+  assert.equal(nextAggregate.overall.numerator,'100');assert.equal(nextAggregate.overall.denominator,'1');
+  assert.notDeepEqual(nextAggregate.overall,aggregate.overall);
+  const nextPayload={...payload,runId:nextRun,tasks:nextProofs.map(p=>({taskIndex:p.taskIndex,taskId:p.taskId,inputHash:p.inputHash,resultHash:p.resultHash,fenceEvidenceHash:p.fenceEvidenceHash}))},nextEventHash=sha256CanonicalTaskJson(nextPayload);
+  const nextInput={...nextIds,aggregate:nextAggregate,completionEventHash:nextEventHash,finishedAt,replayed:false};
+  await assert.rejects(db.transaction(tx=>publishRankedHandoff(tx,nextInput)),(e:unknown)=>(e as {code:string}).code==='RANKED_COMPLETION_EVENT_MISMATCH');
+  await client`INSERT INTO oid_run_event(id,run_id,sequence,source,event_type,payload_hash,payload_json) VALUES(${randomUUID()},${nextRun},3,'coordinator','run.completed',${nextEventHash},${canonicalTaskJson(nextPayload)}::jsonb)`;
+  await assert.rejects(db.transaction(tx=>publishRankedHandoff(tx,{...nextInput,aggregate:{...nextAggregate,aggregateHash:hash('corrupt')}})),
+    (e:unknown)=>(e as {code:string}).code==='RANKED_AGGREGATE_INVALID');
+  await assert.rejects(db.transaction(tx=>publishRankedHandoff(tx,{...nextInput,aggregate:{...nextAggregate,taskProofs:nextAggregate.taskProofs.slice(1)}})),
+    (e:unknown)=>(e as {code:string}).code==='RANKED_AGGREGATE_INVALID');
+  // Seed malformed immutable historical proofs in this disposable database; never rewrite a retained proof.
+  for(const invalid of [[],{...aggregate,aggregateHash:hash('corrupt-prior')}]){
+    const invalidFixture=await addFixture(client,{includeEvaluation:false});
+    await client`INSERT INTO oid_ranked_run_handoff SELECT (jsonb_populate_record(NULL::oid_ranked_run_handoff,
+      to_jsonb(h)||jsonb_build_object('run_id',${invalidFixture.runId}::text))).* FROM oid_ranked_run_handoff h WHERE run_id=${ids.runId}`;
+    await client`INSERT INTO oid_ranked_verified_result SELECT (jsonb_populate_record(NULL::oid_ranked_verified_result,
+      to_jsonb(v)||jsonb_build_object('run_id',${invalidFixture.runId}::text,'aggregate_json',${canonicalTaskJson(invalid)}::jsonb))).*
+      FROM oid_ranked_verified_result v WHERE run_id=${ids.runId}`;
+    await client`UPDATE oid_ranked_best_result SET run_id=${invalidFixture.runId} WHERE agent_id=${ids.agentId}`;
+    await assert.rejects(db.transaction(tx=>publishRankedHandoff(tx,nextInput)),(e:unknown)=>(e as {code:string}).code==='RANKED_BEST_CONFLICT');
+    await assert.rejects(db.transaction(tx=>publishRankedHandoff(tx,{...input,replayed:true})),(e:unknown)=>(e as {code:string}).code==='RANKED_BEST_REPLAY_CONFLICT');
+    await client`UPDATE oid_ranked_best_result SET run_id=${ids.runId} WHERE agent_id=${ids.agentId}`;
+  }
+  const nextPublished=await db.transaction(tx=>publishRankedHandoff(tx,nextInput));
+  const nextReplayed=await Promise.all([1,2].map(()=>db.transaction(tx=>publishRankedHandoff(tx,{...nextInput,replayed:true}))));
+  assert.ok(nextReplayed.every(r=>r.handoffHash===nextPublished.handoffHash));
+  const stillBest=await client`SELECT run_id FROM oid_ranked_best_result WHERE agent_id=${ids.agentId}`;
+  assert.equal(stillBest.length,1);assert.equal(stillBest[0]!.run_id,ids.runId);
+  const actualRunIds=[ids.runId,nextRun];
+  const afterDifferentManifest=await client`SELECT (SELECT count(*)::int FROM oid_ranked_run_handoff WHERE run_id=ANY(${actualRunIds}::uuid[])) handoffs,
+    (SELECT count(*)::int FROM oid_ranked_verified_result WHERE run_id=ANY(${actualRunIds}::uuid[])) results,(SELECT count(*)::int FROM oid_agent_first_public_action) markers,
+    (SELECT count(*)::int FROM oid_run_event WHERE event_type='run.ranked_eligible') events`;
+  assert.deepEqual({...afterDifferentManifest[0]},{handoffs:2,results:2,markers:1,events:2});
   await client`DELETE FROM oid_ranked_best_result WHERE agent_id=${ids.agentId}`;
   await assert.rejects(db.transaction(tx=>publishRankedHandoff(tx,{...input,replayed:true})),(e:unknown)=>(e as {code:string}).code==='RANKED_BEST_REPLAY_CONFLICT');
   const absent=await client`SELECT count(*)::int AS count FROM oid_ranked_best_result WHERE agent_id=${ids.agentId}`;assert.equal(absent[0]!.count,0);

@@ -16,13 +16,13 @@
     "--junitxml=artifacts/bdd-evidence/benchmark-task-suite-pytest.xml"
   ],
   "execution_started": true,
-  "exit_code": 1,
-  "finished_at_utc": "2026-10-30T16:11:01.193565Z",
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-31T01:26:30.080415Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "877d202d163e8429a3fce53e8f0dd1d46a2daa8a",
+  "git_commit": "f9614a85261a4bb8a7942a3c5ef8d336ee95e006",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 34,
@@ -36,15 +36,15 @@
     "warnings": []
   },
   "harness_contract_sha256": "839429468f48e4570032c75624e8a812766bb44074e03fd559659ce6c4f17883",
-  "harness_sources_sha256": "bcc9a4c6d7627dd2fa3567080762dc1e26e38b194b1a42cb919a4bee789ab5ba",
-  "harness_sources_sha256_after": "bcc9a4c6d7627dd2fa3567080762dc1e26e38b194b1a42cb919a4bee789ab5ba",
+  "harness_sources_sha256": "07568808bba4a5cd7d159d925ad7bd40b5f3789ba9f70bfecf6ab7adcf12e809",
+  "harness_sources_sha256_after": "07568808bba4a5cd7d159d925ad7bd40b5f3789ba9f70bfecf6ab7adcf12e809",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/benchmark-task-suite/specs/*/spec.md",
-  "scenario_map_sha256": "449f3fa15bc1badd1dff3c2fe87a54e2ac2871194189abeae62b2dfebdc45555",
+  "scenario_map_sha256": "6ae079bb489cc50f9167c337c2f7cf49468088928251ce0d2ca8775fb2737c3e",
   "scenario_results": {
-    "BTS-SC-001": "failed",
-    "BTS-SC-002": "failed",
+    "BTS-SC-001": "passed",
+    "BTS-SC-002": "passed",
     "BTS-SC-003": "blocked",
     "BTS-SC-004": "blocked",
     "BTS-SC-005": "blocked",
@@ -80,5 +80,5 @@
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-30T16:10:45.354248Z"
+  "started_at_utc": "2026-10-31T01:26:15.546316Z"
 }

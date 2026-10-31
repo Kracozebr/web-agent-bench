@@ -9,6 +9,8 @@ import { readSuccessorPreparationPolicySnapshot } from './run-service.js';
 import { finalizeKnownRankedTask, finalizeKnownTrainingTask } from './task-run-completion.js';
 import { evaluateTaskRubric, type EvaluateTaskInput, type TaskEvaluationResult } from './task-evaluator.js';
 import type { TaskEvaluationEvidenceSource } from './task-result-service.js';
+import { finalizeFencedTaskActionReceipts } from './task-action-fence-finalization.js';
+import type { TaskActionEvidenceSink } from './bef-task-executor.js';
 
 type Transaction = Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1280,6 +1282,7 @@ export interface TaskPreparationSessionRevoker {
 export function createTaskPreparationCancellationExecutor(
   deps: TaskPreparationDependencies,
   sessions: TaskPreparationSessionRevoker,
+  options:{actionEvidenceSink?:TaskActionEvidenceSink}={},
 ): CancellationExecutor {
   return {
     async fenceAndStop(input) {
@@ -1295,6 +1298,10 @@ export function createTaskPreparationCancellationExecutor(
             record.observation.generationId !== generationId) return { fenced: false };
         const fence = await fenceTaskPreparationWithEvidence(deps, preparationId, generationId);
       if (!fence.released) return { fenced: false };
+      await finalizeFencedTaskActionReceipts({db:deps.db,...(options.actionEvidenceSink?{evidenceSink:options.actionEvidenceSink}:{})},{
+        runId:input.runId.toLowerCase(),agentId:input.agentId.toLowerCase(),taskIndex:record.intent.taskIndex,
+        preparationId,generationId,fenceEvidenceHash:fence.evidenceHash,
+      });
         deps.preparationAdapter.clearCredentials?.(preparationId);
         sessions.unbindSession(input.runId.toLowerCase(), record.intent.taskIndex);
       return { fenced: true, evidenceHash: fence.evidenceHash, taskPreparation: {

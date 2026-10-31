@@ -81,8 +81,8 @@ export async function publishRankedHandoff(tx:Tx,input:{runId:string;ownerId:str
     const bestAggregate=best[0]&&object(best[0].aggregate_json);
     if(best.length!==1||!bestAggregate||bestAggregate.aggregateHash!==best[0]!.aggregate_hash)fail('RANKED_BEST_REPLAY_CONFLICT');
     const {aggregateHash:bestHash,...bestBody}=bestAggregate;
-    if(sha256CanonicalTaskJson(bestBody)!==bestHash||bestAggregate.manifestHash!==a.manifestHash||
-      compareExactRankedFractions(bestAggregate.overall as RankedOutcomeAggregate['overall'],a.overall)<0)fail('RANKED_BEST_REPLAY_CONFLICT');
+    if(sha256CanonicalTaskJson(bestBody)!==bestHash||typeof bestAggregate.manifestHash!=='string'||!/^[0-9a-f]{64}$/i.test(bestAggregate.manifestHash)||
+      (bestAggregate.manifestHash===a.manifestHash&&compareExactRankedFractions(bestAggregate.overall as RankedOutcomeAggregate['overall'],a.overall)<0))fail('RANKED_BEST_REPLAY_CONFLICT');
     return{handoffHash,aggregateHash};
   }
   if(input.replayed)fail('RANKED_HANDOFF_REPLAY_MISSING');
@@ -99,10 +99,14 @@ export async function publishRankedHandoff(tx:Tx,input:{runId:string;ownerId:str
     JOIN oid_ranked_verified_result r ON r.run_id=b.run_id WHERE b.benchmark_version=${a.benchmarkVersion} AND b.agent_id=${input.agentId} FOR UPDATE OF b`);
   if(bestRows.length>1)fail('RANKED_BEST_CONFLICT');
   const prior=bestRows[0]&&object(bestRows[0].aggregate_json);
+  if(bestRows.length===1&&!prior)fail('RANKED_BEST_CONFLICT');
   if(prior){const {aggregateHash:priorHash,...priorBody}=prior;
-    if(priorHash!==bestRows[0]!.aggregate_hash||sha256CanonicalTaskJson(priorBody)!==priorHash)fail('RANKED_BEST_CONFLICT');}
-  if(prior&&prior.manifestHash!==a.manifestHash)fail('RANKED_BENCHMARK_IDENTITY_CONFLICT');
-  if(!prior||compareExactRankedFractions(a.overall,prior.overall as RankedOutcomeAggregate['overall'])>0){
+    if(priorHash!==bestRows[0]!.aggregate_hash||sha256CanonicalTaskJson(priorBody)!==priorHash||
+      typeof prior.manifestHash!=='string'||!/^[0-9a-f]{64}$/i.test(prior.manifestHash))fail('RANKED_BEST_CONFLICT');}
+  // AICODE-NOTE: The legacy best pointer has only a benchmark-version key. A new manifest
+  // can complete and publish its own immutable result, but cannot compete with or replace
+  // that incompatible pointer. Replay validates both histories without comparing their scores.
+  if(!prior||(prior.manifestHash===a.manifestHash&&compareExactRankedFractions(a.overall,prior.overall as RankedOutcomeAggregate['overall'])>0)){
     await tx.execute(sql`INSERT INTO oid_ranked_best_result(benchmark_version,agent_id,run_id,updated_at) VALUES(${a.benchmarkVersion},${input.agentId},${input.runId},${input.finishedAt})
       ON CONFLICT(benchmark_version,agent_id) DO UPDATE SET run_id=EXCLUDED.run_id,updated_at=EXCLUDED.updated_at`);
   }

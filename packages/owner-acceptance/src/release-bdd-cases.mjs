@@ -117,6 +117,25 @@ export function createReleaseNegativeCandidates(sourceManifest, releaseApi) {
     }
   };
 
+  add('training_set_mismatch', (candidate) => {
+    candidate.inventory.openTrainingTaskIds[1] = 'S2';
+  }, { all: [schemaPathExpected('inventory.openTrainingTaskIds.1')] }, 'inventory.openTrainingTaskIds');
+
+  add('training_weight_or_sum_mismatch', (candidate) => {
+    candidate.inventory.openTrainingWeightSum = 7;
+  }, { all: [schemaPathExpected('inventory.openTrainingWeightSum')] }, 'inventory.openTrainingWeightSum');
+
+  add('ranked_or_training_case_count_mismatch', (candidate) => {
+    candidate.cases.training.pop();
+    candidate.cases.ranked.pop();
+  }, { all: [schemaPathExpected('cases.training'), schemaPathExpected('cases.ranked')] }, 'cases.training_and_ranked.length');
+
+  // AICODE-NOTE: This candidate must pass all evidence validation and fail at
+  // the real immutable PostgreSQL store, unlike malformed manifest negatives.
+  add('release_identity_reuse', (candidate) => {
+    candidate.benchmarkVersion = `${candidate.benchmarkVersion.slice(0, 104)}-bdd-identity-reuse`;
+  }, { activationErrorCode: 'release_identity_immutable_conflict' }, 'benchmarkVersion');
+
   add('placeholder', (candidate) => {
     const target = findCase(candidate, 'ranked', 'M1');
     target.caseId = `${target.caseId.slice(0, 96)}-placeholder`;
@@ -400,6 +419,9 @@ function safeBlockerRows(result) {
 
 function safeErrorCode(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
+  if (message === 'Task release identity already exists with different immutable content') {
+    return 'release_identity_immutable_conflict';
+  }
   return /^[A-Za-z0-9_:-]{1,128}$/.test(message) ? message : 'release_probe_activation_failed';
 }
 
@@ -452,8 +474,9 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
   }
 
   const variants = [];
+  const probes = createReleaseNegativeCandidates(verifiedManifest, releaseApi);
   let stateUnchanged = true;
-  for (const probe of createReleaseNegativeCandidates(verifiedManifest, releaseApi)) {
+  for (const probe of probes) {
     if (!probe.candidate) {
       variants.push({ id: probe.id, status: 'not_run', mutationPath: probe.mutationPath,
         expected: 'expected_production_blocker', observedBlockers: [], reasonCode: probe.generationErrorCode ?? 'negative_candidate_generation_failed' });
@@ -462,7 +485,16 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
     const candidateHash = probe.candidate.manifestHash;
     let activationResult = null;
     let activationErrorCode = null;
+    let preActivationValidation = null;
     try {
+      if (probe.expected.activationErrorCode) {
+        const validation = await releaseApi.validateTaskReleaseCandidate(probe.candidate, verifier);
+        preActivationValidation = validation.status === 'validated'
+          ? { status: validation.status, manifestHash: validation.release.manifestHash,
+            validationEvidence: clone(validation.validationEvidence) }
+          : { status: validation.status, blockers: safeBlockerRows(validation) };
+        if (validation.status !== 'validated') throw new Error('release_identity_reuse_validation_not_complete');
+      }
       activationResult = await storeApi.activatePostgresTaskReleaseCandidate(db, probe.candidate, verifier);
     } catch (error) {
       activationErrorCode = safeErrorCode(error);
@@ -481,7 +513,9 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
     const unchanged = before.stateSha256 === after.stateSha256;
     stateUnchanged &&= unchanged;
     const blockers = safeBlockerRows(activationResult);
-    const blockedByExpected = activationResult?.status === 'blocked' && expectedMatches(blockers, probe.expected);
+    const blockedByExpected = probe.expected.activationErrorCode
+      ? preActivationValidation?.status === 'validated' && activationErrorCode === probe.expected.activationErrorCode
+      : activationResult?.status === 'blocked' && expectedMatches(blockers, probe.expected);
     const status = !unchanged ? 'failed' : blockedByExpected ? 'verified'
       : activationResult?.status === 'validated' || activationErrorCode ? 'failed' : 'not_run';
     variants.push({
@@ -493,6 +527,7 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
       expected: 'expected_production_blocker',
       observedBlockers: blockers,
       activationErrorCode,
+      ...(preActivationValidation ? { preActivationValidation } : {}),
       databaseStateSha256Before: before.stateSha256,
       databaseStateSha256After: after.stateSha256,
       databaseUnchanged: unchanged,
@@ -508,7 +543,7 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
   const notRunCount = variants.filter((entry) => entry.status === 'not_run').length;
   return {
     ...base,
-    status: failedCount ? 'failed' : notRunCount || variants.length !== 17 ? 'blocked' : 'verified',
+    status: failedCount ? 'failed' : notRunCount || variants.length !== probes.length ? 'blocked' : 'verified',
     positiveActivation: {
       status: activation.status,
       manifestHash: activation.release.manifestHash,
@@ -516,7 +551,7 @@ export async function runReleaseBddCases({ db, observerPool, manifest, verifier,
     },
     release: summarizeRelease(verifiedManifest, referenceRows, difficultyEvidence),
     database: { before, unchanged: stateUnchanged, snapshots: [...databaseSnapshots.values()] },
-    coverage: { requested: 17, observed: verifiedCount, notRun: notRunCount, failed: failedCount },
+    coverage: { requested: probes.length, observed: verifiedCount, notRun: notRunCount, failed: failedCount },
     variants,
   };
 }

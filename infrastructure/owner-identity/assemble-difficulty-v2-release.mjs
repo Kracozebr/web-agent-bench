@@ -6,6 +6,7 @@ import { TaskReleaseManifestSchema, TaskCaseSchema, sha256CanonicalTaskJson,
   taskPolicyHash, taskBenchmarkHash, validateTaskReleaseCandidate } from '../../packages/owner-identity/src/task-release.ts';
 import { CURRENT_TRAINING_TASK_IDS, TASK_IDS, PUBLIC_TASK_CATALOG } from '../../packages/owner-identity/src/task-catalog.ts';
 import { verifyRetainedTaskFeasibility } from '../../packages/owner-identity/src/task-feasibility-evidence.ts';
+import { verifySourceRefreshCandidate } from './task-release-source-refresh.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const boundary = 'actual_tool_http_x402_local_evm_application_store';
@@ -52,8 +53,11 @@ async function main() {
   must(sha(manifestBytes) === candidate.executionIdentity.environmentManifestSha256
     && sha256CanonicalTaskJson(candidate.executionIdentity) === candidate.executionIdentityHash
     && bef.tools.participantProtocol === candidate.participantToolProtocol, 'runtime_identity_mismatch');
-  const witnessPath = 'artifacts/runs/bts-release-feasibility-witness/f28df42b-6341-467a-9be9-380e63ab4325/witness.json';
-  const witnessSha256 = 'd092485d3a0a2b807be43411d318bafc8340506ef1873660f4dfa05ebaff6a56';
+  const refresh = candidate.sourceRefreshProfile ? await verifySourceRefreshCandidate('/workspace', candidate) : null;
+  const witnessPath = refresh?.witnessRef.path
+    ?? 'artifacts/runs/bts-release-feasibility-witness/f28df42b-6341-467a-9be9-380e63ab4325/witness.json';
+  const witnessSha256 = refresh?.witnessRef.sha256
+    ?? 'd092485d3a0a2b807be43411d318bafc8340506ef1873660f4dfa05ebaff6a56';
   await pinned(witnessPath, witnessSha256);
   const sourceInputs = [{ path: args[1], sha256: args[3] }, { path: policyPath, sha256: sha(policyBytes) },
     { path: 'infrastructure/benchmark-environment/manifest.json', sha256: sha(manifestBytes) },

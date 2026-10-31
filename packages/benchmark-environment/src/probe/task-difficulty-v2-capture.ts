@@ -631,13 +631,16 @@ async function captureH2(ctx: ProbeContext, mode: DifficultyMode, source: Diffic
 /** Capture exactly one approved task/mode in one fresh, scoped generation. */
 export async function captureDifficultyV2Task(ctx: ProbeContext, input: {
   taskId: DifficultyTaskId; mode: DifficultyMode; source: DifficultyProfileSource;
+  recipient?: string;
 }): Promise<DifficultyV2TaskCapture> {
+  if (input.recipient !== undefined && input.taskId !== 'S1') throw new Error('task_transfer_recipient_scope_invalid');
   if (ctx.runtime.manifest.tools.participantProtocol !== 'separate_payment_delivery_v2') {
     throw new Error('task_difficulty_v2_participant_protocol_not_pinned');
   }
   if (input.taskId === 'S1' || input.taskId === 'S2' || input.taskId === 'S3'
     || input.taskId === 'S4' || input.taskId === 'M3') {
-    return captureBasicDifficultyV2Task(ctx, { taskId: input.taskId, mode: input.mode, source: input.source });
+    return captureBasicDifficultyV2Task(ctx, { taskId: input.taskId, mode: input.mode, source: input.source,
+      ...(input.recipient === undefined ? {} : { recipient: input.recipient }) });
   }
   if (input.taskId === 'M2') return captureM2DifficultyV2Task(ctx, input.mode, input.source);
   validateDifficultyV2ProfileTask(ctx, input.source, input.taskId, input.mode);

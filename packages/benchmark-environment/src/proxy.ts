@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { loadManifest } from './manifest.js';
 import { readProxyConfig, readSecret } from './config.js';
+import { forwardValidatedProxyRead, SOURCE_READ_TOTAL_TIMEOUT_MS, SOURCE_READ_RETRY_BACKOFF_MS, SOURCE_READ_MAX_ATTEMPTS } from './proxy-read-forwarding.js';
 
 type RpcRequest = { jsonrpc: '2.0'; id: string | number | null; method: string; params: unknown[] };
 type RpcResult = { jsonrpc: '2.0'; id: string | number | null; result?: unknown; error?: { code: number; message: string; data?: unknown } };
@@ -195,6 +196,8 @@ export async function createRpcProxy(): Promise<FastifyInstance> {
   let deniedItems = 0;
   let upstreamErrors = 0;
   let reservedSourceCalls = 0;
+  const sourceReadRecovery = { wireAttempts:0, networkFailuresBeforeResponse:0, retryAttempts:0,
+    retryResponses:0, retryExhausted:0, retryBudgetDenied:0, retryDeadlineExhausted:0 };
   const deniedByMethod = new Map<string, number>();
   const forwardedByMethod = new Map<string, number>();
   const count = (target: Map<string, number>, method: string) => target.set(method, (target.get(method) ?? 0) + 1);
@@ -223,6 +226,8 @@ export async function createRpcProxy(): Promise<FastifyInstance> {
       mode: config.mode, forwardedItems, deniedItems, upstreamErrors,
       sourceCallsReserved: isSource ? reservedSourceCalls : null,
       sourceCallLimit: isSource ? manifest.guardrails.maxSourceCallsPerTrial : null,
+      sourceReadRecovery: isSource ? { ...sourceReadRecovery, maxAttempts:SOURCE_READ_MAX_ATTEMPTS,
+        totalTimeoutMs:SOURCE_READ_TOTAL_TIMEOUT_MS, backoffMs:SOURCE_READ_RETRY_BACKOFF_MS } : null,
       deniedByMethod: Object.fromEntries(deniedByMethod),
       forwardedByMethod: Object.fromEntries(forwardedByMethod),
       deniedParameterShapes: [...deniedParameterShapes.values()],
@@ -281,12 +286,27 @@ export async function createRpcProxy(): Promise<FastifyInstance> {
         : { jsonrpc: '2.0', id: forward[0]!.request.id, method: forward[0]!.request.method, params: forward[0]!.params };
       const serialized = JSON.stringify(body);
       if (Buffer.byteLength(serialized) > maxBody) return reply.code(413).send(rpcError(null, -32005, 'RPC request byte limit exceeded'));
-      forwardedItems += forward.length;
-      for (const { request: item } of forward) count(forwardedByMethod, item.method);
       let response: Response;
       let responseText: string;
       try {
-        response = await fetch(config.targetUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: serialized, signal: AbortSignal.timeout(15_000) });
+        response = await forwardValidatedProxyRead({source:isSource,targetUrl:config.targetUrl,serialized,
+          reserveRetry:()=>{
+            if(reservedSourceCalls+forward.length>maxCalls)return false;
+            reservedSourceCalls+=forward.length;return true;
+          },
+          onAttempt:(retry)=>{
+            forwardedItems+=forward.length;
+            for(const {request:item} of forward)count(forwardedByMethod,item.method);
+            if(isSource){sourceReadRecovery.wireAttempts++;if(retry)sourceReadRecovery.retryAttempts++;}
+          },
+          onNetworkFailure:()=>{sourceReadRecovery.networkFailuresBeforeResponse++;},
+          onRetryOutcome:(reason)=>{
+            if(reason==='response')sourceReadRecovery.retryResponses++;
+            else if(reason==='exhausted')sourceReadRecovery.retryExhausted++;
+            else if(reason==='budget_denied')sourceReadRecovery.retryBudgetDenied++;
+            else sourceReadRecovery.retryDeadlineExhausted++;
+          },
+        });
         const lengthHeader = response.headers.get('content-length');
         if (lengthHeader && Number(lengthHeader) > maxResponse) throw new Error('upstream_response_too_large');
         const reader = response.body?.getReader();

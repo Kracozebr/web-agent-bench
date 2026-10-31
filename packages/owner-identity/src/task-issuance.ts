@@ -4,6 +4,14 @@ import type { OwnerDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
 import type { DataComponentValidator, TaskCase, TaskReleaseManifest, TaskReleaseQuerySource } from "./task-release.js";
 import { getTaskExecutionContext } from "./task-execution-binding.js";
+import { z } from "zod";
+import { TaskFinishAnswerSchemas } from "./task-action-service.js";
+
+export function issuedTaskAnswerContract(taskId: string): Record<string, unknown> {
+  const schema = taskId === 'S2' ? TaskFinishAnswerSchemas.S2 : taskId === 'S3' ? TaskFinishAnswerSchemas.S3 : null;
+  return schema ? { acceptsStructuredAnswer: true, answerOptional: true, schema: z.toJSONSchema(schema) }
+    : { acceptsStructuredAnswer: false, answerOptional: true, instruction: 'Omit answer; grading observes admitted task effects.' };
+}
 
 const componentInstruction = (component: { componentId: string; resourceId: string; sourceIds: string[]; validator: DataComponentValidator }) => ({
   componentId: component.componentId, resourceId: component.resourceId, sourceIds: [...component.sourceIds],
@@ -68,6 +76,7 @@ export interface IssuedTask {
   participantToolProtocol: NonNullable<TaskReleaseManifest['participantToolProtocol']>;
   mandatoryRules: string[];
   conditions: Record<string, unknown>;
+  answerContract: Record<string, unknown>;
   costPolicy: TaskReleaseManifest["costPolicy"];
   execution: Pick<TaskReleaseManifest["executionIdentity"], "localChainId" | "localNetwork" | "assets" | "contracts">;
   startedAt: string;
@@ -154,6 +163,7 @@ export async function getCurrentAgentTask(
       releaseIdentity: run.release_identity, manifestHash: run.manifest_hash, mode: run.mode,
       participantToolProtocol: release.manifest.participantToolProtocol ?? 'combined_purchase_v1',
       mandatoryRules: [...task.mandatoryRules], conditions: issuedTaskConditions(task, release.manifest.participantToolProtocol),
+      answerContract: issuedTaskAnswerContract(task.taskId),
       costPolicy: structuredClone(release.manifest.costPolicy),
       execution: { localChainId: release.manifest.executionIdentity.localChainId,
         localNetwork: release.manifest.executionIdentity.localNetwork,

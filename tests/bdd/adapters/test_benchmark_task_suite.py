@@ -97,7 +97,12 @@ def test_retained_release_fixture_recomputes_bounded_u1_allocation_negative() ->
     assert capture["release"].get("caseHashes") == expected_case_summary
     variants = capture.get("variants")
     assert isinstance(variants, list)
-    assert {row.get("id") for row in variants if isinstance(row, dict)} == set(adapter.RELEASE_VARIANT_REQUIREMENTS)
+    historical_variant_ids = {row.get("id") for row in variants if isinstance(row, dict)}
+    missing_current_controls = {
+        "training_set_mismatch", "training_weight_or_sum_mismatch",
+        "ranked_or_training_case_count_mismatch", "release_identity_reuse",
+    }
+    assert historical_variant_ids == set(adapter.RELEASE_VARIANT_REQUIREMENTS) - missing_current_controls
     snapshots_raw = capture.get("database", {}).get("snapshots")
     assert isinstance(snapshots_raw, list)
     snapshots = {row["stateSha256"]: row for row in snapshots_raw if adapter._verify_release_database_snapshot(row)}
@@ -123,6 +128,53 @@ def test_retained_release_fixture_recomputes_bounded_u1_allocation_negative() ->
         {"account": "participant", "assetId": "unrelated-invalid-balance", "amountUnits": "9" * 79}
     )
     assert adapter._expected_release_candidate(malformed_source, "initially_satisfied_u1_allocation") is None
+
+
+def test_current_release_controls_require_independent_mutation_and_store_rejection_proof() -> None:
+    fixture_path = os.environ.get("BTS_RELEASE_CURRENT_FIXTURE")
+    if not fixture_path:
+        pytest.skip("BTS_RELEASE_CURRENT_FIXTURE is required for current-catalog replay regression")
+    capture = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
+    source = capture["release"]["manifest"]
+    before_hash = "c" * 64
+    snapshot = {"tables": {"oid_task_release": {"rows": [{
+        "release_identity": source["releaseIdentity"], "manifest_hash": source["manifestHash"],
+        "sealed_manifest": source,
+    }]}}}
+    snapshots = {before_hash: snapshot}
+    controls = ("training_set_mismatch", "training_weight_or_sum_mismatch",
+                "ranked_or_training_case_count_mismatch", "release_identity_reuse")
+    for variant_id in controls:
+        expected = adapter._expected_release_candidate(source, variant_id)
+        assert expected is not None, variant_id
+        candidate, path = expected
+        blockers = [{"code": code, "subject": subject}
+                    for code, subject in adapter.RELEASE_VARIANT_REQUIREMENTS[variant_id][1]]
+        variant = {
+            "id": variant_id, "status": "verified", "candidateHash": candidate["manifestHash"],
+            "candidateManifest": candidate, "mutationPath": path, "observedBlockers": blockers,
+            "databaseStateSha256Before": before_hash, "databaseStateSha256After": before_hash,
+            "databaseUnchanged": True, "activationErrorCode": None,
+        }
+        if variant_id == "release_identity_reuse":
+            variant["activationErrorCode"] = "release_identity_immutable_conflict"
+            variant["preActivationValidation"] = {
+                "status": "validated", "manifestHash": candidate["manifestHash"],
+                "validationEvidence": [
+                    {"kind": "feasibility", "sha256": candidate["feasibilityEvidence"]["sha256"]},
+                    *({"kind": "reference_path", "sha256": row["referencePath"]["evidence"]["sha256"]}
+                      for row in candidate["cases"]["training"] + candidate["cases"]["ranked"]),
+                    {"kind": "difficulty_review", "sha256": candidate["difficultyReviewEvidence"]["sha256"]},
+                ],
+            }
+            assert not adapter._variant_matches(None, {**variant, "preActivationValidation": None}, source, snapshots)
+            assert not adapter._variant_matches(None, {**variant, "activationErrorCode": "generic_error"}, source, snapshots)
+            assert not adapter._variant_matches(None, variant, source, {before_hash: {}})
+        assert adapter._variant_matches(None, variant, source, snapshots), variant_id
+        assert not adapter._variant_matches(None, {**variant, "candidateManifest": source}, source, snapshots)
+        assert not adapter._variant_matches(None, {**variant, "databaseStateSha256After": "d" * 64}, source, snapshots)
+        if blockers:
+            assert not adapter._variant_matches(None, {**variant, "observedBlockers": []}, source, snapshots)
 
 
 def test_ranked_capture_summary_without_snapshots_does_not_derive_pass() -> None:

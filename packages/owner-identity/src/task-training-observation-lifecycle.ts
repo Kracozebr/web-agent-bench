@@ -83,7 +83,14 @@ export type TaskTrainingObservationLifecycleResult =
   | { status: 'run_completed'; stage: 'terminalize'; runId: string; taskIndex: number; taskId: string;
       outcome: 'passed' | 'partial' | 'failed'; replayed: boolean }
   | { status: 'blocked' | 'unavailable'; stage: TaskTrainingObservationLifecycleStage; reasonCode: string;
-      runId: string; taskIndex: number; taskId?: string; evaluationStatus?: 'known' | 'unknown' };
+      runId: string; taskIndex: number; taskId?: string; evaluationStatus?: 'known' | 'unknown'; evaluationUnknownReasons?: string[] };
+
+/** Internal diagnostics contain categories only, never raw case values or evaluator input. */
+export function taskEvaluationUnknownReasonCategories(reasons: readonly string[]): string[] {
+  const allowed=new Set(['paid_resource_delivery_unobserved','settled_payment_missing_matching_receipt_effect',
+    'operating_expense_evidence_incomplete_or_contradictory','rubric_evaluation_incomplete']);
+  return [...new Set(reasons.slice(0,16).map(reason=>allowed.has(reason)?reason:'evaluation_evidence_unknown'))];
+}
 
 export type KnownCandidateSealResult<T> =
   | { status: 'known'; result: TaskEvaluationResult; sealed: T }
@@ -142,7 +149,7 @@ type LifecycleTargetRow = {
 type LifecycleTargetCheck = { row: LifecycleTargetRow } | { reasonCode: string; taskId?: string };
 
 function blocked(target: TaskTarget, stage: TaskTrainingObservationLifecycleStage, reasonCode: string,
-  taskId?: string, evaluationStatus?: 'known' | 'unknown'): TaskTrainingObservationLifecycleResult {
+  taskId?: string, evaluationStatus?: 'known' | 'unknown'): Extract<TaskTrainingObservationLifecycleResult,{status:'blocked'|'unavailable'}> {
   return { status: 'blocked', stage, reasonCode, runId: target.runId, taskIndex: target.taskIndex,
     ...(taskId ? { taskId } : {}), ...(evaluationStatus ? { evaluationStatus } : {}) };
 }
@@ -450,7 +457,8 @@ export async function processClosedTrainingTask(
       const gated = await preflightAndSealKnownCandidate(context.input, () =>
         sealTaskObservationBundle({ db: deps.db, taskReleaseSource: deps.taskReleaseSource }, target, collection.candidate));
       await deps.assertLeaseHeld();
-      if (gated.status !== 'known') return blocked(target, 'preflight', 'candidate_evaluation_unknown', taskId, 'unknown');
+      if (gated.status !== 'known') return { ...blocked(target, 'preflight', 'candidate_evaluation_unknown', taskId, 'unknown'),
+        evaluationUnknownReasons:taskEvaluationUnknownReasonCategories(gated.result.unknownReasons) };
       const stored = gated.sealed;
       if (stored.status !== 'sealed') return blocked(target, stage, stored.reasonCode, taskId);
       sealed = stored;

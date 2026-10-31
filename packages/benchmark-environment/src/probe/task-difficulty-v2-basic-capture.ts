@@ -334,7 +334,7 @@ async function captureNative(ctx: ProbeContext, taskId: 'S4' | 'M3', mode: Basic
   return { taskId, mode, capture, session, participantActions, caseArtifact };
 }
 
-async function captureS1(ctx: ProbeContext, mode: BasicDifficultyMode, source: { path: string; sha256: string }): Promise<BasicDifficultyCapture> {
+async function captureS1(ctx: ProbeContext, mode: BasicDifficultyMode, source: { path: string; sha256: string }, recipient?: string): Promise<BasicDifficultyCapture> {
   const policy = basicDifficultyV2Policy('S1', mode, ctx.runtime.manifest);
   const variantId = `bts_s1_${mode}_difficulty_v2_transfer_reference`;
   const { result: legacyCapture, responses } = await withResponseCapture(ctx, 'S1', (input) => {
@@ -342,7 +342,7 @@ async function captureS1(ctx: ProbeContext, mode: BasicDifficultyMode, source: {
     try { pathname = new URL(input.url).pathname; } catch { return null; }
     if (input.method.toUpperCase() === 'POST' && pathname === `/tools/${ctx.env.envId}/transfer`) return 'transfer';
     return 'unclassified_actor_action';
-  }, () => captureSelectedUsdcTransfer(ctx, policy.amountUnits));
+  }, () => captureSelectedUsdcTransfer(ctx, policy.amountUnits, recipient));
   const session = sessionFor(ctx, 'S1');
   if (responses.some((item) => item.kind === 'unclassified_actor_action')) throw new Error('task_difficulty_v2_s1_unclassified_tool_action');
   const operation = record(legacyCapture.operation);
@@ -355,6 +355,8 @@ async function captureS1(ctx: ProbeContext, mode: BasicDifficultyMode, source: {
     taskId: 'S1', mode, difficultyProfile: { profileId: 'bts-task-difficulty-v2', mode, sourcePath: source.path,
       sourceSha256: source.sha256, manifestSha256: ctx.runtime.manifestSha256 },
     inputPolicy: { ...policy, participantActionPlan: ['transfer'], countedParticipantActions: 1 },
+    recipientSelection: recipient === undefined ? { source: 'ephemeral_generator' }
+      : { source: 'explicit_public_fixture', recipient },
     participantToolProtocol: 'separate_payment_delivery_v2', executionProtocol: 'selected_execution_v1', participantActionPlan: ['transfer'],
     countedParticipantActions: actions.length, participantActions: actions,
     releaseReadiness: 'blocked', candidateDoesNotClaimTaskScore: true,
@@ -403,8 +405,9 @@ async function captureS2(ctx: ProbeContext, mode: BasicDifficultyMode, source: {
 
 export async function captureBasicDifficultyV2Task(ctx: ProbeContext, input: {
   taskId: BasicDifficultyTaskId; mode: BasicDifficultyMode; source: { path: string; sha256: string };
+  recipient?: string;
 }): Promise<BasicDifficultyCapture> {
-  if (input.taskId === 'S1') return captureS1(ctx, input.mode, input.source);
+  if (input.taskId === 'S1') return captureS1(ctx, input.mode, input.source, input.recipient);
   if (input.taskId === 'S2') return captureS2(ctx, input.mode, input.source);
   if (input.taskId === 'S3') return captureS3(ctx, input.mode, input.source);
   if (input.taskId === 'S4' || input.taskId === 'M3') return captureNative(ctx, input.taskId, input.mode, input.source);

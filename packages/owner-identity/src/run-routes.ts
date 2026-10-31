@@ -331,7 +331,7 @@ export function registerRunIntentMcpTools(server: McpServer, principal: AgentPri
   }, async (input) => mcpTaskOperation(() => getTaskActionState(deps, principal, input)));
   server.registerTool("runs.finish_task", {
     title: "Close the current task to new actions",
-    description: "Commit one action cutoff and the structured answer for a read-only task. Admitted effects still need reconciliation and platform grading. This operation accepts no score and does not activate the next task.",
+    description: "Commit one action cutoff. Follow current_task.task.answerContract: only S2/S3 accept a structured answer, with the disclosed schema; omit answer for other tasks. Admitted effects still need reconciliation and platform grading. This accepts no score and does not activate the next task.",
     inputSchema: z.object({ ...taskTarget, answer: z.unknown().optional() }).strict(),
   }, async (input) => mcpTaskOperation(() => finishTask(deps, principal, input)));
   server.registerTool("runs.current_task", {

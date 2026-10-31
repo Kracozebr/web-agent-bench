@@ -1205,7 +1205,7 @@ export class BefTaskExecutor {
       const context = await this.lockContext(tx, candidate.id);
       if (!context || context.candidate.outbox_status !== 'pending' || context.candidate.receipt_status !== 'pending') return false;
       const publicBinding = binding
-        ? await assertTaskExecutionBinding(tx, publicBindingInput(binding))
+        ? await assertTaskExecutionBinding(tx, publicBindingInput(binding), { admittedActionId: candidate.id })
         : await getTaskExecutionBinding(tx, { runId: context.candidate.run_id, taskIndex: context.candidate.task_index });
       await tx.execute(sql`UPDATE oid_run_task_action_outbox SET status='delivered',delivered_at=clock_timestamp()
         WHERE action_id=${candidate.id} AND status='pending'`);
@@ -1290,7 +1290,8 @@ export class BefTaskExecutor {
       if (task.action_cutoff_sequence === null || sequence > BigInt(task.action_cutoff_sequence)) return 'task_cutoff_fenced';
     } else if (task.closure_status !== 'open') return 'task_closed';
     if (task.status !== 'active') return 'task_not_active';
-    const execution = await getTaskExecutionContext(tx, { runId: run.id, taskIndex: action.task_index }, { requireActive: true });
+    const execution = await getTaskExecutionContext(tx, { runId: run.id, taskIndex: action.task_index },
+      { requireActive: true, admittedActionId: action.id });
     if (!execution || execution.envId !== binding.envId || execution.envId !== action.environment_id ||
         execution.generationId !== binding.generationId || execution.environmentManifestSha256 !== binding.manifestHash ||
         execution.applicationSourceHash !== binding.applicationSourceHash ||
@@ -1340,7 +1341,7 @@ export class BefTaskExecutor {
         return { status: 'unknown', reasonCode: 'claimed_action_state_unavailable' };
       }
       if (forcedReason) return { status: 'unknown', reasonCode: forcedReason };
-      await assertTaskExecutionBinding(tx, publicBindingInput(binding));
+      await assertTaskExecutionBinding(tx, publicBindingInput(binding), { admittedActionId: candidate.id });
       const denied = await this.authorizeDispatch(tx, context, binding);
       if (denied) return { status: 'rejected_before_execution', reasonCode: denied };
       let paymentReference: TaskPaymentReference | undefined;

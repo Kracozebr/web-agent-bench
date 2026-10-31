@@ -2,25 +2,56 @@ import type { RuntimeManifest } from './manifest.js';
 
 type JsonRpcResponse = { jsonrpc?: string; id?: number; result?: unknown; error?: { code?: number; message?: string } };
 
+export type AdminRpcDiagnostic = {
+  reason: 'transport_timeout' | 'transport_abort' | 'transport_network' | 'http_status' | 'invalid_json' |
+    'invalid_rpc_envelope' | 'rpc_error' | 'unexpected_set_balance_ack' | 'invalid_balance_readback' | 'balance_mismatch';
+  stage: 'request' | 'set' | 'readback';
+  httpStatus?: number;
+  rpcCode?: number;
+};
+
+/** AICODE-NOTE: Only fixed categories and bounded numbers cross the fixture diagnostic boundary. */
+export class AdminRpcFailure extends Error {
+  constructor(readonly diagnostic: AdminRpcDiagnostic) {
+    super('Private local RPC operation failed');
+    this.name = 'AdminRpcFailure';
+  }
+}
+
 export async function adminRpc(rpcUrl: string, method: string, params: unknown[] = []): Promise<unknown> {
-  const response = await fetch(rpcUrl, {
+  let response: Response;
+  try { response = await fetch(rpcUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok) throw new Error('Private local RPC request failed');
-  const body = await response.json() as JsonRpcResponse;
-  if (body.id !== 1 || body.error || !Object.hasOwn(body, 'result')) throw new Error('Private local RPC returned no confirmed result');
+  }); } catch (error) {
+    const name = error && typeof error === 'object' ? (error as {name?: unknown}).name : null;
+    throw new AdminRpcFailure({ reason: name === 'TimeoutError' ? 'transport_timeout' : name === 'AbortError' ? 'transport_abort' : 'transport_network', stage: 'request' });
+  }
+  if (!response.ok) throw new AdminRpcFailure({reason: 'http_status', stage: 'request', httpStatus: response.status});
+  let body: JsonRpcResponse;
+  try { body = await response.json() as JsonRpcResponse; }
+  catch { throw new AdminRpcFailure({reason: 'invalid_json', stage: 'request'}); }
+  if (!body || typeof body !== 'object' || Array.isArray(body) || body.id !== 1) {
+    throw new AdminRpcFailure({reason: 'invalid_rpc_envelope', stage: 'request'});
+  }
+  if (body.error) throw new AdminRpcFailure({reason: 'rpc_error', stage: 'request',
+    ...(Number.isInteger(body.error.code) && Number(body.error.code) >= -2147483648 && Number(body.error.code) <= 2147483647 ? {rpcCode: body.error.code} : {})});
+  if (!Object.hasOwn(body, 'result')) throw new AdminRpcFailure({reason: 'invalid_rpc_envelope', stage: 'request'});
   return body.result;
 }
 
 export async function setAnvilBalance(rpcUrl: string, address: `0x${string}`, value: string): Promise<void> {
-  const result = await adminRpc(rpcUrl, 'anvil_setBalance', [address, value]);
-  if (result !== null && result !== true) throw new Error('Private Anvil balance setter returned an unexpected acknowledgement');
-  const observed = await adminRpc(rpcUrl, 'eth_getBalance', [address, 'latest']);
+  const atStage = async (stage: 'set'|'readback', method: string, params: unknown[]) => {
+    try { return await adminRpc(rpcUrl, method, params); }
+    catch (error) { if (error instanceof AdminRpcFailure) throw new AdminRpcFailure({...error.diagnostic, stage}); throw error; }
+  };
+  const result = await atStage('set', 'anvil_setBalance', [address, value]);
+  if (result !== null && result !== true) throw new AdminRpcFailure({reason: 'unexpected_set_balance_ack', stage: 'set'});
+  const observed = await atStage('readback', 'eth_getBalance', [address, 'latest']);
   if (typeof observed !== 'string' || !/^0x[0-9a-f]+$/i.test(observed) || BigInt(observed) !== BigInt(value)) {
-    throw new Error('Private Anvil balance did not equal the declared fixture value');
+    throw new AdminRpcFailure({reason: typeof observed !== 'string' || !/^0x[0-9a-f]+$/i.test(observed) ? 'invalid_balance_readback' : 'balance_mismatch', stage: 'readback'});
   }
 }
 

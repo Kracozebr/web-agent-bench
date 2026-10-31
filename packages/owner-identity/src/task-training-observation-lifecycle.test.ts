@@ -14,7 +14,7 @@ import { getTaskEvaluatorBuildHash, recordTaskEvaluation } from './task-result-s
 import { getTaskPreparation, type TaskPreparationAdapter } from './task-preparation.js';
 import type { TaskReleaseQuerySource } from './task-release.js';
 import { addFixture } from './task-run-completion.test-fixture.js';
-import { preflightAndSealKnownCandidate, processClosedTrainingTask, supportsObservationTask,
+import { preflightAndSealKnownCandidate, processClosedTrainingTask, supportsObservationTask,taskEvaluationUnknownReasonCategories,
   supportsTrainingObservationTask, taskObservationCollectorFor } from './task-training-observation-lifecycle.js';
 
 const evidence: EvidenceReference = {
@@ -23,6 +23,11 @@ const evidence: EvidenceReference = {
   boundary: 'actual_tool_http_x402_local_evm_application_store',
 };
 const txHash = `0x${'b'.repeat(64)}`;
+
+test('evaluation diagnostics retain safe unknown categories without case data',()=>{
+ assert.deepEqual(taskEvaluationUnknownReasonCategories(['paid_resource_delivery_unobserved',
+  'private-case-value','paid_resource_delivery_unobserved']),['paid_resource_delivery_unobserved','evaluation_evidence_unknown']);
+});
 
 test('training observation routing preserves legacy collectors and supports open paid and chain tasks', () => {
   const routes = new Map<string, string>([

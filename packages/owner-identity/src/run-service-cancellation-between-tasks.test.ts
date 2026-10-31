@@ -129,7 +129,9 @@ test('post-start cancellation between known fenced tasks reuses the exact stored
     assert.deepEqual(unboundSessions, [{ runId: good.runId, taskIndex: 0 }],
       'session cleanup uses the exact predecessor index returned by the stored preparation');
 
-    const successorCase = good.record.manifest.cases.training.find((entry: { taskId: string }) => entry.taskId === 'S2');
+    const goodSuccessorRows = await client`SELECT task_id FROM oid_run_task WHERE run_id=${good.runId} AND task_index=1`;
+    assert.equal(goodSuccessorRows.length, 1);
+    const successorCase = good.record.manifest.cases.training.find((entry: { taskId: string }) => entry.taskId === goodSuccessorRows[0]!.task_id);
     assert.ok(successorCase);
     await assert.rejects(beginSuccessorTaskPreparation({ db, releaseSource,
       predecessorEvidenceSource: completionDeps.evidenceSource,
@@ -159,13 +161,15 @@ test('post-start cancellation between known fenced tasks reuses the exact stored
       } },
     };
     await finalizeKnownTrainingTask(corruptCompletionDeps, { runId: corrupt.runId, taskIndex: 0 });
-    const successor = corrupt.record.manifest.cases.training.find((entry: { taskId: string }) => entry.taskId === 'S2');
+    const corruptSuccessorRows = await client`SELECT task_id FROM oid_run_task WHERE run_id=${corrupt.runId} AND task_index=1`;
+    assert.equal(corruptSuccessorRows.length, 1);
+    const successor = corrupt.record.manifest.cases.training.find((entry: { taskId: string }) => entry.taskId === corruptSuccessorRows[0]!.task_id);
     assert.ok(successor);
     await client`INSERT INTO oid_task_preparation_intent(preparation_id,run_id,task_index,claim_id,lease_id,environment_id,
         release_identity,manifest_hash,task_id,case_id,case_hash,initial_state_sha256,execution_identity_hash,
         environment_manifest_sha256,application_source_hash)
       VALUES(${randomUUID()},${corrupt.runId},1,${corrupt.claimId},${randomUUID()},'orphan-successor-preparation',
-        ${corrupt.record.releaseIdentity},${corrupt.record.manifestHash},'S2',${successor.caseId},${successor.caseHash},
+        ${corrupt.record.releaseIdentity},${corrupt.record.manifestHash},${successor.taskId},${successor.caseId},${successor.caseHash},
         ${successor.initialState.stateSha256},${corrupt.record.manifest.executionIdentityHash},
         ${corrupt.record.manifest.executionIdentity.environmentManifestSha256},${corrupt.record.manifest.executionIdentity.x402ServiceSha256})`;
     await assert.rejects(requestRunCancellation(db, {

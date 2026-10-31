@@ -37,14 +37,15 @@ export const TaskActionCommandSchema = z.discriminatedUnion('kind', [
   }).strict().refine((value) => value.inputAssetId !== value.outputAssetId, 'swap assets must differ'),
 ]);
 
-const shortAnswerString = z.string().max(512);
+// AICODE-NOTE: PostgreSQL JSONB cannot store NUL; reject before cutoff writes.
+const shortAnswerString = z.string().max(512).regex(/^[^\u0000]*$/);
 const S2TaskAnswerSchema = z.object({
   amountUnits: shortAnswerString.optional(), network: shortAnswerString.optional(), assetId: shortAnswerString.optional(),
   recipient: shortAnswerString.optional(), scheme: shortAnswerString.optional(), resourceId: shortAnswerString.optional(),
   offerId: shortAnswerString.optional(), version: shortAnswerString.optional(),
-  authFields: z.array(z.object({ name: z.string().min(1).max(128), value: shortAnswerString }).strict()).max(128).optional(),
+  authFields: z.array(z.object({ name: z.string().min(1).max(128).regex(/^[^\u0000]*$/), value: shortAnswerString }).strict()).max(128).optional(),
 }).strict();
-const S3TaskAnswerSchema = z.object({ offerId: z.string().max(128).optional() }).strict();
+const S3TaskAnswerSchema = z.object({ offerId: z.string().max(128).regex(/^[^\u0000]*$/).optional() }).strict();
 export const TaskFinishAnswerSchemas = { S2: S2TaskAnswerSchema, S3: S3TaskAnswerSchema } as const;
 export type TaskFinishAnswer = z.infer<typeof S2TaskAnswerSchema> | z.infer<typeof S3TaskAnswerSchema>;
 
@@ -207,7 +208,15 @@ export function parseTaskFinishAnswer(taskId: string, value: unknown): TaskFinis
   const schema = taskId === 'S2' ? S2TaskAnswerSchema : taskId === 'S3' ? S3TaskAnswerSchema : null;
   if (!schema) throw new HttpError(400, 'INVALID_TASK_ANSWER', 'This task does not accept a structured finish answer');
   const parsed = schema.safeParse(value);
-  if (!parsed.success) throw new HttpError(400, 'INVALID_TASK_ANSWER', 'The structured task answer is malformed');
+  if (!parsed.success) {
+    // AICODE-NOTE: Disclose schema paths, never rejected values or unknown key names.
+    const allowed = new Set(['amountUnits', 'network', 'assetId', 'recipient', 'scheme', 'resourceId', 'offerId', 'version', 'authFields', 'name', 'value']);
+    const paths = [...new Set(parsed.error.issues.slice(0, 4).map((issue) => {
+      const path = issue.path.filter((part) => typeof part === 'number' || (typeof part === 'string' && allowed.has(part)));
+      return 'answer' + path.map((part) => typeof part === 'number' ? `[${part}]` : `.${String(part)}`).join('');
+    }))];
+    throw new HttpError(400, 'INVALID_TASK_ANSWER', `The structured task answer is malformed at ${paths.join(', ')}; follow current_task.task.answerContract.schema`);
+  }
   return parsed.data;
 }
 

@@ -14,7 +14,7 @@ import {
   type Hex,
 } from 'viem';
 import { base } from 'viem/chains';
-import { adminRpc, assertAnvilIdentity, setAnvilBalance } from './chain.js';
+import { AdminRpcFailure, adminRpc, assertAnvilIdentity, setAnvilBalance, type AdminRpcDiagnostic } from './chain.js';
 import type { RuntimeManifest } from './manifest.js';
 
 const transferAbi = parseAbi([
@@ -78,6 +78,7 @@ export class GenerationFixtureFailure extends Error {
     readonly causeClass: string | null = null,
     readonly rpcDiagnostic: SafeRpcDiagnostic | null = null,
     readonly receiptObservation: ReceiptObservation | null = null,
+    readonly adminRpcDiagnostic: AdminRpcDiagnostic | null = null,
   ) {
     super(`generation_fixture_${phase}`);
     this.name = 'GenerationFixtureFailure';
@@ -85,6 +86,7 @@ export class GenerationFixtureFailure extends Error {
 }
 
 const safeCauseNames = new Set([
+  'AdminRpcFailure',
   'AbortError',
   'AggregateError',
   'BaseError',
@@ -139,7 +141,8 @@ async function atFixturePhase<T>(phase: FixtureFailurePhase, work: () => Promise
     return await work();
   } catch (error) {
     const receiptObservation = error instanceof FixtureReceiptPollTimeoutError ? error.observation : null;
-    throw new GenerationFixtureFailure(phase, safeCauseClass(error), safeRpcDiagnostic(error), receiptObservation);
+    throw new GenerationFixtureFailure(phase, safeCauseClass(error), safeRpcDiagnostic(error), receiptObservation,
+      error instanceof AdminRpcFailure ? error.diagnostic : null);
   }
 }
 

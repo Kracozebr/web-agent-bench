@@ -4,13 +4,14 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { connect, createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
 
-function parseArguments(args) {
+export function parseDifficultyReferenceArguments(args) {
   const values = new Map();
   const offset = args[0] === '--' ? 1 : 0;
   for (let index = offset; index < args.length; index += 1) {
     const flag = args[index];
-    if (!['--task-id', '--mode', '--env-id'].includes(flag) || values.has(flag)) throw new Error('usage');
+    if (!['--task-id', '--mode', '--env-id', '--recipient'].includes(flag) || values.has(flag)) throw new Error('usage');
     const value = args[++index];
     if (!value || value.startsWith('--')) throw new Error('usage');
     values.set(flag, value);
@@ -21,7 +22,9 @@ function parseArguments(args) {
   if (!['S1', 'S2', 'S3', 'S4', 'M1', 'M2', 'M3', 'M4', 'H1', 'H2', 'H3'].includes(taskId) || !['ranked', 'training'].includes(mode)
     || (['S3', 'M2', 'H3'].includes(taskId) && mode !== 'ranked')
     || !['bef-env-a', 'bef-env-b'].includes(envId)) throw new Error('usage');
-  return { taskId, mode, envId };
+  const recipient = values.get('--recipient');
+  if (recipient !== undefined && (taskId !== 'S1' || !/^0x[0-9a-f]{40}$/i.test(recipient) || /^0x0{40}$/i.test(recipient))) throw new Error('usage');
+  return { taskId, mode, envId, ...(recipient === undefined ? {} : { recipient: recipient.toLowerCase() }) };
 }
 
 function portFromEnvironment(name, fallback) {
@@ -38,7 +41,7 @@ async function readLocalSecret(root, name, minimumLength) {
 
 async function main() {
   if (process.platform !== 'linux' || process.cwd() !== '/workspace') throw new Error('docker');
-  const { taskId, mode, envId } = parseArguments(process.argv.slice(2));
+  const { taskId, mode, envId, recipient } = parseDifficultyReferenceArguments(process.argv.slice(2));
   const apiPort = portFromEnvironment('BEF_API_HOST_PORT', '38783');
   const observerPort = portFromEnvironment('BEF_DATABASE_OBSERVER_HOST_PORT', '55432');
   const sourcePort = portFromEnvironment('BEF_SOURCE_PROXY_HOST_PORT', '18544');
@@ -85,6 +88,7 @@ async function main() {
       '--import', './packages/benchmark-environment/node_modules/tsx/dist/loader.mjs',
       'packages/benchmark-environment/src/probe/task-difficulty-v2-main.ts',
       '--task-id', taskId, '--mode', mode, '--env-id', envId, '--evidence-dir', captureDirectory,
+      ...(recipient === undefined ? [] : ['--recipient', recipient]),
     ];
     const child = spawn(process.execPath, childArguments, { cwd: '/workspace', env: runtimeEnvironment, stdio: 'inherit' });
     const exitCode = await new Promise((done, reject) => {
@@ -100,7 +104,7 @@ async function main() {
   }
 }
 
-void main().catch(() => {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) void main().catch(() => {
   process.stderr.write('status=error code=difficulty_v2_wrapper_failed\n');
   process.exitCode = 2;
 });

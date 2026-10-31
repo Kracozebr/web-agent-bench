@@ -12,6 +12,7 @@ import type { SelectedExecutionTransactionEvidence } from './rpc.js';
 import { transferEvents } from './rpc.js';
 import { apiPath, newParticipantId } from './environment.js';
 import { createEphemeralSigner } from './x402.js';
+import { validateTransferRecipient } from './task-transfer-recipient.js';
 
 const { Pool } = pg;
 const ERC20_ABI = [{
@@ -251,11 +252,19 @@ async function readSelectedRows(ctx: ProbeContext, session: { envId: string; gen
 export async function captureSelectedUsdcTransfer(
   ctx: ProbeContext,
   requestedAmountUnits = '100000',
+  pinnedRecipient?: string,
 ): Promise<Record<string, unknown>> {
   if (!UINT.test(requestedAmountUnits) || BigInt(requestedAmountUnits) <= 0n ||
       BigInt(requestedAmountUnits) > BigInt(ctx.runtime.manifest.funding.maxUsdcUnitsPerGeneration)) {
     throw new Error('task_transfer_amount_outside_fixture_bounds');
   }
+  const fixedAddresses = Object.values(ctx.runtime.manifest.contracts).flatMap(contract => contract ? [contract.address] : []);
+  if (pinnedRecipient !== undefined) validateTransferRecipient(pinnedRecipient, fixedAddresses);
+  const signer = createEphemeralSigner();
+  const recipientSigner = pinnedRecipient === undefined ? createEphemeralSigner() : null;
+  const recipient = validateTransferRecipient(pinnedRecipient ?? recipientSigner!.payerAddress, fixedAddresses, signer.payerAddress);
+  ctx.secretValues.push(signer.privateKey);
+  if (recipientSigner) ctx.secretValues.push(recipientSigner.privateKey);
   const resetRoute = ctx.capability.reset?.route?.replace(/^POST\s+/i, '').replace('{envId}', ctx.env.envId);
   if (!resetRoute || !resetRoute.startsWith('/internal/admin/environments/')) throw new Error('task_transfer_reset_route_unavailable');
   const reset = await ctx.transport.request({
@@ -266,9 +275,6 @@ export async function captureSelectedUsdcTransfer(
   });
   if (reset.status < 200 || reset.status >= 300) throw new Error(`task_transfer_reset_failed_${reset.status}`);
 
-  const signer = createEphemeralSigner();
-  const recipientSigner = createEphemeralSigner();
-  ctx.secretValues.push(signer.privateKey, recipientSigner.privateKey);
   const participantId = newParticipantId(ctx.scenarioId);
   const generation = await ctx.transport.request({
     boundary: 'private-admin-http', observationId: 'task-transfer-generation', method: 'POST',
@@ -295,8 +301,6 @@ export async function captureSelectedUsdcTransfer(
   ctx.primarySession = session;
   await ctx.database.snapshot({ envId: session.envId, generationId: session.generationId, variantId: VARIANT_ID, label: 'task-transfer-generation-row' });
 
-  const recipient = recipientSigner.payerAddress;
-  if (recipient.toLowerCase() === signer.payerAddress.toLowerCase()) throw new Error('task_transfer_recipient_collides_with_payer');
   const before = await readSnapshot(ctx, signer.payerAddress, recipient, null, 'task-transfer-before');
   const amount = BigInt(requestedAmountUnits);
   if (BigInt(before.payerUsdcUnits) < amount) throw new Error('task_transfer_fixture_balance_insufficient');

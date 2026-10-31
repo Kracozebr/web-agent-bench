@@ -6,6 +6,7 @@ import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { selectAgentMcpTransport } from "./agent-mcp-profile.js";
+import { AGENT_MCP_BODY_BYTES, AGENT_MCP_INPUT_ELEMENTS, boundedMcpArguments } from "./mcp-input-bounds.js";
 import { reportUploadChunkSchema } from "./report-service.js";
 import { withOAuthSelection, type OAuthSelectionContext } from "./auth.js";
 import type { createAuth } from "./auth.js";
@@ -618,7 +619,7 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
 }
 
 export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRouteDependencies) {
-  app.all("/api/agent/mcp", { bodyLimit: 64 * 1024 }, async (request, reply) => {
+  app.all("/api/agent/mcp", { bodyLimit: AGENT_MCP_BODY_BYTES }, async (request, reply) => {
     if (request.method !== "POST") return reply.code(405).header("Allow", "POST").send({ error: "method_not_allowed" });
     const host = request.headers.host?.toLowerCase();
     const allowedHosts = allowedAgentRequestHosts(dependencies.config);
@@ -648,6 +649,15 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     } else {
       await dependencies.rateLimit(request, `agent-preflight-${principal.credentialId}`, dependencies.preflightRateLimitMax);
     }
+    // Malformed authenticated requests still consume the credential's abuse budget.
+    if (!boundedMcpArguments(request.body)) {
+      const inputId = (request.body as { id?: unknown })?.id;
+      const id = typeof inputId === 'string' || typeof inputId === 'number' && Number.isFinite(inputId) ? inputId : null;
+      return reply.code(400).send({
+        jsonrpc: "2.0", id,
+        error: { code: -32602, message: "Tool arguments exceed bounded element or nesting limits" },
+      });
+    }
     const outputSchema = z.object({
       status: z.enum(["allowed", "denied"]),
       operationId: z.string(),
@@ -660,7 +670,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
           ? [...new Set(dependencies.config.betaManifest?.clients.filter((profile) => profile.enabled)
             .flatMap((profile) => profile.protocolVersions) ?? ["2026-07-28"])]
           : ["2026-07-28"],
-        maxToolInputElements: 8
+        maxToolInputElements: AGENT_MCP_INPUT_ELEMENTS
       });
       server.registerTool("identity.preflight", {
         title: "Check agent connection",

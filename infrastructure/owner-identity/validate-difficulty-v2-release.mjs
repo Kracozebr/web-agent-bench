@@ -11,6 +11,7 @@ import { TaskCaseSchema, TaskReleaseManifestSchema, canonicalTaskJson, sha256Can
   taskBenchmarkHash, taskPolicyHash, validateTaskReleaseCandidate } from '../../packages/owner-identity/src/task-release.ts';
 import { CURRENT_TASK_RELEASE_INPUTS_PATH, loadCurrentTaskReleaseInputPins }
   from './current-task-release-pins.mjs';
+import { assertSemanticCasePreserved, verifySourceRefreshCandidate } from './task-release-source-refresh.mjs';
 
 const root = '/workspace';
 const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
@@ -75,7 +76,7 @@ function currentCaseKeys() {
     ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`)].sort(compare);
 }
 
-function caseInventory(candidateCases, manifest, frozenCandidate) {
+function caseInventory(candidateCases, manifest, frozenCandidate, refresh = null) {
   demand(candidateCases.schemaVersion === 'bts-difficulty-v2-case-candidates/v1'
     && candidateCases.participantToolProtocol === 'separate_payment_delivery_v2'
     && Array.isArray(candidateCases.cases), 'case_candidate_contract_invalid');
@@ -85,6 +86,10 @@ function caseInventory(candidateCases, manifest, frozenCandidate) {
   demand(keys.length === expectedKeys.length && new Set(keys).size === expectedKeys.length,
     'current_fifteen_case_inventory_invalid');
   demand(canonicalTaskJson([...keys].sort(compare)) === canonicalTaskJson(expectedKeys), 'case_candidate_inventory_mismatch');
+  if (refresh) {
+    const approved = new Map(refresh.baseline.cases.map((c) => [`${c.taskId}:${c.mode}`, c]));
+    for (const taskCase of parsedCases) assertSemanticCasePreserved(taskCase, approved.get(`${taskCase.taskId}:${taskCase.mode}`));
+  } else {
   const frozenByKey = new Map(frozenCandidate.cases.map((taskCase) => [`${taskCase.taskId}:${taskCase.mode}`, taskCase]));
   demand(candidateCases.frozenCandidateBaseline?.path === FROZEN_CANDIDATE.path
     && candidateCases.frozenCandidateBaseline?.sha256 === FROZEN_CANDIDATE.sha256
@@ -100,6 +105,7 @@ function caseInventory(candidateCases, manifest, frozenCandidate) {
   const candidateSourcePins = readPinRows(candidateCases.sourceInputs, 'case_candidate_source_inventory_invalid');
   demand(candidateSourcePins.some((row) => row.path === FROZEN_CANDIDATE.path && row.sha256 === FROZEN_CANDIDATE.sha256),
     'frozen_candidate_source_pin_missing');
+  }
   const manifestCases = [...manifest.cases.training, ...manifest.cases.ranked];
   const keyOf = (taskCase) => `${taskCase.taskId}:${taskCase.mode}`;
   const byKey = new Map(parsedCases.map((taskCase) => [keyOf(taskCase), taskCase]));
@@ -179,7 +185,8 @@ async function main() {
     && taskPolicyHash(originalManifest) === originalManifest.policyHash
     && taskBenchmarkHash(originalManifest) === originalManifest.benchmarkHash,
   'original_release_manifest_hash_mismatch');
-  const parsedCases = caseInventory(casesCandidate, originalManifest, frozenCaseCandidate);
+  const refresh = casesCandidate.sourceRefreshProfile ? await verifySourceRefreshCandidate(root, casesCandidate) : null;
+  const parsedCases = caseInventory(casesCandidate, originalManifest, frozenCaseCandidate, refresh);
   demand(minimumReview.candidate?.path === CASES.path && minimumReview.candidate?.sha256 === CASES.sha256
     && minimumReview.executionIdentityHash === originalManifest.executionIdentityHash,
   'minimum_review_candidate_or_identity_mismatch');

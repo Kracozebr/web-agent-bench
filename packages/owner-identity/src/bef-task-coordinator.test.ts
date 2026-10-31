@@ -16,6 +16,7 @@ import { activeTaskNeedsCancellation, activeTaskNeedsCancellationAfterRecovery, 
   isBoundedSuccessorWindowFailure, isValidSuccessorLocator, leaseGuardedPreparedTaskStartPort,
   predecessorFinishedBeforeOriginalDeadline, successorFailureCancellationReason, parseLocalBefTaskCoordinatorConfig,
   isExpiredKnownRunGap,cancelExpiredKnownRunGaps,isExpiredClosedUngradedTask,cancelExpiredClosedUngradedTasks,
+  closedTaskEvaluationRetryExpired,CLOSED_TASK_EVALUATION_RETRY_MS,
   parseBetaBefTaskCoordinatorConfig,
   BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY, PostgresLocalCoordinatorLease, taskIndexFromFenceResult, cleanupFailedLocalBefTaskCoordinatorStartup,
   writeSafeEvidence, type CoordinatorReservedSql } from './bef-task-coordinator.js';
@@ -297,8 +298,31 @@ test('expired closed ungraded cleanup requests only normal run cancellation once
 
 const deadlineCleanupPgEnabled=process.env.OID_COORDINATOR_DEADLINE_CLEANUP_PG_TEST==='1';
 
+test('closed evaluation retry uses durable closure plus 180 seconds, not the later overall deadline',async()=>{
+ const closed='2026-10-30T09:00:00.000Z';
+ assert.equal(CLOSED_TASK_EVALUATION_RETRY_MS,180_000);
+ for(const [observed,expired] of [['2026-10-30T09:02:59.999Z',false],['2026-10-30T09:03:00.000Z',true],
+  ['2026-10-30T09:03:00.001Z',true]] as const){
+  const row={...expiredClosedUngradedTask,closed_at:closed,overall_deadline:'2026-10-30T09:20:00.000Z',observed_at:observed};
+  assert.equal(closedTaskEvaluationRetryExpired(row),expired);assert.equal(isExpiredClosedUngradedTask(row),expired);
+ }
+ assert.equal(closedTaskEvaluationRetryExpired({closed_at:null,observed_at:'2026-10-30T09:03:00.000Z'}),false);
+ assert.equal(closedTaskEvaluationRetryExpired({closed_at:'invalid',observed_at:'2026-10-30T09:03:00.000Z'}),false);
+ const row={...expiredClosedUngradedTask,closed_at:closed,overall_deadline:'2026-10-30T09:20:00.000Z',observed_at:'2026-10-30T09:03:00.000Z'};
+ let requests=0;let terminal=false;
+ const dependencies={db:{execute:async()=>terminal?[]:[row,row]},async assertLeaseHeld(){},
+  async requestCancellation(_runId:string,reason:string){assert.equal(reason,'coordinator_evaluation_unknown');requests++;terminal=true;},
+  async drainCancellations(){}} as unknown as Parameters<typeof cancelExpiredClosedUngradedTasks>[0];
+ assert.equal(await cancelExpiredClosedUngradedTasks(dependencies),1);
+ assert.equal(await cancelExpiredClosedUngradedTasks(dependencies),0);
+ assert.equal(requests,1);
+ assert.equal(await cancelExpiredClosedUngradedTasks({...dependencies,db:{execute:async()=>[row]}} as unknown as
+  Parameters<typeof cancelExpiredClosedUngradedTasks>[0],new Set([row.run_id])),0);
+ assert.equal(isExpiredClosedUngradedTask({...row,active_platform_recovery:true}),false);
+});
+
 async function closeSyntheticDeadlineTaskWithAction(client:ReturnType<typeof postgres>,
- fixture:Awaited<ReturnType<typeof addFixture>>,receiptStatus:'observed'|'pending'|'unknown'):Promise<void>{
+ fixture:Awaited<ReturnType<typeof addFixture>>,receiptStatus:'observed'|'pending'|'unknown',closureAgeMs=0):Promise<void>{
  const actionId=randomUUID(),grantId=randomUUID(),closureId=randomUUID();
  const operationId=`deadline_${randomUUID().replaceAll('-','')}`;
  const payloadHash=fixtureHash(`${fixture.runId}:${receiptStatus}:command`),evidenceHash=fixtureHash(`${fixture.runId}:${receiptStatus}:receipt`);
@@ -322,7 +346,7 @@ async function closeSyntheticDeadlineTaskWithAction(client:ReturnType<typeof pos
  await client`INSERT INTO oid_run_task_finish_outbox(closure_id,status,delivered_at)
    VALUES(${closureId},'delivered',clock_timestamp())`;
  await client`UPDATE oid_run_task SET closure_id=${closureId},closure_status='closed',closure_payload_hash=${closureHash},
-     closure_reason='agent_finish',closed_at=clock_timestamp(),action_cutoff_sequence=1,reconciled_action_sequence=1
+     closure_reason='agent_finish',closed_at=clock_timestamp()-${closureAgeMs}*interval '1 millisecond',action_cutoff_sequence=1,reconciled_action_sequence=1
    WHERE run_id=${fixture.runId} AND task_index=0`;
 }
 
@@ -347,10 +371,12 @@ test('isolated PostgreSQL selector cancels only resolved expired cutoffs through
   const good=await addFixture(client,{actionOpen:true,includeEvaluation:false,overallDeadlinePast:true});
   const pending=await addFixture(client,{actionOpen:true,includeEvaluation:false,overallDeadlinePast:true});
   const unknown=await addFixture(client,{actionOpen:true,includeEvaluation:false,overallDeadlinePast:true});
+  const evaluationExpired=await addFixture(client,{actionOpen:true,includeEvaluation:false});
   await closeSyntheticDeadlineTaskWithAction(client,good,'observed');
   await closeSyntheticDeadlineTaskWithAction(client,pending,'pending');
   await closeSyntheticDeadlineTaskWithAction(client,unknown,'unknown');
-  const fixtures=[good,pending,unknown];
+  await closeSyntheticDeadlineTaskWithAction(client,evaluationExpired,'observed',181_000);
+  const fixtures=[good,pending,unknown,evaluationExpired];
   const releaseSource={
    async getActiveAdmissionRelease(){return null;},
    async getValidatedReleaseRecord(identity:string,manifestHash:string){
@@ -367,18 +393,19 @@ test('isolated PostgreSQL selector cancels only resolved expired cutoffs through
    async requestCancellation(runId,reason){await requestRunCancellationFromCoordinator(db,{runId,reason});},
    async drainCancellations(){await consumeRunCancellationOutbox(db,cancellationExecutor,100);},
   });
-  assert.equal(cleaned,1);
-  assert.deepEqual(unbound,[{runId:good.runId,taskIndex:0}]);
-  for(const [fixture,expectedStatus] of [[good,'cancelled'],[pending,'running'],[unknown,'running']] as const){
-   const stateRows:Array<{status:string;claim_status:string;slot_count:number;evaluation_count:number;refund_count:number}>=await client`SELECT r.status,c.status AS claim_status,
+  assert.equal(cleaned,2);
+  assert.deepEqual(unbound.map(item=>item.runId).sort(),[good.runId,evaluationExpired.runId].sort());
+  for(const [fixture,expectedStatus] of [[good,'cancelled'],[pending,'running'],[unknown,'running'],[evaluationExpired,'cancelled']] as const){
+   const stateRows:Array<{status:string;cancellation_reason:string;claim_status:string;slot_count:number;evaluation_count:number;refund_count:number}>=await client`SELECT r.status,r.cancellation_reason,c.status AS claim_status,
        (SELECT count(*)::int FROM oid_run_execution_slot slot WHERE slot.run_id=r.id) AS slot_count,
        (SELECT count(*)::int FROM oid_run_task_evaluation e WHERE e.run_id=r.id) AS evaluation_count,
        (SELECT count(*)::int FROM oid_ledger_entry entry WHERE entry.owner_id=r.owner_id AND entry.entry_type='refund') AS refund_count
      FROM oid_benchmark_run r JOIN oid_run_dispatch_claim c ON c.run_id=r.id WHERE r.id=${fixture.runId}`;
    assert.equal(stateRows[0]?.status,expectedStatus);
-   if(fixture===good){
+   if(fixture===good||fixture===evaluationExpired){
     assert.equal(stateRows[0]?.claim_status,'released');assert.equal(stateRows[0]?.slot_count,0);
     assert.equal(stateRows[0]?.evaluation_count,0);assert.equal(stateRows[0]?.refund_count,0);
+    assert.equal(stateRows[0]?.cancellation_reason,fixture===evaluationExpired?'coordinator_evaluation_unknown':'coordinator_run_deadline');
    }else{
     assert.equal(stateRows[0]?.claim_status,'claimed');assert.equal(stateRows[0]?.slot_count,1);
     assert.equal(stateRows[0]?.evaluation_count,0);assert.equal(stateRows[0]?.refund_count,0);
