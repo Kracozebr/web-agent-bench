@@ -2234,9 +2234,14 @@ async function submitLinkedTrainingAction(context, command, expectsTransaction) 
   let admitted;
   let transportUnknown = false;
   try {
-    admitted = await agentRequest({ publicOrigin: input.publicOrigin,
+    const send = () => agentRequest({ publicOrigin: input.publicOrigin,
       path: '/api/agent/runs/' + runId + '/tasks/' + taskIndex + '/actions', method: 'POST', bearer,
       body: { operationId, command } });
+    // The optional acceptance transport can delay/drop/repeat only this original admission.
+    // Credentials and request bytes remain bound inside send; it cannot substitute a new command.
+    admitted = typeof input.genuineActionTransport === 'function'
+      ? await input.genuineActionTransport({send,runId,taskIndex,taskId,operationId,command:structuredClone(command)})
+      : await send();
   } catch (error) {
     if (safeErrorCode(error) !== 'agent_http_transport_unknown') throw error;
     transportUnknown = true;
@@ -2392,6 +2397,15 @@ async function captureAndEvaluateTrainingTask(context) {
   finishFact.closureStatus = closedTask.closure_status;
   record('agent_finish_and_authoritative_cutoff', 'verified', { taskIndex, taskId, closureId: closedTask.closure_id,
     actionCutoffSequence: closedTask.action_cutoff_sequence, reconciledActionSequence: closedTask.reconciled_action_sequence });
+
+  // AICODE-NOTE: Fault qualification can inspect a real committed closure before the usual
+  // known-grade wait. Callback authority is limited to the explicit disposable acceptance run;
+  // intentional interruption remains an incomplete capture, never a fabricated successful run.
+  if (typeof input.onGenuineTaskClosed === 'function') {
+    await input.onGenuineTaskClosed({runId,taskIndex,taskId,closureId:closedTask.closure_id,
+      agentBearer:bearer,ownerPage:input.ownerPage,publicOrigin:input.publicOrigin,
+      observerDatabaseUrl:input.observerDatabaseUrl});
+  }
 
   if (input.automaticWorkerEvaluation) return observeWorkerTask({ ...context, mode }, task);
 
@@ -3110,9 +3124,11 @@ async function runGenuineOwnerRunCase(input) {
     output.database = { databaseName: observerIdentity.database_name, observerRole: observerIdentity.role, readOnly: true };
 
     record(input.bonusCodeFunding ? 'owner_bonus_code_issue_redeem_and_readonly_database' : 'owner_bonus_fixture_ui_and_readonly_database', 'started');
-    const selectedTrainingQuoteUnits = trainingSequenceMode ? quoteTrainingSelectionUnits(release, taskIds) : null;
+    const exactTrainingFunding = !rankedMode && input.exactQuoteBonusFunding === true;
+    const selectedTrainingQuoteUnits = trainingSequenceMode || exactTrainingFunding ? quoteTrainingSelectionUnits(release, taskIds) : null;
     const grantAmountUnits = rankedMode
       ? BigInt(release.rankedPriceUnits) * (bddContext && !input.primaryClientOnly ? 3n : 1n)
+      : exactTrainingFunding ? selectedTrainingQuoteUnits
       : trainingSequenceMode ? trainingSequenceGrantAmountUnits(selectedTrainingQuoteUnits) : 100_000n;
     demand(grantAmountUnits > 0n, 'synthetic_run_budget_invalid');
     const grantAmount = formatUsdcUnits(grantAmountUnits);
@@ -3714,9 +3730,15 @@ export function validateGenuineRecoveryProxySettings({ apiBaseUrl = undefined, o
 
 /** Provision coordinator credentials only inside the compose tmpfs mount. */
 export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, automaticWorkerEvaluation = false,
-  apiBaseUrl = undefined, observerDatabase = undefined }) {
+  apiBaseUrl = undefined, observerDatabase = undefined, observerRpcUrl = undefined }) {
   demand(process.platform === 'linux' && repositoryRoot === ROOT, 'genuine_s1_requires_pinned_docker_runtime');
   demand(process.env.OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED === 'true', 'explicit_private_coordinator_override_required');
+  if (observerRpcUrl !== undefined) {
+    const observerRpc = new URL(observerRpcUrl);
+    demand(automaticWorkerEvaluation === true && observerRpc.protocol === 'http:' &&
+      ['127.0.0.1','localhost'].includes(observerRpc.hostname) && !observerRpc.username && !observerRpc.password &&
+      !observerRpc.search && !observerRpc.hash && observerRpc.pathname === '/', 'genuine_observer_rpc_fault_origin_invalid');
+  }
   const recoveryProxySettings = validateGenuineRecoveryProxySettings({ apiBaseUrl, observerDatabase, automaticWorkerEvaluation });
   const configPath = process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG || '.local/owner-identity/bef-task-coordinator.json';
   demand(configPath === '.local/owner-identity/bef-task-coordinator.json', 'coordinator_config_path_not_pinned');
@@ -3771,7 +3793,7 @@ export async function provisionGenuineS1CoordinatorConfig({ repositoryRoot, auto
       passwordFile: '/run/secrets/bef_database_observer_password',
     } } : {}),
     environments: [{ envId: 'bef-env-a', apiBaseUrl: recoveryProxySettings?.participantApiOrigin ?? 'http://host.docker.internal:' + apiPort,
-      observerRpcUrl: 'http://host.docker.internal:' + rpcPort, x402Policy }] };
+      observerRpcUrl: observerRpcUrl ?? 'http://host.docker.internal:' + rpcPort, x402Policy }] };
   const configAbsolute = resolve(repositoryRoot, configPath);
   await writeFile(configAbsolute, JSON.stringify(config) + '\n', { flag: 'wx', mode: 0o600 });
   await chmod(configAbsolute, 0o600);

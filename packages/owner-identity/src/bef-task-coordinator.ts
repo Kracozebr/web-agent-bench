@@ -33,6 +33,7 @@ import { TaskSealedEvidenceSource } from './task-sealed-evidence-source.js';
 import { createBefObservationPorts, type BefObservationPorts, type BefObserverDatabaseConfig } from './bef-observation-ports.js';
 import { processClosedTrainingTask } from './task-training-observation-lifecycle.js';
 import { createBetaPlatformRecoveryMonitor, type BetaPlatformRecoveryMonitor } from './beta-platform-recovery-monitor.js';
+import { getTaskExecutionContext } from './task-execution-binding.js';
 
 /**
  * AICODE-NOTE: This disabled-by-default local coordinator advances only from an already evaluated,
@@ -717,6 +718,49 @@ export function activeTaskNeedsCancellation(
 
 type FencedKnownTaskRecoveryRow = Record<string, unknown>;
 
+/**
+ * AICODE-NOTE: A closed, fully reconciled task needs no actor session to retry observation.
+ * Restart must retain its original closed_at + 180-second bound. This classification only
+ * defers lost-RAM cancellation; it never restores credentials, dispatches, grades or refunds.
+ * The caller independently rechecks the execution context and immutable release case.
+ */
+export function classifyClosedObservationRecovery(row: FencedKnownTaskRecoveryRow): 'retry' | 'expired' | null {
+  if (!['training', 'ranked'].includes(String(row.run_mode)) || row.run_status !== 'running' ||
+      row.task_status !== 'active' || row.closure_status !== 'closed' ||
+      row.recovery_access_current !== true || row.recovery_claim_slot_matches !== true ||
+      row.recovery_active_task_count !== 1 || row.recovery_unresolved_action !== false ||
+      row.run_cancellation_reason !== null || row.run_cancellation_requested_at !== null ||
+      row.lease_state !== 'leased' || row.observation_status !== 'ready' ||
+      typeof row.run_id !== 'string' || !UUID.test(row.run_id) ||
+      typeof row.owner_id !== 'string' || !UUID.test(row.owner_id) ||
+      typeof row.agent_id !== 'string' || !UUID.test(row.agent_id) ||
+      !Number.isSafeInteger(row.task_index) || Number(row.task_index) < 0 || Number(row.task_index) > 11 ||
+      typeof row.closure_id !== 'string' || !UUID.test(row.closure_id) ||
+      typeof row.closure_payload_hash !== 'string' || !HASH.test(row.closure_payload_hash)) return null;
+  const time = (value: unknown) => value instanceof Date ? value.getTime()
+    : typeof value === 'string' ? Date.parse(value) : NaN;
+  const now = time(row.recovery_observed_at), closed = time(row.closed_at), requested = time(row.journal_requested_at);
+  const overall = time(row.overall_deadline);
+  if (![now, closed, requested, overall].every(Number.isFinite) || requested > closed || closed > now) return null;
+  const sequence = (value: unknown) => typeof value === 'string' || typeof value === 'number'
+    ? nonnegativeSequence(value) : null;
+  const cutoff = sequence(row.action_cutoff_sequence);
+  if (cutoff === null || sequence(row.accepted_action_sequence) !== cutoff ||
+      sequence(row.reconciled_action_sequence) !== cutoff || sequence(row.recovery_action_count) !== cutoff ||
+      sequence(row.recovery_max_sequence) !== cutoff || sequence(row.journal_cutoff_sequence) !== cutoff) return null;
+  const journalMatches = row.journal_closure_id === row.closure_id && row.closure_run_id === row.run_id &&
+    row.closure_task_index === row.task_index && row.journal_owner_id === row.owner_id &&
+    row.journal_agent_id === row.agent_id && row.journal_payload_hash === row.closure_payload_hash &&
+    row.journal_operation_id === row.closure_operation_id && row.journal_reason === row.closure_reason &&
+    ['agent_finish', 'task_deadline', 'run_deadline'].includes(String(row.closure_reason));
+  if (!journalMatches) return null;
+  return now < closed + CLOSED_TASK_EVALUATION_RETRY_MS && now < overall ? 'retry' : 'expired';
+}
+
+export function isBoundedClosedObservationRetry(row: FencedKnownTaskRecoveryRow): boolean {
+  return classifyClosedObservationRecovery(row) === 'retry';
+}
+
 function recoveryObject(value: unknown): Record<string, unknown> | null {
   if (typeof value === 'string') {
     try { value = JSON.parse(value); } catch { return null; }
@@ -1288,7 +1332,27 @@ async function createBefTaskCoordinatorCore(input: {
   async function cancelRunningBindingsWithoutRam(recoveringRunIds: ReadonlySet<string> = new Set()): Promise<void> {
     await lease.assertHeld();
     const rows = await input.db.execute(sql`SELECT r.id AS run_id,r.owner_id,r.agent_id,r.mode AS run_mode,r.status AS run_status,
-        r.release_identity,r.manifest_hash AS release_manifest_hash,
+        r.release_identity,r.manifest_hash AS release_manifest_hash,r.overall_deadline,
+        r.cancellation_reason AS run_cancellation_reason,r.cancellation_requested_at AS run_cancellation_requested_at,
+        clock_timestamp() AS recovery_observed_at,t.closed_at,
+        (SELECT count(*)::int FROM oid_run_task active WHERE active.run_id=r.id AND active.status='active') AS recovery_active_task_count,
+        (SELECT count(*)::text FROM oid_run_task_action a WHERE a.run_id=r.id AND a.task_index=t.task_index) AS recovery_action_count,
+        (SELECT COALESCE(max(a.action_sequence),0)::text FROM oid_run_task_action a WHERE a.run_id=r.id AND a.task_index=t.task_index) AS recovery_max_sequence,
+        EXISTS (SELECT 1 FROM oid_run_task_action a
+          LEFT JOIN oid_run_task_action_receipt receipt ON receipt.action_id=a.id
+          LEFT JOIN oid_run_task_action_outbox outbox ON outbox.action_id=a.id
+          WHERE a.run_id=r.id AND a.task_index=t.task_index AND a.action_sequence<=t.action_cutoff_sequence
+            AND (receipt.action_id IS NULL OR receipt.receipt_status NOT IN ('observed','rejected_before_execution')
+              OR outbox.action_id IS NULL OR outbox.status<>'delivered')) AS recovery_unresolved_action,
+        EXISTS (SELECT 1 FROM oid_owner own JOIN oid_agent a ON a.owner_id=own.id
+          JOIN oid_agent_policy policy ON policy.agent_id=a.id
+          WHERE own.id=r.owner_id AND a.id=r.agent_id AND own.admission_status='admitted'
+            AND a.access_revoked_at IS NULL AND a.access_generation=r.access_generation
+            AND CASE WHEN r.mode='training' THEN policy.training ELSE policy.ranked END) AS recovery_access_current,
+        EXISTS (SELECT 1 FROM oid_run_dispatch_claim claim
+          JOIN oid_run_execution_slot slot ON slot.run_id=claim.run_id AND slot.claim_id=claim.claim_id
+          WHERE claim.run_id=r.id AND claim.claim_id=i.claim_id AND claim.status='claimed'
+            AND slot.agent_id=r.agent_id AND slot.state='running' AND slot.released_at IS NULL) AS recovery_claim_slot_matches,
         t.task_index,t.task_id,t.status AS task_status,t.closure_status,t.closure_id,
         t.closure_operation_id,t.closure_payload_hash,t.closure_reason,
         t.accepted_action_sequence::text AS accepted_action_sequence,t.action_cutoff_sequence::text AS action_cutoff_sequence,
@@ -1307,6 +1371,7 @@ async function createBefTaskCoordinatorCore(input: {
         eb.application_source_hash AS binding_source_hash,
         c.id AS journal_closure_id,c.run_id AS closure_run_id,c.task_index AS closure_task_index,c.owner_id AS journal_owner_id,
         c.agent_id AS journal_agent_id,c.operation_id AS journal_operation_id,c.payload_hash AS journal_payload_hash,c.reason AS journal_reason,
+        c.requested_at AS journal_requested_at,
         c.action_cutoff_sequence::text AS journal_cutoff_sequence,t.closure_payload_hash,t.closure_reason,
         ob.run_id AS bundle_run_id,ob.task_index AS bundle_task_index,ob.owner_id AS bundle_owner_id,ob.agent_id AS bundle_agent_id,
         ob.task_id AS bundle_task_id,ob.closure_id AS bundle_closure_id,ob.preparation_id AS bundle_preparation_id,
@@ -1353,6 +1418,30 @@ async function createBefTaskCoordinatorCore(input: {
       // closed-cutoff, immutable-bundle, known-evaluation, event, and task-scoped fence chain;
       // mismatches still follow ordinary lost-RAM cancellation.
       if (recoveringRunIds.has(row.run_id) || !activeTaskNeedsCancellationAfterRecovery(row.run_id, row.task_index, attached, row)) continue;
+      const closedObservationRecovery = classifyClosedObservationRecovery(row);
+      if (closedObservationRecovery !== null) {
+        await lease.assertHeld();
+        const context = await getTaskExecutionContext(input.db,
+          { runId: row.run_id, taskIndex: row.task_index }, { requireActive: false, requireBinding: true });
+        const release = context && await input.releaseSource.getValidatedReleaseRecord(context.releaseIdentity, context.releaseManifestHash);
+        await lease.assertHeld();
+        const taskCase = context && release?.manifest.cases[context.mode].find(candidate => candidate.taskId === context.taskId);
+        if (context?.runStatus === 'running' && context.taskStatus === 'active' && context.closureStatus === 'closed' &&
+            context.preparationId === row.preparation_id && context.leaseId === row.preparation_lease_id &&
+            context.generationId === row.observed_generation_id && context.envId === row.preparation_environment_id &&
+            context.releaseIdentity === row.release_identity && context.releaseManifestHash === row.release_manifest_hash &&
+            context.executionIdentityHash === release?.manifest.executionIdentityHash &&
+            taskCase?.caseId === context.caseId && taskCase.caseHash === context.caseHash) {
+          // AICODE-NOTE: The grading/overall bound can cross between the earlier expiry
+          // scan and this lost-RAM scan. Preserve normal expiry authority and attribution;
+          // a valid expired closure must never become executor_session_lost due to that race.
+          if (closedObservationRecovery === 'expired') {
+            await cancelExpiredClosedUngradedTasks({ db: input.db,
+              assertLeaseHeld: () => lease.assertHeld(), requestCancellation, drainCancellations }, recoveringRunIds);
+          }
+          continue;
+        }
+      }
       await requestCancellation(row.run_id, 'coordinator_executor_session_lost');
     }
   }

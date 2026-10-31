@@ -470,7 +470,7 @@ async function persistGenuineAttempt(commonCapture, name, output) {
 }
 
 async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
-  { taskId = 'S1', onGenuineRunCompleted, requirePassingEvaluation = false } = {}) {
+  { taskId = 'S1', onGenuineRunCompleted, requirePassingEvaluation = false, exactQuoteBonusFunding = false } = {}) {
   const captureId = randomUUID();
   const ownerPool = new Pool({ connectionString: commonCapture.observerDatabaseUrl, max: 1,
     application_name: 'bpc-recovery-owner-snapshot' });
@@ -487,6 +487,7 @@ async function runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, pr
     const output = await runGenuineS1OwnerCase({ ...commonCapture.genuineCaptureInput, captureId,
       mode: 'training', taskId, automaticWorkerEvaluation: true, bonusCodeFunding: true,
       bddProbes: false, primaryClientOnly: false, platformRecoveryFault: recoveryFault,
+      ...(exactQuoteBonusFunding ? { exactQuoteBonusFunding: true } : {}),
       ...(typeof onGenuineRunCompleted === 'function' ? { onGenuineRunCompleted } : {}) });
     const genuineAttempt = await persistGenuineAttempt(commonCapture,
       taskId === 'S1' ? 'recovered' : 'collector-' + taskId.toLowerCase(), output);
@@ -659,7 +660,8 @@ export async function waitForRecoveryDeadline(pool, target, maxWaitMs, progressF
   }
 }
 
-async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, recoveryObserverProxy, progressFn) {
+async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, recoveryObserverProxy, progressFn,
+  { exactQuoteBonusFunding = false, interruptBeforeFirstRefund = false } = {}) {
   const captureId = randomUUID();
   const ownerPool = new Pool({ connectionString: commonCapture.observerDatabaseUrl, max: 1,
     application_name: 'bpc-recovery-exhaustion-owner-snapshot' });
@@ -670,6 +672,8 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
   let unblocked = false;
   let target;
   let deadlineObservation;
+  let refundCrashFault;
+  let refundCrash;
   const readExhaustionTerminalState = async ({ runId, actionId }) => {
     const snapshot = await readOwnerRecoverySnapshot(ownerPool, {
       databaseName: commonCapture.databaseIsolation.databaseName, runId, actionId });
@@ -677,7 +681,7 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
   };
   const recoveryFault = {
     terminalAfterRecovery: true,
-    waitTimeoutMs: 235_000,
+    waitTimeoutMs: interruptBeforeFirstRefund ? 240_000 : 235_000,
     beforeFirstAction: async () => {
       recoveryFaultProxy.arm({ onDrop: () => recoveryObserverProxy.block() });
       proxyArmed = true;
@@ -693,10 +697,24 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
           sourceWritesResubmitted: false });
       }
       deadlineObservation = await waitForRecoveryDeadline(ownerPool, target, 205_000, progressFn);
+      if (interruptBeforeFirstRefund) {
+        const { armFirstRefundCrash } = await import('./ber-first-refund-crash.mjs');
+        refundCrashFault = await armFirstRefundCrash({ commonCapture, target,
+          readSourceSnapshot: async () => {
+            const snapshot = await readOwnerRecoverySnapshot(ownerPool, target);
+            return readBefAction(befPool, { ...activeBinding(snapshot), actionId: target.actionId });
+          } });
+        await progress(progressFn, { phase: 'first_owed_refund_barrier_armed', runId: target.runId, actionId: target.actionId });
+      }
       recoveryObserverProxy.unblock();
       unblocked = true;
       await progress(progressFn, { phase: 'observer_restored_after_original_deadline', runId: event.runId,
         elapsedMs: deadlineObservation.wallWaitMs, deadlineAt: deadlineObservation.row.deadline_at });
+      if (refundCrashFault) {
+        refundCrash = await refundCrashFault.interruptAndRestart();
+        await progress(progressFn, { phase: 'first_owed_refund_interrupted_and_normal_runtime_restarted',
+          runId: target.runId, actionId: target.actionId, beforeCrash: refundCrash.beforeCrash, afterStop: refundCrash.afterStop });
+      }
     },
     finishWhenUnknown: async ({ runId, actionId }) => {
       return (await readExhaustionTerminalState({ runId, actionId })).conditions.verified;
@@ -802,7 +820,8 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
   try {
     const output = await runGenuineS1OwnerCase({ ...commonCapture.genuineCaptureInput, captureId,
       mode: 'training', taskId: 'S1', automaticWorkerEvaluation: true, bonusCodeFunding: true,
-      bddProbes: false, primaryClientOnly: false, platformRecoveryFault: recoveryFault });
+      bddProbes: false, primaryClientOnly: false, platformRecoveryFault: recoveryFault,
+      ...(exactQuoteBonusFunding ? { exactQuoteBonusFunding: true } : {}) });
     const genuineAttempt = await persistGenuineAttempt(commonCapture, 'exhausted', output);
     if (!(output.status === 'captured_platform_recovery_exhausted_without_grade' &&
       output.platformRecovery?.terminalCapturedWithoutGrade === true && UUID.test(output.runId))) {
@@ -823,6 +842,11 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
       source.result[0].generationStatus === 'fenced' && /^0x[0-9a-f]{64}$/i.test(source.result[0].transactionHash ?? '') &&
       source.result[0].responseSha256 === null && recoverySourceBound(source),
     'recovery_exhaustion_poststate_invalid');
+    if (refundCrashFault) {
+      refundCrash = await refundCrashFault.observeAfterFinalization();
+      await progress(progressFn, { phase: 'first_owed_refund_committed_once_after_restart', runId: target.runId,
+        actionId: target.actionId, afterFinalization: refundCrash.afterFinalization });
+    }
     const proxy = recoveryFaultProxy.snapshot();
     const observerFault = recoveryObserverProxy.snapshot();
     const actionSubmissions = proxy.submissions.filter((row) => row.actionId === binding.actionId);
@@ -845,6 +869,7 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
         participantIdSha256: hash(binding.participantId), leaseId: binding.leaseId },
       recovery: { row: owner.result.recovery, observations: owner.result.recoveryObservations,
         restartReceipt, deadlineObservation, sourceOperationCount: source.result.length,
+        ...(refundCrash ? { refundCrash } : {}),
         originalEffectsPreserved: true, runOutcomeUnknownNotReopened: owner.result.evaluations.length === 0 },
       sourceOperation: source, proxy, observerFault,
       terminalEvidence: { actionEvidence: output.platformRecovery?.exhaustion?.actionEvidence,
@@ -858,6 +883,7 @@ async function runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, re
         ledger: owner.result.ledger, holds: owner.result.holds,
         terminalEvents: owner.result.terminalEvents } };
   } finally {
+    await refundCrashFault?.close();
     if (!unblocked && recoveryObserverProxy.snapshot().blocked) recoveryObserverProxy.unblock();
     if (proxyArmed) {
       const proxy = recoveryFaultProxy.snapshot();
@@ -918,8 +944,8 @@ async function saveRecoveryStage(commonCapture, result, stageRoot, phase, progre
     path: relative(commonCapture.repoRoot, path).split(sep).join('/'), sha256: hash(bytes) });
 }
 
-export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress: progressFn,
-  onGenuineRunCompleted }) {
+export async function runBetaRecoveryCoreCases({ commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress: progressFn,
+  onGenuineRunCompleted, exactQuoteBonusFunding = false, interruptBeforeFirstRefund = false }) {
   demand(commonCapture?.databaseIsolation?.databaseName && /^oid_acceptance_[a-f0-9]{32}$/.test(commonCapture.databaseIsolation.databaseName),
     'recovery_requires_unique_acceptance_database');
   demand(recoveryFaultProxy && typeof recoveryFaultProxy.arm === 'function' &&
@@ -928,10 +954,11 @@ export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, 
   'recovery_proxies_missing');
   await progress(progressFn, { phase: 'recovery_capture_started', databaseName: commonCapture.databaseIsolation.databaseName });
   const recovered = await runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
-    { taskId: 'S1', onGenuineRunCompleted });
+    { taskId: 'S1', onGenuineRunCompleted, exactQuoteBonusFunding });
   await progress(progressFn, { phase: 'recovery_committed_action_verified', runId: recovered.binding.runId,
     actionId: recovered.action.actionId });
-  const exhausted = await runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, recoveryObserverProxy, progressFn);
+  const exhausted = await runExhaustedCommittedAction(commonCapture, recoveryFaultProxy, recoveryObserverProxy, progressFn,
+    { exactQuoteBonusFunding, interruptBeforeFirstRefund });
   const coreResult = { schemaVersion: 'bpc-platform-recovery-runtime-observation/v1', scenarioId: 'BPC-SC-017', status: 'verified',
     boundary: 'isolated_local_owner_browser_api_postgres_bef_observer_and_real_loopback_fault_proxies',
     localStatus: 'observed_partial', database: { name: commonCapture.databaseIsolation.databaseName,
@@ -944,6 +971,12 @@ export async function runBetaRecoveryCases({ commonCapture, recoveryFaultProxy, 
   // Preserve the independently replayable recovery boundary before later report
   // and backup work, so a later restore failure cannot erase this raw evidence.
   await saveRecoveryStage(commonCapture, coreResult, 'beta-platform-recovery-stage', 'recovery_stage_capture_saved', progressFn);
+  return coreResult;
+}
+
+export async function runBetaRecoveryCases(input) {
+  const { commonCapture, recoveryFaultProxy, progress: progressFn } = input;
+  const coreResult = await runBetaRecoveryCoreCases(input);
   await progress(progressFn, { phase: 'recovery_collector_case_started', taskId: 'S4' });
   const collectorS4 = await runRecoveredCommittedAction(commonCapture, recoveryFaultProxy, progressFn,
     { taskId: 'S4', requirePassingEvaluation: true });

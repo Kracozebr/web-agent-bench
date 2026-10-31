@@ -1,9 +1,10 @@
 """Approved BER boundary adapters. Missing independent evidence blocks acceptance.
 
 Catalog checks reuse the existing source-bound BTS producer and independent reader.
-Other scenarios remain explicitly blocked until their full approved native/browser/
-worker negative matrices have source-bound replay implementations; unit tests cannot
-promote them to environment passes.
+Other scenarios remain blocked until their full approved native/browser/worker
+negative matrices have independently replayable proof. Partial recovery evidence is
+actually verified before reporting its missing variants; unit tests cannot promote
+it to an environment pass.
 """
 from pathlib import Path
 import json
@@ -32,6 +33,16 @@ class BenchmarkExecutionReliabilityCase:
 
     def _blocked(self, scenario_id):
         pytest.skip("BLOCKED: " + scenario_id + " requires the full approved actual-boundary capture and independent negative replay; isolated unit/HTTP integration is partial proof only")
+
+    def _runtime_inputs(self):
+        path = ROOT / "tests/bdd/changes/benchmark-execution-reliability/runtime-inputs.json"
+        if not path.is_file():
+            pytest.skip("BLOCKED: hash-pinned BER runtime inputs have not been recorded")
+        assert path.stat().st_size <= 65536, "BER input manifest exceeds its finite bound"
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+        assert isinstance(value, dict) and value.get("schemaVersion") == "ber-runtime-inputs/v1", "invalid BER input manifest"
+        assert isinstance(value.get("captures"), dict), "BER capture references missing"
+        return value["captures"]
 
     def _catalog_facts(self):
         registry = build_registry("benchmark-task-suite")
@@ -87,7 +98,23 @@ class BenchmarkExecutionReliabilityCase:
         context.check("invalid_answer_no_task_or_action_mutation", facts.get("invalid_answer_no_task_or_action_mutation") is True)
 
     def _execute_BER_SC_003(self, context):
-        self._blocked("BER-SC-003")
+        from tests.bdd.adapters.ber_recovery_replay import verify_fault_core
+        inputs = self._runtime_inputs()
+        if "h1CutoffMatrix" in inputs:
+            from tests.bdd.adapters.ber_h1_replay import verify_h1_matrix
+            report = verify_h1_matrix(inputs["h1CutoffMatrix"], repository_root=ROOT)
+            context.state["ber_facts"] = report["facts"]
+            context.state["ber_independent_replay"] = report
+            if report.get("missingVariants") or report.get("fullScenarioAcceptance") != "passed":
+                pytest.skip("BLOCKED: BER-SC-003 independently verified available H1 cases; missing " +
+                            ", ".join(report.get("missingVariants") or ["complete approved cutoff matrix"]))
+            return
+        if "faultCore" not in inputs:
+            self._blocked("BER-SC-003")
+        report = verify_fault_core(inputs["faultCore"], repository_root=ROOT)
+        context.state["ber_independent_replay"] = report
+        pytest.skip("BLOCKED: BER-SC-003 verified S1 response-loss subset; missing " +
+                    ", ".join(report["missingVariants"]))
 
     def _verify_BER_SC_003(self, context):
         facts = context.state.get("ber_facts", {})
@@ -106,7 +133,16 @@ class BenchmarkExecutionReliabilityCase:
         context.check("no_duplicate_effect_or_charge", facts.get("no_duplicate_effect_or_charge") is True)
 
     def _execute_BER_SC_004(self, context):
-        self._blocked("BER-SC-004")
+        from tests.bdd.adapters.ber_recovery_replay import verify_unknown_matrix
+        inputs = self._runtime_inputs()
+        if "unknownMatrix" not in inputs:
+            self._blocked("BER-SC-004")
+        report = verify_unknown_matrix(inputs["unknownMatrix"], repository_root=ROOT)
+        context.state["ber_facts"] = report["facts"]
+        context.state["ber_independent_replay"] = report
+        if report.get("missingVariants") or report.get("fullScenarioAcceptance") != "passed":
+            pytest.skip("BLOCKED: BER-SC-004 independently verified available cases; missing " +
+                        ", ".join(report.get("missingVariants") or ["complete approved unknown-grading matrix"]))
 
     def _verify_BER_SC_004(self, context):
         facts = context.state.get("ber_facts", {})
@@ -159,7 +195,16 @@ class BenchmarkExecutionReliabilityCase:
         context.check("no_reservation_or_grant_mutation", facts.get("no_reservation_or_grant_mutation") is True)
 
     def _execute_BER_SC_007(self, context):
-        self._blocked("BER-SC-007")
+        from tests.bdd.adapters.ber_recovery_replay import verify_matrix
+        report = verify_matrix(ROOT, self._runtime_inputs())
+        context.state["ber_facts"] = report["facts"]
+        context.state["ber_independent_replay"] = report
+        # A malformed supplied proof raises before this branch. Missing approved
+        # transition experiments remain blocked even when the retained history replays.
+        missing = report.get("missingVariants", [])
+        if missing or report.get("fullScenarioAcceptance") != "passed":
+            pytest.skip("BLOCKED: BER-SC-007 independently verified partial history; missing " +
+                        ", ".join(missing or ["complete approved recovery/replay matrix"]))
 
     def _verify_BER_SC_007(self, context):
         facts = context.state.get("ber_facts", {})

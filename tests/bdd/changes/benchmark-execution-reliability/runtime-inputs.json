@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "ber-runtime-inputs/v1",
+  "captures": {
+    "faultCore": {
+      "path": "artifacts/runs/ber-fault-recovery-core/1c756aa5-8556-4ad0-b17a-b744821e609b/capture.json",
+      "sha256": "002e62815d664ff3bcbd5aa98776e439462c10e48bed752d487e207dee234e47"
+    },
+    "unknownMatrix": {
+      "path": "artifacts/runs/ber-unknown-grading-assembly/202f6ab5-a3cf-4b3e-9f63-7bb5d67f1ce9/assembly.json",
+      "sha256": "e348ad02967e24684eae5169b45f21dc80569b706a274109ec9ab026fe03d6a8"
+    },
+    "replayReport": {
+      "path": "artifacts/runs/ber-independent-two-replay/8a6878f7-6018-40e0-96a2-b6d826ffb0f1/verification.json",
+      "sha256": "5f49ad8f543b9fd2e117d1ec43b76b16f93885f889f6968fdca15d2aec1b89c5"
+    },
+    "databaseBefore": {
+      "path": "artifacts/runs/ber-independent-replay-history/7227b244-a34f-4828-bb0b-4b5f465744df/fingerprint.json",
+      "sha256": "08b40b8f7ac6ea54d478e66410e1b74389d6ccce999dc0a1a96c12d71d5c78dc"
+    },
+    "databaseAfter": {
+      "path": "artifacts/runs/ber-independent-replay-history/1dfea305-90c4-4df2-a383-393a2bc1f44f/fingerprint.json",
+      "sha256": "219161e31900558eb628d6aa17e534fff0a4758faaf64ad32fb008ff54b7880c"
+    },
+    "freshBaseline": {
+      "path": "artifacts/runs/ber-fresh-current-source-baseline/b8d594f9-b6e2-4e9a-adf0-c7b2cc0d1d4f/manifest.json",
+      "sha256": "8931b5f6c57b9f062fb6e4afe3931b70c48c79a106a64daf816cd7f81a3030fa"
+    },
+    "h1CutoffMatrix": {
+      "path": "artifacts/runs/ber-h1-cutoff-assembly/c6b1b44c-2748-4e37-8412-e895e3eef7fc/assembly.json",
+      "sha256": "fb89b3c6164eda66061bc8d2868bdd469f5561afbbc98f96b1d98366f4450070"
+    }
+  }
+}

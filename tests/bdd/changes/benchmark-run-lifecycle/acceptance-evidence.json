@@ -17,12 +17,12 @@
   ],
   "execution_started": true,
   "exit_code": 0,
-  "finished_at_utc": "2026-10-30T16:17:17.835256Z",
+  "finished_at_utc": "2026-10-31T12:11:46.220498Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "877d202d163e8429a3fce53e8f0dd1d46a2daa8a",
+  "git_commit": "5b0b74e1b85c2aa5efbee8f459d3175e5ae36b54",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 25,
@@ -36,8 +36,8 @@
     "warnings": []
   },
   "harness_contract_sha256": "a2ef7f712b1fc2fffe0ed75f213b7cb94f7b877071558a4ade42b791bf651f8a",
-  "harness_sources_sha256": "afe57eba2390a35d8251fa03b4547555c2e799130dc5103f7ba6d6fe559817dd",
-  "harness_sources_sha256_after": "afe57eba2390a35d8251fa03b4547555c2e799130dc5103f7ba6d6fe559817dd",
+  "harness_sources_sha256": "3c7652c37f97dc440883e399e72c05f169f4d18d0c5c2407cb043667fc91fa1e",
+  "harness_sources_sha256_after": "3c7652c37f97dc440883e399e72c05f169f4d18d0c5c2407cb043667fc91fa1e",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/benchmark-run-lifecycle/specs/*/spec.md",
@@ -71,5 +71,5 @@
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-30T16:17:15.333318Z"
+  "started_at_utc": "2026-10-31T12:11:43.665294Z"
 }

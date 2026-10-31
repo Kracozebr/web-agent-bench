@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { stopDetachedChild } from "./bounded-child-stop.mjs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +48,15 @@ const runId = randomUUID();
 const bonusCodesOptIn = process.argv.includes("--bonus-codes-only");
 const reportsOptIn = process.argv.includes("--reports-only");
 const platformRecoveryOptIn = process.argv.includes("--platform-recovery-only");
+// AICODE-NOTE: This explicit BER mode retains the two actual S1 recovery cases without
+// entering legacy S4/M3 Training collectors. It is subset evidence, never a full BPC/BER gate.
+const berRecoveryCoreOptIn = process.env.OID_BER_RECOVERY_CORE === "1";
+const berUnknownGradingOptIn = process.env.OID_BER_UNKNOWN_GRADING === "1";
+const berH1CutoffOptIn = process.env.OID_BER_H1_CUTOFF === "1";
+const interruptBeforeFirstRefund = process.env.OID_BER_INTERRUPT_BEFORE_FIRST_REFUND === "1";
+if ((berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn) && !platformRecoveryOptIn) throw new Error("ber_fault_capture_requires_platform_recovery_only");
+if ([berRecoveryCoreOptIn,berUnknownGradingOptIn,berH1CutoffOptIn].filter(Boolean).length>1) throw new Error("ber_fault_capture_modes_are_exclusive");
+if (interruptBeforeFirstRefund && !berRecoveryCoreOptIn) throw new Error("ber_first_refund_fault_requires_core_mode");
 // AICODE-NOTE: This diagnostic isolates the real queue/pause preparation; it never
 // substitutes for a complete recovery/checkpoint/restore capture or a BPC gate.
 const combinedQueueOptIn = process.argv.includes("--combined-queue-only");
@@ -94,6 +104,7 @@ let reportCaptureIsolation;
 let sourceInputsBeforeCheckpoint;
 let recoveryFaultProxy;
 let recoveryObserverProxy;
+let receiptFaultProxy;
 let genuineArtifactWritten = false;
 let betaOperationsArtifactWritten = false;
 
@@ -213,12 +224,7 @@ function startChild(args, env, label, executable = pnpm) {
 }
 
 async function stopChild(child) {
-  if (!child || child.exitCode !== null) return;
-  try { process.kill(-child.pid, "SIGTERM"); } catch { return; }
-  await Promise.race([new Promise((done) => child.once("exit", done)), pause(3000)]);
-  if (child.exitCode === null) {
-    try { process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ }
-  }
+  await stopDetachedChild(child);
 }
 
 async function restartOwnerApi() {
@@ -317,10 +323,16 @@ async function startRuntime() {
       recoveryObserverProxy = await startBetaRecoveryObserverProxy({ upstreamHost: "host.docker.internal",
         upstreamPort: Number(process.env.BEF_DATABASE_HOST_PORT || "55432") });
     }
+    if (berUnknownGradingOptIn) {
+      receiptFaultProxy = await (await import("./ber-unknown-receipt-proxy.mjs")).startBerUnknownReceiptProxy({
+        upstreamOrigin: `http://host.docker.internal:${process.env.BEF_LOCAL_RPC_A_HOST_PORT || "18545"}`,
+      });
+    }
     await provisionGenuineS1CoordinatorConfig({ repositoryRoot: repoRoot,
       automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn,
       ...(platformRecoveryOptIn || combinedRestoreOptIn ? { apiBaseUrl: recoveryFaultProxy.origin,
-        observerDatabase: { host: "127.0.0.1", port: recoveryObserverProxy.port } } : {}) });
+        observerDatabase: { host: "127.0.0.1", port: recoveryObserverProxy.port } } : {}),
+      ...(berUnknownGradingOptIn ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
   }
   requireLoopbackOrigin(publicOrigin, "OID_PUBLIC_ORIGIN");
   requireLoopbackOrigin(apiOrigin, "OID_ACCEPTANCE_API_ORIGIN");
@@ -364,6 +376,18 @@ async function startRuntime() {
       OID_LOCAL_REPORT_CAPTURE_ROOT: reportCaptureIsolation.captureIsolationRoot,
     } : {}),
   };
+  if (berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn) {
+    const faultDatabaseUrl = new URL(apiEnv.OID_DATABASE_URL);
+    if (!/^oid_acceptance_[a-f0-9]{32}$/.test(databaseIsolation.databaseName) ||
+        faultDatabaseUrl.pathname !== '/' + databaseIsolation.databaseName || faultDatabaseUrl.hostname !== 'postgres') {
+      throw new Error('ber_disconnect_detection_requires_disposable_database');
+    }
+    // A dead fault-injected API must roll back a lock-blocked transaction before
+    // the private barrier is released; no server-wide PostgreSQL setting changes.
+    faultDatabaseUrl.searchParams.set('options', [faultDatabaseUrl.searchParams.get('options'),
+      '-c client_connection_check_interval=100ms'].filter(Boolean).join(' '));
+    apiEnv.OID_DATABASE_URL = faultDatabaseUrl.href;
+  }
   // This is a runner-only path selection; the API receives only the per-capture root.
   delete apiEnv.OID_LOCAL_REPORT_CAPTURE_BASE;
   // Keep acceptance rate buckets and cookies isolated across independent runs.
@@ -682,6 +706,17 @@ async function collectSourceHashes() {
     resolve(repoRoot, "Dockerfile"),
     resolve(repoRoot, ".dockerignore"),
     resolve(repoRoot, "infrastructure/owner-identity"),
+    ...(berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn ? [
+      resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/specs"),
+      resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/bdd-design.md"),
+      resolve(repoRoot, "tests/bdd/changes/benchmark-execution-reliability/harness-contracts.json"),
+      resolve(repoRoot, "tools/capture_ber_replay_history.mjs"),
+      ...(berUnknownGradingOptIn ? [
+        resolve(repoRoot, "tools/ber_completed_callbacks.mjs"),
+        resolve(repoRoot, "tools/ber_pending_transition_interruption.mjs"),
+        resolve(repoRoot, "tools/ber_completion_handoff_interruption.mjs"),
+      ] : []),
+    ] : []),
   ];
   const extensions = new Set([".json", ".mjs", ".ts", ".tsx", ".py", ".feature", ".md", ".yaml", ".yml", ".sh", ".ps1", ".css"]);
   const files = [];
@@ -865,16 +900,34 @@ async function main() {
         adminOwnerId: admin.owner.owner.id,
         ownerPage: ownerLogin.page, ownerCapture: ownerLogin.captureApi, ownerId,
         newContext, login: (context, scenarioId, subject) => googleLogin(context, scenarioId, subject),
-        restartApi: async () => {
+        restartApi: async (options = undefined) => {
+          if (options !== undefined) {
+            if (!berH1CutoffOptIn || !options || Object.keys(options).join(',') !== 'coordinatorEnabled' ||
+                typeof options.coordinatorEnabled !== 'boolean' ||
+                !/^oid_acceptance_[a-f0-9]{32}$/.test(databaseIsolation.databaseName) ||
+                new URL(apiEnvironment.OID_DATABASE_URL).pathname !== '/' + databaseIsolation.databaseName ||
+                !['127.0.0.1','localhost'].includes(new URL(apiOrigin).hostname) || apiEnvironment.OID_BETA_MANIFEST_FILE ||
+                (apiEnvironment.OID_MCP_TRANSPORT_PROFILE ?? 'strict-2026-07-28') !== 'strict-2026-07-28') {
+              throw new Error('ber_h1_coordinator_pause_requires_disposable_capture');
+            }
+            apiEnvironment = { ...apiEnvironment, OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: String(options.coordinatorEnabled) };
+          }
           const previousPid = apiChild?.pid;
           const startedAt = new Date().toISOString();
           await restartOwnerApi();
           const health = await fetch(new URL("/healthz", apiOrigin), { signal: AbortSignal.timeout(5000) });
           return { schemaVersion: "beta-local-api-restart-receipt/v1", startedAt,
             finishedAt: new Date().toISOString(), previousPid, currentPid: apiChild?.pid,
-            healthHttpStatus: health.status, boundary: "runner_owned_process_stop_start_and_real_health_http" };
+            healthHttpStatus: health.status, coordinatorEnabled: apiEnvironment.OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED === 'true',
+            boundary: "runner_owned_process_stop_start_and_real_health_http" };
         },
-        stopApi: async () => stopChild(apiChild),
+        stopApi: async () => {
+          const previousPid = apiChild?.pid, startedAt = new Date().toISOString();
+          await stopChild(apiChild);
+          return { schemaVersion: "beta-local-api-stop-receipt/v1", previousPid, startedAt,
+            finishedAt: new Date().toISOString(), exitCode: apiChild?.exitCode ?? null,
+            signal: apiChild?.signalCode ?? null, boundary: "runner_owned_bounded_process_stop_no_business_write" };
+        },
         getRuntimeRecoverySecrets: () => ({ authSecret: apiEnvironment.OID_AUTH_SECRET,
           bonusCodeVerifierSecret: apiEnvironment.OID_BONUS_CODE_VERIFIER_SECRET,
           googleClientId: apiEnvironment.OID_GOOGLE_CLIENT_ID, googleClientSecret: apiEnvironment.OID_GOOGLE_CLIENT_SECRET }),
@@ -965,8 +1018,15 @@ async function main() {
       const result = combinedQueueOptIn
         ? await (await import("./beta-combined-restore-cases.mjs")).runBetaQueuePreparationCases({ commonCapture, progress })
         : platformRecoveryOptIn
-        ? await (await import("./beta-recovery-cases.mjs")).runBetaRecoveryCases({
-          commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress })
+        ? berUnknownGradingOptIn
+        ? await (await import("./ber-unknown-grading-cases.mjs")).runBerUnknownGradingCases({
+          commonCapture, receiptFaultProxy, recoveryFaultProxy, progress })
+        : berH1CutoffOptIn
+        ? await (await import("./ber-h1-cutoff-cases.mjs")).runBerH1CutoffCases({commonCapture,recoveryFaultProxy,progress})
+        : await (await import("./beta-recovery-cases.mjs"))[berRecoveryCoreOptIn
+          ? "runBetaRecoveryCoreCases" : "runBetaRecoveryCases"]({
+          commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress,
+          ...(berRecoveryCoreOptIn ? { exactQuoteBonusFunding: true, interruptBeforeFirstRefund } : {}) })
         : await (await import("./beta-combined-restore-cases.mjs")).runBetaCombinedRestoreCases({
           commonCapture, recoveryFaultProxy, recoveryObserverProxy, progress });
       phase = "beta_operations_source_provenance_after";
@@ -977,12 +1037,16 @@ async function main() {
       const provenance = { databaseIsolation, inputHashesBefore, inputHashesAfter,
         sourceStableDuringRun: JSON.stringify(inputHashesBefore) === JSON.stringify(inputHashesAfter) };
       const artifactRoot = combinedQueueOptIn ? "beta-combined-queue"
-        : platformRecoveryOptIn ? "beta-platform-recovery" : "beta-combined-restore";
+        : platformRecoveryOptIn ? (berH1CutoffOptIn ? "ber-h1-cutoff-matrix" : berUnknownGradingOptIn ? "ber-unknown-grading"
+          : berRecoveryCoreOptIn ? "ber-fault-recovery-core" : "beta-platform-recovery") : "beta-combined-restore";
       await mkdir(resolve(repoRoot, "artifacts/runs", artifactRoot), { recursive: true, mode: 0o700 });
       const directory = resolve(repoRoot, "artifacts/runs", artifactRoot, runId);
       await mkdir(directory, { recursive: false, mode: 0o700 });
       const capture = { schemaVersion: `${artifactRoot}-capture/v1`, captureId: runId,
         boundary: "isolated_local_browser_backend_postgres_bef_files", result, provenance,
+        ...(berRecoveryCoreOptIn ? { scope: { executedCases: ["committedActionRecovery", "recoveryDeadlineExhaustion"],
+          taskFamily: "S1", completeBpc017: false, completeBer003: false, completeBer004: false,
+          note: "S1 recovery subset only; H1 cutoff/grading and the other approved negatives remain unproven" } } : {}),
         targetHostAcceptance: "blocked_target_not_selected" };
       assertSecretFree(capture, artifactRoot);
       const bytes = Buffer.from(`${JSON.stringify(capture, null, 2)}\n`);
@@ -1540,13 +1604,15 @@ async function main() {
     await fixture?.close().catch(() => undefined);
     await recoveryFaultProxy?.close().catch(() => undefined);
     await recoveryObserverProxy?.close().catch(() => undefined);
+    await receiptFaultProxy?.close().catch(() => undefined);
   }
 }
 
 main().catch(async (error) => {
   if ((platformRecoveryOptIn || combinedRestoreOptIn) && !betaOperationsArtifactWritten) {
     const artifactRoot = combinedQueueOptIn ? "beta-combined-queue"
-      : platformRecoveryOptIn ? "beta-platform-recovery" : "beta-combined-restore";
+      : platformRecoveryOptIn ? (berH1CutoffOptIn ? "ber-h1-cutoff-matrix" : berUnknownGradingOptIn ? "ber-unknown-grading"
+        : berRecoveryCoreOptIn ? "ber-fault-recovery-core" : "beta-platform-recovery") : "beta-combined-restore";
     const reasonCode = typeof error?.code === "string" && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
       ? error.code : "beta_operations_startup_or_runtime_failed";
     try {

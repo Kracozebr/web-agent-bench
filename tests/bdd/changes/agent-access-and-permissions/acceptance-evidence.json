@@ -1,10 +1,10 @@
 {
   "acceptance_state": "failed",
-  "active_delta_sha256": "4e09b1dc18dc3d45caebe4202146f1a4bd6b3aff680e10bdec1ad7ef76d79986",
+  "active_delta_sha256": "7b505fbe1968662c019bca2f8ba6d92163b9b3cdfa4a480293f62a0015e62381",
   "bef_spec_profile": "active-delta",
   "change": "agent-access-and-permissions",
   "command": [
-    ".venv/bin/python",
+    ".venv/Scripts/python.exe",
     "-m",
     "pytest",
     "tests/bdd/mappers/test_agent_access_and_permissions_bdd.py",
@@ -15,13 +15,14 @@
     "no:cacheprovider",
     "--junitxml=artifacts/bdd-evidence/agent-access-and-permissions-pytest.xml"
   ],
+  "execution_started": true,
   "exit_code": 0,
-  "finished_at_utc": "2026-10-26T07:42:45.161113Z",
+  "finished_at_utc": "2026-10-31T12:11:59.784521Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "4ef9f4478514590c8cef512c4f3ec6196a48e0f3",
+  "git_commit": "5b0b74e1b85c2aa5efbee8f459d3175e5ae36b54",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 16,
@@ -35,8 +36,8 @@
     "warnings": []
   },
   "harness_contract_sha256": "9a65f6257e884712d6b7de092477f7b090be11a69806be30f9c9bde004815456",
-  "harness_sources_sha256": "28c5261f489bb7e2cb4db8769eb4a8178ea3822d3dbd0db9708540f04db0c8f4",
-  "harness_sources_sha256_after": "28c5261f489bb7e2cb4db8769eb4a8178ea3822d3dbd0db9708540f04db0c8f4",
+  "harness_sources_sha256": "0cef7d4357e8a3ee844d351a1ed9630c34b0f950952c3b38bd2fb8a3a92028e9",
+  "harness_sources_sha256_after": "0cef7d4357e8a3ee844d351a1ed9630c34b0f950952c3b38bd2fb8a3a92028e9",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/agent-access-and-permissions/specs/*/spec.md",
@@ -61,5 +62,5 @@
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-26T07:42:27.518289Z"
+  "started_at_utc": "2026-10-31T12:11:56.604793Z"
 }

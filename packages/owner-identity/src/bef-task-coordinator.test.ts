@@ -16,7 +16,7 @@ import { activeTaskNeedsCancellation, activeTaskNeedsCancellationAfterRecovery, 
   isBoundedSuccessorWindowFailure, isValidSuccessorLocator, leaseGuardedPreparedTaskStartPort,
   predecessorFinishedBeforeOriginalDeadline, successorFailureCancellationReason, parseLocalBefTaskCoordinatorConfig,
   isExpiredKnownRunGap,cancelExpiredKnownRunGaps,isExpiredClosedUngradedTask,cancelExpiredClosedUngradedTasks,
-  closedTaskEvaluationRetryExpired,CLOSED_TASK_EVALUATION_RETRY_MS,
+  closedTaskEvaluationRetryExpired,CLOSED_TASK_EVALUATION_RETRY_MS,isBoundedClosedObservationRetry,classifyClosedObservationRecovery,
   parseBetaBefTaskCoordinatorConfig,
   BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY, PostgresLocalCoordinatorLease, taskIndexFromFenceResult, cleanupFailedLocalBefTaskCoordinatorStartup,
   writeSafeEvidence, type CoordinatorReservedSql } from './bef-task-coordinator.js';
@@ -446,6 +446,74 @@ test('deadline gap cleanup uses only normal cancellation/drain once, independent
  const lostLease={...dependencies,async assertLeaseHeld(){throw new Error('lease_lost');}};
  await assert.rejects(()=>cancelExpiredKnownRunGaps(lostLease));
  assert.equal(calls.filter((value)=>value==='cancel').length,1);
+});
+
+test('closed observation retries retain their original finite bound after loss of actor RAM', () => {
+  const row = { ...fencedKnownClosedRecoveryRow(), lease_state: 'leased', observation_status: 'ready',
+    recovery_access_current: true, recovery_claim_slot_matches: true, recovery_active_task_count: 1,
+    recovery_unresolved_action: false, recovery_action_count: '0', recovery_max_sequence: '0',
+    run_cancellation_reason: null, run_cancellation_requested_at: null,
+    journal_requested_at: '2026-10-31T05:46:34.000Z', closed_at: '2026-10-31T05:46:34.775Z',
+    recovery_observed_at: '2026-10-31T05:46:41.965Z', overall_deadline: '2026-10-31T05:55:00.000Z' };
+  assert.equal(isBoundedClosedObservationRetry(row), true);
+  assert.equal(isBoundedClosedObservationRetry({...row,recovery_observed_at:'2026-10-31T05:49:34.774Z'}),true);
+  assert.equal(isBoundedClosedObservationRetry({...row,recovery_observed_at:'2026-10-31T05:49:34.775Z'}),false);
+  assert.equal(isBoundedClosedObservationRetry({...row,recovery_observed_at:'2026-10-31T05:49:34.776Z'}),false);
+  assert.equal(classifyClosedObservationRecovery({...row,recovery_observed_at:'2026-10-31T05:49:34.774Z'}),'retry');
+  assert.equal(classifyClosedObservationRecovery({...row,recovery_observed_at:'2026-10-31T05:49:34.775Z'}),'expired');
+  assert.equal(classifyClosedObservationRecovery({...row,recovery_observed_at:'2026-10-31T05:49:34.776Z'}),'expired');
+  assert.equal(isBoundedClosedObservationRetry({...row,overall_deadline:row.recovery_observed_at}),false);
+  assert.equal(classifyClosedObservationRecovery({...row,overall_deadline:row.recovery_observed_at}),'expired');
+  assert.equal(isBoundedClosedObservationRetry({...row,closed_at:'2026-10-31T05:46:42.000Z'}),false);
+  assert.equal(isBoundedClosedObservationRetry({...row,journal_requested_at:'2026-10-31T05:46:35.000Z'}),false);
+  for (const field of ['closed_at','journal_requested_at','recovery_observed_at','overall_deadline']) {
+    assert.equal(isBoundedClosedObservationRetry({...row,[field]:null}),false);
+    assert.equal(isBoundedClosedObservationRetry({...row,[field]:'invalid'}),false);
+  }
+  assert.equal(row.closed_at,'2026-10-31T05:46:34.775Z','classification never resets durable closure origin');
+});
+
+test('closed observation retry does not exempt unresolved actions, revocation or inconsistent closure identity', () => {
+  const row = { ...fencedKnownClosedRecoveryRow(), lease_state: 'leased', observation_status: 'ready',
+    recovery_access_current: true, recovery_claim_slot_matches: true, recovery_active_task_count: 1,
+    recovery_unresolved_action: false, recovery_action_count: '0', recovery_max_sequence: '0',
+    run_cancellation_reason: null, run_cancellation_requested_at: null,
+    journal_requested_at: '2026-10-31T05:46:34.000Z', closed_at: '2026-10-31T05:46:34.775Z',
+    recovery_observed_at: '2026-10-31T05:46:41.965Z', overall_deadline: '2026-10-31T05:55:00.000Z' };
+  for (const patch of [
+    {recovery_access_current:false},{recovery_claim_slot_matches:false},{recovery_active_task_count:2},
+    {recovery_unresolved_action:true},{recovery_action_count:'1'},{recovery_max_sequence:'1'},
+    {accepted_action_sequence:'1'},{reconciled_action_sequence:'1'},{journal_cutoff_sequence:'1'},
+    {lease_state:'fenced'},{observation_status:'unknown'},{closure_status:'open'},{task_status:'queued'},
+    {run_status:'cancellation_requested'},{run_cancellation_reason:'owner_requested'},
+    {run_cancellation_requested_at:'2026-10-31T05:46:40.000Z'},
+    {journal_owner_id:randomUUID()},{journal_agent_id:randomUUID()},{journal_closure_id:randomUUID()},
+    {closure_run_id:randomUUID()},{closure_task_index:1},{journal_payload_hash:'0'.repeat(64)},
+    {journal_operation_id:'different_operation'},{journal_reason:'task_deadline'},
+    {task_index:12},{action_cutoff_sequence:'-1'},
+  ]) {
+    assert.equal(isBoundedClosedObservationRetry({...row,...patch}),false,JSON.stringify(patch));
+    assert.equal(classifyClosedObservationRecovery({...row,...patch,recovery_observed_at:'2026-10-31T05:49:34.776Z'}),null,
+      'expired invalid authority must not enter normal recovery: '+JSON.stringify(patch));
+  }
+});
+
+test('crossing grading or overall expiry between scans retains normal expiry classification', () => {
+  const row = { ...fencedKnownClosedRecoveryRow(), lease_state: 'leased', observation_status: 'ready',
+    recovery_access_current: true, recovery_claim_slot_matches: true, recovery_active_task_count: 1,
+    recovery_unresolved_action: false, recovery_action_count: '0', recovery_max_sequence: '0',
+    run_cancellation_reason: null, run_cancellation_requested_at: null,
+    journal_requested_at: '2026-10-31T05:46:34.000Z', closed_at: '2026-10-31T05:46:34.775Z',
+    recovery_observed_at: '2026-10-31T05:49:34.774Z', overall_deadline: '2026-10-31T05:55:00.000Z' };
+  // The first normal-expiry scan can finish before the bound while the later
+  // lost-RAM scan sees its other side. Neither deadline may turn into session loss.
+  assert.equal(classifyClosedObservationRecovery(row),'retry');
+  assert.equal(classifyClosedObservationRecovery({...row,recovery_observed_at:'2026-10-31T05:49:34.776Z'}),'expired');
+  const overall = { ...row, overall_deadline: '2026-10-31T05:47:00.000Z', recovery_observed_at: '2026-10-31T05:46:59.999Z' };
+  assert.equal(classifyClosedObservationRecovery(overall),'retry');
+  assert.equal(classifyClosedObservationRecovery({...overall,recovery_observed_at:'2026-10-31T05:47:00.001Z'}),'expired');
+  assert.equal(row.closed_at,'2026-10-31T05:46:34.775Z');
+  assert.equal(overall.overall_deadline,'2026-10-31T05:47:00.000Z');
 });
 
 test('lost RAM selection and cancellation cleanup use the exact active task index', () => {

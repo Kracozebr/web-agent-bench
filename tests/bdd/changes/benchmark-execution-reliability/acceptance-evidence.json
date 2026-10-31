@@ -1,6 +1,6 @@
 {
   "acceptance_state": "failed",
-  "active_delta_sha256": "07389119afcd8276e7a64495d1d3627b9e0b85e493b0aad782ff83cb8b391f99",
+  "active_delta_sha256": "3229321b2400dfd11085d679a46678c298ae83e02770279d41224f42371ee497",
   "bef_spec_profile": "active-delta",
   "change": "benchmark-execution-reliability",
   "command": [
@@ -17,12 +17,12 @@
   ],
   "execution_started": true,
   "exit_code": 0,
-  "finished_at_utc": "2026-10-31T01:26:57.497114Z",
+  "finished_at_utc": "2026-10-31T12:45:03.061877Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "f9614a85261a4bb8a7942a3c5ef8d336ee95e006",
+  "git_commit": "5b0b74e1b85c2aa5efbee8f459d3175e5ae36b54",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 8,
@@ -36,23 +36,23 @@
     "warnings": []
   },
   "harness_contract_sha256": "7aaf06eb23440b6b90458b01b1e30e0ddec510a08f671effbeee021046ac64c9",
-  "harness_sources_sha256": "593321c67eb47c8773c127ed506831a7f3108de2f9293f8eab697302ad54a007",
-  "harness_sources_sha256_after": "593321c67eb47c8773c127ed506831a7f3108de2f9293f8eab697302ad54a007",
+  "harness_sources_sha256": "e880a906f0179971af1e0afb1e09b2ce2577bf1e1c14a9411cb3abec5dcb7c38",
+  "harness_sources_sha256_after": "e880a906f0179971af1e0afb1e09b2ce2577bf1e1c14a9411cb3abec5dcb7c38",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/benchmark-execution-reliability/specs/*/spec.md",
-  "scenario_map_sha256": "a85337424499e067bff75bf680b9d56c5b9091944f85a098e89aa53431bbe067",
+  "scenario_map_sha256": "02cedd55209d0ff05e42fc0deb3ab3c74e4c858e9dd2d3f6bc22416effc557cc",
   "scenario_results": {
     "BER-SC-001": "blocked",
     "BER-SC-002": "blocked",
-    "BER-SC-003": "blocked",
-    "BER-SC-004": "blocked",
+    "BER-SC-003": "passed",
+    "BER-SC-004": "passed",
     "BER-SC-005": "blocked",
     "BER-SC-006": "passed",
-    "BER-SC-007": "blocked",
+    "BER-SC-007": "passed",
     "BER-SC-008": "blocked"
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-31T01:26:45.441515Z"
+  "started_at_utc": "2026-10-31T12:44:19.412980Z"
 }
