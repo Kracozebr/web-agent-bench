@@ -1,78 +1,77 @@
-# Agent client installer and durable connection
+# Agent client remote MCP connection and durable handoff
 
-Status: approved for implementation on 2026-10-31. Runtime for all 8 scenarios: `not_run`. [Design](../../design.md), [BDD packet](../../bdd-design.md), [approval](../../approval.md).
+Status: revised planning proposal; updated BDD assertions await explicit approval. Runtime for all 8 scenarios: not_run. [Design](../../design.md), [BDD packet](../../bdd-design.md), [revision record](../../approval.md).
 
 ## ADDED Requirements
 
-### Requirement: ACI-REQ-001 Install only selected client configuration safely
-A user-launched installer SHALL detect supported client editions, explain the changes and configure only the selected installation/profile using supported extension points. It SHALL back up affected entries, preserve unrelated settings and roll back failed writes. Initial packaging targets the user's Windows environment; other OS support SHALL not be advertised without qualification. Installer packages and updates SHALL be authenticated against the reviewed trusted distribution identity before execution; tampered or untrusted artifacts SHALL not run.
+### Requirement: ACI-REQ-001 Connect through remote MCP without a platform installer
+The platform SHALL expose one canonical HTTPS remote MCP endpoint for its released agent tools. The ordinary participant connection SHALL NOT require downloading or executing a platform installer, SDK, bridge, or local process, and the platform SHALL NOT write to client configuration files. When a selected client provides an official add/import link, the platform MAY open that client’s native setup with the canonical endpoint prefilled. Otherwise it SHALL show the remote endpoint and concise client-native setup instructions. The link and setup text SHALL contain no bearer/refresh token, authorization code, provider key, private benchmark input, or withdrawal material. A client without remote MCP support SHALL receive a clear unsupported reason, not an unreviewed helper download.
 
-Scenario setup: A clean or customized Windows account with supported clients installed
+Scenario setup: An owner has a supported remote MCP client or another MCP client and is signed into the benchmark account
 
-#### Scenario: ACI-SC-001 Install only selected client configuration safely
-- **WHEN** the user selects Codex CLI/Desktop, Claude Code/Desktop or Hermes and installs, repeats, aborts, upgrades or uninstalls while another process edits configuration or an altered package/untrusted update is offered
-- **THEN** only the intended MCP integration SHALL change once, conflicts SHALL stop safely, rollback/uninstall SHALL preserve subsequent unrelated edits and unsupported profiles SHALL get a clear blocker; untrusted package/update content SHALL be rejected before execution or configuration writes
+#### Scenario: ACI-SC-001 Add the canonical remote MCP endpoint without local platform software
+- **WHEN** the owner connects a named client with a native add link, a client requiring manual URL setup, or a client with no remote MCP capability, including an invalid or substituted endpoint attempt
+- **THEN** the selected client SHALL receive only the canonical HTTPS endpoint through its official native flow or clear URL instructions; the platform SHALL download or execute no local code, write no client files, expose no credential in links/prompts, and SHALL report unsupported clients honestly without claiming a connection
 
-### Requirement: ACI-REQ-002 Authorize the actual owner and selected agent
-Installer authorization SHALL use a browser-mediated public-client flow with PKCE, state and exact registered redirect/resource binding, scoped to the selected owner/agent/client grant. Google login SHALL remain free signup; the platform SHALL NOT collect model-provider credentials or place platform bearer/refresh tokens in URLs, prompts, config plaintext, repository, logs or screenshots. Any local callback or credential bridge SHALL bind only loopback and enforce exact permitted origins plus a per-session unguessable verifier; it SHALL not expose arbitrary local files or generic command execution.
+### Requirement: ACI-REQ-002 Authorize the verified owner and selected agent
+Remote MCP authorization SHALL use the approved browser-mediated OAuth authorization-code flow with PKCE, state, exact callback and resource binding, and a grant scoped to the verified owner, selected agent, and client connection. The consent surface SHALL show selected business permissions and limits; no business permission SHALL be enabled by connection alone. The platform SHALL NOT collect model-provider credentials or expose platform credentials in URLs, prompts, config plaintext, logs, screenshots, or evidence. An explicitly enabled AAP manual credential route remains an advanced alternative and is not the default onboarding path.
 
-Scenario setup: Selected client integration and production HTTPS or explicitly registered loopback development profile
+Scenario setup: A client has the canonical endpoint and a verified owner with an existing agent
 
-#### Scenario: ACI-SC-002 Authorize the actual owner and selected agent
-- **WHEN** the owner authorizes or rejects the browser consent and wrong-state, reused-code, foreign-agent or substituted-origin attempts occur and cross-origin/local-verifier attacks target any loopback bridge
-- **THEN** only valid consent SHALL establish the bound grant, denied or tampered flows SHALL create no usable credential, and tokens SHALL reside only in a protected local store; wrong local origin/verifier or non-loopback access SHALL be denied before token/configuration effects
+#### Scenario: ACI-SC-002 Consent creates only the selected owner-agent connection grant
+- **WHEN** the owner authorizes or denies the client and callback substitution, wrong resource, wrong state, replayed code, foreign agent, or an unapproved redirect is attempted
+- **THEN** only valid consent SHALL create one grant bound to that owner, agent, client, and MCP resource with the displayed permissions; denied or mismatched flows SHALL create no usable credential or domain effect, and no provider secret or platform credential SHALL appear in a URL, prompt, client setup text, or retained evidence
 
-### Requirement: ACI-REQ-003 Refresh until revocation with bounded access tokens
-The ordinary connection SHALL have no scheduled user-facing 24-hour expiry: bounded short-lived access tokens SHALL renew automatically using rotated refresh credentials while its grant remains valid. Refresh SHALL preserve owner/agent/client scope, permissions and caps and SHALL NOT mint new owner sessions or expand authorization.
+### Requirement: ACI-REQ-003 Refresh a connection until revocation
+The ordinary OAuth connection SHALL use bounded short-lived access tokens and rotated refresh credentials and SHALL renew without scheduled user-facing 24-hour reauthorization while the grant remains valid. Refresh SHALL preserve owner, agent, client, resource, permission, and cap bindings and SHALL NOT mint an owner session or increase authorization.
 
-Scenario setup: An authorized persisted client grant with short access expiry
+Scenario setup: An authorized persisted remote MCP grant with short-lived access and refresh credentials
 
-#### Scenario: ACI-SC-003 Refresh until revocation with bounded access tokens
-- **WHEN** the client crosses access expiry, reconnects after offline time or concurrently retries refresh around server/client restart
-- **THEN** the connection SHALL renew without manual key copying, with idempotent bounded refresh retry and rotation; previous refresh replay outside that retry SHALL revoke the affected token family and require explicit reauthorization
+#### Scenario: ACI-SC-003 Refresh remains bounded and recovers safely
+- **WHEN** access expires, the client reconnects after offline time, or concurrent refresh retries occur around response loss or server/client restart
+- **THEN** the same connection SHALL renew through a bounded idempotent retry and rotation policy; replay outside that policy SHALL revoke the affected token family and require explicit reauthorization without changing permissions, caps, runs, or charges
 
 ### Requirement: ACI-REQ-004 Separate connection revocation from agent-wide revocation and restore
-Revoking/replacing a selected client connection SHALL invalidate only that grant and refresh family, without agent-wide generation bump, cancelling the agent's runs or revoking another client. Ordinary disconnect SHALL only change connectivity. Explicit agent-wide owner revocation SHALL invalidate all agent grants and cancel its queued/active runs under existing AAP/BRL scope, fencing and financial rules. In-flight refresh SHALL not revive either scope. Restored checkpoints predating revoke/rotation SHALL remain write-disabled and deny obsolete access/refresh until authoritative invalidation/rotation state is reconciled; if that state is unavailable, all restored connection grants SHALL be invalidated and require explicit owner reauthorization.
+Revoking or replacing one client connection SHALL invalidate only that grant and refresh family without revoking another connection or cancelling the agent’s already-admitted work. Ordinary disconnect SHALL change connectivity only. Explicit agent-wide owner revocation SHALL follow AAP cancellation and generation-fencing authority. Restored checkpoints predating revocation or rotation SHALL remain write-disabled until trusted invalidation state is reconciled; if it cannot be proven, restored connection grants SHALL be invalidated and require owner reauthorization.
 
-Scenario setup: Two clients on one agent, active/queued work and a checkpoint predating revocation or refresh rotation
+Scenario setup: Two client connections on one agent, active/queued work, and a checkpoint predating revocation or refresh rotation
 
-#### Scenario: ACI-SC-004 Separate connection revocation from agent-wide revocation and restore
-- **WHEN** the owner revokes/replaces one connection, disconnects or explicitly revokes the whole agent during refresh/tool use, then an old checkpoint is restored
-- **THEN** selected-connection revoke SHALL deny only its native MCP and refresh with no new scoped admissions while the other connection and run remain authorized; agent-wide revoke SHALL cancel/fence all and only that agent's work; old restored credentials SHALL remain denied before write-enable and neither operation SHALL revive a grant or duplicate effects
+#### Scenario: ACI-SC-004 Revoke the intended scope and never revive restored credentials
+- **WHEN** the owner disconnects, replaces one connection, revokes that connection, or revokes the whole agent during refresh/tool use and then an old checkpoint is restored
+- **THEN** only the selected grant SHALL be denied after connection revocation while the other connection and admitted run remain authorized; agent-wide revocation SHALL fence only that agent under AAP rules; and restored stale credentials SHALL remain denied before write-enable without duplicate business effects
 
-### Requirement: ACI-REQ-005 Negotiate protocol and required capabilities
-Compatibility SHALL be negotiated from supported protocol, transport, authorization and required tool/schema capabilities. Routine application version changes alone SHALL NOT cause rejection. Verified client edition/version SHALL remain evidence metadata; identity spoofing or removing exact callback checks SHALL NOT be used to make unsupported clients pass.
+### Requirement: ACI-REQ-005 Negotiate protocol and required capabilities without exact client-version gates
+The server SHALL negotiate only declared MCP protocol revisions and SHALL check the actual remote transport, authorization, and required tool/schema capabilities. The initial compatibility profile SHALL cover MCP revisions 2025-06-18 and 2026-07-28. A reported client name, edition, or version SHALL be observational metadata, never authentication or an exact-version allowlist. A client SHALL NOT be rejected only because its application version is new or differs from a recorded version. Unsupported protocol or missing required capability SHALL produce a safe actionable reason before domain effects; metadata or protocol labels SHALL NOT be rewritten to bypass checks.
 
-Scenario setup: Two versions of a qualified client and deliberately incapable profiles
+Scenario setup: Two application versions that provide the same required MCP capabilities and a client profile missing a required capability
 
-#### Scenario: ACI-SC-005 Negotiate protocol and required capabilities
-- **WHEN** the installer performs initialization and an actual schema-valid preflight through each selected native client
-- **THEN** capable profiles SHALL connect without exact-version equality, incapable profiles SHALL show a specific supported remediation and no falsely connected state
+#### Scenario: ACI-SC-005 Compatible versions connect and missing capabilities fail closed
+- **WHEN** clients initialize using either declared protocol revision, change their application version while retaining required capabilities, omit a required transport/tool/schema behavior, or spoof client metadata
+- **THEN** capable clients SHALL complete schema-valid preflight without exact application-version equality; incapable clients SHALL receive a specific incompatibility reason before any grant expansion, run, or financial effect; and spoofed metadata SHALL NOT change authority
 
-### Requirement: ACI-REQ-006 Discover self identity and show real connection health
-Preflight SHALL derive authenticated owner/agent identity from the credential and return safe self identity and permission/readiness status without requiring a user to find UUIDs. Health SHALL distinguish configured, authorized, last successfully connected, offline, revoked and executor-unready; refresh of a client list SHALL not prove live tool access.
+### Requirement: ACI-REQ-006 Derive identity and show actual connection health
+A free preflight SHALL derive owner and agent identity from the authenticated grant and prove actual native remote MCP access without starting or charging a run. Health SHALL distinguish configured, authorized, last successful preflight, offline, revoked, and executor-unready. Client-supplied identity hints and a server-only self-test SHALL NOT establish a native connection.
 
-Scenario setup: Installed selected client with owner-authorized agent
+Scenario setup: An owner-authorized native remote MCP client with available, missing, revoked, or unreachable tools
 
-#### Scenario: ACI-SC-006 Discover self identity and show real connection health
-- **WHEN** the user completes setup or checks connection while tools are absent, access revoked, backend down or executor unready
-- **THEN** a real native preflight SHALL prove transport/identity without starting or charging a run and the cabinet SHALL render timestamped status with actionable safe errors
+#### Scenario: ACI-SC-006 Preflight proves native access without benchmark effects
+- **WHEN** the owner connects or checks status while tools are absent, authorization is revoked, the backend is unreachable, or the executor is unready
+- **THEN** only an actual authenticated client preflight SHALL establish the timestamped connection state and safe identity; the UI SHALL distinguish the observed failure/readiness state, and preflight SHALL create no run, queue slot, task action, reservation, charge, or public card
 
-### Requirement: ACI-REQ-007 Launch without copying identifiers
-After setup and sufficient authorized bonus balance, a browser Training/Ranked start SHALL create one owner-bound request and hand it to the selected connected agent without clipboard Intent IDs. Repeating a launch SHALL take at most the site start action and one native Send/Run if required; model execution SHALL remain in the participant's client.
+### Requirement: ACI-REQ-007 Launch Training or Ranked without copying identifiers
+After setup and explicit mode permission, a browser Training or Ranked start SHALL create one owner-bound launch intent and open or otherwise deliver a ready request to the selected connected client without requiring the owner to copy an intent identifier. Pending intent creation, waiting, and free preflight SHALL NOT create a run, queue slot, reservation, charge, or execution timer. The repeat path target is one site start action plus one native Send/Run action when the client requires it; setup, manual URL fallback, and native approval steps SHALL be counted separately. The agent SHALL accept through its authenticated MCP grant and the existing BRL admission path.
 
-Scenario setup: Configured connected client, explicit mode permission and a valid pinned quote
+Scenario setup: A connected agent with mode permission, a valid displayed quote, and an owner-started browser handoff
 
-#### Scenario: ACI-SC-007 Launch without copying identifiers
-- **WHEN** the owner clicks start, opens the intended client and confirms Send if required, including double-click, stale quote, sleeping client and wrong-account handoff
-- **THEN** the same request SHALL be accepted once by its bound agent or remain safely pending with visible guidance; no other agent SHALL accept it, no unrelated intent SHALL be chosen and no extra run or charge SHALL arise
+#### Scenario: ACI-SC-007 One launch intent reaches only its selected agent and admits once
+- **WHEN** the owner starts Training or Ranked, opens the selected client, and sends the ready request, including double-click, stale quote, sleeping client, wrong account, response loss, or owner cancellation
+- **THEN** the matching authorized agent SHALL accept one unchanged intent or leave it visibly pending; stale, foreign, cancelled, expired, or unapproved requests SHALL create no admission effect; and retries SHALL recover at most one normally admitted run and charge under BRL rules
 
-### Requirement: ACI-REQ-008 Qualify every required native execution path
-Acceptance SHALL separately qualify Codex CLI, Codex Desktop, Claude Code, Claude Desktop and Hermes with actual participant-owned models on the target. Setup, preflight, Training3, Ranked12, reporting, renewal, reconnect and revoke SHALL be evidenced per edition. A bridge MAY translate transport only with principal-preserving authorization; it SHALL NOT solve benchmark tasks or impersonate client identity.
+### Requirement: ACI-REQ-008 Support an open MCP client set and qualify versions as metadata
+The service SHALL accept any client that authenticates and passes the declared remote MCP capability preflight, without an exact application-version allowlist. The named target surfaces are Codex Desktop, Codex CLI, Claude Desktop, Claude Code, OpenClaw, OpenCode, Hermes, KiloCode, Cline, and Goose; this list is non-exclusive. Before a named surface is labelled client-family-qualified, one actual native connection, preflight, and launch-handoff smoke SHALL be evidenced at an available representative edition/version. Beta MAY launch with a verified subset of the named targets; every unverified target SHALL be identified as unverified and excluded from the supported-client claim until its smoke is complete. Client versions and protocols SHALL be retained as evidence metadata; a new client version SHALL remain eligible when it passes the same live capability contract. Missing client access or unobserved paths SHALL be unverified/blocked for that surface, never passed by an SDK-only client or reference worker. This requirement does not demand rerunning full Training and Ranked benchmarks for every client patch.
 
-Scenario setup: Frozen target runtime and real accounts/model access for all five edition paths
+Scenario setup: A frozen beta support subset drawn from the named target surfaces, with some target surfaces available and others unavailable, plus at least one additional MCP client not in the list
 
-#### Scenario: ACI-SC-008 Qualify every required native execution path
-- **WHEN** each installed native client completes the prescribed journey and independent effects are inspected
-- **THEN** only the actually exercised edition SHALL pass; missing access or unsupported setup SHALL remain blocked, reference workers and synthetic Google SHALL not count and the all-client beta release wait SHALL remain
-
+#### Scenario: ACI-SC-008 Named clients qualify once and new compatible versions remain eligible
+- **WHEN** each surface in the claimed beta support subset performs native connect, free preflight, and launch handoff at a representative version, other named surfaces are unavailable or not selected for beta, an unlisted MCP client performs the same capability check, or a new version arrives with unchanged or changed required capabilities
+- **THEN** actual observations SHALL qualify only exercised client surfaces; beta MAY launch with that verified subset if all other named targets are visibly marked unverified and excluded from its support claim; the unlisted client and new versions SHALL connect when they pass the same authenticated capability contract; missing capabilities SHALL fail with a specific reason; and no client SHALL be blocked solely by a version change or counted as qualified without native evidence
