@@ -6,6 +6,7 @@ import type { DataComponentValidator, TaskCase, TaskReleaseManifest, TaskRelease
 import { getTaskExecutionContext } from "./task-execution-binding.js";
 import { z } from "zod";
 import { TaskFinishAnswerSchemas } from "./task-action-service.js";
+import type { RunStatus } from "./run-service.js";
 
 export function issuedTaskAnswerContract(taskId: string): Record<string, unknown> {
   const schema = taskId === 'S2' ? TaskFinishAnswerSchemas.S2 : taskId === 'S3' ? TaskFinishAnswerSchemas.S3 : null;
@@ -86,13 +87,64 @@ export interface IssuedTask {
   environmentEvidenceHash: string;
 }
 
+export type CurrentTaskRunState = 'task_ready' | 'waiting_queue' | 'preparing_task' |
+  'reconciling_actions' | 'evaluating_task' | 'preparing_next_task' | 'finalizing_run' |
+  'cancelling_run' | 'awaiting_terminal' | 'terminal';
+
+export interface CurrentAgentTaskResponse {
+  task: IssuedTask | null;
+  run: { runId: string; status: RunStatus; terminal: boolean; terminalReason: string | null; cancellationReason: string | null };
+  state: CurrentTaskRunState;
+  retryAfterMs: number | null;
+}
+
+interface CurrentRunRow {
+  release_identity: string; manifest_hash: string; mode: 'training' | 'ranked'; status: RunStatus;
+  overall_deadline: Date | string | null; within_deadline: boolean;
+  terminal_reason: string | null; cancellation_reason: string | null;
+  benchmark_version: string; benchmark_hash: string; policy_hash: string; task_ids: string[];
+  mode_fenced: boolean;
+}
+
+interface CurrentTaskProgressRow {
+  task_index: number; task_id: string; status: string; closure_status: string;
+  started_at: Date | string | null; deadline_at: Date | string | null;
+  within_deadline: boolean; known_evaluation: boolean; unresolved_action: boolean;
+}
+
+// AICODE-NOTE: These terminal states match run-service cancellation authority. A null
+// issued task, deadline, unknown observation or transition never creates a terminal run.
+const RUN_READ_STATES = {
+  queued: 'waiting_queue', preparing: 'preparing_task', running: null,
+  cancellation_requested: 'cancelling_run', cancelled: 'terminal', expired: 'terminal',
+  completed: 'terminal', failed: 'terminal', unknown: 'terminal', disqualified: 'terminal',
+} as const satisfies Record<RunStatus, CurrentTaskRunState | null>;
+
+function currentRunResponse(runId: string, run: CurrentRunRow, state: CurrentTaskRunState,
+  task: IssuedTask | null = null): CurrentAgentTaskResponse {
+  return { task, run: { runId, status: run.status, terminal: RUN_READ_STATES[run.status] === 'terminal',
+    terminalReason: run.terminal_reason, cancellationReason: run.cancellation_reason }, state,
+    retryAfterMs: state === 'terminal' || task !== null ? null : 1000 };
+}
+
+function waitingTaskState(tasks: readonly CurrentTaskProgressRow[]): CurrentTaskRunState {
+  const active = tasks.filter(task => task.status === 'active');
+  if (active.length === 1) {
+    if (active[0]!.unresolved_action || active[0]!.closure_status === 'closing' ||
+        (active[0]!.closure_status === 'open' && !active[0]!.within_deadline)) return 'reconciling_actions';
+    if (!active[0]!.known_evaluation) return 'evaluating_task';
+  }
+  if (active.length > 1) return 'awaiting_terminal';
+  return tasks.some(task => task.status === 'queued') ? 'preparing_next_task' : 'finalizing_run';
+}
+
 /**
  * A fresh database permission check is necessary for long-lived MCP sessions.
  * Owner row locking serializes disclosure with revocation/policy changes.
  */
 export async function getCurrentAgentTask(
   deps: CurrentTaskDependencies, principal: AgentPrincipal, runId: string,
-): Promise<{ task: IssuedTask | null }> {
+): Promise<CurrentAgentTaskResponse> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)) {
     throw new HttpError(400, "INVALID_RUNID", "runId must be a UUID");
   }
@@ -114,28 +166,54 @@ export async function getCurrentAgentTask(
       throw new HttpError(403, "AGENT_ACCESS_REVOKED", "Current agent access is required");
     }
     const runs = await tx.execute(sql`SELECT release_identity,manifest_hash,benchmark_version,benchmark_hash,policy_hash,task_ids,
-      mode,status,overall_deadline,
+      mode,status,overall_deadline,terminal_reason,cancellation_reason,
       EXISTS(SELECT 1 FROM oid_run_mode_cancellation_outbox c WHERE c.owner_id=oid_benchmark_run.owner_id
         AND c.agent_id=oid_benchmark_run.agent_id AND c.mode=oid_benchmark_run.mode
         AND c.policy_revision>oid_benchmark_run.agent_policy_revision) AS mode_fenced,
       overall_deadline>clock_timestamp() AS within_deadline
       FROM oid_benchmark_run WHERE id=${runId} AND owner_id=${principal.ownerId} AND agent_id=${principal.agentId}
-        AND access_generation=${principal.accessGeneration} FOR UPDATE`) as unknown as Array<{
-          release_identity: string; manifest_hash: string; mode: "training" | "ranked"; status: string;
-          overall_deadline: Date | string | null; within_deadline: boolean;
-          benchmark_version: string; benchmark_hash: string; policy_hash: string; task_ids: string[];
-          mode_fenced: boolean;
-        }>;
+        AND access_generation=${principal.accessGeneration} FOR UPDATE`) as unknown as CurrentRunRow[];
     const run = runs[0];
     if (!run) throw new HttpError(404, "RUN_NOT_FOUND", "The run does not exist for this agent");
     if (!(run.mode === "training" ? grant.training : grant.ranked)) throw new HttpError(403, "MODE_NOT_ALLOWED", "Current mode permission is required");
-    if (run.status !== "running" || !run.within_deadline || run.mode_fenced) return { task: null };
-    const tasks = await tx.execute(sql`SELECT task_index,task_id,started_at,deadline_at FROM oid_run_task
-      WHERE run_id=${runId} AND status='active' AND closure_status='open' AND deadline_at>clock_timestamp() ORDER BY task_index FOR UPDATE`) as unknown as Array<{
-        task_index: number; task_id: string; started_at: Date | string; deadline_at: Date | string;
-      }>;
-    if (tasks.length !== 1) return { task: null };
-    const active = tasks[0]!;
+    const respond = async (state: CurrentTaskRunState, task: IssuedTask | null = null): Promise<CurrentAgentTaskResponse> => {
+      // Clock-based expiry can occur while a release is being checked, even though
+      // owner/agent/run row locks serialize explicit revocation and policy writes.
+      const taskClocks = task ? sql`,clock_timestamp()<${task.deadlineAt}::timestamptz AS task_live,
+        clock_timestamp()<${task.overallDeadline}::timestamptz AS run_live` : sql``;
+      const current = await tx.execute(sql`SELECT EXISTS(SELECT 1 FROM oid_agent_access_grant
+        WHERE id=${principal.grantId} AND owner_id=${principal.ownerId} AND agent_id=${principal.agentId}
+          AND access_generation=${principal.accessGeneration} AND role='agent' AND resource=${principal.resource}
+          AND revoked_at IS NULL AND expires_at>clock_timestamp()) AS allowed${taskClocks}`) as unknown as Array<{
+            allowed: boolean; task_live?: boolean; run_live?: boolean;
+          }>;
+      if (!current[0]?.allowed) throw new HttpError(403, 'AGENT_ACCESS_REVOKED', 'Current agent access is required');
+      if (task && (!current[0].task_live || !current[0].run_live)) {
+        return currentRunResponse(runId, run, current[0].run_live ? 'reconciling_actions' : 'awaiting_terminal');
+      }
+      return currentRunResponse(runId, run, state, task);
+    };
+    const runState = RUN_READ_STATES[run.status];
+    if (runState) return respond(runState);
+    if (run.status !== 'running' || !run.within_deadline || run.mode_fenced) return respond('awaiting_terminal');
+    const tasks = await tx.execute(sql`SELECT t.task_index,t.task_id,t.status,t.closure_status,t.started_at,t.deadline_at,
+      t.deadline_at>clock_timestamp() AS within_deadline,
+      EXISTS(SELECT 1 FROM oid_run_task_evaluation e WHERE e.run_id=t.run_id AND e.task_index=t.task_index
+        AND e.result_json->>'status'='known') AS known_evaluation,
+      EXISTS(SELECT 1 FROM oid_run_task_action a
+        LEFT JOIN oid_run_task_action_receipt receipt ON receipt.action_id=a.id
+        LEFT JOIN oid_run_task_action_outbox outbox ON outbox.action_id=a.id
+        WHERE a.run_id=t.run_id AND a.task_index=t.task_index
+          AND a.action_sequence<=COALESCE(t.action_cutoff_sequence,t.accepted_action_sequence)
+          AND (receipt.action_id IS NULL OR receipt.receipt_status NOT IN ('observed','rejected_before_execution')
+            OR outbox.action_id IS NULL OR outbox.status<>'delivered')) AS unresolved_action
+      FROM oid_run_task t WHERE t.run_id=${runId} ORDER BY t.task_index FOR UPDATE OF t`) as unknown as CurrentTaskProgressRow[];
+    const activeTasks = tasks.filter(task => task.status === 'active');
+    if (activeTasks.length !== 1 || activeTasks[0]!.closure_status !== 'open' || !activeTasks[0]!.within_deadline) {
+      return respond(waitingTaskState(tasks));
+    }
+    const active = activeTasks[0]!;
+    if (!active.started_at || !active.deadline_at) return respond('awaiting_terminal');
     const release = await deps.taskReleaseSource.getValidatedReleaseRecord(run.release_identity, run.manifest_hash, tx);
     if (!release || release.releaseIdentity !== run.release_identity || release.manifestHash !== run.manifest_hash ||
       release.benchmarkVersion !== run.benchmark_version || release.benchmarkHash !== run.benchmark_hash || release.policyHash !== run.policy_hash) {
@@ -143,6 +221,11 @@ export async function getCurrentAgentTask(
     }
     const task = release.manifest.cases[run.mode].find((candidate) => candidate.taskId === active.task_id);
     const execution = await getTaskExecutionContext(tx, { runId, taskIndex: active.task_index }, { requireActive: true });
+    if (!execution) {
+      const clocks = await tx.execute(sql`SELECT clock_timestamp()<${new Date(active.deadline_at).toISOString()}::timestamptz AS task_live,
+        clock_timestamp()<${new Date(run.overall_deadline!).toISOString()}::timestamptz AS run_live`) as unknown as Array<{ task_live: boolean; run_live: boolean }>;
+      if (clocks[0] && (!clocks[0].task_live || !clocks[0].run_live)) return respond(clocks[0].run_live ? 'reconciling_actions' : 'awaiting_terminal');
+    }
     if (!task || run.task_ids[active.task_index] !== active.task_id || !execution ||
       execution.taskId !== active.task_id || execution.releaseIdentity !== run.release_identity ||
       execution.releaseManifestHash !== run.manifest_hash || execution.caseId !== task.caseId ||
@@ -152,13 +235,8 @@ export async function getCurrentAgentTask(
       execution.applicationSourceHash.toLowerCase() !== release.manifest.executionIdentity.x402ServiceSha256.toLowerCase()) {
       throw new HttpError(503, "PINNED_CASE_UNAVAILABLE", "The active task case cannot be verified");
     }
-    const fresh = await tx.execute(sql`SELECT clock_timestamp()<LEAST(${new Date(active.deadline_at).toISOString()}::timestamptz,
-      ${new Date(run.overall_deadline!).toISOString()}::timestamptz) AND EXISTS(
-        SELECT 1 FROM oid_agent_access_grant WHERE id=${principal.grantId} AND revoked_at IS NULL AND expires_at>clock_timestamp()
-      ) AS valid`) as unknown as Array<{ valid: boolean }>;
-    if (!fresh[0]?.valid) return { task: null };
     // AICODE-NOTE: Never spread a sealed case into an agent response: it includes reference-path and initial-state evidence.
-    return { task: {
+    return respond('task_ready', {
       runId, taskIndex: active.task_index, taskId: task.taskId, caseHash: task.caseHash,
       releaseIdentity: run.release_identity, manifestHash: run.manifest_hash, mode: run.mode,
       participantToolProtocol: release.manifest.participantToolProtocol ?? 'combined_purchase_v1',
@@ -171,6 +249,6 @@ export async function getCurrentAgentTask(
       startedAt: new Date(active.started_at).toISOString(), deadlineAt: new Date(active.deadline_at).toISOString(),
       overallDeadline: new Date(run.overall_deadline!).toISOString(),
       environmentId: execution.envId, environmentEvidenceHash: execution.environmentEvidenceHash,
-    } };
+    });
   });
 }

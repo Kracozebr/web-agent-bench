@@ -321,7 +321,10 @@ async function loadCandidateContext(deps: TaskTrainingObservationLifecycleDepend
       release: release.manifest,
       run: { ...binding, acceptedActionCutoffSequence: actionCutoff, reconciledThroughActionSequence: reconciled,
         observationCutoffSequence: candidate.observationCutoffSequence, cutoffStatus: 'authoritative',
-        cutoffEvidence: candidate.cutoffEvidence },
+        cutoffEvidence: candidate.cutoffEvidence,
+        ...(candidate.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)
+          ? { observationAuthority: { closureId: row.closure_id, preparationId: row.preparation_id,
+            leaseId: row.lease_id, generationId: row.generation_id } } : {}) },
       observations: candidate.observations,
     };
     return { taskId: row.task_id, selectedTaskCount: row.task_ids.length, taskCase, input,

@@ -4,6 +4,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { RunFeedbackPanel } from "./run-feedback-panel";
+import { buildRunHandoffPrompt } from "@/lib/run-handoff";
 import {
   ApiError,
   apiRequest,
@@ -266,12 +267,12 @@ export function RunLaunchPanel() {
   }
 
   async function copyHandoffPrompt(intent: RunLaunchIntent) {
-    const prompt = `Run the free Web3 Agent Bench preflight for your configured connection. If it confirms that this agent is authorized for ${intent.mode} and the current selection, accept private launch intent ${intent.id} through the run-intent acceptance tool. If the server denies it, report the denial without retrying with another identity. This ID is only a reference; it is not a credential or permission.`;
+    const prompt = buildRunHandoffPrompt(intent);
     try {
       await copyText(prompt);
       setCopiedHandoffId(intent.id);
       setError(false);
-      setMessage("Copied a handoff prompt containing only the nonauthorizing intent reference.");
+      setMessage("Copied the complete request: preflight, accept and continuously execute this run.");
     } catch {
       setMessage("Clipboard access is unavailable. The safe handoff prompt is shown below for manual copying.");
       setError(true);
@@ -451,7 +452,7 @@ export function RunLaunchPanel() {
                     <button className="button button-small" data-testid={`run-intent-handoff-${intent.id}`} type="button" onClick={() => void copyHandoffPrompt(intent)} disabled={busy}>
                       {copiedHandoffId === intent.id ? "Copied safe handoff" : "Copy safe handoff prompt"}
                     </button>
-                    <p className="fine" data-testid={`run-intent-handoff-text-${intent.id}`}>Run the free preflight for the configured connection, then ask the matching agent to accept intent {intent.id} if its current permission allows. The intent ID is a reference, not a credential.</p>
+                    <p className="fine" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }} data-testid={`run-intent-handoff-text-${intent.id}`}>{buildRunHandoffPrompt(intent)}</p>
                   </div>
                   <div className="button-row">
                     <button className="button button-danger" data-testid={`run-intent-cancel-${intent.id}`} type="button" onClick={() => void cancelIntent(intent)} disabled={busy}>Cancel pending intent</button>

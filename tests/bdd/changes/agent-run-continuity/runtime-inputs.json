@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "arc-runtime-inputs/v1",
+  "captures": {
+    "controlled": {
+      "path": "artifacts/runs/agent-run-continuity-controlled/396226a1-1f9e-47e2-866c-5f49d008b2f3/capture.json",
+      "sha256": "4cce5f20355455a4e5800d0b2edccdec349ea234b8ae94831bc4ce8fda50d4f2"
+    },
+    "native": {
+      "path": "artifacts/runs/agent-run-continuity-native/396226a1-1f9e-47e2-866c-5f49d008b2f3/capture.json",
+      "sha256": "e6079626cbfe614e87cbd334b404523d71b75dd84bcf0e03d5be8243e6e5713a"
+    }
+  },
+  "negativeReports": [
+    {
+      "path": "artifacts/runs/agent-run-continuity-validation/identity-negative-report.json",
+      "sha256": "84d44036fe875e445dc118956b610c5d32e15e351c98922826e5a82af9f158fe"
+    },
+    {
+      "path": "artifacts/runs/agent-run-continuity-validation/handoff-negative-report.json",
+      "sha256": "2aa6f3535467ae14b3445eb6fc381ec78881f383f650407181c3c383958e73ae"
+    }
+  ],
+  "historicalPreservation": {
+    "path": "artifacts/runs/agent-run-continuity-validation/historical-preservation.json",
+    "sha256": "59b56ecd6910a0ef170cfdc147fcc7a44da3e7161b4d45712f3d7f0d3bf79fd5"
+  }
+}

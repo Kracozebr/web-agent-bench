@@ -280,6 +280,10 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       observationCutoffSequence: observationCutoff,
       cutoffStatus: 'authoritative',
       cutoffEvidence: bundle.cutoff.evidence as EvidenceReference,
+      // Preserve the exact historical input shape/hash for bundles predating absence proof.
+      ...(bundle.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)
+        ? { observationAuthority: { closureId: row.closure_id, preparationId: row.preparation_id,
+          leaseId: row.lease_id, generationId: row.generation_id } } : {}),
     };
     return {
       taskCase,
@@ -1575,6 +1579,9 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     const projected = projectM1PacketObservations(packet, {
       taskCase, binding: bundle.binding as unknown as TaskEvidenceBinding, taskIndex: row.task_index,
       closureId: row.closure_id, captureEvidence: bundle.observations.captureEvidence as EvidenceReference, assets,
+      // AICODE-NOTE: Old sealed facts must replay byte-for-byte, without retroactive regrading.
+      preserveLegacyDeliveryObservations: !(bundle.observations.payments as PersistedTaskObservations['payments'])
+        .some((payment) => payment.deliveryRequestAbsence !== undefined),
     });
     for (const domain of ['transfers', 'payments', 'stateMutations', 'deliveries', 'expenses'] as const) {
       if (canonicalTaskJson(bundle.observations[domain]) !== canonicalTaskJson(projected[domain])) {

@@ -365,6 +365,12 @@ test('sealed source binds S1 to the caller transaction and preserves incomplete 
     assert.equal(result.run.acceptedActionCutoffSequence, 1);
     assert.equal(result.run.observationCutoffSequence, 7);
     assert.equal(result.run.environmentId, ENVIRONMENT, 'historical run input remains bound to the sealed task environment');
+    const legacyRun = { ...fixture.bundle.binding, acceptedActionCutoffSequence: 1, reconciledThroughActionSequence: 1,
+      observationCutoffSequence: 7, cutoffStatus: 'authoritative', cutoffEvidence: fixture.bundle.cutoff.evidence };
+    assert.deepEqual(result.run, legacyRun, 'legacy reload must not add optional authority fields');
+    assert.equal(sha256CanonicalTaskJson(result), sha256CanonicalTaskJson({ taskCase: fixture.taskCase,
+      release: fixture.record.manifest, run: legacyRun, observations: fixture.bundle.observations }),
+    'legacy evaluator input hash remains identical after the optional proof extension');
     assert.deepEqual(result.observations.coverage, { transfers: 'incomplete', balances: 'contradictory' });
     assert.equal(result.observations.transfers.length, 1);
     assert.equal(queryCount, 1);

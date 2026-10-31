@@ -1,0 +1,7 @@
+# Approved BDD design
+
+Owner approved all three fixes, BDD, real E2E and commit/push in this chat on 2026-10-31. The active spec is normative; no historical BER acceptance is promoted. Each scenario is mandatory environment evidence with frozen sources, real initiating browser click, native MCP where stated and independent durable PG/BEF/files. All negative controls below must actually execute; unit/PG reports must bind exact command, zero failures/skips and source hashes. Unavailable runtime evidence stays blocked.
+
+- ARC-SC-001: actual_browser_clipboard_native_mcp_owner_postgres; observations clipboard_selection_binding, continuous_native_run, historical_run_unchanged; negatives wrong_card_or_intent, clipboard_fallback, stale_selection; effects one_admission, one_platform_debit.
+- ARC-SC-002: actual_mcp_readonly_owner_postgres; observations raw_waiting_and_terminal_responses, readonly_projection, authorization_rechecked; negatives queued_or_preparing_null, closed_grading_null, foreign_owner_or_card, revoked_expired_or_mode_disabled; effects zero_projection_business_writes, no_cross_owner_disclosure.
+- ARC-SC-003: actual_worker_bef_rpc_postgres_evaluator; observations closed_admission_census, confirmed_payment_and_source_absence, known_m1_then_h1_completion, exact_fences_and_finance; negatives missing_census, contradictory_source, admitted_pending_or_unknown_retrieve, tampered_or_foreign_proof; effects no_duplicate_effect_or_refund, historical_grade_unchanged.

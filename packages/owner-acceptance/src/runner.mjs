@@ -48,6 +48,8 @@ const runId = randomUUID();
 const bonusCodesOptIn = process.argv.includes("--bonus-codes-only");
 const reportsOptIn = process.argv.includes("--reports-only");
 const platformRecoveryOptIn = process.argv.includes("--platform-recovery-only");
+// AICODE-NOTE: ARC owns only disposable browser/MCP continuity captures, including a native client handoff.
+const agentRunContinuityOptIn = process.argv.includes("--agent-run-continuity-only");
 // AICODE-NOTE: This explicit BER mode retains the two actual S1 recovery cases without
 // entering legacy S4/M3 Training collectors. It is subset evidence, never a full BPC/BER gate.
 const berRecoveryCoreOptIn = process.env.OID_BER_RECOVERY_CORE === "1";
@@ -61,7 +63,7 @@ if (interruptBeforeFirstRefund && !berRecoveryCoreOptIn) throw new Error("ber_fi
 // substitutes for a complete recovery/checkpoint/restore capture or a BPC gate.
 const combinedQueueOptIn = process.argv.includes("--combined-queue-only");
 const combinedRestoreOptIn = process.argv.includes("--combined-restore-only") || combinedQueueOptIn;
-const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn;
+const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn;
 const bonusFundedTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-sequence-worker-owner-run");
 const bonusFundedRankedOptIn = process.argv.includes("--genuine-bonus-funded-ranked-worker-owner-run");
 const genuineAllOpenTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-all-open-worker-owner-run");
@@ -84,7 +86,7 @@ const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || g
 const genuineTaskId = genuineWorkerTaskId ?? ["S1"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
 // AICODE-NOTE: Bonus run-admission negatives use the same guarded local policy as owner-run captures.
-const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn || combinedRestoreOptIn || platformRecoveryOptIn;
+const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn;
 const activeContract = JSON.parse(await readFile(resolve(repoRoot, "tests/bdd/changes/owner-identity-and-pilot-admission/harness-contracts.json"), "utf8"));
 const contractRows = activeContract.protected_scenarios;
 const REQUIRED = Object.fromEntries(Object.entries(contractRows).map(([scenarioId, row]) => [scenarioId, row.required_observations]));
@@ -304,7 +306,7 @@ async function waitHttp(url, predicate, label) {
 
 async function startRuntime() {
   phase = "runtime_preflight";
-  const domainOptIns = [bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn].filter(Boolean).length;
+  const domainOptIns = [bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn, agentRunContinuityOptIn].filter(Boolean).length;
   if (domainOptIns > 1 || (domainOptIns === 1 && process.argv.slice(2).filter((argument) => argument !== "--").length !== 1)) {
     throw Object.assign(new Error("beta_poc_domain_cli_shape_invalid"), { code: "BPC_CLI_SHAPE_INVALID" });
   }
@@ -313,6 +315,9 @@ async function startRuntime() {
     throw Object.assign(new Error("report_capture_base_requires_absolute_path_and_reports_opt_in"), { code: "BPC_REPORT_CAPTURE_BASE_INVALID" });
   }
   if (process.platform !== "linux") throw new Error("Run owner acceptance inside the pinned Linux Docker runtime");
+  if (agentRunContinuityOptIn && process.env.OID_BETA_MANIFEST_FILE) {
+    throw Object.assign(new Error('arc_requires_disposable_local_manual_transport'), { code: 'ARC_LOCAL_PROFILE_REQUIRED' });
+  }
   if (localCoordinatorCaptureOptIn) {
     if (process.argv.length !== 3) throw Object.assign(new Error("genuine_s1_cli_shape_invalid"), { code: "GENUINE_S1_CLI_SHAPE_INVALID" });
     phase = "genuine_s1_private_coordinator_provisioning";
@@ -329,7 +334,7 @@ async function startRuntime() {
       });
     }
     await provisionGenuineS1CoordinatorConfig({ repositoryRoot: repoRoot,
-      automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn,
+      automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn,
       ...(platformRecoveryOptIn || combinedRestoreOptIn ? { apiBaseUrl: recoveryFaultProxy.origin,
         observerDatabase: { host: "127.0.0.1", port: recoveryObserverProxy.port } } : {}),
       ...(berUnknownGradingOptIn ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
@@ -370,6 +375,7 @@ async function startRuntime() {
     OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG: process.env.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG ?? ".local/owner-identity/bef-task-coordinator.json",
     OID_LOCAL_REPORT_ACCEPTANCE_ENABLED: privateReportStorageOptIn ? "true" : "false",
     NODE_ENV: "development",
+    ...(agentRunContinuityOptIn ? { OID_MCP_TRANSPORT_PROFILE: "codex-local-manual-2025-06-18" } : {}),
     ...(privateReportStorageOptIn ? {
       OID_PRIVATE_DATA_DIR: reportCaptureIsolation.privateDataDir,
       OID_BETA_REPORT_CLOSURE_STATE_FILE: reportCaptureIsolation.closureStatePath,
@@ -706,6 +712,18 @@ async function collectSourceHashes() {
     resolve(repoRoot, "Dockerfile"),
     resolve(repoRoot, ".dockerignore"),
     resolve(repoRoot, "infrastructure/owner-identity"),
+    ...(agentRunContinuityOptIn ? [
+      resolve(repoRoot, "openspec/changes/agent-run-continuity"),
+      resolve(repoRoot, "tests/bdd/changes/agent-run-continuity"),
+      resolve(repoRoot, "tests/bdd/features/agent_run_continuity.feature"),
+      resolve(repoRoot, "tests/bdd/mappers/test_agent_run_continuity_bdd.py"),
+      resolve(repoRoot, "tests/bdd/adapters/agent_run_continuity.py"),
+      resolve(repoRoot, "tests/bdd/adapters/test_agent_run_continuity.py"),
+      resolve(repoRoot, "tests/bdd/adapters/ber_recovery_replay.py"),
+      resolve(repoRoot, "tools/arc-native-bridge.mjs"),
+      resolve(repoRoot, "tools/arc-native-bridge.test.mjs"),
+      resolve(repoRoot, "tools/run_arc_native.mjs"),
+    ] : []),
     ...(berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn ? [
       resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/specs"),
       resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/bdd-design.md"),
@@ -730,6 +748,12 @@ async function collectSourceHashes() {
         await visit(resolve(path, entry.name));
       }
     } else if (info.isFile()) {
+      // AICODE-NOTE: ARC qualification bookkeeping is updated after evidence collection.
+      // Exclude only these metadata names under this change; code, approval, normative
+      // specs/design, BDD contracts, features and readers remain hash-pinned.
+      const relativeInput = relative(repoRoot, path).split(sep).join('/');
+      const arcMetadata = /^(?:openspec|tests\/bdd)\/changes\/agent-run-continuity\/(?:tasks\.md|runtime-inputs\.json|acceptance-evidence\.(?:md|json))$/;
+      if (agentRunContinuityOptIn && arcMetadata.test(relativeInput)) return;
       const extension = path.slice(path.lastIndexOf("."));
       if ((extensions.has(extension) || [".dockerignore", "Dockerfile"].includes(path.slice(path.lastIndexOf(sep) + 1))) && !path.split(sep).includes("node_modules")) files.push(path);
     }
@@ -878,7 +902,7 @@ async function main() {
     const confirmed = await waitOwner(ownerLogin.page, "authenticated");
     if (confirmed.owner?.id !== ownerId || confirmed.owner?.admissionStatus !== "admitted") throw new Error("Activation did not confirm the same admitted owner in the real owner projection");
     const activationOperation = ownerLogin.capture.requests.filter((item) => item.path === "/api/admission/activate" && item.method === "POST").at(-1)?.operationId;
-    if (platformRecoveryOptIn || combinedRestoreOptIn) {
+    if (platformRecoveryOptIn || combinedRestoreOptIn || agentRunContinuityOptIn) {
       const genuineCaptureInput = {
         captureId: runId, repoRoot, databaseUrl: process.env.OID_DATABASE_URL,
         observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL, publicOrigin,
@@ -999,6 +1023,40 @@ async function main() {
         assertSecretFree(value, "beta operations progress");
         console.log(JSON.stringify({ event: "beta_operations_progress", ...value }));
       };
+      if (agentRunContinuityOptIn) {
+        const { runArcContinuityOwnerCase } = await import("./arc-continuity-cases.mjs");
+        const { createArcNativeIntentRunner } = await import("../../../tools/arc-native-bridge.mjs");
+        const savedProfiles = [];
+        for (const profile of ['paid_without_retrieve', 'native_handoff']) {
+          phase = "agent_run_continuity_" + profile;
+          const result = await runArcContinuityOwnerCase({ ...genuineCaptureInput, continuityCase: profile,
+            ...(profile === 'native_handoff' ? { onArcNativeIntentReady: createArcNativeIntentRunner({ repoRoot, captureId: runId }) } : {}) });
+          const sourceHashesAfter = await collectSourceHashes();
+          const map = (rows) => Object.fromEntries(rows.map((row) => [row.path, row.sha256]));
+          const inputHashesBefore = map(sourceHashesBefore), inputHashesAfter = map(sourceHashesAfter);
+          const provenance = { databaseIsolation, sourceInputsBeforeCheckpoint, inputHashesBefore, inputHashesAfter,
+            sourceStableDuringRun: JSON.stringify(inputHashesBefore) === JSON.stringify(inputHashesAfter) };
+          const artifactRoot = profile === 'native_handoff' ? 'agent-run-continuity-native' : 'agent-run-continuity-controlled';
+          const directory = resolve(repoRoot, 'artifacts/runs', artifactRoot, runId);
+          await mkdir(directory, { recursive: true, mode: 0o700 });
+          const capture = { schemaVersion: 'agent-run-continuity-capture/v1', captureId: runId,
+            boundary: 'isolated_local_browser_backend_postgres_bef_files', profile, result, provenance,
+            targetHostAcceptance: 'blocked_target_not_selected' };
+          assertSecretFree(capture, artifactRoot);
+          const bytes = Buffer.from(JSON.stringify(capture, null, 2) + '\n');
+          await writeFile(resolve(directory, 'capture.json'), bytes, { flag: 'wx', mode: 0o600 });
+          const saved = { profile, path: `artifacts/runs/${artifactRoot}/${runId}/capture.json`, sha256: sha256(bytes),
+            status: result.continuity?.status ?? 'blocked', blocker: result.blocker ?? null,
+            sourceStableDuringRun: provenance.sourceStableDuringRun };
+          savedProfiles.push(saved);
+          console.log(JSON.stringify({ event: 'agent_run_continuity_capture_saved', captureId: runId, ...saved }));
+          betaOperationsArtifactWritten = true;
+          if (!provenance.sourceStableDuringRun || result.continuity?.status !== 'verified') { process.exitCode = 2; break; }
+        }
+        console.log(JSON.stringify({ event: 'agent_run_continuity_profiles_complete', captureId: runId, profiles: savedProfiles,
+          nativeProfileExecuted: savedProfiles.some((row) => row.profile === 'native_handoff') }));
+        return;
+      }
       commonCapture.createCombinedBackup = async ({ officialEvidenceRefs, kind = "pre_migration" }) => {
         const { createLocalCombinedBackup } = await import("../../../infrastructure/owner-identity/beta-backup-local.mjs");
         return createLocalCombinedBackup({ repoRoot, databaseUrl: commonCapture.databaseUrl,
@@ -1609,6 +1667,21 @@ async function main() {
 }
 
 main().catch(async (error) => {
+  if (agentRunContinuityOptIn && !betaOperationsArtifactWritten) {
+    try {
+      const directory = resolve(repoRoot, 'artifacts/runs/agent-run-continuity-controlled', runId);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const reasonCode = typeof error?.code === 'string' && /^[A-Za-z0-9_]{1,96}$/.test(error.code)
+        ? error.code : 'arc_startup_or_owner_setup_failed';
+      const blocked = { schemaVersion: 'agent-run-continuity-capture/v1', captureId: runId,
+        boundary: 'isolated_local_browser_backend_postgres_bef_files', profile: 'paid_without_retrieve',
+        result: { status: 'blocked', phase, reasonCode },
+        provenance: { databaseIsolation, sourceInputsBeforeCheckpoint, sourceStability: 'not_verified' } };
+      assertSecretFree(blocked, 'arc-startup-block');
+      await writeFile(resolve(directory, 'capture.json'), JSON.stringify(blocked, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      betaOperationsArtifactWritten = true;
+    } catch { /* Keep the original safe startup diagnostic if a blocked artifact cannot be retained. */ }
+  }
   if ((platformRecoveryOptIn || combinedRestoreOptIn) && !betaOperationsArtifactWritten) {
     const artifactRoot = combinedQueueOptIn ? "beta-combined-queue"
       : platformRecoveryOptIn ? (berH1CutoffOptIn ? "ber-h1-cutoff-matrix" : berUnknownGradingOptIn ? "ber-unknown-grading"

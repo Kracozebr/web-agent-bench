@@ -117,12 +117,16 @@ function m1Context(packet: M1CapturePacket, alternateExpected = false): M1Packet
       { assetId: 'ETH', kind: 'native', chainId: 8453, address: null }] };
 }
 
-function evaluateProjection(packet: M1CapturePacket, context: M1PacketProjectionContext) {
+function evaluateProjection(packet: M1CapturePacket, context: M1PacketProjectionContext,
+  edit?: (input: Parameters<typeof evaluateTaskRubric>[0]) => void) {
   const projected = projectM1PacketObservations(packet, context);
   const cutoff = packet.closure.actionCutoffSequence as number;
   const run: TrustedTaskRun = { ...context.binding, acceptedActionCutoffSequence: cutoff,
     reconciledThroughActionSequence: packet.closure.reconciledActionSequence as number, observationCutoffSequence: cutoff,
-    cutoffStatus: 'authoritative', cutoffEvidence: TEST_CAPTURE };
+    cutoffStatus: 'authoritative', cutoffEvidence: TEST_CAPTURE,
+    ...(projected.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)
+      ? { observationAuthority: { closureId: String(packet.closure.closureId), preparationId: String(packet.execution.preparationId),
+        leaseId: String(packet.execution.leaseId), generationId: String(packet.execution.generationId) } } : {}) };
   const observations: PersistedTaskObservations = {
     schemaVersion: 'bts-task-observations/v1', binding: context.binding, coveredThroughSequence: cutoff, captureEvidence: TEST_CAPTURE,
     coverage: projected.coverage, transfers: projected.transfers, payments: projected.payments, stateMutations: projected.stateMutations,
@@ -132,9 +136,96 @@ function evaluateProjection(packet: M1CapturePacket, context: M1PacketProjection
   const release = { manifestHash: context.binding.manifestHash, releaseIdentity: context.binding.releaseIdentity,
     executionIdentity: { assets: context.assets.map((asset) => ({ ...asset, codeHash: null, decimals: asset.assetId === 'USDC' ? 6 : 18 })) },
     costPolicy: { usdcAssetId: 'USDC', ethValuation: { numerator: '1', denominator: '1' } } };
-  return { projected, result: evaluateTaskRubric({ taskCase: context.taskCase, run, observations,
-    release: release as unknown as Parameters<typeof evaluateTaskRubric>[0]['release'] }) };
+  const input = { taskCase: context.taskCase, run, observations,
+    release: release as unknown as Parameters<typeof evaluateTaskRubric>[0]['release'] };
+  edit?.(input);
+  return { projected, input, result: evaluateTaskRubric(input) };
 }
+
+function paidWithoutRetrievePacket(): M1CapturePacket {
+  const packet = validM1PaymentPacket();
+  packet.ownerActions = packet.ownerActions.filter((action) => action.actionKind !== 'retrieve');
+  const cutoff = packet.ownerActions.at(-1)!.actionSequence;
+  packet.closure = { ...packet.closure, actionCutoffSequence: cutoff, reconciledActionSequence: cutoff, reason: 'task_deadline' };
+  for (const operation of packet.bef.after.operations) if (operation.operation_kind === 'purchase') operation.status = 'settled';
+  packet.bef.after.deliveries = [];
+  packet.bef.before = structuredClone(packet.bef.after);
+  packet.bef.censusSha256 = digest(Buffer.from(canonicalTaskJson(packet.bef.after)));
+  return packet;
+}
+
+test('M1 closed complete payment with no admitted retrieve is a known missed goal, not unknown delivery', () => {
+  const packet = paidWithoutRetrievePacket();
+  const { projected, result } = evaluateProjection(packet, m1Context(packet));
+  assert.equal(projected.payments.length, 1);
+  assert.equal(projected.deliveries.length, 0);
+  assert.equal(projected.payments[0]!.deliveryRequestAbsence?.status, 'not_admitted_at_cutoff');
+  assert.equal(result.status, 'known');
+  assert.equal(result.outcome, 'failed');
+  assert.deepEqual(result.credit, { numerator: '0', denominator: '1' });
+});
+
+test('M1 absence requires exact immutable payment, cutoff, source and generation authority', () => {
+  const edits: Array<(input: Parameters<typeof evaluateTaskRubric>[0]) => void> = [
+    (input) => { delete input.observations.payments[0]!.deliveryRequestAbsence; },
+    (input) => { delete input.run.observationAuthority; },
+    (input) => { Object.assign(input.observations.payments[0]!.deliveryRequestAbsence!, { schemaVersion: 'unverified/v1' }); },
+    (input) => { Object.assign(input.observations.payments[0]!.deliveryRequestAbsence!, { status: 'claimed_absent' }); },
+    (input) => { input.observations.payments[0]!.deliveryRequestAbsence!.paymentAttemptId = 'foreign-payment'; },
+    (input) => { input.observations.payments[0]!.deliveryRequestAbsence!.paymentActionSequence += 1; },
+    (input) => { input.observations.payments[0]!.deliveryRequestAbsence!.acceptedActionCutoffSequence += 1; },
+    (input) => { input.observations.payments[0]!.deliveryRequestAbsence!.authority.generationId = '00000000-0000-4000-8000-000000000000'; },
+    (input) => { input.observations.payments[0]!.deliveryRequestAbsence!.authority.closureId = '00000000-0000-4000-8000-000000000000'; },
+    (input) => { input.observations.payments[0]!.deliveryRequestAbsence!.captureEvidence = { ...TEST_CAPTURE, sha256: '0'.repeat(64) }; },
+    (input) => { input.observations.coverage.deliveries = 'incomplete'; },
+    (input) => { input.observations.coverage.payments = 'contradictory'; },
+  ];
+  for (const edit of edits) {
+    const packet = paidWithoutRetrievePacket();
+    const { result } = evaluateProjection(packet, m1Context(packet), edit);
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.credit, null);
+  }
+});
+
+test('legacy sealed M1 payment observations and evaluator input hash remain unchanged and unknown', () => {
+  const packet = paidWithoutRetrievePacket();
+  const context = { ...m1Context(packet), preserveLegacyDeliveryObservations: true };
+  const legacy = evaluateProjection(packet, context);
+  assert.equal(legacy.projected.payments[0]!.deliveryRequestAbsence, undefined);
+  assert.equal(Object.hasOwn(legacy.input.run, 'observationAuthority'), false);
+  const before = canonicalTaskJson(legacy.input);
+  const upgraded = evaluateProjection(packet, m1Context(packet));
+  delete upgraded.input.observations.payments[0]!.deliveryRequestAbsence;
+  delete upgraded.input.run.observationAuthority;
+  assert.equal(canonicalTaskJson(upgraded.input), before);
+  assert.equal(digest(Buffer.from(canonicalTaskJson(upgraded.input))), digest(Buffer.from(before)));
+  assert.equal(legacy.result.status, 'unknown');
+  assert.ok(legacy.result.unknownReasons.includes('paid_resource_delivery_unobserved'));
+});
+
+test('M1 no-request exemption is not minted for an admitted rejected retrieval or incomplete source census', () => {
+  const packet = paidWithoutRetrievePacket();
+  const original = validM1PaymentPacket().ownerActions.find((action) => action.actionKind === 'retrieve')!;
+  packet.ownerActions.push({ ...original, receiptStatus: 'rejected_before_execution', participantToolResponse: null,
+    paymentProtocol: null, befOperationId: null, rawResponseSha256: null });
+  packet.closure.actionCutoffSequence = original.actionSequence;
+  packet.closure.reconciledActionSequence = original.actionSequence;
+  const { projected, result } = evaluateProjection(packet, m1Context(packet));
+  assert.equal(projected.payments[0]!.deliveryRequestAbsence, undefined);
+  assert.equal(result.status, 'unknown');
+  assert.ok(result.unknownReasons.includes('paid_resource_delivery_unobserved'));
+  for (const mutation of ['pending', 'unknown', 'after_cutoff', 'retrieve_after_cutoff', 'missing_action', 'missing_receipt', 'foreign_generation'] as const) {
+    const broken = paidWithoutRetrievePacket();
+    if (mutation === 'pending' || mutation === 'unknown') (broken.ownerActions[1] as unknown as {receiptStatus:string}).receiptStatus = mutation;
+    else if (mutation === 'after_cutoff') broken.closure.actionCutoffSequence = 1;
+    else if (mutation === 'retrieve_after_cutoff') broken.ownerActions.push(original);
+    else if (mutation === 'missing_action') broken.ownerActions.shift();
+    else if (mutation === 'missing_receipt') broken.rpc.paymentProofs = [];
+    else broken.bef.after.generation.generation_id = '00000000-0000-4000-8000-000000000000';
+    assert.throws(() => projectM1PacketObservations(broken, m1Context(broken)), M1CapturePacketError);
+  }
+});
 
 function rejectedChallengePacket(): M1CapturePacket {
   const packet = validM1PaymentPacket();

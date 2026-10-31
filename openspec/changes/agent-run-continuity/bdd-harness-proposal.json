@@ -1,0 +1,92 @@
+{
+  "normative_delta": "specs/agent-run-continuity/spec.md",
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/agent-run-continuity/harness-contracts.json",
+  "protected_scenarios": {
+    "ARC-SC-001": {
+      "adapter": "agent_run_continuity",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_browser_clipboard_native_mcp_owner_postgres",
+      "durable_effects": [
+        "one_admission",
+        "one_platform_debit"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_arc_sc_001",
+      "negative_variants": [
+        "wrong_card_or_intent",
+        "clipboard_fallback",
+        "stale_selection"
+      ],
+      "required_observations": [
+        "clipboard_selection_binding",
+        "continuous_native_run",
+        "historical_run_unchanged"
+      ],
+      "requirement_id": "ARC-REQ-001",
+      "runtime_status": "not_run",
+      "title": "Execute the complete handoff continuously"
+    },
+    "ARC-SC-002": {
+      "adapter": "agent_run_continuity",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_mcp_readonly_owner_postgres",
+      "durable_effects": [
+        "zero_projection_business_writes",
+        "no_cross_owner_disclosure"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_arc_sc_002",
+      "negative_variants": [
+        "queued_or_preparing_null",
+        "closed_grading_null",
+        "foreign_owner_or_card",
+        "revoked_expired_or_mode_disabled"
+      ],
+      "required_observations": [
+        "raw_waiting_and_terminal_responses",
+        "readonly_projection",
+        "authorization_rechecked"
+      ],
+      "requirement_id": "ARC-REQ-002",
+      "runtime_status": "not_run",
+      "title": "Expose authorized run progression through MCP"
+    },
+    "ARC-SC-003": {
+      "adapter": "agent_run_continuity",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_worker_bef_rpc_postgres_evaluator",
+      "durable_effects": [
+        "no_duplicate_effect_or_refund",
+        "historical_grade_unchanged"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_arc_sc_003",
+      "negative_variants": [
+        "missing_census",
+        "contradictory_source",
+        "admitted_pending_or_unknown_retrieve",
+        "tampered_or_foreign_proof"
+      ],
+      "required_observations": [
+        "closed_admission_census",
+        "confirmed_payment_and_source_absence",
+        "known_m1_then_h1_completion",
+        "exact_fences_and_finance"
+      ],
+      "requirement_id": "ARC-REQ-003",
+      "runtime_status": "not_run",
+      "title": "Grade proven unrequested retrieval without fabricating absence"
+    }
+  }
+}

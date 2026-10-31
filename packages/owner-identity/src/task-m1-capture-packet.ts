@@ -729,6 +729,8 @@ export type M1PacketProjectionContext = {
   taskIndex: number;
   closureId: string;
   captureEvidence: EvidenceReference;
+  /** Only immutable pre-extension sealed bundles may suppress the new optional fact. */
+  preserveLegacyDeliveryObservations?: boolean;
   assets: readonly { assetId: string; address: string | null; kind: 'native' | 'erc20'; chainId: number }[];
 };
 
@@ -1028,6 +1030,20 @@ function projectSingleM1PacketObservations(
     paymentAttemptId: String(paymentRow.payment_id), status: 'settled', requirements,
     gasPayer: cost.payer_role === 'participant' ? 'participant' : 'facilitator', transactionHash: String(paymentRow.transaction_hash),
   };
+  // AICODE-NOTE: A settled payment is not a delivery. Only this complete, validated
+  // closed-cutoff census can distinguish a never-admitted retrieve from lost delivery evidence.
+  // Even a rejected admitted retrieve remains outside this narrow absence authority.
+  if (!context.preserveLegacyDeliveryObservations && operation.status === 'settled' && operation.payment_response_mode === 'deferred_delivery' &&
+      !delivery && !packet.ownerActions.some((action) => action.actionKind === 'retrieve')) {
+    paymentObservation.deliveryRequestAbsence = {
+      schemaVersion: 'bts-delivery-request-absence/v1', status: 'not_admitted_at_cutoff',
+      paymentAttemptId: paymentObservation.paymentAttemptId, paymentActionSequence: payAction.actionSequence,
+      acceptedActionCutoffSequence: packet.closure.actionCutoffSequence as number,
+      authority: { closureId: packet.closure.closureId as string, preparationId: packet.execution.preparationId as string,
+        leaseId: packet.execution.leaseId as string, generationId: packet.execution.generationId as string },
+      captureEvidence,
+    };
+  }
   const stateMutations: StateMutationObservation[] = [
     { kind: 'state_mutation', ...meta(`m1-state-payer-${paymentRow.payment_id}`, payAction.actionSequence, payAction.actionSequence),
       mutationType: 'balance', key: `${payerAddress}:${asset.assetId}`, beforeValue: String(paymentRow.payer_balance_before),

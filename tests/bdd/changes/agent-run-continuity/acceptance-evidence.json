@@ -1,0 +1,53 @@
+{
+  "acceptance_state": "complete",
+  "active_delta_sha256": "f146156804776490f11d3733d5ea21db0bb20c047111d8b4139450ffa3333a32",
+  "bef_spec_profile": "active-delta",
+  "change": "agent-run-continuity",
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_agent_run_continuity_bdd.py",
+    "--change",
+    "agent-run-continuity",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/agent-run-continuity-pytest.xml"
+  ],
+  "execution_started": true,
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-31T15:59:33.801356Z",
+  "gate": {
+    "class": "environment",
+    "mandatory": true
+  },
+  "git_commit": "65abcc4e09e9d6618ddb6b80dd97a8a3a19042df",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "approved_scenarios": 3,
+    "change": "agent-run-continuity",
+    "coverage_status": "complete",
+    "errors": [],
+    "normative_source": "openspec/changes/agent-run-continuity/specs/*/spec.md",
+    "protected_scenarios": 3,
+    "status": "passed",
+    "unprotected_scenarios": [],
+    "warnings": []
+  },
+  "harness_contract_sha256": "6500c730a574942600e87b8dbbac20e1960ed7291518603798b62b4b8158006f",
+  "harness_sources_sha256": "d407a2499d983686be4d040ec82a73620ed47a73771c9f502d79a84371a98c0e",
+  "harness_sources_sha256_after": "d407a2499d983686be4d040ec82a73620ed47a73771c9f502d79a84371a98c0e",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/agent-run-continuity/specs/*/spec.md",
+  "scenario_map_sha256": "592698ee8f8e2a6ea8066f65b3d636336b152a5133356fecd7d12bb917463b6d",
+  "scenario_results": {
+    "ARC-SC-001": "passed",
+    "ARC-SC-002": "passed",
+    "ARC-SC-003": "passed"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-10-31T15:59:30.462181Z"
+}

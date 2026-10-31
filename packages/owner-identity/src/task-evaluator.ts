@@ -18,6 +18,7 @@ import type { TaskId } from './task-catalog.js';
 const UINT = /^(?:0|[1-9][0-9]{0,77})$/;
 const HASH = /^[0-9a-f]{64}$/i;
 const TX_HASH = /^0x[0-9a-f]{64}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type ExactCredit = { numerator: string; denominator: string };
 export type ObservationCoverage = 'complete' | 'incomplete' | 'contradictory';
@@ -54,6 +55,25 @@ export type TrustedTaskRun = TaskEvidenceBinding & {
   observationCutoffSequence: number;
   cutoffStatus: 'authoritative' | 'unknown' | 'contradictory';
   cutoffEvidence: EvidenceReference;
+  /** Loaded from the exact validated closure/preparation or sealed bundle, never the client. */
+  observationAuthority?: TaskObservationAuthority;
+};
+
+export type TaskObservationAuthority = {
+  closureId: string;
+  preparationId: string;
+  leaseId: string;
+  generationId: string;
+};
+
+export type DeliveryRequestAbsence = {
+  schemaVersion: 'bts-delivery-request-absence/v1';
+  status: 'not_admitted_at_cutoff';
+  paymentAttemptId: string;
+  paymentActionSequence: number;
+  acceptedActionCutoffSequence: number;
+  authority: TaskObservationAuthority;
+  captureEvidence: EvidenceReference;
 };
 
 export type PersistedObservationMeta = {
@@ -99,6 +119,8 @@ export type PaymentObservation = PersistedObservationMeta & {
   /** Persisted transaction provenance identifies who paid settlement gas; x402 may be facilitator-submitted. */
   gasPayer: 'participant' | 'facilitator';
   transactionHash?: string;
+  /** Minted only by a complete closed-cutoff/source census that proves no admitted retrieval. */
+  deliveryRequestAbsence?: DeliveryRequestAbsence;
 };
 
 export type StateMutationObservation = PersistedObservationMeta & {
@@ -1047,7 +1069,23 @@ function evidenceContradictions(input: EvaluateTaskInput, evidence: ReturnType<t
   return reasons;
 }
 
-function missingPurchasedDeliveries(taskCase: TaskCase, evidence: ReturnType<typeof taskEvidence>): string[] {
+function knownUnrequestedDelivery(input: EvaluateTaskInput, payment: PaymentObservation): boolean {
+  const proof = payment.deliveryRequestAbsence, authority = input.run.observationAuthority;
+  if (!proof || !authority || typeof proof !== 'object' || typeof proof.authority !== 'object' || proof.authority === null ||
+      proof.schemaVersion !== 'bts-delivery-request-absence/v1' || proof.status !== 'not_admitted_at_cutoff' ||
+      proof.paymentAttemptId !== payment.paymentAttemptId || proof.paymentActionSequence !== payment.actionSequence ||
+      proof.acceptedActionCutoffSequence !== input.run.acceptedActionCutoffSequence ||
+      input.observations.coverage.deliveries !== 'complete' || input.observations.coverage.payments !== 'complete' ||
+      !isEvidenceReference(proof.captureEvidence)) return false;
+  const keys = ['closureId', 'preparationId', 'leaseId', 'generationId'] as const;
+  if (!keys.every((key) => typeof authority[key] === 'string' && UUID.test(authority[key]) && proof.authority[key] === authority[key])) return false;
+  const expected = canonicalTaskJson(proof.captureEvidence);
+  return [input.run.cutoffEvidence, input.observations.captureEvidence, payment.evidence]
+    .every((reference) => canonicalTaskJson(reference) === expected);
+}
+
+function missingPurchasedDeliveries(input: EvaluateTaskInput, evidence: ReturnType<typeof taskEvidence>): string[] {
+  const { taskCase } = input;
   const paid = evidence.payments.filter((payment) => payment.status === 'settled' && hasMatchingSettlement(payment, evidence.transfers));
   const missing = paid.filter((payment) => {
     let requiredResource = false;
@@ -1059,7 +1097,8 @@ function missingPurchasedDeliveries(taskCase: TaskCase, evidence: ReturnType<typ
       case 'U1': requiredResource = taskCase.objective.requiredComponents.some((component) => component.resourceId === payment.requirements.resourceId); break;
       default: return false;
     }
-    return requiredResource && !evidence.deliveries.some((delivery) => delivery.paymentAttemptId === payment.paymentAttemptId);
+    return requiredResource && !evidence.deliveries.some((delivery) => delivery.paymentAttemptId === payment.paymentAttemptId) &&
+      !knownUnrequestedDelivery(input, payment);
   });
   return missing.length ? ['paid_resource_delivery_unobserved'] : [];
 }
@@ -1573,7 +1612,7 @@ export function evaluateTaskRubric(input: EvaluateTaskInput): TaskEvaluationResu
   if (missing.length) return unknownResult(taskId, missing.map((domain) => `coverage_${domain}_${observations.coverage[domain] ?? 'missing'}`), expense);
   const contradictions = evidenceContradictions(input, evidence);
   if (contradictions.length) return unknownResult(taskId, contradictions, expense);
-  const missingDelivery = missingPurchasedDeliveries(taskCase, evidence);
+  const missingDelivery = missingPurchasedDeliveries(input, evidence);
   if (missingDelivery.length) return unknownResult(taskId, missingDelivery, expense);
   const missingState = missingFinalStateFields(input, evidence);
   if (missingState.length) return unknownResult(taskId, missingState, expense);
