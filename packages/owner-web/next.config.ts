@@ -14,11 +14,15 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/.well-known/oauth-authorization-server/api/auth",
-        destination: `${parsedApiOrigin.origin}/api/auth/.well-known/oauth-authorization-server`,
+        destination: `${parsedApiOrigin.origin}/.well-known/oauth-authorization-server/api/auth`,
       },
       {
         source: "/.well-known/oauth-protected-resource/api/agent",
         destination: `${parsedApiOrigin.origin}/.well-known/oauth-protected-resource/api/agent`,
+      },
+      {
+        source: "/.well-known/oauth-protected-resource/api/agent/mcp",
+        destination: `${parsedApiOrigin.origin}/.well-known/oauth-protected-resource/api/agent/mcp`,
       },
       {
         source: "/api/:path*",

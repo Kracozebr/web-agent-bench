@@ -3,6 +3,8 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { readinessText } from "@/lib/readiness";
+import { Money } from "./money";
 import { RunFeedbackPanel } from "./run-feedback-panel";
 import { buildRunHandoffPrompt } from "@/lib/run-handoff";
 import {
@@ -27,10 +29,11 @@ interface AgentCard {
 }
 
 interface AgentsResponse { agents: AgentCard[] }
-interface IntentsResponse { intents: RunLaunchIntent[] }
+interface IntentsResponse { intents: RunLaunchIntent[]; nextCursor: string | null }
 interface IntentResponse { intent: RunLaunchIntent; replayed: boolean }
-interface RunsResponse { runs: OwnerRunProjection[] }
+interface RunsResponse { runs: OwnerRunProjection[]; nextCursor: string | null }
 interface RunResponse { run: OwnerRunProjection; replayed: boolean }
+interface LaunchConnection { id: string; clientLabel: string; status: string; lastPreflightAt: string | null }
 
 interface PendingOperation {
   payload: string;
@@ -61,9 +64,15 @@ export function RunLaunchPanel() {
   const [catalog, setCatalog] = useState<RunCatalogResponse | null>(null);
   const [intents, setIntents] = useState<RunLaunchIntent[]>([]);
   const [runs, setRuns] = useState<OwnerRunProjection[]>([]);
+  const [intentCursor, setIntentCursor] = useState<string | null>(null);
+  const [runCursor, setRunCursor] = useState<string | null>(null);
   const [agentId, setAgentId] = useState("");
+  const [connections, setConnections] = useState<LaunchConnection[]>([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
+  const [legacyConnection, setLegacyConnection] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
   const [mode, setMode] = useState<RunMode>("training");
-  const [taskIds, setTaskIds] = useState<string[]>(["S1"]);
+  const [taskIds, setTaskIds] = useState<string[]>(["S1", "M1", "H1"]);
   const [cashCeiling, setCashCeiling] = useState("0");
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
@@ -80,13 +89,15 @@ export function RunLaunchPanel() {
       const [nextCatalog, agentResponse, intentResponse, runResponse] = await Promise.all([
         apiRequest<RunCatalogResponse>("/api/owner/runs/catalog"),
         apiRequest<AgentsResponse>("/api/owner/agents"),
-        apiRequest<IntentsResponse>("/api/owner/runs/intents"),
-        apiRequest<RunsResponse>("/api/owner/runs"),
+        apiRequest<IntentsResponse>("/api/owner/runs/intents?limit=5"),
+        apiRequest<RunsResponse>("/api/owner/runs?limit=5"),
       ]);
       setCatalog(nextCatalog);
       setAgents(agentResponse.agents);
       setIntents(intentResponse.intents);
       setRuns(runResponse.runs);
+      setIntentCursor(intentResponse.nextCursor ?? null);
+      setRunCursor(runResponse.nextCursor ?? null);
       setMessage("Loaded the latest private release, permission and intent status from the server.");
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) router.replace("/sign-in");
@@ -127,6 +138,15 @@ export function RunLaunchPanel() {
     return () => { active = false; };
   }, [refresh, router]);
 
+  useEffect(() => {
+    let active = true;
+    setConnections([]); setSelectedConnectionId(""); setLegacyConnection(false); setConnectionError("");
+    if (agentId) void apiRequest<{ connections: LaunchConnection[] }>(`/api/owner/agents/${encodeURIComponent(agentId)}/connections`).then((response) => {
+      if (active) setConnections(response.connections.filter((connection) => !["expired", "revoked"].includes(connection.status)));
+    }).catch((failure) => { if (active) setConnectionError(errorText(failure)); });
+    return () => { active = false; };
+  }, [agentId]);
+
   const selectedAgent = agents.find((agent) => agent.id === agentId) ?? null;
   const release = catalog?.activeRelease ?? null;
   const trainingWeights = release ? trainingCatalogWeights(release) : null;
@@ -144,7 +164,8 @@ export function RunLaunchPanel() {
   const selectedTasks = mode === "ranked" ? rankedTaskIds : trainingTaskIds.filter((id) => taskIds.includes(id));
   const cashCeilingValid = /^\d+(?:\.\d{1,6})?$/.test(cashCeiling.trim());
   const quotePrice = useMemo(() => release ? selectedRunQuote(release, mode, selectedTasks) : null, [mode, release, selectedTasks]);
-  const canCreate = Boolean(ownerReady && !busy && releaseAvailable && catalog?.intentCreationReady === true && selectedAgent && modeAllowed && selectedTasks.length > 0 && cashCeilingValid && quotePrice !== null);
+  const connectionSelected = legacyConnection || connections.some((connection) => connection.id === selectedConnectionId);
+  const canCreate = Boolean(ownerReady && !busy && releaseAvailable && catalog?.intentCreationReady === true && selectedAgent && connectionSelected && modeAllowed && selectedTasks.length > 0 && cashCeilingValid && quotePrice !== null);
 
   function changeMode(nextMode: RunMode) {
     setMode(nextMode);
@@ -159,7 +180,7 @@ export function RunLaunchPanel() {
 
   async function createIntent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedAgent || !releaseAvailable || catalog?.intentCreationReady !== true || !modeAllowed || selectedTasks.length === 0 || !cashCeilingValid || quotePrice === null || !release) return;
+    if (!selectedAgent || !connectionSelected || !releaseAvailable || catalog?.intentCreationReady !== true || !modeAllowed || selectedTasks.length === 0 || !cashCeilingValid || quotePrice === null || !release) return;
 
     const payload = {
       agentId: selectedAgent.id,
@@ -169,6 +190,7 @@ export function RunLaunchPanel() {
       expectedReleaseIdentity: release!.releaseIdentity,
       expectedManifestHash: release!.manifestHash,
       expectedQuotePrice: quotePrice!,
+      ...(!legacyConnection ? { selectedConnectionId } : {}),
     };
     const serialized = JSON.stringify(payload);
     if (pendingCreate.current?.payload !== serialized) {
@@ -254,6 +276,24 @@ export function RunLaunchPanel() {
     }
   }
 
+  async function loadOlder(kind: "intents" | "runs") {
+    const cursor = kind === "intents" ? intentCursor : runCursor;
+    if (!cursor) return;
+    setBusy(true); setError(false);
+    try {
+      if (kind === "intents") {
+        const result = await apiRequest<IntentsResponse>(`/api/owner/runs/intents?limit=5&cursor=${encodeURIComponent(cursor)}`);
+        setIntents((current) => [...current, ...result.intents.filter((item) => !current.some((existing) => existing.id === item.id))]);
+        setIntentCursor(result.nextCursor);
+      } else {
+        const result = await apiRequest<RunsResponse>(`/api/owner/runs?limit=5&cursor=${encodeURIComponent(cursor)}`);
+        setRuns((current) => [...current, ...result.runs.filter((item) => !current.some((existing) => existing.id === item.id))]);
+        setRunCursor(result.nextCursor);
+      }
+    } catch (failure) { setMessage(errorText(failure)); setError(true); }
+    finally { setBusy(false); }
+  }
+
   async function copyIntentId(intentId: string) {
     try {
       await copyText(intentId);
@@ -294,11 +334,11 @@ export function RunLaunchPanel() {
       <div className="page-heading">
         <p className="eyebrow">Private owner workspace</p>
         <h1>Launch a benchmark run</h1>
-        <p className="lede">Review the active release, choose an authorized agent and create a private intent for that agent to accept.</p>
+        <p className="lede">Choose Training to practise or Ranked to enter the benchmark. Your connected agent accepts the request and performs the tasks.</p>
       </div>
 
       <div className="notice" data-testid="run-launch-boundary">
-        Creating an intent does not reserve funds, create a run, claim a queue slot or start a timer. Admission happens only after the matching connected agent accepts and the server confirms the current policy, quote and funding limits. A cash ceiling only bounds a possible cash allocation; it does not grant permission to spend cash.
+        Payment uses internal bonus USDC only; cash use is zero. A launch request waits for your connected agent. Funds, queue position and timers begin only when the server confirms admission.
       </div>
 
       <section className="card stack-sm" aria-labelledby="run-catalog-title">
@@ -316,20 +356,20 @@ export function RunLaunchPanel() {
             <span className="pill pill-success">Complete 12-task release available</span>
             <dl className="kv-list">
               <dt>Benchmark version</dt><dd>{release.benchmarkVersion}</dd>
-              <dt>Release identity</dt><dd data-testid="run-release-identity">{release.releaseIdentity}</dd>
-              <dt>Manifest hash</dt><dd>{release.manifestHash}</dd>
+              <dt>Technical references</dt><dd><details><summary>Release references and hashes</summary><dl className="kv-list"><dt>Release identity</dt><dd data-testid="run-release-identity">{release.releaseIdentity}</dd>
+              <dt>Manifest hash</dt><dd><details><summary>What is this hash?</summary>A hash identifies the pinned benchmark content and helps support match your run to its release. It is not a credential.</details>{release.manifestHash}</dd>
               <dt>Benchmark hash</dt><dd>{release.benchmarkHash}</dd>
-              <dt>Policy hash</dt><dd>{release.policyHash}</dd>
-              <dt>Ranked quote</dt><dd>{release.rankedPrice} USDC</dd>
-              <dt>Full open training quote</dt><dd>{trainingQuoteDescription(release)}</dd>
+              <dt>Policy hash</dt><dd>{release.policyHash}</dd></dl></details></dd>
+              <dt>Ranked quote</dt><dd><Money amount={release.rankedPrice} /></dd>
+              <dt>Full Training quote</dt><dd><Money amount={release.trainingPrice} /><details><summary>How is Training priced?</summary>Select S1, M1 and H1 for full Training. Partial selections use the existing weighted quote and micro-USDC rounding. The displayed quote is pinned to your request.</details></dd>
             </dl>
-            {!catalog?.readyToStart ? <p className="notice notice-warning" data-testid="run-release-readiness">Execution start is still gated: {catalog?.readinessReason || "executor readiness is not confirmed"}.</p> : null}
-            {catalog?.intentCreationReady !== true ? <p className="notice notice-warning" data-testid="run-intent-policy-readiness">Intent creation is disabled until the server confirms a bounded intent lifetime and pending-intent capacity policy. {catalog?.intentCreationReason || "Launch intent policy is not configured."}</p> : null}
+            {!catalog?.readyToStart ? <p className="notice notice-warning" data-testid="run-release-readiness">Execution start is still gated: {readinessText(catalog?.readinessReason)}.</p> : null}
+            {catalog?.intentCreationReady !== true ? <p className="notice notice-warning" data-testid="run-intent-policy-readiness">Intent creation is disabled until the server confirms a bounded intent lifetime and pending-intent capacity policy. {readinessText(catalog?.intentCreationReason)}</p> : null}
           </div>
         ) : (
           <div className="notice notice-warning" data-testid="run-catalog-status" role="status">
             {catalog?.status === "active_release_unavailable"
-              ? `No complete active 12-task release is available. Intent creation is disabled. ${catalog.readinessReason || ""}`
+              ? `No complete active 12-task release is available. Intent creation is disabled. `
               : "The server has not confirmed a complete active 12-task release. Intent creation is disabled."}
           </div>
         )}
@@ -337,7 +377,7 @@ export function RunLaunchPanel() {
 
       <section className="card stack-sm" aria-labelledby="run-intent-create-title">
         <div>
-          <h2 id="run-intent-create-title">Create launch intent</h2>
+          <h2 id="run-intent-create-title">Start Training or Ranked</h2>
           <p className="fine">The server fixes the catalog and quote in the intent. If that quote, version or funding need later changes, review and create a new intent.</p>
         </div>
         <form className="form" data-testid="run-intent-form" onSubmit={(event) => void createIntent(event)}>
@@ -348,6 +388,17 @@ export function RunLaunchPanel() {
               {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} ({agent.id})</option>)}
             </select>
             <span className="fine">The agent must have the corresponding current permission. Its credential and policy are checked again when it accepts.</span>
+          </div>
+
+          <div className="field">
+            <label htmlFor="run-connection">Client connection</label>
+            <select id="run-connection" data-testid="run-connection-select" value={selectedConnectionId} onChange={(event) => setSelectedConnectionId(event.target.value)} disabled={busy || legacyConnection || !agentId}>
+              <option value="">Choose the client that will run these tasks</option>
+              {connections.map((connection) => <option key={connection.id} value={connection.id}>{connection.clientLabel} / {connection.status === "preflight-verified" ? "last preflight verified" : "connection not currently verified"}</option>)}
+            </select>
+            <span className="fine">Only this client authorization can accept the request. Last preflight is an observation, not proof the client is online now. <Link href="/agents">Connect or reconnect a client</Link>.</span>
+            {connectionError && !legacyConnection ? <p role="alert">{connectionError}</p> : null}
+            <details><summary>Advanced: legacy manual connection</summary><label><input data-testid="run-legacy-connection" type="checkbox" checked={legacyConnection} disabled={busy} onChange={(event) => setLegacyConnection(event.target.checked)} />Use an existing legacy manual credential for this launch</label><p className="fine">This compatibility path does not establish a Remote MCP client connection.</p></details>
           </div>
 
           <div className="field">
@@ -381,8 +432,8 @@ export function RunLaunchPanel() {
             <div className="notice" data-testid="run-ranked-task-selection">Ranked mode includes all twelve tasks: {rankedTaskIds.join(", ")}.</div>
           )}
 
-          <div className="field">
-            <label htmlFor="run-cash-ceiling">Maximum cash allocation (USDC)</label>
+          <details><summary>Bonus payment details</summary><div className="field">
+            <label htmlFor="run-cash-ceiling">Cash allocation in this beta (USDC)</label>
             <input
               id="run-cash-ceiling"
               data-testid="run-cash-ceiling"
@@ -392,16 +443,18 @@ export function RunLaunchPanel() {
               inputMode="decimal"
               value={cashCeiling}
               onChange={(event) => setCashCeiling(event.target.value)}
-              disabled={busy}
+              readOnly
               required
             />
-            <span className="fine" data-testid="run-selected-quote">Server quote for this selection: {quotePrice ?? "unavailable"} USDC. The intent pins this value and rejects a stale release or changed quote.</span>
-            <span className="fine">This is a bound on cash the accepted run may need, not permission to spend. Cash spending also requires the separate owner policy.</span>
+            <span className="fine" data-testid="run-selected-quote">Price for this selection: {quotePrice ? <Money amount={quotePrice} /> : "unavailable"}. The intent pins this value and rejects a stale release or changed quote.</span>
+            <span className="fine">Only internal bonus credit pays for beta runs. Cash cannot cover a shortfall.</span>
           </div>
 
+          </details>
+          <p data-testid="run-price-summary">{mode === "training" ? "Training" : "Ranked"}: {quotePrice ? <Money amount={quotePrice} /> : "Quote unavailable"}  /  bonus credit  /  cash 0.00 USDC</p>
           {!modeAllowed && selectedAgent ? <p className="notice notice-warning" data-testid="run-agent-permission-warning">This agent does not currently have {mode} permission. Save its policy in Agents before creating an intent.</p> : null}
           <button className="button button-primary" data-testid="run-intent-create" type="submit" disabled={!canCreate || !cashCeiling.trim()}>
-            {busy ? "Submitting…" : "Create private intent"}
+            {busy ? "Submitting…" : `Start ${mode === "training" ? "Training" : "Ranked"}`}
           </button>
         </form>
       </section>
@@ -409,7 +462,7 @@ export function RunLaunchPanel() {
       <section className="card stack-sm" aria-labelledby="run-intent-list-title">
         <div className="section-heading">
           <div>
-            <h2 id="run-intent-list-title">Private intents and run status</h2>
+            <h2 id="run-intent-list-title">Launch requests</h2>
             <p className="fine">Intent IDs are safe references, not credentials. Run identity and status appear only after the server confirms agent acceptance.</p>
           </div>
         </div>
@@ -419,14 +472,15 @@ export function RunLaunchPanel() {
               <div className="section-heading">
                 <div>
                   <p className="eyebrow">{intent.mode} · {intent.taskIds.length} task{intent.taskIds.length === 1 ? "" : "s"}</p>
-                  <h3>Intent {intent.id}</h3>
+                  <h3>{agents.find((agent) => agent.id === intent.agentId)?.name ?? "Agent"}  /  {intent.mode === "training" ? "Training" : "Ranked"}</h3>
                   <span className={`pill ${intent.status === "accepted" ? "pill-success" : intent.status === "pending" ? "pill-warning" : ""}`} data-testid={`run-intent-status-${intent.id}`}>{intent.status}</span>
                 </div>
                 <button className="button button-small" data-testid={`run-intent-copy-${intent.id}`} type="button" onClick={() => void copyIntentId(intent.id)} disabled={busy}>
                   {copiedIntentId === intent.id ? "Copied reference" : "Copy intent ID"}
                 </button>
               </div>
-              <dl className="kv-list">
+              <p>{intent.taskIds.join(", ")}  /  {intent.benchmarkVersion}  /  <Money amount={intent.quote.price} /></p>
+              <details data-testid={`run-intent-details-${intent.id}`}><summary>Request details and references</summary><dl className="kv-list">
                 <dt>Agent</dt><dd>{intent.agentId}</dd>
                 <dt>Tasks</dt><dd>{intent.taskIds.join(", ")}</dd>
                 <dt>Benchmark version</dt><dd>{intent.benchmarkVersion}</dd>
@@ -445,6 +499,7 @@ export function RunLaunchPanel() {
                 </dd></> : null}
                 {intent.terminalReason ? <><dt>Terminal reason</dt><dd>{intent.terminalReason}</dd></> : null}
               </dl>
+              </details>
               {intent.status === "pending" ? (
                 <div className="stack-sm">
                   <div className="notice">Handoff reference: <code>{intent.id}</code>. The matching agent must run its own preflight and accept this intent. This reference alone cannot authorize or admit a run.</div>
@@ -462,6 +517,7 @@ export function RunLaunchPanel() {
             </article>
           ))}
         </div>
+        {intentCursor ? <button data-testid="run-intents-older" className="button button-small" disabled={busy} onClick={() => void loadOlder("intents")}>Load older requests</button> : null}
         <p className={`status-box ${error ? "status-error" : ""}`} data-testid="run-intents-status" role={error ? "alert" : "status"} aria-live="polite">{message}</p>
       </section>
 
@@ -480,11 +536,13 @@ export function RunLaunchPanel() {
                 <div className="section-heading">
                   <div>
                     <p className="eyebrow">{run.mode} · {run.taskIds.length} task{run.taskIds.length === 1 ? "" : "s"}</p>
-                    <h3>Run {run.id}</h3>
+                    <h3>{agents.find((agent) => agent.id === run.agentId)?.name ?? "Agent"}  /  {run.mode === "training" ? "Training" : "Ranked"}</h3>
                     <span className={`pill ${run.status === "completed" ? "pill-success" : run.status === "queued" || run.status === "preparing" || run.status === "running" ? "pill-warning" : ""}`} data-testid={`owner-run-status-${run.id}`}>{run.status}</span>
                   </div>
                 </div>
-                <dl className="kv-list">
+                <p>{run.taskIds.join(", ")}  /  {run.benchmarkVersion}  /  <Money amount={run.quotePrice} /></p>
+                <Link className="button button-small" href={`/reports?runId=${encodeURIComponent(run.id)}`}>Report a problem</Link>
+                <details data-testid={`owner-run-details-${run.id}`}><summary>Run details and cancellation terms</summary><p>Queued cancellation releases pre-start holds. Started cancellation follows the existing retained-fee and executor-fence policy.</p><dl className="kv-list">
                   <dt>Agent</dt><dd>{run.agentId}</dd>
                   {run.intentId ? <><dt>Intent</dt><dd>{run.intentId}</dd></> : null}
                   <dt>Tasks</dt><dd>{run.taskIds.join(", ")}</dd>
@@ -501,7 +559,8 @@ export function RunLaunchPanel() {
                   {run.cancellationRequestedAt ? <><dt>Cancellation requested</dt><dd>{timestamp(run.cancellationRequestedAt)}</dd></> : null}
                   {run.cancellationEvidenceHash ? <><dt>Cancellation evidence</dt><dd>{run.cancellationEvidenceHash}</dd></> : null}
                 </dl>
-                <RunFeedbackPanel runId={run.id} />
+                </details>
+                <RunFeedbackPanel runId={run.id} mode={run.mode} status={run.status} />
                 {run.queueExpiryFencePending ? <div className="notice notice-warning" data-testid={`run-queue-expiry-fence-${run.id}`}>
                   This run expired before starting. Cancellation is finishing; reserved bonus USDC will be released after cleanup is confirmed.
                 </div> : run.status === "cancellation_requested" ? <div className="notice notice-warning">The cancellation request is recorded and awaits confirmed executor fence evidence.</div> : null}
@@ -511,6 +570,7 @@ export function RunLaunchPanel() {
           })}
         </div>
       </section>
+      {runCursor ? <button data-testid="owner-runs-older" className="button button-small" disabled={busy} onClick={() => void loadOlder("runs")}>Load older runs</button> : null}
       <p className="fine"><Link href="/agents">Manage agents and permissions</Link> · <Link href="/billing">Review private balance and policy</Link></p>
     </div>
   );

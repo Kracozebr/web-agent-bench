@@ -1,10 +1,14 @@
 {
   "schema_version": "beta-usability-bdd-proposal/v1",
   "change": "agent-client-installer",
-  "status": "revision_pending_approval",
-  "approval": "prior_approval_superseded_for_revised_assertions",
+  "status": "approved",
+  "approval": "renewed_remote_scope_2026-10-31",
   "execution_status": "not_run",
-  "scenarios": {
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/agent-client-installer/harness-contracts.json",
+  "normative_delta": "specs/agent-client-installer/spec.md",
+  "protected_scenarios": {
     "ACI-SC-001": {
       "requirement_id": "ACI-REQ-001",
       "title": "Add the canonical remote MCP endpoint without local platform software",
@@ -34,10 +38,7 @@
         "no_platform_binary_or_local_process"
       ],
       "evidence_mode": "actual_browser_and_native_client_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_and_client_config_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "ACI-SC-002": {
@@ -71,10 +72,7 @@
         "denial_no_usable_credential_or_domain_effect"
       ],
       "evidence_mode": "actual_browser_oauth_mcp_capture_with_independent_readonly_database_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "ACI-SC-003": {
@@ -106,10 +104,7 @@
         "no_new_run_or_charge"
       ],
       "evidence_mode": "actual_authorization_service_and_postgres_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "ACI-SC-004": {
@@ -144,10 +139,7 @@
         "no_permission_revival"
       ],
       "evidence_mode": "actual_owner_ui_native_mcp_and_postgres_bef_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "ACI-SC-005": {
@@ -181,10 +173,7 @@
         "no_identity_or_authorization_bypass"
       ],
       "evidence_mode": "actual_native_protocol_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "ACI-SC-006": {
@@ -215,10 +204,7 @@
         "no_publication"
       ],
       "evidence_mode": "actual_native_client_preflight_with_independent_readonly_database_bef_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "ACI-SC-007": {
@@ -255,15 +241,12 @@
         "no_charge_before_admission"
       ],
       "evidence_mode": "actual_browser_client_mcp_and_brl_postgres_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "ACI-SC-008": {
       "requirement_id": "ACI-REQ-008",
-      "title": "Claimed clients qualify once and new compatible versions remain eligible",
+      "title": "Named clients qualify once and new compatible versions remain eligible",
       "gate": "environment",
       "mandatory": true,
       "named_mapper": "test_aci_sc_008",
@@ -294,10 +277,7 @@
         "unverified_targets_excluded_from_support_claim"
       ],
       "evidence_mode": "actual_named_native_client_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_observation"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     }
   }

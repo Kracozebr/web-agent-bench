@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { Money } from "./money";
 import { ApiError, apiRequest, errorText, newOperationId } from "@/lib/api";
 
 interface BonusCodeRedemption {
@@ -136,7 +137,7 @@ export function OwnerBonusCodesPanel({ onRedeemed }: { onRedeemed?: () => Promis
       {receipt && (
         <div className="notice notice-success" data-testid="bonus-code-redemption-receipt" role="status">
           <strong>Bonus added</strong>
-          <span>{receipt.redemption.amount} bonus USDC · {receipt.redemption.label} · {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "medium", timeZone: "UTC" }).format(new Date(receipt.redemption.createdAt))} UTC</span>
+          <span><Money amount={receipt.redemption.amount} /> bonus credit · {receipt.redemption.label} · {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "medium", timeZone: "UTC" }).format(new Date(receipt.redemption.createdAt))} UTC</span>
           <details><summary>Receipt reference</summary><code>{receipt.redemption.id}</code></details>
         </div>
       )}
@@ -149,7 +150,7 @@ export function OwnerBonusCodesPanel({ onRedeemed }: { onRedeemed?: () => Promis
             <tbody>{redemptions.map((item) => (
               <tr key={item.id} data-testid={`bonus-code-redemption-${item.id}`}>
                 <td>{new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "medium", timeZone: "UTC" }).format(new Date(item.createdAt))}</td>
-                <td>{item.amount} USDC</td>
+                <td><Money amount={item.amount} /></td>
                 <td>{item.label}</td>
                 <td><details><summary>View reference</summary><code>{item.id}</code></details></td>
               </tr>

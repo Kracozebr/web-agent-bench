@@ -203,3 +203,11 @@ td code, code { font-family: var(--font-mono); font-size: 11px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+/* AICODE-NOTE: Exact money remains keyboard/touch accessible without changing accounting units. */
+.money-toggle { padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--ink-soft); font: inherit; font-size: 11px; cursor: pointer; }
+.money-detail { font-size: 12px; overflow-wrap: anywhere; }
+.money-detail:not([hidden]) { display: block; }
+details > summary { cursor: pointer; padding: 7px 0; }
+summary:focus-visible, .money-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+[data-testid="run-intents"], [data-testid="owner-runs"] { max-height: 44rem; overflow: auto; padding: 2px; }

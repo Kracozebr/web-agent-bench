@@ -40,6 +40,18 @@ test('qualification read CIDRs reject unrestricted IPv4 and IPv6 defaults', () =
   }
 });
 
+test('remote OAuth manifest releases only the verified subset and permits new client versions as evidence metadata', () => {
+  const base = qualificationManifest();
+  const verified = { ...base.clients[0]!, verificationStatus: 'verified', verificationEvidenceSha256: [hash] };
+  const release = { ...base, transportProfileId: 'remote-oauth-v1', state: 'cohort_release', releaseEvidenceSha256: hash,
+    clients: [verified, base.clients[1]!] };
+  assert.equal(BetaDeploymentManifestSchema.safeParse(release).success, true);
+  assert.equal(BetaDeploymentManifestSchema.safeParse({ ...release, clients: [{ ...verified, family: 'new-compatible-client', version: '99', mcpClientVersion: '99' }] }).success, true);
+  assert.equal(BetaDeploymentManifestSchema.safeParse({ ...release, clients: [base.clients[0]!] }).success, false);
+  assert.equal(BetaDeploymentManifestSchema.safeParse({ ...release, clients: [base.clients[1]!] }).success, false);
+  assert.equal(BetaDeploymentManifestSchema.safeParse({ ...release, transportProfileId: 'beta-remote-v1' }).success, false);
+});
+
 test('socket-peer allowlist matching handles IPv4, IPv6 and mapped IPv4 without forwarded headers', () => {
   assert.equal(isAddressInCidrs('203.0.113.22', ['203.0.113.0/24']), true);
   assert.equal(isAddressInCidrs('203.0.114.22', ['203.0.113.0/24']), false);

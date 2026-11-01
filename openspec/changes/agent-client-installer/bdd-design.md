@@ -2,7 +2,7 @@
 
 Workflow: [docs/task-design.md](../../../docs/task-design.md)
 
-**Status:** Revised planning proposal; awaiting explicit approval of the changed assertions. The 2026-10-31 approval applies to the earlier installer scope only. All eight revised runtime gates remain not_run.
+**Status:** Implementation and the revised eight-scenario BDD scope were explicitly approved on 2026-10-31; see the renewed approval record. All mandatory environment runtime gates remain not_run pending actual native/browser captures and independent replay.
 **Normative proposed delta:** [spec](specs/agent-client-installer/spec.md)
 **Target main source after eventual approved sync:** openspec/specs/agent-client-installer/spec.md
 **Proposed contracts:** [bdd-harness-proposal.json](bdd-harness-proposal.json). No executable registry, Gherkin, mapper, adapter, runtime profile, or runtime capture is installed by this revision.

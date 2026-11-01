@@ -5,7 +5,11 @@ import { isIP } from "node:net";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { readAgentFinancialPolicy } from "./ledger.js";
 import { selectAgentMcpTransport } from "./agent-mcp-profile.js";
+import type { AgentMcpAcceptanceEvent } from './agent-mcp-acceptance-observer.js';
+import { externalConnectionAllowed, type AgentConnectionInvalidationStore } from './agent-connection-invalidation-state.js';
+import { CONNECTION_GRANT_TTL_SECONDS, REMOTE_MCP_PROTOCOLS, remoteConnectionSetup, connectionHealth, validConnectionScopes } from "./agent-connection-profile.js";
 import { AGENT_MCP_BODY_BYTES, AGENT_MCP_INPUT_ELEMENTS, boundedMcpArguments } from "./mcp-input-bounds.js";
 import { reportUploadChunkSchema } from "./report-service.js";
 import { withOAuthSelection, type OAuthSelectionContext } from "./auth.js";
@@ -22,6 +26,8 @@ import {
   agentCancellationOutbox,
   agentOauthAuthorizations,
   oauthClients,
+  oauthRefreshTokens,
+  oauthAccessTokens,
   owners,
   auditEvents
 } from "./schema.js";
@@ -71,6 +77,8 @@ export interface AgentRouteDependencies {
   agentResource: string;
   agentPreflightUrl: string;
   registerMcpTools?: (server: McpServer, principal: AgentPrincipal) => void;
+  observeAgentMcp?: (event: AgentMcpAcceptanceEvent) => void;
+  invalidationStore?: AgentConnectionInvalidationStore;
 }
 
 /** Hosts accepted by authenticated agent HTTP ingress on the configured API listener. */
@@ -120,7 +128,7 @@ async function parseOAuthQuery(value: unknown, dependencies: AgentRouteDependenc
     params.get("code_challenge_method") !== "S256" || params.getAll("code_challenge_method").length !== 1 ||
     params.getAll("code_challenge").length !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(challenge) ||
     !state || state.length > 512 || params.getAll("state").length !== 1 || resources.length !== 1 || resources[0] !== dependencies.agentResource ||
-    params.getAll("scope").length !== 1 || scopes.length !== 1 || scopes[0] !== "agent:operate") {
+    params.getAll("scope").length !== 1 || !validConnectionScopes(dependencies.config, scopeValue)) {
     throw new HttpError(400, "OAUTH_REQUEST_NOT_SUPPORTED", "Only a registered public client, its exact callback, S256 PKCE, the agent resource, and agent:operate scope are supported");
   }
   if (nonceValues.length > 1 || (nonceValues[0] !== undefined && (nonceValues[0].length < 1 || nonceValues[0].length > 512))) {
@@ -489,7 +497,7 @@ export interface AgentPrincipal {
 }
 
 function bearerChallenge(dependencies: AgentRouteDependencies): string {
-  const metadataUrl = `${dependencies.config.publicOrigin}/.well-known/oauth-protected-resource/api/agent`;
+  const metadataUrl = `${dependencies.config.publicOrigin}/.well-known/oauth-protected-resource${new URL(dependencies.agentResource).pathname}`;
   return `Bearer resource_metadata="${metadataUrl}", scope="agent:operate"`;
 }
 
@@ -536,6 +544,8 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
     const row = rows[0];
     if (!row || row.role !== "agent" || row.admissionStatus !== "admitted" || row.grantRevokedAt || row.accessRevokedAt ||
       row.grantGeneration !== row.accessGeneration || row.grantExpiresAt <= now || row.resource !== dependencies.agentResource) return undefined;
+    if (!(await externalConnectionAllowed(dependencies.invalidationStore,
+      { ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, accessGeneration: row.accessGeneration }, dependencies.db))) return undefined;
     return {
       credentialSource: "manual",
       ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, credentialId: row.credentialId,
@@ -564,7 +574,7 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
   const oauthClientId = payload.azp;
   const registeredClient = typeof oauthClientId === "string" ? findMcpClient(dependencies.config, oauthClientId) : undefined;
   if (!resourceMatches || payload.iss !== `${dependencies.config.publicOrigin}/api/auth` ||
-    !registeredClient || payload.scope !== "agent:operate" || payload.oid_role !== "agent" ||
+    !registeredClient || !validConnectionScopes(dependencies.config, payload.scope) || payload.oid_role !== "agent" ||
     typeof payload.sub !== "string" || typeof ownerId !== "string" || typeof agentId !== "string" || typeof grantId !== "string" ||
     typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1) return undefined;
 
@@ -608,6 +618,8 @@ export async function resolveAgentPrincipal(dependencies: AgentRouteDependencies
     row.authorizationCodeHash === null || row.admissionStatus !== "admitted" || row.grantRevokedAt || row.accessRevokedAt ||
     row.grantGeneration !== row.accessGeneration || row.grantGeneration !== generation || row.authorizationGeneration !== generation ||
     row.grantExpiresAt <= now) return undefined;
+  if (!(await externalConnectionAllowed(dependencies.invalidationStore,
+    { ownerId: row.ownerId, agentId: row.agentId, grantId: row.grantId, accessGeneration: row.accessGeneration }, dependencies.db))) return undefined;
   return {
     credentialSource: "oauth",
     oauthClientId: oauthClientId as string,
@@ -639,10 +651,24 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     const principal = await resolveAgentPrincipal(dependencies, match[1]!);
     if (!principal) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
 
+    const mcpRequestId = randomUUID();
+    const offeredProtocol = request.headers['mcp-protocol-version'] ??
+      (request.body as { params?: { protocolVersion?: unknown } } | undefined)?.params?.protocolVersion;
+    const observedProtocol = typeof offeredProtocol === 'string' && REMOTE_MCP_PROTOCOLS.includes(offeredProtocol as typeof REMOTE_MCP_PROTOCOLS[number])
+      ? offeredProtocol : undefined;
+    const observeMcp = (phase: 'request' | 'response', body: unknown, httpStatus?: number) => {
+      try { dependencies.observeAgentMcp?.({ requestId: mcpRequestId, phase, body,
+        principal: { ownerId: principal.ownerId, agentId: principal.agentId, grantId: principal.grantId },
+        ...(observedProtocol ? { protocolVersion: observedProtocol } : {}),
+        ...(httpStatus === undefined ? {} : { httpStatus }) }); } catch { /* Observation never changes authorization or HTTP behavior. */ }
+    };
+    observeMcp('request', request.body);
+
     const selectedTransport = selectAgentMcpTransport(dependencies.config,
       principal.credentialSource === "manual", request.body, request.headers, principal.oauthClientId);
     const localCodexTransport = selectedTransport === "codex-local";
     const betaRemoteTransport = selectedTransport === "beta-remote";
+    const remoteOAuthTransport = selectedTransport === "remote-oauth";
     if (betaRemoteTransport && isValidatedSupportScreenshotChunk(request.body)) {
       await dependencies.rateLimit(request, "agent-mcp-screenshot-chunk-ip", 300);
       await dependencies.rateLimit(request, `agent-mcp-screenshot-chunk-${principal.credentialId}`, 300);
@@ -662,11 +688,17 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
       status: z.enum(["allowed", "denied"]),
       operationId: z.string(),
       policyVersion: z.number().int(),
-      accessGeneration: z.number().int()
+      accessGeneration: z.number().int(),
+      ...(remoteOAuthTransport ? {
+        checkedAt: z.string(),
+        identity: z.object({ agentId: z.string().uuid(), connectionId: z.string().uuid() }),
+        permissions: z.object({ training: z.boolean(), ranked: z.boolean(), forumMessages: z.boolean(), customTopics: z.boolean() }),
+        protocolVersion: z.enum(REMOTE_MCP_PROTOCOLS)
+      } : {})
     });
     const mcpHandler = createMcpHandler(() => {
       const server = new McpServer({ name: "Web3 Agent Bench", version: "1.0.0" }, {
-        supportedProtocolVersions: localCodexTransport ? ["2026-07-28", "2025-06-18"] : betaRemoteTransport
+        supportedProtocolVersions: remoteOAuthTransport ? [...REMOTE_MCP_PROTOCOLS] : localCodexTransport ? ["2026-07-28", "2025-06-18"] : betaRemoteTransport
           ? [...new Set(dependencies.config.betaManifest?.clients.filter((profile) => profile.enabled)
             .flatMap((profile) => profile.protocolVersions) ?? ["2026-07-28"])]
           : ["2026-07-28"],
@@ -676,22 +708,39 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
         title: "Check agent connection",
         description: "Check this fixed agent connection and report the current policy revision. This free check does not authorize a paid or public action.",
         inputSchema: z.object({
-          agentId: z.string().uuid(),
+          agentId: remoteOAuthTransport ? z.string().uuid().optional() : z.string().uuid(),
           operationId: z.string().regex(/^[A-Za-z0-9_-]{12,128}$/)
         }),
         outputSchema
       }, async ({ agentId, operationId }) => {
+        const checkedAt = new Date();
+        const allowed = agentId === undefined || agentId === principal.agentId;
+        if (allowed && remoteOAuthTransport) {
+          await dependencies.db.insert(auditEvents).values({ id: randomUUID(),
+            eventType: 'agent.connection.preflight', operationId: `preflight:${randomUUID()}`,
+            actorOwnerId: principal.ownerId, subjectOwnerId: principal.ownerId,
+            policyRevision: principal.policyRevision,
+            metadata: { agentId: principal.agentId, connectionId: principal.grantId,
+              protocolVersion: request.headers['mcp-protocol-version'] ?? null,
+              tool: 'identity.preflight', credentialSource: principal.credentialSource ?? 'manual' }, createdAt: checkedAt });
+        }
         const result = {
-          status: agentId === principal.agentId ? "allowed" as const : "denied" as const,
+          status: allowed ? "allowed" as const : "denied" as const,
           operationId,
           policyVersion: principal.policyRevision,
-          accessGeneration: principal.accessGeneration
+          accessGeneration: principal.accessGeneration,
+          ...(remoteOAuthTransport ? {
+            checkedAt: checkedAt.toISOString(),
+            identity: { agentId: principal.agentId, connectionId: principal.grantId },
+            permissions: principal.permissions,
+            protocolVersion: observedProtocol as typeof REMOTE_MCP_PROTOCOLS[number]
+          } : {})
         };
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result };
       });
       dependencies.registerMcpTools?.(server, principal);
       return server;
-    }, { legacy: localCodexTransport || betaRemoteTransport ? "stateless" : "reject",
+    }, { legacy: localCodexTransport || betaRemoteTransport || remoteOAuthTransport ? "stateless" : "reject",
       responseMode: "json", keepAliveMs: 0, maxRequestBodySize: 64 * 1024 });
 
     const headers = new Headers();
@@ -707,10 +756,90 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
       const responseHeaders = new Headers(response.headers);
       responseHeaders.set("Cache-Control", "no-store");
       responseHeaders.forEach((value, key) => reply.header(key, value));
-      return reply.code(response.status).send(Buffer.from(await response.arrayBuffer()));
+      const responseBytes = Buffer.from(await response.arrayBuffer());
+      if (dependencies.observeAgentMcp && responseBytes.length <= 256 * 1024) {
+        try {
+          if ((response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+            for (const frame of responseBytes.toString('utf8').split(/\r?\n\r?\n/).slice(0, 128)) {
+              const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
+              if (data) observeMcp('response', JSON.parse(data), response.status);
+            }
+          } else if ((response.headers.get('content-type') ?? '').includes('application/json') && responseBytes.length) {
+            observeMcp('response', JSON.parse(responseBytes.toString('utf8')), response.status);
+          }
+        } catch { /* Malformed or oversized observation input cannot change the original bytes/status. */ }
+      }
+      return reply.code(response.status).send(responseBytes);
     } finally {
       await mcpHandler.close().catch(() => undefined);
     }
+  });
+
+  app.get<{ Params: { agentId: string } }>("/api/owner/agents/:agentId/connections", async (request, reply) => {
+    await dependencies.rateLimit(request, 'agent-connections', dependencies.rateLimitMax);
+    const context = await admittedOwner(request, dependencies);
+    const agentId = request.params.agentId;
+    if (!validAgentId(agentId)) throw uuidError();
+    const profile = await dependencies.db.query.agentProfiles.findFirst({ where: and(
+      eq(agentProfiles.id, agentId), eq(agentProfiles.ownerId, context.owner.id)) });
+    if (!profile) throw uuidError();
+    const policy = await dependencies.db.query.agentPolicies.findFirst({ where: eq(agentPolicies.agentId, agentId) });
+    if (!policy) throw new Error('Agent policy row is missing');
+    const grants = await dependencies.db.select().from(agentAccessGrants).where(and(
+      eq(agentAccessGrants.ownerId, context.owner.id), eq(agentAccessGrants.agentId, agentId), eq(agentAccessGrants.source, 'oauth')
+    )).orderBy(desc(agentAccessGrants.createdAt));
+    const preflights = await dependencies.db.select({ metadata: auditEvents.metadata, createdAt: auditEvents.createdAt })
+      .from(auditEvents).where(and(eq(auditEvents.eventType, 'agent.connection.preflight'),
+        eq(auditEvents.actorOwnerId, context.owner.id), sql`${auditEvents.metadata}->>'agentId' = ${agentId}`))
+      .orderBy(desc(auditEvents.createdAt));
+    const connections = grants.map((grant) => {
+      const preflight = preflights.find((event) => (event.metadata as Record<string, unknown>).connectionId === grant.id);
+      return { id: grant.id, clientId: grant.oauthClientId,
+        clientLabel: grant.oauthClientId ? findMcpClient(dependencies.config, grant.oauthClientId)?.clientName ?? 'Authorized client' : 'Authorized client',
+        clientLabelProvenance: 'registered-oauth-client' as const,
+        status: connectionHealth(grant, preflight?.createdAt ?? null),
+        createdAt: grant.createdAt.toISOString(), expiresAt: grant.expiresAt.toISOString(),
+        revokedAt: grant.revokedAt?.toISOString() ?? null, lastPreflightAt: preflight?.createdAt.toISOString() ?? null,
+        protocolVersion: (preflight?.metadata as Record<string, unknown> | undefined)?.protocolVersion ?? null,
+        permissions: toAgentCard(profile, policy).permissions };
+    });
+    return reply.header('Cache-Control', 'no-store').send({ ...remoteConnectionSetup(dependencies.config),
+      connections, access: accessView(profile) });
+  });
+
+  app.post<{ Params: { agentId: string; connectionId: string } }>("/api/owner/agents/:agentId/connections/:connectionId/revoke", async (request, reply) => {
+    await dependencies.rateLimit(request, 'agent-connections', dependencies.credentialRateLimitMax);
+    await dependencies.requireOrigin(request);
+    const context = await admittedOwner(request, dependencies);
+    const { agentId, connectionId } = request.params;
+    if (!validAgentId(agentId) || !validAgentId(connectionId)) throw uuidError();
+    const body = record(request.body, 'body');
+    rejectUnknownKeys(body, ['operationId']);
+    const opId = parseOperationId(body.operationId);
+    const receipt = await dependencies.db.transaction(async (tx) => {
+      const replay = await claimSafeOperation(tx, { operationId: opId, ownerId: context.owner.id, agentId,
+        action: 'agent.connection.revoke', payloadHash: hashPayload({ connectionId }) });
+      if (replay) return replay;
+      await lockOwnedProfile(tx, agentId, context.owner.id);
+      const grant = await tx.query.agentAccessGrants.findFirst({ where: and(
+        eq(agentAccessGrants.id, connectionId), eq(agentAccessGrants.ownerId, context.owner.id),
+        eq(agentAccessGrants.agentId, agentId), eq(agentAccessGrants.source, 'oauth')) });
+      if (!grant) throw uuidError();
+      await dependencies.invalidationStore?.appendIntent({ kind: 'connection_revoke', operationId: `connection-revoke:${opId}`,
+        ownerId: context.owner.id, agentId, connectionId });
+      const now = grant.revokedAt ?? new Date();
+      await tx.update(agentAccessGrants).set({ revokedAt: now, revocationReason: grant.revocationReason ?? 'owner_connection_revoke' })
+        .where(eq(agentAccessGrants.id, connectionId));
+      await tx.update(oauthRefreshTokens).set({ revoked: now, rotationReplayResponse: null, rotationReplayExpiresAt: null })
+        .where(eq(oauthRefreshTokens.referenceId, connectionId));
+      await tx.update(oauthAccessTokens).set({ revoked: now }).where(eq(oauthAccessTokens.referenceId, connectionId));
+      const response = { connectionId, revokedAt: now.toISOString() };
+      await saveOperationReceipt(tx, opId, agentId, response);
+      await auditAccess(tx, 'agent.connection.revoked', opId, context.owner.id, agentId, 0,
+        { connectionId, scope: 'connection', activeRunCancellation: false });
+      return response;
+    });
+    return reply.header('Cache-Control', 'no-store').send(receipt);
   });
 
   app.post("/api/owner/agents/oauth-select", async (request, reply) => {
@@ -795,9 +924,12 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     if (row.profile.accessRevokedAt || row.profile.accessGeneration !== flow.accessGeneration) {
       throw new HttpError(409, "AGENT_ACCESS_CHANGED", "Agent access changed after this OAuth request began; restart authorization");
     }
+    const financialPolicy = await readAgentFinancialPolicy(dependencies.db, context.owner.id, flow.agentId);
     const client = await dependencies.db.query.oauthClients.findFirst({ where: eq(oauthClients.clientId, flow.clientId) });
     return reply.header("Cache-Control", "no-store").send({
       flowId: flow.id,
+      financialPolicy: { ...financialPolicy, configured: financialPolicy.revision > 0, token: "USDC", precision: 6 },
+      redirectUri: flow.redirectUri,
       client: { clientId: flow.clientId, name: client?.name ?? "Registered MCP client" },
       resource: flow.resource,
       scopes: flow.scopes,
@@ -857,7 +989,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
           id: flow.grantId, ownerId: context.owner.id, agentId: flow.agentId,
           operationId: `oauth-${flow.id}`, source: "oauth", oauthClientId: flow.clientId,
           resource: flow.resource, role: "agent", accessGeneration: locked.accessGeneration,
-          createdAt: now, expiresAt: new Date(now.getTime() + 3600_000), revokedAt: null, revocationReason: null
+          createdAt: now, expiresAt: new Date(now.getTime() + (dependencies.config.mcpTransportProfile === 'remote-oauth-v1' ? CONNECTION_GRANT_TTL_SECONDS : 3600) * 1000), revokedAt: null, revocationReason: null
         });
       }
       const changed = await tx.update(agentOauthAuthorizations).set({
@@ -1305,6 +1437,8 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
 
       const now = new Date();
       const nextGeneration = lockedProfile.accessGeneration + 1;
+      await dependencies.invalidationStore?.appendIntent({ kind: 'agent_revoke', operationId: `agent-revoke:${opId}`,
+        ownerId: context.owner.id, agentId, generationFloor: nextGeneration });
       const [updatedProfile] = await tx.update(agentProfiles).set({
         accessRevision: sql`${agentProfiles.accessRevision} + 1`,
         accessGeneration: sql`${agentProfiles.accessGeneration} + 1`,

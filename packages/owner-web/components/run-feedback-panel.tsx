@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { apiRequest, errorText } from "@/lib/api";
 
 type TaskFeedback = {
@@ -12,6 +13,28 @@ type TaskFeedback = {
 };
 
 type RunFeedback = { status: "available" | "withheld_until_run_termination"; tasks: TaskFeedback[] };
+type Check = { code: string; status: "passed" | "failed" | "unknown"; evidenceRefs: string[] };
+type Diagnostics = { runId: string; taskId: string; goalChecks: Check[]; constraintChecks: Check[];
+  actions: { actionId: string; sequence: string; kind: string; status: string; createdAt: string; evidenceRefs: string[] }[];
+  timing: { issuedAt: string | null; deadlineAt: string | null; closedAt: string | null }; evidenceRefs: string[] };
+
+const checkLabel = (code: string) => code === "task_goal" ? "Task goal" : code === "mandatory_constraints" ? "Mandatory constraints" : /^paid_resource_delivery/.test(code) ? "Recorded delivery evidence after payment" : "Verified task check";
+const actionKinds = new Set(["purchase", "pay", "retrieve", "approve", "transfer", "wrap", "unwrap", "swap", "inspect_catalog", "inspect_offer", "unknown"]);
+const actionStatuses = new Set(["observed", "pending", "unknown", "rejected_before_execution"]);
+function safeRefs(value: unknown, limit: number): value is string[] {
+  return Array.isArray(value) && value.length <= limit && value.every((reference) => typeof reference === "string" && /^sha256:[a-f0-9]{64}$/.test(reference));
+}
+function safeChecks(value: unknown): value is Check[] {
+  return Array.isArray(value) && value.length <= 4097 && value.every((check) => check &&
+    (check.code === "task_goal" || check.code === "mandatory_constraints" || /^paid_resource_delivery_recorded_[1-9][0-9]*$/.test(check.code)) &&
+    ["passed", "failed", "unknown"].includes(check.status) && safeRefs(check.evidenceRefs, 2));
+}
+function safeDiagnostics(value: Diagnostics, runId: string, taskId: string): boolean {
+  return value?.runId === runId && value.taskId === taskId && safeChecks(value.goalChecks) && safeChecks(value.constraintChecks) &&
+    safeRefs(value.evidenceRefs, 2) && !!value.timing && [value.timing.issuedAt, value.timing.deadlineAt, value.timing.closedAt].every((time) => time === null || typeof time === "string" && Number.isFinite(Date.parse(time))) &&
+    Array.isArray(value.actions) && value.actions.length <= 4096 && value.actions.every((action) =>
+      action && /^[a-f0-9-]{36}$/i.test(action.actionId) && /^[1-9][0-9]*$/.test(action.sequence) && actionKinds.has(action.kind) && actionStatuses.has(action.status) && Number.isFinite(Date.parse(action.createdAt)) && safeRefs(action.evidenceRefs, 1));
+}
 
 const reasons = {
   goal_unmet: "The task goal was not fully met.",
@@ -41,10 +64,20 @@ function isFeedback(value: unknown): value is RunFeedback {
 }
 
 /** Only the allowlisted owner feedback projection is rendered; no case or tool evidence is requested. */
-export function RunFeedbackPanel({ runId }: { runId: string }) {
+export function RunFeedbackPanel({ runId, mode, status }: { runId: string; mode?: string; status?: string }) {
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [diagnostics, setDiagnostics] = useState<Record<string, Diagnostics>>({});
+  async function loadDiagnostics(taskId: string) {
+    setBusy(true); setError("");
+    try {
+      const result = await apiRequest<{ diagnostics: Diagnostics }>(`/api/owner/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/diagnostics`);
+      if (!safeDiagnostics(result.diagnostics, runId, taskId)) throw new Error("Invalid diagnostic scope or projection");
+      setDiagnostics((current) => ({ ...current, [taskId]: result.diagnostics }));
+    } catch (failure) { setError(errorText(failure)); }
+    finally { setBusy(false); }
+  }
 
   async function loadFeedback() {
     setBusy(true);
@@ -79,6 +112,16 @@ export function RunFeedbackPanel({ runId }: { runId: string }) {
               <strong>{task.taskId}</strong>: {task.reason === "not_issued" ? "Not issued" : task.reason === "not_evaluated" ? "Not evaluated" : task.status === "unknown" ? "Evidence unknown" : task.outcome}
               {task.status === "known" && task.credit ? <span> · Credit {task.credit.numerator}/{task.credit.denominator}</span> : null}
               {task.reason ? <p className="fine">{reasons[task.reason]}</p> : null}
+              <Link href={`/reports?runId=${encodeURIComponent(runId)}&taskId=${encodeURIComponent(task.taskId)}`}>Report this task</Link>
+              {mode === "training" && task.reason !== "not_issued" && task.reason !== "not_evaluated" && (task.status === "known" || status === "completed" || status === "failed" || status === "cancelled") ? <div className="stack-sm">
+                <button data-testid={`run-diagnostics-load-${runId}-${task.taskId}`} className="button button-small" disabled={busy} onClick={() => void loadDiagnostics(task.taskId)}>Explain Training result</button>
+                {diagnostics[task.taskId] ? <details open><summary>Private Training checks and accepted actions</summary>
+                  <p className="fine">Unknown evidence does not establish agent failure. A recorded action is not proof of its external effect.</p>
+                  {[...diagnostics[task.taskId]!.goalChecks, ...diagnostics[task.taskId]!.constraintChecks].map((check, index) => <div key={index}><strong>{checkLabel(check.code)}</strong>: {check.status}<details><summary>Evidence references</summary>{check.evidenceRefs.length ? check.evidenceRefs.map((reference) => <code key={reference}>{reference} </code>) : "Evidence unavailable"}</details></div>)}
+                  <dl className="kv-list">{Object.entries(diagnostics[task.taskId]!.timing).map(([name, value]) => <div key={name}><dt>{name === "issuedAt" ? "Issued" : name === "deadlineAt" ? "Deadline" : "Closed"}</dt><dd>{value ? new Date(value).toLocaleString() : "Not observed"}</dd></div>)}</dl>
+                  <ol>{diagnostics[task.taskId]!.actions.map((action) => <li key={action.actionId}>{action.kind.replaceAll("_", " ")} / {action.status.replaceAll("_", " ")} / {new Date(action.createdAt).toLocaleString()}<details><summary>Action evidence</summary><code>{action.actionId}</code>{action.evidenceRefs.map((reference) => <p key={reference}><code>{reference}</code></p>)}</details><Link href={`/reports?runId=${encodeURIComponent(runId)}&taskId=${encodeURIComponent(task.taskId)}&actionId=${encodeURIComponent(action.actionId)}`}>Report this action</Link></li>)}</ol>
+                </details> : null}
+              </div> : null}
             </li>)}
           </ul>
           : null}

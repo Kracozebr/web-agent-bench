@@ -23,3 +23,9 @@ The owner authorized revising this change’s planning artifacts. The revised ei
 - Missing native client access remains blocked or unverified; it is never replaced by SDK-only evidence.
 
 The original approval quote and its delivery authorization remain in repository history; this record narrows their relevance to the superseded installer plan.
+
+## Renewed implementation approval — 2026-10-31
+
+The owner subsequently explicitly instructed implementation with separate UI and remote-MCP agents after the successful Training/Ranked work was committed and pushed, using the revised remote-MCP change. This renews approval for the existing eight ACI scenarios and their revised assertions: canonical remote endpoint with honest URL fallback, owner/selected-agent consent, renewable bounded tokens, scoped versus agent-wide revocation and restore fencing, capability-based protocol/schema checks, authenticated free preflight, selected-connection launch intent, and truthful native-client qualification. The earlier pending-approval statements above describe the superseded planning checkpoint; they do not require another approval for this scope.
+
+No installer, local bridge, hidden client-configuration write, provider-key collection, exact application-version gate, price/rubric/timer/refund change, or claim for an untested client is authorized. Existing AAP and BRL authorities remain in force. Implementation and structural checks do not establish native-client/browser acceptance. All mandatory environment gates remain not_run until real captures and independent replay prove them; missing infrastructure or clients remain blocked/unverified. No live migration, restart, global client configuration, or operator-secret change was performed by the remote-MCP implementation agent.

@@ -2864,7 +2864,7 @@ async function requestOwnerSnapshot(pool, ownerId, agentId) {
   });
 }
 
-async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, ownerId, agentId, limitUnits = 100_000n }) {
+export async function setS1FinancialPolicyThroughOwnerUi({ ownerPage, observerPool, ownerId, agentId, limitUnits = 100_000n }) {
   const form = ownerPage.getByTestId('financial-policy-form-' + agentId);
   await form.waitFor({ state: 'visible', timeout: 15_000 });
   const cap = async (name) => ({
@@ -3261,6 +3261,12 @@ async function runGenuineOwnerRunCase(input) {
     await input.ownerPage.getByTestId('run-intent-form').waitFor({ state: 'visible', timeout: 15_000 });
     await input.ownerPage.getByTestId('run-agent-select').selectOption(agentId);
     await input.ownerPage.getByTestId('run-mode-select').selectOption(mode);
+    const legacyConnection = input.ownerPage.getByTestId('run-legacy-connection');
+    if (await legacyConnection.count()) {
+      const advanced = legacyConnection.locator('xpath=ancestor::details[1]');
+      if (await advanced.getAttribute('open') === null) await advanced.locator(':scope > summary').click();
+      await legacyConnection.check();
+    }
     const catalog = await input.ownerPage.request.get('/api/owner/runs/catalog').then((response) => response.json());
     demand(catalog?.intentCreationReady === true && catalog?.activeRelease?.manifestHash === output.release.manifestHash &&
       catalog?.activeRelease?.completeRankedRelease === true && Array.isArray(catalog.activeRelease.openTaskIds) &&
@@ -3283,8 +3289,17 @@ async function runGenuineOwnerRunCase(input) {
       (await input.ownerPage.getByTestId('run-ranked-task-selection').innerText()).includes(RANKED_TASK_IDS.join(', '))
       : checkedCount === taskIds.length, 'run_intent_task_selection_mismatch');
     const cashCeiling = input.ownerPage.getByTestId('run-cash-ceiling');
-    await cashCeiling.fill('0');
-    const quoteText = (await input.ownerPage.getByTestId('run-selected-quote').innerText()).trim();
+    if (await cashCeiling.getAttribute('readonly') !== null) {
+      demand(exactUsdcUnits(await cashCeiling.inputValue()) === 0n, 'bonus_only_cash_ceiling_not_zero');
+    } else await cashCeiling.fill('0');
+    const quote = input.ownerPage.getByTestId('run-selected-quote');
+    const quoteDetails = quote.locator('xpath=ancestor::details[1]');
+    if (await quoteDetails.count() && await quoteDetails.getAttribute('open') === null) {
+      await quoteDetails.locator(':scope > summary').click();
+    }
+    const exactAmount = quote.getByRole('button', { name: 'Exact amount', exact: true });
+    if (await exactAmount.count() && await exactAmount.getAttribute('aria-expanded') !== 'true') await exactAmount.click();
+    const quoteText = (await quote.innerText()).trim();
     const selectedTasksForQuote = rankedMode ? output.release.rankedTasks : output.release.trainingTasks;
     const selectedWeight = selectedTasksForQuote.filter((entry) => taskIds.includes(entry.taskId))
       .reduce((sum, entry) => sum + entry.taskWeight, 0);
@@ -3299,7 +3314,9 @@ async function runGenuineOwnerRunCase(input) {
     const quoteUnits = rankedMode ? fullPrice : ((fullPrice * BigInt(selectedWeight)) + BigInt(totalWeight) - 1n) / BigInt(totalWeight);
     demand(!trainingSequenceMode || (quoteUnits === selectedTrainingQuoteUnits && grantAmountUnits >= quoteUnits),
       'training_sequence_release_quote_or_funding_mismatch');
-    const quoteMatch = /Server quote for this selection:\s*([0-9]+(?:\.[0-9]+)?)\s+USDC/i.exec(quoteText);
+    const quoteMatch = await exactAmount.count()
+      ? /^\s*([0-9]+(?:\.[0-9]+)?)\s+USDC/i.exec(await quote.locator('.money-detail').innerText())
+      : /Server quote for this selection:\s*([0-9]+(?:\.[0-9]+)?)\s+USDC/i.exec(quoteText);
     demand(quoteMatch && exactUsdcUnits(quoteMatch[1]) === quoteUnits, 'owner_quote_does_not_match_validated_release_weights');
     const intentPromise = input.ownerPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/owner/runs/intents'
       && response.request().method() === 'POST', { timeout: 20_000 });

@@ -6,6 +6,9 @@ services:
       OID_LOCAL_REPORT_CAPTURE_BASE: /local-report-captures
     volumes:
       - report-acceptance-data:/local-report-captures
+      # Operator invalidation authority is deliberately outside checkpoint/private data.
+      - agent-invalidation-acceptance-data:/local-agent-invalidation
 
 volumes:
   report-acceptance-data:
+  agent-invalidation-acceptance-data:

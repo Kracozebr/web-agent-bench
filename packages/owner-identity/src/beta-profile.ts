@@ -110,7 +110,7 @@ export function isQualificationReadPeerAllowed(address: string | undefined, mani
 }
 
 const ClientProfile = z.object({
-  family: z.enum(BETA_CLIENT_FAMILIES),
+  family: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
   enabled: z.boolean(),
   verificationStatus: z.enum(['unverified', 'verified']),
   edition: z.string().min(1).max(120).nullable(),
@@ -154,7 +154,7 @@ export const BetaDeploymentManifestSchema = z.object({
   schemaVersion: z.literal('beta-deployment-manifest/v1'),
   state: z.enum(['qualification', 'cohort_release']),
   executionProfileId: z.literal(BETA_EXECUTION_PROFILE_ID),
-  transportProfileId: z.literal(BETA_TRANSPORT_PROFILE_ID),
+  transportProfileId: z.enum([BETA_TRANSPORT_PROFILE_ID, 'remote-oauth-v1']),
   source: z.object({
     commit: Commit,
     applicationBuildSha256: Hash,
@@ -202,11 +202,13 @@ export const BetaDeploymentManifestSchema = z.object({
     googleClientSecretEnv: z.literal('OID_GOOGLE_CLIENT_SECRET'),
     bonusCodeVerifierSecretEnv: z.literal('OID_BONUS_CODE_VERIFIER_SECRET')
   }).strict(),
-  clients: z.array(ClientProfile).length(BETA_CLIENT_FAMILIES.length),
+  clients: z.array(ClientProfile).min(1).max(64),
   releaseEvidenceSha256: Hash.optional()
 }).strict().superRefine((manifest, ctx) => {
   const families = manifest.clients.map((profile) => profile.family);
-  if (new Set(families).size !== BETA_CLIENT_FAMILIES.length || BETA_CLIENT_FAMILIES.some((family) => !families.includes(family))) {
+  const remote = manifest.transportProfileId === 'remote-oauth-v1';
+  if (new Set(families).size !== families.length || (!remote &&
+      (families.length !== BETA_CLIENT_FAMILIES.length || BETA_CLIENT_FAMILIES.some((family) => !families.includes(family))))) {
     ctx.addIssue({ code: 'custom', path: ['clients'], message: 'must declare each of the four selected client families exactly once' });
   }
   const oauthClients = manifest.clients.flatMap((profile) => profile.oauthClientId ? [profile.oauthClientId] : []);
@@ -219,8 +221,9 @@ export const BetaDeploymentManifestSchema = z.object({
   if (manifest.state === 'qualification' && manifest.qualificationReadCidrs.length === 0) {
     ctx.addIssue({ code: 'custom', path: ['qualificationReadCidrs'], message: 'qualification requires an explicit anonymous-read allowlist' });
   }
-  if (manifest.state === 'cohort_release' && (!manifest.releaseEvidenceSha256 || manifest.clients.some((profile) =>
-      !profile.enabled || profile.verificationStatus !== 'verified' || profile.verificationEvidenceSha256.length === 0))) {
+  if (manifest.state === 'cohort_release' && (!manifest.releaseEvidenceSha256 ||
+      (remote && !manifest.clients.some((profile) => profile.enabled)) || manifest.clients.some((profile) =>
+      (!remote || profile.enabled) && (!profile.enabled || profile.verificationStatus !== 'verified' || profile.verificationEvidenceSha256.length === 0)))) {
     ctx.addIssue({ code: 'custom', path: ['clients'], message: 'cohort release requires pinned complete evidence and all four verified client profiles' });
   }
 });

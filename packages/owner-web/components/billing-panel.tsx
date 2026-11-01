@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ApiError, apiRequest, errorText, getCurrentOwner, type OwnerBillingHistoryEntry, type OwnerBillingResponse, type OwnerProjection } from "@/lib/api";
+import { ApiError, apiRequest, errorText, getCurrentOwner, type OwnerBonusGrant, type OwnerBillingHistoryEntry, type OwnerBillingResponse, type OwnerProjection } from "@/lib/api";
+import { Money } from "./money";
+import { ledgerDisplayAmount, moneyDisplay } from "@/lib/money";
 import { OwnerBonusCodesPanel } from "@/components/owner-bonus-codes-panel";
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -25,9 +27,6 @@ function label(value: string): string {
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function Money({ amount }: { amount: string }) {
-  return <>{amount} USDC</>;
-}
 
 function HistoryTable({ entries }: { entries: OwnerBillingHistoryEntry[] }) {
   if (!entries.length) {
@@ -41,11 +40,11 @@ function HistoryTable({ entries }: { entries: OwnerBillingHistoryEntry[] }) {
         </thead>
         <tbody>
           {entries.map((entry) => (
-            <tr key={entry.id} data-testid={`billing-history-entry-${entry.id}`}>
-              <td><code>{entry.id}</code></td>
-              <td>{label(entry.type)}</td>
+            <tr key={entry.id} data-testid={`billing-history-entry-${entry.id}`} data-ledger-type={entry.type} data-ledger-amount={entry.amount}>
+              <td><details><summary>Reference</summary><code>{entry.id}</code></details></td>
+              <td>{entry.type === "reserve" ? "Hold reserved" : entry.type === "release" ? "Hold released" : entry.type === "refund" ? "Refund credit" : label(entry.type)}</td>
               <td>{label(entry.source)}</td>
-              <td><Money amount={entry.amount} /></td>
+              <td><Money amount={ledgerDisplayAmount(entry.type, entry.amount)} /><details className="ledger-detail"><summary>Ledger record and direction</summary>{entry.amount} USDC / {moneyDisplay(entry.amount)?.units ?? "Unavailable"} micro-USDC raw magnitude / {entry.type}. Reserve and release entries move holds; they are not spending.</details></td>
               <td>{formatTimestamp(entry.createdAt)}</td>
               <td>{formatHistoryExpiry(entry.expiresAt)}</td>
               <td>{entry.reason || "—"}</td>
@@ -63,13 +62,20 @@ export function BillingPanel() {
   const [owner, setOwner] = useState<OwnerProjection | null>(null);
   const [billing, setBilling] = useState<OwnerBillingResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [grantCursor, setGrantCursor] = useState<string | null>(null);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
 
   const loadBilling = useCallback(async () => {
-    const response = await apiRequest<OwnerBillingResponse>("/api/owner/billing");
-    setBilling(response);
+    const [response, grants, history] = await Promise.all([
+      apiRequest<OwnerBillingResponse>("/api/owner/billing"),
+      apiRequest<{ grants: OwnerBonusGrant[]; nextCursor: string | null }>("/api/owner/billing/grants?limit=5"),
+      apiRequest<{ history: OwnerBillingHistoryEntry[]; nextCursor: string | null }>("/api/owner/billing/history?limit=5"),
+    ]);
+    setBilling({ ...response, grants: grants.grants, history: history.history });
+    setGrantCursor(grants.nextCursor); setHistoryCursor(history.nextCursor);
     return response;
   }, []);
 
@@ -100,6 +106,18 @@ export function BillingPanel() {
     });
     return () => { active = false; };
   }, [loadBilling, router]);
+
+  async function loadOlder(kind: "grants" | "history") {
+    const cursor = kind === "grants" ? grantCursor : historyCursor;
+    if (!cursor) return;
+    setBusy(true); setError(false);
+    try {
+      const result = await apiRequest<{ grants?: OwnerBonusGrant[]; history?: OwnerBillingHistoryEntry[]; nextCursor: string | null }>(`/api/owner/billing/${kind}?limit=5&cursor=${encodeURIComponent(cursor)}`);
+      setBilling((current) => current ? { ...current, [kind]: [...current[kind], ...(result[kind] ?? []).filter((item) => !current[kind].some((existing) => existing.id === item.id))] } : current);
+      if (kind === "grants") setGrantCursor(result.nextCursor); else setHistoryCursor(result.nextCursor);
+    } catch (failure) { setMessage(errorText(failure)); setError(true); }
+    finally { setBusy(false); }
+  }
 
   async function refresh() {
     setBusy(true);
@@ -199,7 +217,7 @@ export function BillingPanel() {
                   <tbody>
                     {billing.grants.map((grant) => (
                       <tr key={grant.id} data-testid={`billing-grant-${grant.id}`}>
-                        <td data-testid={`billing-grant-id-${grant.id}`}><code>{grant.id}</code></td>
+                        <td data-testid={`billing-grant-id-${grant.id}`}><details><summary>Grant reference</summary><code>{grant.id}</code></details></td>
                         <td>{formatTimestamp(grant.createdAt)}</td>
                         <td><Money amount={grant.amount} /></td>
                         <td><Money amount={grant.available} /></td>
@@ -216,11 +234,13 @@ export function BillingPanel() {
             )}
           </section>
 
+          {grantCursor ? <button data-testid="billing-grants-older" className="button button-small" disabled={busy} onClick={() => void loadOlder("grants")}>Load older bonus grants</button> : null}
           <section className="card" aria-labelledby="billing-history-title">
             <div className="section-heading">
-              <div><h2 id="billing-history-title">Financial history</h2><p className="fine">This activity list follows source and expiry information returned by the owner ledger.</p></div>
+              <div><h2 id="billing-history-title">Financial history</h2><p className="fine">Newest five entries first. Load older activity to reach the complete owner history. Exact amounts remain available for entries that round to the same displayed value.</p></div>
             </div>
             <HistoryTable entries={billing.history} />
+            {historyCursor ? <button data-testid="billing-history-older" className="button button-small" disabled={busy} onClick={() => void loadOlder("history")}>Load older financial activity</button> : null}
           </section>
         </>
       )}

@@ -53,6 +53,10 @@ const agentRunContinuityOptIn = process.argv.includes("--agent-run-continuity-on
 // AICODE-NOTE: PDC performs real deadline/payment negatives only in a fresh disposable local fixture.
 const paidDeliveryCutoffOptIn = process.argv.includes("--paid-delivery-cutoff-only");
 const agentFailureReportingOptIn = process.argv.includes('--agent-failure-reporting-only');
+const participantClientOptIn = process.argv.includes('--participant-client-only');
+const participantCabinetOptIn = participantClientOptIn || process.argv.includes('--participant-cabinet-only');
+const agentClientConnectionOptIn = participantClientOptIn || process.argv.includes('--agent-client-connection-only');
+const cabinetClientCaptureOptIn = participantCabinetOptIn || agentClientConnectionOptIn;
 // AICODE-NOTE: This explicit BER mode retains the two actual S1 recovery cases without
 // entering legacy S4/M3 Training collectors. It is subset evidence, never a full BPC/BER gate.
 const berRecoveryCoreOptIn = process.env.OID_BER_RECOVERY_CORE === "1";
@@ -66,7 +70,7 @@ if (interruptBeforeFirstRefund && !berRecoveryCoreOptIn) throw new Error("ber_fi
 // substitutes for a complete recovery/checkpoint/restore capture or a BPC gate.
 const combinedQueueOptIn = process.argv.includes("--combined-queue-only");
 const combinedRestoreOptIn = process.argv.includes("--combined-restore-only") || combinedQueueOptIn;
-const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn;
+const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn;
 const bonusFundedTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-sequence-worker-owner-run");
 const bonusFundedRankedOptIn = process.argv.includes("--genuine-bonus-funded-ranked-worker-owner-run");
 const genuineAllOpenTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-all-open-worker-owner-run");
@@ -89,7 +93,7 @@ const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || g
 const genuineTaskId = genuineWorkerTaskId ?? ["S1"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
 // AICODE-NOTE: Bonus run-admission negatives use the same guarded local policy as owner-run captures.
-const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn;
+const localCoordinatorCaptureOptIn = genuineS1OptIn || bonusCodesOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn;
 const activeContract = JSON.parse(await readFile(resolve(repoRoot, "tests/bdd/changes/owner-identity-and-pilot-admission/harness-contracts.json"), "utf8"));
 const contractRows = activeContract.protected_scenarios;
 const REQUIRED = Object.fromEntries(Object.entries(contractRows).map(([scenarioId, row]) => [scenarioId, row.required_observations]));
@@ -103,6 +107,7 @@ let observer;
 let browser;
 let phase = "startup";
 let apiChild;
+let lastApiStopReceipt;
 let apiEnvironment;
 let databaseIsolation;
 let reportCaptureIsolation;
@@ -231,7 +236,12 @@ function startChild(args, env, label, executable = pnpm) {
 }
 
 async function stopChild(child) {
-  await stopDetachedChild(child);
+  if (child === apiChild && child) {
+    child.acceptanceStopRequested ||= child.exitCode === null && child.signalCode === null;
+  }
+  await stopDetachedChild(child, { graceMs: cabinetClientCaptureOptIn && child === apiChild ? 15_000 : 3000 });
+  if (child === apiChild && child) lastApiStopReceipt = { requested: child.acceptanceStopRequested === true,
+    exitCode: child.exitCode, signal: child.signalCode, processId: child.pid };
 }
 
 async function restartOwnerApi() {
@@ -311,7 +321,7 @@ async function waitHttp(url, predicate, label) {
 
 async function startRuntime() {
   phase = "runtime_preflight";
-  const domainOptIns = [bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn, agentRunContinuityOptIn, paidDeliveryCutoffOptIn, agentFailureReportingOptIn].filter(Boolean).length;
+  const domainOptIns = [bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn, agentRunContinuityOptIn, paidDeliveryCutoffOptIn, agentFailureReportingOptIn, cabinetClientCaptureOptIn].filter(Boolean).length;
   if (domainOptIns > 1 || (domainOptIns === 1 && process.argv.slice(2).filter((argument) => argument !== "--").length !== 1)) {
     throw Object.assign(new Error("beta_poc_domain_cli_shape_invalid"), { code: "BPC_CLI_SHAPE_INVALID" });
   }
@@ -322,6 +332,9 @@ async function startRuntime() {
   if (process.platform !== "linux") throw new Error("Run owner acceptance inside the pinned Linux Docker runtime");
   if ((agentRunContinuityOptIn || agentFailureReportingOptIn) && process.env.OID_BETA_MANIFEST_FILE) {
     throw Object.assign(new Error('arc_requires_disposable_local_manual_transport'), { code: 'ARC_LOCAL_PROFILE_REQUIRED' });
+  }
+  if (cabinetClientCaptureOptIn && process.env.OID_BETA_MANIFEST_FILE) {
+    throw Object.assign(new Error('participant_client_requires_fresh_local_fixture'), {code: 'PARTICIPANT_LOCAL_FIXTURE_REQUIRED'});
   }
   if (paidDeliveryCutoffOptIn && (process.env.OID_BETA_MANIFEST_FILE ||
       (process.env.OID_MCP_TRANSPORT_PROFILE && process.env.OID_MCP_TRANSPORT_PROFILE !== 'strict-2026-07-28'))) {
@@ -343,7 +356,7 @@ async function startRuntime() {
       });
     }
     await provisionGenuineS1CoordinatorConfig({ repositoryRoot: repoRoot,
-      automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn,
+      automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn,
       ...(platformRecoveryOptIn || combinedRestoreOptIn ? { apiBaseUrl: recoveryFaultProxy.origin,
         observerDatabase: { host: "127.0.0.1", port: recoveryObserverProxy.port } } : {}),
       ...(berUnknownGradingOptIn || agentFailureReportingOptIn ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
@@ -386,12 +399,24 @@ async function startRuntime() {
     NODE_ENV: "development",
     ...(agentRunContinuityOptIn || agentFailureReportingOptIn ? { OID_MCP_TRANSPORT_PROFILE: "codex-local-manual-2025-06-18" } : {}),
     ...(paidDeliveryCutoffOptIn ? { OID_MCP_TRANSPORT_PROFILE: 'strict-2026-07-28' } : {}),
+    ...(agentClientConnectionOptIn ? { OID_MCP_TRANSPORT_PROFILE: 'remote-oauth-v1',
+      OID_LOCAL_ACI_CAPTURE_ID: runId, OID_MCP_CLIENT_REDIRECT_URI: 'http://127.0.0.1:38765/callback' } : {}),
     ...(privateReportStorageOptIn ? {
       OID_PRIVATE_DATA_DIR: reportCaptureIsolation.privateDataDir,
       OID_BETA_REPORT_CLOSURE_STATE_FILE: reportCaptureIsolation.closureStatePath,
       OID_LOCAL_REPORT_CAPTURE_ROOT: reportCaptureIsolation.captureIsolationRoot,
     } : {}),
   };
+  let nativeInvalidationOptions;
+  if (agentClientConnectionOptIn) {
+    const operatorRoot = resolve('/local-agent-invalidation', runId);
+    await mkdir(operatorRoot, { recursive: true, mode: 0o700 });
+    nativeInvalidationOptions = { journalPath: resolve(operatorRoot, 'journal.json'),
+      floorPath: resolve(operatorRoot, 'floor.json'), journalId: randomUUID() };
+    apiEnv.OID_AGENT_INVALIDATION_JOURNAL_FILE = nativeInvalidationOptions.journalPath;
+    apiEnv.OID_AGENT_INVALIDATION_FLOOR_FILE = nativeInvalidationOptions.floorPath;
+    apiEnv.OID_AGENT_INVALIDATION_JOURNAL_ID = nativeInvalidationOptions.journalId;
+  }
   if (berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn) {
     const faultDatabaseUrl = new URL(apiEnv.OID_DATABASE_URL);
     if (!/^oid_acceptance_[a-f0-9]{32}$/.test(databaseIsolation.databaseName) ||
@@ -412,6 +437,10 @@ async function startRuntime() {
 
   phase = "api_build";
   await runCommand(["--filter", "@web-agent-bench/owner-identity", "build"], apiEnv, "API build");
+  if (nativeInvalidationOptions) {
+    const { initializeAgentConnectionInvalidationState } = await import('../../owner-identity/dist/agent-connection-invalidation-state.js');
+    await initializeAgentConnectionInvalidationState(nativeInvalidationOptions);
+  }
   phase = "database_migration";
   await runCommand(["--filter", "@web-agent-bench/owner-identity", "migrate"], apiEnv, "database migration");
   const webEnv = { ...process.env, OID_API_URL: apiOrigin, HOSTNAME: "127.0.0.1", NODE_ENV: "production" };
@@ -427,8 +456,25 @@ async function startRuntime() {
   }, "owner API");
 
   phase = "owner_web_startup";
-  startChild(["--filter", "@web-agent-bench/owner-web", "exec", "next", "start", "-p", "3000", "-H", "127.0.0.1"], webEnv, "web");
+  // AICODE-NOTE: Native Windows clients reach the container through Compose's
+  // loopback-only published port; an in-container loopback listener is unreachable there.
+  startChild(["--filter", "@web-agent-bench/owner-web", "exec", "next", "start", "-p", "3000", "-H", agentClientConnectionOptIn ? "0.0.0.0" : "127.0.0.1"], webEnv, "web");
   await waitHttp(publicOrigin, (response) => response.status >= 200 && response.status < 500, "owner web");
+  if (agentClientConnectionOptIn) {
+    phase = 'native_oauth_public_discovery_readback';
+    const resourceResponse = await fetch(new URL('/.well-known/oauth-protected-resource/api/agent/mcp', publicOrigin));
+    const resource = await resourceResponse.json().catch(() => ({}));
+    const issuer = `${publicOrigin}/api/auth`;
+    if (resourceResponse.status !== 200 || resource.resource !== `${publicOrigin}/api/agent/mcp` ||
+        JSON.stringify(resource.authorization_servers) !== JSON.stringify([issuer])) throw new Error('aci_public_resource_metadata_unavailable');
+    const authorizationResponse = await fetch(new URL('/.well-known/oauth-authorization-server/api/auth', publicOrigin));
+    const authorization = await authorizationResponse.json().catch(() => ({}));
+    if (authorizationResponse.status !== 200 || authorization.issuer !== issuer ||
+        authorization.authorization_endpoint !== `${issuer}/oauth2/authorize` ||
+        authorization.token_endpoint !== `${issuer}/oauth2/token`) throw new Error('aci_public_authorization_metadata_unavailable');
+    console.log(JSON.stringify({event: 'aci_public_oauth_discovery_verified', captureId: runId,
+      resourceMetadataHttpStatus: resourceResponse.status, authorizationMetadataHttpStatus: authorizationResponse.status}));
+  }
   phase = "observer_and_browser_startup";
   const configResponse = await fetch(new URL("/api/identity/config", publicOrigin));
   if (!configResponse.ok || (await configResponse.json()).googleMode !== "provider-fixture") throw new Error("The real same-origin API proxy did not expose provider-fixture mode");
@@ -753,6 +799,18 @@ async function collectSourceHashes() {
       resolve(repoRoot, 'tools/run_arc_native.mjs'),
       resolve(repoRoot, 'tools/enable-agent-failure-reporting.mjs'),
     ] : []),
+    ...(cabinetClientCaptureOptIn ? [
+      resolve(repoRoot, 'openspec/changes/participant-cabinet-ux'),
+      resolve(repoRoot, 'tests/bdd/changes/participant-cabinet-ux'),
+      resolve(repoRoot, 'tests/bdd/features/participant_cabinet_ux.feature'),
+      resolve(repoRoot, 'tests/bdd/mappers/test_participant_cabinet_ux_bdd.py'),
+      resolve(repoRoot, 'openspec/changes/agent-client-installer'),
+      resolve(repoRoot, 'tests/bdd/changes/agent-client-installer'),
+      resolve(repoRoot, 'tests/bdd/features/agent_client_installer.feature'),
+      resolve(repoRoot, 'tests/bdd/mappers/test_agent_client_installer_bdd.py'),
+      resolve(repoRoot, 'tools/run_aci_native.mjs'),
+      resolve(repoRoot, 'infrastructure/owner-identity/run-codex-google-local.mjs'),
+    ] : []),
     ...(berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn ? [
       resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/specs"),
       resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/bdd-design.md"),
@@ -791,6 +849,8 @@ async function collectSourceHashes() {
       if (paidDeliveryCutoffOptIn && pdcMetadata.test(relativeInput)) return;
       const afrMetadata = /^(?:openspec|tests\/bdd)\/changes\/agent-failure-reporting\/(?:tasks\.md|runtime-inputs\.json|acceptance-evidence\.(?:md|json)|scenario-map\.md)$/;
       if (agentFailureReportingOptIn && afrMetadata.test(relativeInput)) return;
+      const cabinetClientMetadata = /^(?:openspec|tests\/bdd)\/changes\/(?:participant-cabinet-ux|agent-client-installer)\/(?:tasks\.md|runtime-inputs\.json|acceptance-evidence\.(?:md|json)|scenario-map\.md)$/;
+      if (cabinetClientCaptureOptIn && cabinetClientMetadata.test(relativeInput)) return;
       const extension = path.slice(path.lastIndexOf("."));
       if ((extensions.has(extension) || [".dockerignore", "Dockerfile"].includes(path.slice(path.lastIndexOf(sep) + 1))) && !path.split(sep).includes("node_modules")) files.push(path);
     }
@@ -939,7 +999,7 @@ async function main() {
     const confirmed = await waitOwner(ownerLogin.page, "authenticated");
     if (confirmed.owner?.id !== ownerId || confirmed.owner?.admissionStatus !== "admitted") throw new Error("Activation did not confirm the same admitted owner in the real owner projection");
     const activationOperation = ownerLogin.capture.requests.filter((item) => item.path === "/api/admission/activate" && item.method === "POST").at(-1)?.operationId;
-    if (platformRecoveryOptIn || combinedRestoreOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn) {
+    if (platformRecoveryOptIn || combinedRestoreOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn) {
       const genuineCaptureInput = {
         captureId: runId, repoRoot, databaseUrl: process.env.OID_DATABASE_URL,
         observerDatabaseUrl: process.env.OID_OBSERVER_DATABASE_URL, publicOrigin,
@@ -963,6 +1023,43 @@ async function main() {
         newContext, login: (context, scenarioId, subject) => googleLogin(context, scenarioId, subject),
         restartApi: async (options = undefined) => {
           if (options !== undefined) {
+            if (agentClientConnectionOptIn && options?.connectionRegistration) {
+              const registration = options.connectionRegistration;
+              const callback = new URL(registration.redirectUri);
+              if (Object.keys(options).join(',') !== 'connectionRegistration' ||
+                  Object.keys(registration).sort().join(',') !== 'clientId,redirectUri' ||
+                  registration.clientId !== (apiEnvironment.OID_MCP_CLIENT_ID ?? 'oid-local-mcp-client') ||
+                  callback.origin !== 'http://127.0.0.1:38765' || !/^\/callback(?:\/[A-Za-z0-9_-]{1,100})?$/.test(callback.pathname) ||
+                  callback.search || callback.hash || callback.username || callback.password ||
+                  !/^oid_acceptance_[a-f0-9]{32}$/.test(databaseIsolation.databaseName) ||
+                  new URL(apiEnvironment.OID_DATABASE_URL).pathname !== '/' + databaseIsolation.databaseName ||
+                  apiEnvironment.OID_MCP_TRANSPORT_PROFILE !== 'remote-oauth-v1' || apiEnvironment.OID_BETA_MANIFEST_FILE ||
+                  publicOrigin !== 'http://127.0.0.1:3000') throw new Error('aci_registration_requires_exact_disposable_client');
+              const previousPid = apiChild?.pid, startedAt = new Date().toISOString();
+              await stopChild(apiChild);
+              const setup = new pg.Client({ connectionString: apiEnvironment.OID_DATABASE_URL });
+              await setup.connect();
+              try {
+                await setup.query('BEGIN');
+                const database = (await setup.query('SELECT current_database() AS name')).rows[0].name;
+                if (database !== databaseIsolation.databaseName) throw new Error('aci_registration_database_mismatch');
+                const existing = (await setup.query('SELECT count(*)::int AS n FROM oid_agent_access_grant WHERE oauth_client_id=$1', [registration.clientId])).rows[0];
+                if (existing.n !== 0) throw new Error('aci_registration_must_precede_authorized_grants');
+                // AICODE-NOTE: The immutable ordinary migration validates pre-registered
+                // callbacks; only this fresh fixture setup changes its existing public client.
+                const updated = await setup.query('UPDATE oid_oauth_client SET redirect_uris=$2::text[] WHERE client_id=$1', [registration.clientId, [callback.href]]);
+                if (updated.rowCount !== 1) throw new Error('aci_registered_public_client_missing');
+                await setup.query('COMMIT');
+              } catch (failure) { await setup.query('ROLLBACK').catch(() => {}); throw failure; }
+              finally { await setup.end(); }
+              apiEnvironment = { ...apiEnvironment, OID_MCP_CLIENT_REDIRECT_URI: callback.href };
+              await runCommand(['--filter', '@web-agent-bench/owner-identity', 'migrate'], apiEnvironment, 'isolated native callback registration validation');
+              apiChild = startChild([resolve(repoRoot, 'packages/owner-identity/dist/server.js')], apiEnvironment, 'native callback registered API', process.execPath);
+              await waitHttp(new URL('/healthz', apiOrigin), response => response.ok, 'native callback registered API');
+              return { schemaVersion: 'aci-native-registration-restart/v1', previousPid, currentPid: apiChild.pid,
+                startedAt, finishedAt: new Date().toISOString(), healthHttpStatus: 200,
+                boundary: 'fresh_fixture_exact_public_client_registration_before_consent' };
+            }
             if (!berH1CutoffOptIn || !options || Object.keys(options).join(',') !== 'coordinatorEnabled' ||
                 typeof options.coordinatorEnabled !== 'boolean' ||
                 !/^oid_acceptance_[a-f0-9]{32}$/.test(databaseIsolation.databaseName) ||
@@ -1060,6 +1157,84 @@ async function main() {
         assertSecretFree(value, "beta operations progress");
         console.log(JSON.stringify({ event: "beta_operations_progress", ...value }));
       };
+      if (cabinetClientCaptureOptIn) {
+        const sourceMap = rows => Object.fromEntries(rows.map(row => [row.path, row.sha256]));
+        const provenance = async () => {
+          const before = sourceMap(sourceHashesBefore), after = sourceMap(await collectSourceHashes());
+          return { databaseIsolation, sourceInputsBeforeCheckpoint, inputHashesBefore: before,
+            inputHashesAfter: after, sourceStableDuringRun: JSON.stringify(before) === JSON.stringify(after) };
+        };
+        const createAdditionalAdmittedOwner = async () => {
+          const admitted = await googleLogin(await newContext(), 'OID-SC-011', 'oid-pcu-extra-' + randomUUID());
+          if (admitted.owner.status !== 200 || admitted.owner.owner?.admissionStatus !== 'pending') throw new Error('pcu_additional_owner_not_pending');
+          await commonCapture.adminPage.goto('/admin', { waitUntil: 'domcontentloaded' });
+          const issued = commonCapture.adminPage.waitForResponse(response => new URL(response.url()).pathname === '/api/admin/invitations' && response.request().method() === 'POST');
+          await commonCapture.adminPage.getByTestId('invite-create').click();
+          if ((await issued).status() !== 201) throw new Error('pcu_additional_invitation_ui_failed');
+          let secret = (await commonCapture.adminPage.getByTestId('invite-secret-once').locator('code').first().innerText()).trim();
+          await admitted.page.getByTestId('invitation-code').fill(secret); secret = '';
+          const activated = admitted.page.waitForResponse(response => new URL(response.url()).pathname === '/api/admission/activate' && response.request().method() === 'POST');
+          await admitted.page.getByTestId('activate-owner').click();
+          if ((await activated).status() !== 200) throw new Error('pcu_additional_activation_ui_failed');
+          await waitForPath(admitted.page, ['/account'], 15000);
+          const confirmed = await waitOwner(admitted.page, 'authenticated');
+          if (confirmed.owner?.admissionStatus !== 'admitted' || confirmed.owner?.id !== admitted.owner.owner.id) throw new Error('pcu_additional_owner_scope_changed');
+          return { page: admitted.page, ownerId: confirmed.owner.id };
+        };
+        let pcuResult;
+        if (participantCabinetOptIn) {
+          phase = 'participant_cabinet_actual_browser_worker';
+          const {runParticipantCabinetOwnerCase} = await import('./participant-cabinet-owner-case.mjs');
+          pcuResult = await runParticipantCabinetOwnerCase({commonCapture, captureId: runId,
+            createAdditionalAdmittedOwner, onProgress: progress, runRanked: true});
+          const directory = resolve(repoRoot, 'artifacts/runs/participant-cabinet', runId);
+          await mkdir(directory, {recursive: true, mode: 0o700});
+          const wrapper = {schemaVersion: 'participant-cabinet-owner-capture/v1', captureId: runId,
+            boundary: 'isolated_actual_browser_backend_postgres_bef', result: pcuResult,
+            provenance: await provenance(), targetHostAcceptance: 'blocked_target_not_selected'};
+          assertSecretFree(wrapper, 'pcu-owner-wrapper');
+          const bytes = Buffer.from(JSON.stringify(wrapper, null, 2) + '\n');
+          await writeFile(resolve(directory, 'owner-case.json'), bytes, {flag: 'wx', mode: 0o600});
+          betaOperationsArtifactWritten = true;
+          console.log(JSON.stringify({event: 'participant_cabinet_capture_saved', captureId: runId,
+            path: `artifacts/runs/participant-cabinet/${runId}/owner-case.json`, sha256: sha256(bytes),
+            nativeConnectionQualification: 'not_substituted_by_reference_worker'}));
+          if (!wrapper.provenance.sourceStableDuringRun) { process.exitCode = 2; return; }
+        }
+        if (agentClientConnectionOptIn) {
+          phase = 'agent_client_native_oauth_owner_boundary';
+          console.log(JSON.stringify({event: 'aci_native_broker_ready', captureId: runId,
+            command: 'node tools/run_aci_native.mjs --capture-id ' + runId}));
+          const {runAgentClientConnectionOwnerCase} = await import('./agent-client-connection-owner-case.mjs');
+          const result = await runAgentClientConnectionOwnerCase({...commonCapture.genuineCaptureInput, commonCapture,
+            restartConnectionRegistration: options => commonCapture.restartApi(options)});
+          const directory = resolve(repoRoot, 'artifacts/runs/agent-client-connection', runId);
+          await mkdir(directory, {recursive: true, mode: 0o700});
+          const wrapper = {schemaVersion: 'agent-client-connection-partial/v1', captureId: runId,
+            boundary: 'isolated_actual_browser_native_oauth_postgres_bef', result,
+            provenance: await provenance(), ...(pcuResult ? {participantCabinetCapture: pcuResult.artifact} : {}),
+            targetHostAcceptance: 'blocked_target_not_selected'};
+          assertSecretFree(wrapper, 'aci-native-partial');
+          const bytes = Buffer.from(JSON.stringify(wrapper, null, 2) + '\n');
+          const partialRef = {path: `artifacts/runs/agent-client-connection/${runId}/capture-partial.json`, sha256: sha256(bytes)};
+          await writeFile(resolve(repoRoot, partialRef.path), bytes, {flag: 'wx', mode: 0o600});
+          betaOperationsArtifactWritten = true;
+          // AICODE-NOTE: Final acceptance requires the real API onClose observer flush;
+          // native completion or a tentative live JSONL read cannot certify this capture.
+          await stopChild(apiChild);
+          if (result.status !== 'captured_aci_run' || !wrapper.provenance.sourceStableDuringRun) {
+            console.log(JSON.stringify({event: 'aci_native_capture_blocked', captureId: runId,
+              partialRef, phase: result.aci?.phase ?? phase, reasonCode: result.aci?.blocker ?? 'aci_native_or_source_boundary_incomplete'}));
+            process.exitCode = 2;
+          } else {
+            const {finalizeAgentClientConnectionCapture} = await import('./agent-client-connection-finalize.mjs');
+            const finalRef = await finalizeAgentClientConnectionCapture({partialRef, repoRoot, captureId: runId, apiStopReceipt: lastApiStopReceipt});
+            console.log(JSON.stringify({event: 'aci_native_final_capture_saved', captureId: runId, ...finalRef,
+              qualificationScope: 'documented_local_codex_cli_profile_only', mandatoryEnvironmentGates: 'independent_replay_required'}));
+          }
+        }
+        return;
+      }
       if (agentFailureReportingOptIn) {
         phase = 'agent_failure_reporting_native_same_handoff';
         const {runAgentFailureReportingOwnerCase} = await import('./agent-failure-reporting-cases.mjs');
@@ -1758,6 +1933,19 @@ async function main() {
 }
 
 main().catch(async (error) => {
+  if (cabinetClientCaptureOptIn && !betaOperationsArtifactWritten) {
+    try {
+      const root = agentClientConnectionOptIn ? 'agent-client-connection' : 'participant-cabinet';
+      const directory = resolve(repoRoot, 'artifacts/runs', root, runId);
+      await mkdir(directory, {recursive: true, mode: 0o700});
+      const blocked = {schemaVersion: root + '-startup-block/v1', captureId: runId,
+        boundary: 'isolated_local_fixture_setup_only', result: {status: 'blocked', phase,
+          reasonCode: 'participant_client_startup_or_boundary_failed'},
+        provenance: {databaseIsolation, sourceInputsBeforeCheckpoint, sourceStability: 'not_verified'}};
+      assertSecretFree(blocked, 'participant-client-startup-block');
+      await writeFile(resolve(directory, 'capture-startup-blocked.json'), JSON.stringify(blocked, null, 2) + '\n', {flag: 'wx', mode: 0o600});
+    } catch { /* Preserve the original sanitized failure, never raw browser/provider errors. */ }
+  }
   if(agentFailureReportingOptIn&&!betaOperationsArtifactWritten){
     try{const directory=resolve(repoRoot,'artifacts/runs/agent-failure-reporting',runId);await mkdir(directory,{recursive:true,mode:0o700});
       const reasonCode=typeof error?.code==='string'&&/^[A-Za-z0-9_]{1,96}$/.test(error.code)?error.code:'afr_startup_or_owner_setup_failed';

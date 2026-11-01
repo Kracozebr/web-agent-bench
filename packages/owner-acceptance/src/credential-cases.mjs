@@ -88,6 +88,10 @@ export async function issueThroughUi(page, agentId, intent = "issue", captureApi
   const target = intent === "replace"
     ? page.getByTestId(`credential-replace-${safeBefore.body.credentials.find((row) => row.status === "active")?.id}`)
     : page.getByTestId(`credential-issue-${agentId}`);
+  const advanced = target.locator('xpath=ancestor::details[1]');
+  if (await advanced.count() && await advanced.getAttribute('open') === null) {
+    await advanced.locator(':scope > summary').click();
+  }
   await target.waitFor({ state: "visible", timeout: 15000 });
   assert(await target.count() === 1, `Credential ${intent} control is not uniquely available`);
   captureApi?.action("click", await target.getAttribute("data-testid"));

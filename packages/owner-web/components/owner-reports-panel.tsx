@@ -13,6 +13,11 @@ interface SupportReport {
 }
 interface ListResponse { reports: SupportReport[]; nextCursor: string | null; }
 interface PendingAttachment { report: SupportReport; file: File; uploadOperationId: string; attachOperationId: string; uploadId?: string; }
+class ScreenshotValidationError extends Error {}
+
+function reportErrorText(failure: unknown): string {
+  return failure instanceof ScreenshotValidationError ? failure.message : errorText(failure);
+}
 
 function timestamp(value: string) {
   const date = new Date(value);
@@ -21,7 +26,7 @@ function timestamp(value: string) {
 
 async function multipartUploadForm(file: File, operationId: string): Promise<FormData> {
   if (!file.size || file.size > 5 * 1024 * 1024 || !["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-    throw new Error("Choose a PNG, JPEG, or WebP screenshot no larger than 5 MiB.");
+    throw new ScreenshotValidationError("Choose a PNG, JPEG, or WebP screenshot no larger than 5 MiB.");
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
@@ -74,6 +79,10 @@ export function OwnerReportsPanel() {
       if (!current) { router.replace("/sign-in"); return; }
       if (current.admissionStatus !== "admitted") { router.replace("/activate"); return; }
       setOwner(current);
+      const context = new URLSearchParams(window.location.search);
+      setRunId(context.get("runId") ?? "");
+      setTaskId(context.get("taskId") ?? "");
+      setActionId(context.get("actionId") ?? "");
       await loadReports();
     }).catch((failure) => { if (active) setError(errorText(failure)); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -115,7 +124,7 @@ export function OwnerReportsPanel() {
       setMessage(result.replayed ? "Your report receipt was recovered." : "Your report was submitted.");
       setSubmission(null); setTitle(""); setBody(""); setRunId(""); setTaskId(""); setActionId(""); setClientVersion(""); setFile(null); setFileOperationId(newOperationId());
     } catch (failure) {
-      setError(`${errorText(failure)} Retry keeps the same operation IDs and screenshot bytes while this page stays open.`);
+      setError(`${reportErrorText(failure)} Retry keeps the same operation IDs and screenshot bytes while this page stays open.`);
     } finally { setBusy(false); }
   }
 
@@ -143,7 +152,7 @@ export function OwnerReportsPanel() {
         method: "POST", body: JSON.stringify({ operationId: pending.attachOperationId, imageUploadIds: [uploadId] })
       });
       await loadReports(); await openReport(pending.report.id); setMessage("Screenshot attached to your agent report."); setPendingAttachment(null);
-    } catch (failure) { setError(`${errorText(failure)} Retry uses the same upload and attachment operation IDs.`); }
+    } catch (failure) { setError(`${reportErrorText(failure)} Retry uses the same upload and attachment operation IDs.`); }
     finally { setBusy(false); }
   }
 
@@ -154,10 +163,10 @@ export function OwnerReportsPanel() {
     <section className="page-heading"><p className="eyebrow">Private support</p><h1>Reports</h1>
       <p className="lede">Send a private issue report to the support team. Do not include passwords, tokens, private keys, or hidden task answers. Reports and screenshots are not grading or billing evidence.</p>
     </section>
-    {error ? <p className="status-box status-error" role="alert">{error}</p> : null}
+    {error ? <p className="status-box status-error" role="alert" data-testid="owner-report-error">{error}</p> : null}
     {message ? <p className="notice notice-success" role="status">{message}</p> : null}
     <section className="card" aria-label="Submit a support report">
-      <h2>New report</h2>
+      <h2>New report</h2><p className="fine">Run context is checked by the server. Connection problems can be reported without any run, task or action ID.</p>
       <form className="form" onSubmit={(event) => void submit(event)}>
         <div className="field"><label htmlFor="report-title">Title</label><input id="report-title" maxLength={160} required value={title} onChange={(event) => { setTitle(event.target.value); setSubmission(null); }} /></div>
         <div className="field"><label htmlFor="report-body">What happened?</label><textarea id="report-body" maxLength={4000} required value={body} onChange={(event) => { setBody(event.target.value); setSubmission(null); }} /><small className="fine">Up to 4,000 characters. Avoid secret values and personal data.</small></div>
@@ -165,7 +174,7 @@ export function OwnerReportsPanel() {
           <div className="field"><label htmlFor="report-run">Run ID</label><input id="report-run" value={runId} onChange={(event) => { setRunId(event.target.value); setSubmission(null); }} /></div>
           <div className="field"><label htmlFor="report-task">Task ID</label><input id="report-task" maxLength={128} value={taskId} onChange={(event) => { setTaskId(event.target.value); setSubmission(null); }} /></div>
           <div className="field"><label htmlFor="report-action">Action ID</label><input id="report-action" value={actionId} onChange={(event) => { setActionId(event.target.value); setSubmission(null); }} /></div>
-          <div className="field"><label htmlFor="report-client">Client version</label><input id="report-client" maxLength={64} value={clientVersion} onChange={(event) => { setClientVersion(event.target.value); setSubmission(null); }} /></div>
+          <div className="field"><label htmlFor="report-client">Client version (declared by you, unverified)</label><input id="report-client" maxLength={64} value={clientVersion} onChange={(event) => { setClientVersion(event.target.value); setSubmission(null); }} /></div>
         </div></details>
         <div className="field"><label htmlFor="report-image">Optional screenshot (PNG, JPEG, or WebP; up to 5 MiB)</label><input id="report-image" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const next = event.target.files?.[0] ?? null; setFile(next); setFileOperationId(newOperationId()); setSubmission(null); }} /></div>
         {previewUrl ? <figure className="report-preview"><img src={previewUrl} alt="Local screenshot preview before upload" /><figcaption className="fine">Preview is local to this page. The server will validate and strip image metadata.</figcaption></figure> : null}

@@ -2,7 +2,8 @@ import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { getAddress, verifyMessage } from "viem";
 import { allowedAgentRequestHosts, registerAgentRoutes, resolveAgentPrincipal, type AgentRouteDependencies } from "./agents.js";
@@ -17,6 +18,11 @@ import { createReportClosureStateStore } from "./report-closure-state.js";
 import { runReportHousekeeping, runReportRetentionCleanup, type ReportServiceDependencies } from "./report-service.js";
 import { REPORT_IMAGE_MAX_INPUT_BYTES } from "./report-images.js";
 import { registerRunIntentMcpTools, registerRunRoutes } from "./run-routes.js";
+import { registerParticipantCabinetRoutes } from "./participant-cabinet-routes.js";
+import { handleConnectionTokenRequest } from "./agent-connection-refresh.js";
+import { REMOTE_MCP_PROTOCOLS, agentOAuthResource, connectionOAuthScopes, validConnectionScopes } from "./agent-connection-profile.js";
+import { createAgentMcpAcceptanceObserver } from "./agent-mcp-acceptance-observer.js";
+import { createAgentConnectionInvalidationStore, reconcileAgentConnectionInvalidation } from './agent-connection-invalidation-state.js';
 import { consumeRunCancellationOutbox, expireQueuedRuns } from "./run-service.js";
 import type { RunServiceDependencies } from "./run-service.js";
 import { unavailableTaskExecutionReadinessProvider, type TaskExecutionReadiness } from "./task-release.js";
@@ -29,7 +35,7 @@ import { cleanupFailedLocalBefTaskCoordinatorStartup, createLocalBefTaskCoordina
 import { acquireCoordinatorForStartup } from "./coordinator-startup.js";
 import { pinBetaRunReleaseProvider } from "./beta-bef-runtime-profile.js";
 import { createAuth, siweRequestFingerprint, withSiweRequest } from "./auth.js";
-import { loadConfig, getGoogleMode } from "./config.js";
+import { loadConfig, getGoogleMode, isPathOutsideDirectory } from "./config.js";
 import { createDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
 import { responseError as mapResponseError } from "./http-error-response.js";
@@ -53,12 +59,30 @@ import {
 
 const config = loadConfig();
 const { db, client } = createDatabase(config);
-const auth = createAuth(config, db);
-const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 64 * 1024 });
+const invalidationOptions = {
+  journalPath: process.env.OID_AGENT_INVALIDATION_JOURNAL_FILE,
+  floorPath: process.env.OID_AGENT_INVALIDATION_FLOOR_FILE,
+  expectedJournalId: process.env.OID_AGENT_INVALIDATION_JOURNAL_ID,
+};
+const invalidationConfigured = Object.values(invalidationOptions).some(value => value !== undefined);
+const invalidationStore = (() => {
+  if (!invalidationConfigured && config.mcpTransportProfile !== 'remote-oauth-v1') return undefined;
+  const { journalPath, floorPath, expectedJournalId } = invalidationOptions;
+  const artifactRoot = fileURLToPath(new URL('../../../artifacts', import.meta.url));
+  if (!journalPath || !floorPath || !expectedJournalId || !isAbsolute(journalPath) || !isAbsolute(floorPath) ||
+      !config.privateDataDir || !isPathOutsideDirectory(config.privateDataDir, journalPath) ||
+      !isPathOutsideDirectory(config.privateDataDir, floorPath) || !isPathOutsideDirectory(artifactRoot, journalPath) ||
+      !isPathOutsideDirectory(artifactRoot, floorPath)) throw new Error('agent_connection_external_invalidation_configuration_required');
+  return createAgentConnectionInvalidationStore({ journalPath, floorPath, expectedJournalId });
+})();
+const auth = createAuth(config, db, invalidationStore);
+const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 64 * 1024,
+  requestIdHeader: false, genReqId: () => randomUUID() });
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const hmac = (value: string) => createHmac("sha256", config.authSecret).update(value).digest("hex");
 const randomToken = () => randomBytes(32).toString("base64url");
 let startupCoordinatorForCleanup: LocalBefTaskCoordinator | undefined;
+let acceptanceMcpObserver: Awaited<ReturnType<typeof createAgentMcpAcceptanceObserver>> | undefined;
 
 interface Authenticated {
   user: { id: string; email: string; name: string };
@@ -204,7 +228,7 @@ async function auditOAuthCodeExchange(request: FastifyRequest, response: Respons
         const resourceMatches = audience === authorization.resource ||
           (Array.isArray(audience) && audience.length === 1 && audience[0] === authorization.resource);
         tokenValid = Boolean(verified.payload && resourceMatches && claims.iss === `${config.publicOrigin}/api/auth` &&
-          claims.sub === authorization.authUserId && claims.azp === authorization.clientId && claims.scope === "agent:operate" &&
+          claims.sub === authorization.authUserId && claims.azp === authorization.clientId && validConnectionScopes(config, claims.scope) &&
           claims.oid_owner_id === authorization.ownerId && claims.oid_agent_id === authorization.agentId &&
           claims.oid_grant_id === authorization.grantId && claims.oid_access_generation === authorization.accessGeneration &&
           claims.oid_role === "agent");
@@ -420,6 +444,43 @@ function parseSiwe(message: string) {
 }
 
 async function start() {
+  // AICODE-NOTE: Operator authority is never recreated from a restored database.
+  // Even a profile downgrade must retain a previously established external fence.
+  if (invalidationStore) await reconcileAgentConnectionInvalidation(db, invalidationStore);
+  else {
+    const prior = await db.execute(sql`SELECT 1 FROM oid_audit WHERE event_type='agent.connection.invalidation_reconciled' LIMIT 1`);
+    if (Array.from(prior).length) throw new Error('agent_connection_external_invalidation_configuration_required');
+  }
+  if (process.env.OID_LOCAL_ACI_CAPTURE_ID !== undefined) {
+    acceptanceMcpObserver = await createAgentMcpAcceptanceObserver({
+      enabled: true, nodeEnv: process.env.NODE_ENV ?? '',
+      databaseName: new URL(config.databaseUrl).pathname.slice(1),
+      repoRoot: fileURLToPath(new URL('../../../', import.meta.url)),
+      captureId: process.env.OID_LOCAL_ACI_CAPTURE_ID, publicOrigin: config.publicOrigin
+    });
+  }
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (!acceptanceMcpObserver || reply.statusCode !== 401 ||
+        new URL(request.url, config.publicOrigin).pathname !== '/api/agent/mcp') return payload;
+    // AICODE-NOTE: A denied request has no authenticated principal. Observe only the
+    // real status/challenge scheme, never credentials, headers or authority hints.
+    try {
+      const protocol = request.headers['mcp-protocol-version'];
+      const protocolVersion = typeof protocol === 'string' ? protocol : undefined;
+      acceptanceMcpObserver.observe({ requestId: request.id, phase: 'request', body: request.body,
+        ...(protocolVersion ? { protocolVersion } : {}) });
+      let body: unknown = null;
+      if (typeof payload === 'string' && Buffer.byteLength(payload) <= 64 * 1024) {
+        try { body = JSON.parse(payload); } catch { /* No raw response is retained. */ }
+      }
+      const challenge = reply.getHeader('www-authenticate');
+      acceptanceMcpObserver.observe({ requestId: request.id, phase: 'response', body,
+        ...(protocolVersion ? { protocolVersion } : {}),
+        httpStatus: 401,
+        ...(typeof challenge === 'string' && /^Bearer(?:\s|$)/i.test(challenge) ? { authenticateScheme: 'Bearer' as const } : {}) });
+    } catch { /* Diagnostic failures cannot alter the original denial response. */ }
+    return payload;
+  });
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (request, body, done) => {
     try {
       const parsed: Record<string, string | string[]> = Object.create(null) as Record<string, string | string[]>;
@@ -439,6 +500,8 @@ async function start() {
   await app.register(multipart, { limits: { fieldNameSize: 32, fieldSize: 128, fields: 4, files: 1,
     fileSize: REPORT_IMAGE_MAX_INPUT_BYTES, headerPairs: 16, parts: 5 }, throwFileSizeLimit: false });
   app.addHook("onRequest", async (request, reply) => {
+    // AICODE-NOTE: Correlation is server-generated and grants no authority; never echo a caller's request-id header.
+    reply.header("X-Request-Id", request.id);
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Cache-Control", "no-store");
@@ -500,6 +563,8 @@ async function start() {
     };
   }
   const agentRouteDependencies: AgentRouteDependencies = {
+    ...(invalidationStore ? { invalidationStore } : {}),
+    ...(acceptanceMcpObserver ? { observeAgentMcp: acceptanceMcpObserver.observe } : {}),
     db,
     auth,
     config,
@@ -509,7 +574,7 @@ async function start() {
     credentialRateLimitMax: config.agentCredentialRateLimitMax,
     preflightRateLimitMax: config.agentPreflightRateLimitMax,
     manualCredentialTtlSeconds: config.manualCredentialTtlSeconds,
-    agentResource: `${config.publicOrigin}/api/agent`,
+    agentResource: agentOAuthResource(config),
     agentPreflightUrl: `${config.publicOrigin}/api/agent/preflight`,
     registerMcpTools: (server, principal) => {
       registerRunIntentMcpTools(server, principal, runServiceDependencies);
@@ -523,8 +588,14 @@ async function start() {
   };
   registerAgentRoutes(app, agentRouteDependencies);
 
+  registerParticipantCabinetRoutes(app, {
+    db, cabinetCursorSecret: config.authSecret, rateLimit, rateLimitMax: config.authRateLimitMax,
+    resolveOwner: async (request) => ({ owner: (await ownerFor(await authenticated(request))).owner })
+  });
+
   registerRunRoutes(app, {
     ...runServiceDependencies,
+    cabinetCursorSecret: config.authSecret,
     publicOrigin: config.publicOrigin,
     agentRequestHosts: allowedAgentRequestHosts(config),
     agentRateLimitMax: config.agentPreflightRateLimitMax,
@@ -642,11 +713,14 @@ async function start() {
   }));
 
   app.get("/api/identity/connection-profile", async (_request, reply) => reply.send({
+    transportProfile: config.mcpTransportProfile,
+    scopes: connectionOAuthScopes(config),
+    renewableOAuthAvailable: config.mcpTransportProfile === 'remote-oauth-v1',
     protocolVersion: config.betaManifest ? undefined : "2026-07-28",
-    protocolVersions: config.betaManifest ? [...new Set(config.betaManifest.clients.filter((profile) => profile.enabled)
+    protocolVersions: config.mcpTransportProfile === 'remote-oauth-v1' ? [...REMOTE_MCP_PROTOCOLS] : config.betaManifest ? [...new Set(config.betaManifest.clients.filter((profile) => profile.enabled)
       .flatMap((profile) => profile.protocolVersions))] : ["2026-07-28"],
     serverUrl: `${config.publicOrigin}/api/agent/mcp`,
-    resource: `${config.publicOrigin}/api/agent`,
+    resource: agentOAuthResource(config),
     issuer: `${config.publicOrigin}/api/auth`,
     clientId: config.betaManifest ? (config.mcpClientRegistry?.length === 1 ? config.mcpClientRegistry[0]?.clientId ?? null : null) : config.mcpClientId,
     redirectUri: config.betaManifest ? (config.mcpClientRegistry?.length === 1 ? config.mcpClientRegistry[0]?.redirectUris[0] ?? null : null) : config.mcpClientRedirectUri,
@@ -660,15 +734,27 @@ async function start() {
     authorizationEndpointUrl: `${config.publicOrigin}/api/auth/oauth2/authorize`,
     tokenEndpointUrl: `${config.publicOrigin}/api/auth/oauth2/token`,
     authorizationServerMetadataUrl: `${config.publicOrigin}/.well-known/oauth-authorization-server/api/auth`,
-    protectedResourceMetadataUrl: `${config.publicOrigin}/.well-known/oauth-protected-resource/api/agent`
+    protectedResourceMetadataUrl: `${config.publicOrigin}/.well-known/oauth-protected-resource/api/agent${config.mcpTransportProfile === 'remote-oauth-v1' ? '/mcp' : ''}`
   }));
 
   app.get("/.well-known/oauth-protected-resource/api/agent", async (_request, reply) => reply.send({
-    resource: `${config.publicOrigin}/api/agent`,
+    resource: agentOAuthResource(config),
     authorization_servers: [`${config.publicOrigin}/api/auth`],
-    scopes_supported: ["agent:operate"],
+    scopes_supported: config.mcpTransportProfile === 'remote-oauth-v1' ? ["agent:operate", "offline_access"] : ["agent:operate"],
     bearer_methods_supported: ["header"]
   }));
+
+  // AICODE-NOTE: A native OAuth client can discover this URL directly from the
+  // canonical MCP endpoint without first receiving a POST authentication challenge.
+  if (config.mcpTransportProfile === 'remote-oauth-v1') {
+    app.get("/.well-known/oauth-protected-resource/api/agent/mcp", async (_request, reply) =>
+      reply.header('Cache-Control', 'public, max-age=15').send({
+        resource: agentOAuthResource(config),
+        authorization_servers: [`${config.publicOrigin}/api/auth`],
+        scopes_supported: connectionOAuthScopes(config),
+        bearer_methods_supported: ['header']
+      }));
+  }
 
   app.get("/.well-known/oauth-authorization-server/api/auth", async (request, reply) => {
     const metadata = await auth.api.getOAuthServerConfig({
@@ -886,7 +972,9 @@ async function start() {
       const authRequest = new Request(`${config.publicOrigin}${request.url}`, { method: requestMethod, headers, ...(body === undefined ? {} : { body }) });
       authFlowResult = isSiwe && siweContextHash
         ? await withSiweRequest({ purpose: "signin", contextHash: siweContextHash }, () => auth.handler(authRequest))
-        : await auth.handler(authRequest);
+        : endpoint === "/api/auth/oauth2/token"
+          ? await handleConnectionTokenRequest(config, db, authRequest, (tokenRequest) => auth.handler(tokenRequest), invalidationStore)
+          : await auth.handler(authRequest);
       if (endpoint === "/api/auth/oauth2/token") authFlowResult = await auditOAuthCodeExchange(request, authFlowResult);
 
       let outputBody = Buffer.from(await authFlowResult.clone().arrayBuffer());
@@ -1361,6 +1449,7 @@ async function start() {
   }
 
   app.addHook("onClose", async () => {
+    await acceptanceMcpObserver?.close();
     runMaintenanceStopped = true;
     if (runMaintenanceTimer) {
       clearTimeout(runMaintenanceTimer);

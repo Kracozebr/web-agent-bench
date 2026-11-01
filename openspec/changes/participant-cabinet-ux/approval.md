@@ -11,7 +11,7 @@ This supersedes the 30 October planning-only boundary. Commit/push of the five r
 ## Agreed product decisions
 
 - The participant's own native agent/model solves tasks; the platform supplies tools, isolated environment and verification.
-- A user-launched installer automatically configures the selected client. Manual configuration instructions do not satisfy the normal setup requirement.
+- Latest owner instruction on 2026-10-31 supersedes the installer path: use native Remote MCP URL setup and OAuth; no downloadable installer or package. A native add link is optional only when officially verified; otherwise the URL fallback is explicit.
 - Normal connections renew automatically until explicit revocation/security invalidation; manual 24-hour keys are an advanced legacy path.
 - All twelve task-family descriptions, grading criteria, constraints and penalties are public. Exact Ranked cases, state fixtures and reference answers remain private; Training feedback is detailed and owner-private.
 - Google open signup; bonus-code claim afterwards; only internal bonus USDC and simulated environment, no deposits/withdrawals or cash substitution.
@@ -30,3 +30,10 @@ Timing measurement infrastructure is approved, but exact calibrated numerical ru
 ## Delivery and verification
 
 Use actual browser controls through the running API/worker to independently verified durable PostgreSQL/BEF/file effects for user E2E. Native-client gates require the participant's actual model client. Preserve source/build/profile pins, paths/hashes, unknown states, existing financial source/refund authority, revocation and unified backup/restore. Sync/archive only when the applicable approved mandatory gates really pass.
+## Current implementation authorization
+
+The owner explicitly requested agents to implement the UI according to the existing remarks/specification and new Remote MCP plan after the successful Training/Ranked E2E commit and push. This continues the approved PCU assertions and replaces installer wording with native Remote MCP URL/OAuth setup. Client-reported name/version remain unverified observations; stable authorization identity and last preflight do not prove current client health. All eight runtime gates remain not_run until actual evidence is independently replayed.
+
+## Signed history presentation reconciliation (2026-11-01)
+
+The current implementation instruction clarifies PCU-SC-002's `negative_refund_display` variant without changing accounting: `oid_ledger_entry.amount_units` remains strictly positive. Display direction derives from the authoritative entry type: debit is negative, refund is a positive credit, and reserve/release are explicitly holds rather than spending. The original positive magnitude, exact micro-USDC and entry type remain accessible. This is presentation within the approved formatting boundary; it does not authorize negative database rows, modified balances, changed prices or altered financial arithmetic. Actual tied debit/refund history fixtures and read-only fingerprints exercise the variant.

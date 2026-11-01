@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { migrateRankedRuns } from './task-ranked-run-migrate.js';
 import { loadConfig } from "./config.js";
+import { agentOAuthResource } from './agent-connection-profile.js';
 import { createDatabase } from "./db.js";
 import { migrateLedger } from "./ledger-migrate.js";
 import { migrateRuns } from "./run-migrate.js";
@@ -147,14 +148,14 @@ const statements = [
     access_generation integer NOT NULL CHECK (access_generation > 0),
     created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
-    revocation_reason text CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke','consent_denied')),
+    revocation_reason text CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke','consent_denied','owner_connection_revoke','refresh_replay')),
     CONSTRAINT oid_agent_access_grant_owner_agent_fk FOREIGN KEY(owner_id,agent_id)
       REFERENCES oid_agent(owner_id,id) ON DELETE CASCADE
   )`,
   `ALTER TABLE oid_agent_access_grant DROP CONSTRAINT IF EXISTS oid_agent_access_grant_source_check`,
   `ALTER TABLE oid_agent_access_grant ADD CONSTRAINT oid_agent_access_grant_source_check CHECK (source IN ('manual','oauth'))`,
   `ALTER TABLE oid_agent_access_grant DROP CONSTRAINT IF EXISTS oid_agent_access_grant_revocation_reason_check`,
-  `ALTER TABLE oid_agent_access_grant ADD CONSTRAINT oid_agent_access_grant_revocation_reason_check CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke','consent_denied'))`,
+  `ALTER TABLE oid_agent_access_grant ADD CONSTRAINT oid_agent_access_grant_revocation_reason_check CHECK (revocation_reason IS NULL OR revocation_reason IN ('replaced','owner_global_revoke','consent_denied','owner_connection_revoke','refresh_replay'))`,
   `ALTER TABLE oid_agent_access_grant ADD COLUMN IF NOT EXISTS oauth_client_id text`,
   `CREATE INDEX IF NOT EXISTS oid_agent_access_grant_agent_created_idx ON oid_agent_access_grant(agent_id,created_at)`,
   `CREATE INDEX IF NOT EXISTS oid_agent_access_grant_agent_generation_idx ON oid_agent_access_grant(agent_id,access_generation)`,
@@ -288,37 +289,49 @@ async function main() {
       await migrateRankedRuns(tx);
       await migrateBonusCodes(tx);
       await migrateReports(tx);
-      const resource = `${config.publicOrigin}/api/agent`;
+      const resource = agentOAuthResource(config);
+      const remoteResource = config.mcpTransportProfile === 'remote-oauth-v1';
+      const resourceDbId = remoteResource ? `oid-remote-resource-${createHash('sha256').update(resource).digest('hex').slice(0, 32)}` : 'oid-agent-resource-v1';
       const now = new Date().toISOString();
       await tx.unsafe(
         `INSERT INTO oid_oauth_resource(id,identifier,name,access_token_ttl,allowed_scopes,disabled,created_at,updated_at,policy_version)
-         VALUES ('oid-agent-resource-v1',$1,'Web3 Agent Bench agent resource',3600,ARRAY['agent:operate'],false,$2::timestamptz,$2::timestamptz,1)
-         ON CONFLICT (identifier) DO NOTHING`, [resource, now]
+         VALUES ($3,$1,'Web3 Agent Bench agent resource',3600,ARRAY['agent:operate'],false,$2::timestamptz,$2::timestamptz,1)
+         ON CONFLICT (identifier) DO NOTHING`, [resource, now, resourceDbId]
       );
       const resourceCheck = await tx.unsafe(
         "SELECT identifier FROM oid_oauth_resource WHERE identifier=$1 AND allowed_scopes @> ARRAY['agent:operate']::text[] AND disabled=false",
         [resource]
       );
       if (resourceCheck.length !== 1) throw new Error("The registered OAuth resource does not match the configured agent resource and scope");
+      if (config.mcpTransportProfile === 'remote-oauth-v1') {
+        await tx.unsafe("UPDATE oid_oauth_resource SET allowed_scopes=ARRAY['agent:operate','offline_access']::text[] WHERE identifier=$1", [resource]);
+      }
       for (const [index, registeredClient] of (config.mcpClientRegistry ?? []).entries()) {
         const clientHash = createHash("sha256").update(registeredClient.clientId).digest("hex").slice(0, 32);
         const clientDbId = config.betaManifest ? `oid-beta-mcp-${clientHash}` : index === 0 ? "oid-local-mcp-client-v1" : `oid-mcp-client-${clientHash}`;
-        const resourceLinkId = config.betaManifest ? `oid-beta-mcp-resource-${clientHash}` : index === 0 ? "oid-local-mcp-client-resource-v1" : `oid-mcp-resource-${clientHash}`;
+        const resourceLinkId = remoteResource ? `oid-remote-mcp-resource-${clientHash}` : config.betaManifest ? `oid-beta-mcp-resource-${clientHash}` : index === 0 ? "oid-local-mcp-client-resource-v1" : `oid-mcp-resource-${clientHash}`;
         await tx.unsafe(
           `INSERT INTO oid_oauth_client(
              id,client_id,disabled,skip_consent,subject_type,scopes,client_credentials_scopes,created_at,updated_at,name,
              redirect_uris,token_endpoint_auth_method,application_type,grant_types,response_types,require_pkce
-           ) VALUES ($1,$2,false,false,'public',ARRAY['agent:operate'],'{}',$5::timestamptz,$5::timestamptz,$3,
-             $4::text[],'none','native',ARRAY['authorization_code'],ARRAY['code'],true)
+           ) VALUES ($1,$2,false,false,'public',$7::text[],'{}',$5::timestamptz,$5::timestamptz,$3,
+             $4::text[],'none','native',$6::text[],ARRAY['code'],true)
            ON CONFLICT (client_id) DO NOTHING`, [clientDbId, registeredClient.clientId, registeredClient.clientName,
-            registeredClient.redirectUris, now]
+            registeredClient.redirectUris, now,
+            config.mcpTransportProfile === 'remote-oauth-v1' ? ['authorization_code', 'refresh_token'] : ['authorization_code'],
+            config.mcpTransportProfile === 'remote-oauth-v1' ? ['agent:operate', 'offline_access'] : ['agent:operate']]
         );
         const clientCheck = await tx.unsafe(
           `SELECT client_id FROM oid_oauth_client WHERE client_id=$1 AND redirect_uris=$2::text[]
-             AND scopes=ARRAY['agent:operate']::text[] AND require_pkce=true AND disabled=false`,
-          [registeredClient.clientId, registeredClient.redirectUris]
+             AND (scopes=ARRAY['agent:operate']::text[] OR ($3::boolean AND scopes=ARRAY['agent:operate','offline_access']::text[]))
+             AND require_pkce=true AND disabled=false AND token_endpoint_auth_method='none' AND client_secret IS NULL`,
+          [registeredClient.clientId, registeredClient.redirectUris, config.mcpTransportProfile === 'remote-oauth-v1']
         );
         if (clientCheck.length !== 1) throw new Error("A registered MCP client does not match its pinned callbacks, scope, and PKCE policy");
+        if (config.mcpTransportProfile === 'remote-oauth-v1') {
+          await tx.unsafe("UPDATE oid_oauth_client SET grant_types=ARRAY['authorization_code','refresh_token']::text[],scopes=ARRAY['agent:operate','offline_access']::text[] WHERE client_id=$1",
+            [registeredClient.clientId]);
+        }
         await tx.unsafe(
           `INSERT INTO oid_oauth_client_resource(id,client_id,resource_id,created_at)
            VALUES ($1,$2,$3,$4::timestamptz) ON CONFLICT (client_id,resource_id) DO NOTHING`,

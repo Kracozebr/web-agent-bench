@@ -378,6 +378,7 @@ export async function createSupportReport(
     const reportContext: Record<string, unknown> = {
       capturedAt: new Date().toISOString(),
       runContext: input.runId ? "linked" : "unavailable",
+      clientVersionSource: input.clientVersion ? `${actor.kind}_declared_unverified` : "unavailable",
       requestId: actor.requestId && /^[A-Za-z0-9_.:-]{1,128}$/.test(actor.requestId) ? actor.requestId : undefined,
       ...(links.run ? { runMode: links.run.mode, runStatus: links.run.status } : {})
     };

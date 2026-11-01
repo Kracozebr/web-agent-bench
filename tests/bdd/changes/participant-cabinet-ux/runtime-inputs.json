@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "pcu-runtime-inputs/v1",
+  "capture": {
+    "path": "artifacts/runs/participant-cabinet/1333879d-73d9-44d1-b001-71fb0190033f/participant-cabinet-capture.json",
+    "sha256": "f0298bbfe5e0356f573851915cab0cff3ad6738a3b303e900c2ea650fefe1027"
+  }
+}

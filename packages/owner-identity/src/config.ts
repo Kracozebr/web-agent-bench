@@ -25,7 +25,7 @@ export interface OwnerIdentityConfig {
   mcpClientId: string;
   mcpClientRedirectUri: string;
   mcpClientRegistry?: BetaMcpClientRegistration[];
-  mcpTransportProfile?: "strict-2026-07-28" | "codex-local-manual-2025-06-18" | "beta-remote-v1";
+  mcpTransportProfile?: "strict-2026-07-28" | "codex-local-manual-2025-06-18" | "beta-remote-v1" | "remote-oauth-v1";
   agentCredentialRateLimitMax: number;
   agentPreflightRateLimitMax: number;
   authRateLimitMax: number;
@@ -162,6 +162,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     throw new Error("OID_MCP_CLIENT_ID must be an 8-128 character fixed client identifier");
   }
   const mcpClientRedirectUri = configuredMcpClientRedirectUri ?? "http://127.0.0.1:38765/oauth/callback";
+  const remoteCallbackProfile = (optional(env, 'OID_MCP_TRANSPORT_PROFILE') ?? betaManifest?.transportProfileId) === 'remote-oauth-v1';
   let parsedMcpRedirect: URL;
   try {
     parsedMcpRedirect = new URL(mcpClientRedirectUri);
@@ -170,9 +171,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
   }
   if (parsedMcpRedirect.protocol !== "http:" || parsedMcpRedirect.hostname !== "127.0.0.1" ||
     parsedMcpRedirect.port.length === 0 || parsedMcpRedirect.username || parsedMcpRedirect.password ||
-    parsedMcpRedirect.search || parsedMcpRedirect.hash || parsedMcpRedirect.pathname !== "/oauth/callback" ||
+    parsedMcpRedirect.search || parsedMcpRedirect.hash ||
+    (remoteCallbackProfile
+      ? !/^\/[A-Za-z0-9._~/-]{1,255}$/.test(parsedMcpRedirect.pathname) || parsedMcpRedirect.pathname.split('/').slice(1).some(part => !part || part === '.' || part === '..')
+      : parsedMcpRedirect.pathname !== "/oauth/callback") ||
     parsedMcpRedirect.href !== mcpClientRedirectUri) {
-    throw new Error("OID_MCP_CLIENT_REDIRECT_URI must be an exact http://127.0.0.1:<port>/oauth/callback URI");
+    throw new Error(remoteCallbackProfile
+      ? "OID_MCP_CLIENT_REDIRECT_URI must be an exact permitted http://127.0.0.1:<port> callback URI"
+      : "OID_MCP_CLIENT_REDIRECT_URI must be an exact http://127.0.0.1:<port>/oauth/callback URI");
   }
 
   const googleClientId = optional(env, "OID_GOOGLE_CLIENT_ID");
@@ -259,9 +265,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     }
   }
   const configuredMcpTransportProfile = optional(env, "OID_MCP_TRANSPORT_PROFILE");
-  const mcpTransportProfile = configuredMcpTransportProfile ?? (betaManifest ? "beta-remote-v1" : "strict-2026-07-28");
+  const mcpTransportProfile = configuredMcpTransportProfile ?? betaManifest?.transportProfileId ?? "strict-2026-07-28";
   if (mcpTransportProfile !== "strict-2026-07-28" && mcpTransportProfile !== "codex-local-manual-2025-06-18" &&
-      mcpTransportProfile !== "beta-remote-v1") {
+      mcpTransportProfile !== "beta-remote-v1" && mcpTransportProfile !== "remote-oauth-v1") {
     throw new Error("OID_MCP_TRANSPORT_PROFILE is not a supported pinned profile");
   }
   if (mcpTransportProfile === "codex-local-manual-2025-06-18") {
@@ -282,7 +288,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OwnerIdentityC
     const betaCoordinatorConfigInsidePrivateData = betaCoordinatorConfigRelative !== "" && betaCoordinatorConfigRelative !== ".." &&
       !betaCoordinatorConfigRelative.startsWith(`..${sep}`) && !isAbsolute(betaCoordinatorConfigRelative);
     const closureStateOutsidePrivateData = isPathOutsideDirectory(privateDataDir, betaReportClosureStateFile);
-    if (nodeEnv !== "production" || mcpTransportProfile !== "beta-remote-v1" || localBefTaskCoordinatorEnabled ||
+    if (nodeEnv !== "production" || mcpTransportProfile !== betaManifest.transportProfileId || localBefTaskCoordinatorEnabled ||
         configuredMcpClientId || configuredMcpClientRedirectUri || !betaCoordinatorConfigInsidePrivateData ||
         !closureStateOutsidePrivateData ||
         !rawPrivateDataDir || !codeVerifierSecret || !googleClientId || !googleClientSecret || googleFixtureOrigin ||

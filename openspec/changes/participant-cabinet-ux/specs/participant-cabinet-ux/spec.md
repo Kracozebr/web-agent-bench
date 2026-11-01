@@ -68,9 +68,9 @@ Scenario setup: Verified administrator, ordinary owner, unauthenticated browser 
 - **THEN** only verified admin SHALL see the navigation and page; others SHALL receive uncached private-safe 404 pages and no administrative durable effect
 
 ### Requirement: PCU-REQ-008 Present connection management without manual credential clutter
-The primary Agents screen SHALL show selected client, verified connection state/time, permissions and revoke/reconnect controls. Installer/setup and automatic renewal SHALL replace the normal manual-key flow. Manual replacement SHALL remain an explicitly advanced destructive-to-old-credential action with safe one-time local delivery and no token echo into chat or logs.
+The primary Agents screen SHALL show selected client, verified connection state/time, permissions and revoke/reconnect controls. Remote MCP URL setup, OAuth authorization and automatic renewal SHALL replace the normal manual-key flow. Manual replacement SHALL remain an explicitly advanced destructive-to-old-credential action with safe one-time local delivery and no token echo into chat or logs.
 
-Scenario setup: Agent with installed client and optional legacy manual credential
+Scenario setup: Agent with a configured Remote MCP client and optional legacy manual credential
 
 #### Scenario: PCU-SC-008 Present connection management without manual credential clutter
 - **WHEN** the owner checks actual connection, reconnects or explicitly replaces an advanced credential and cancels midway

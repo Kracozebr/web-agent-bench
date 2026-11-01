@@ -136,7 +136,7 @@ export interface RunLaunchIntent {
   terminalReason: string | null;
 }
 
-export interface RunLaunchIntentsResponse { intents: RunLaunchIntent[] }
+export interface RunLaunchIntentsResponse { intents: RunLaunchIntent[]; nextCursor?: string | null }
 export interface RunLaunchIntentResponse { intent: RunLaunchIntent; replayed?: boolean }
 
 export interface OwnerRunProjection {
@@ -164,7 +164,7 @@ export interface OwnerRunProjection {
   queueExpiryFencePending: boolean;
 }
 
-export interface OwnerRunsResponse { runs: OwnerRunProjection[] }
+export interface OwnerRunsResponse { runs: OwnerRunProjection[]; nextCursor?: string | null }
 export interface OwnerRunResponse { run: OwnerRunProjection; replayed: boolean }
 
 export interface IdentityConfig {
@@ -192,12 +192,14 @@ export interface InvitationRecord {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
+  readonly correlationId: string | undefined;
 
-  constructor(status: number, message: string, code?: string) {
+  constructor(status: number, message: string, code?: string, correlationId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.correlationId = correlationId;
   }
 }
 
@@ -254,6 +256,12 @@ const knownMessages: Record<string, string> = {
   BETA_STARTS_PAUSED: "New run starts are paused by the administrator. Retry after operations resume; no new run was started.",
   OPERATIONS_CONTROL_UNAVAILABLE: "Run starts are temporarily unavailable because the operations control could not be read. Retry after service recovers.",
   RELEASE_INVALID: "The active release failed server validation. Intent creation is disabled.",
+  HISTORY_CURSOR_INVALID: "This history cursor cannot be used for this account or list. Refresh the history to start again.",
+  INVALID_HISTORY_CURSOR: "This history cursor cannot be used for this account or list. Refresh the history to start again.",
+  INVALID_CURSOR: "This history cursor is invalid. Refresh the history to start again.",
+  DIAGNOSTICS_UNAVAILABLE: "Detailed feedback is available only for your own completed Training tasks.",
+  REMOTE_MCP_ORIGIN_UNAVAILABLE: "Remote MCP setup is unavailable on this host. Contact support before trying to connect.",
+  CONNECTION_NOT_FOUND: "This client authorization is unavailable. Refresh connections before trying again.",
 };
 
 function readCode(payload: unknown): string | undefined {
@@ -292,7 +300,9 @@ export async function apiRequest<T>(path: `/api/${string}`, init: RequestInit = 
       : response.status === 403
         ? knownMessages.FORBIDDEN
         : "The server did not confirm the request. Refresh the page before retrying.";
-    throw new ApiError(response.status, (code && knownMessages[code]) || fallback, code);
+    const reference = response.headers.get("x-request-id");
+    const correlationId = reference && /^[A-Za-z0-9_.:-]{1,128}$/.test(reference) ? reference : undefined;
+    throw new ApiError(response.status, (code && knownMessages[code]) || fallback, code, correlationId);
   }
 
   return payload as T;
@@ -309,7 +319,7 @@ export async function getCurrentOwner(): Promise<OwnerProjection | null> {
 }
 
 export function errorText(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
+  if (error instanceof ApiError) return `${error.message}${error.correlationId ? ` Support reference: ${error.correlationId}.` : ""}`;
   if (error instanceof Error && /user rejected|user denied|request rejected/i.test(error.message)) {
     return "The wallet request was declined. No sign-in or identity change was confirmed.";
   }

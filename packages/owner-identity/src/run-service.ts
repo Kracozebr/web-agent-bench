@@ -154,6 +154,7 @@ export interface RunView {
 export interface CreateLaunchIntentInput {
   ownerId: string;
   agentId: string;
+  selectedConnectionId?: string;
   mode: RunMode;
   taskIds: string[];
   cashCeiling: string;
@@ -192,7 +193,7 @@ export interface CancellationExecutor {
 
 type RunTransaction = Parameters<Parameters<OwnerDatabase["transaction"]>[0]>[0];
 
-interface DbIntentRow {
+export interface DbIntentRow {
   id: string; owner_id: string; agent_id: string; operation_id: string; payload_hash: string; mode: RunMode;
   task_ids: string[]; release_identity: string; benchmark_version: string; manifest_hash: string; benchmark_hash: string; policy_hash: string;
   successor_preparation_policy_version: string | null; successor_preparation_timeout_seconds: number | null;
@@ -203,7 +204,7 @@ interface DbIntentRow {
   run_started_at?: Date | string | null; run_cancellation_reason?: string | null;
 }
 
-interface DbRunRow {
+export interface DbRunRow {
   id: string; intent_id: string; owner_id: string; agent_id: string; mode: RunMode; task_ids: string[];
   release_identity: string; benchmark_version: string; manifest_hash: string; benchmark_hash: string; policy_hash: string;
   successor_preparation_policy_version: string | null; successor_preparation_timeout_seconds: number | null;
@@ -468,7 +469,7 @@ function parseRelease(release: RunAdmissionRelease | null, mode: RunMode): RunAd
   return release;
 }
 
-function runView(row: DbRunRow, cancellationEvidenceHash: string | null = null): RunView {
+export function runView(row: DbRunRow, cancellationEvidenceHash: string | null = null): RunView {
   return {
     id: row.id,
     intentId: row.intent_id,
@@ -516,7 +517,7 @@ async function selectIntent(tx: RunTransaction, intentId: string, ownerId?: stri
   return rowsFound[0] ?? null;
 }
 
-function intentView(row: DbIntentRow): RunIntentView {
+export function intentView(row: DbIntentRow): RunIntentView {
   const expired = row.status === "pending" && row.expired_by_clock === true;
   const status: RunIntentStatus = expired ? "expired" : row.status;
   return {
@@ -679,8 +680,10 @@ export async function createLaunchIntent(deps: RunServiceDependencies, input: Cr
     throw new HttpError(400, "INVALID_RELEASE_EXPECTATION", "Expected active release identity and manifest hash are required");
   }
   const expectedQuoteUnits = parseAmount(input.expectedQuotePrice, "expectedQuotePrice");
+  const selectedConnectionId = input.selectedConnectionId === undefined ? undefined : parseUuid(input.selectedConnectionId, 'selectedConnectionId');
   const hash = hashPayload({ action: "intent_create", agentId, mode, taskIds: input.taskIds, cashCeiling: formatUnits(cashCeilingUnits),
-    expectedReleaseIdentity, expectedManifestHash, expectedQuotePrice: formatUnits(expectedQuoteUnits) });
+    expectedReleaseIdentity, expectedManifestHash, expectedQuotePrice: formatUnits(expectedQuoteUnits),
+    ...(selectedConnectionId ? { selectedConnectionId } : {}) });
   const created = await deps.db.transaction(async (tx) => {
     await lockOperation(tx, ownerId, operationId);
     const replay = await existingOperation(tx, ownerId, operationId, "intent_create", hash, "owner");
@@ -694,6 +697,13 @@ export async function createLaunchIntent(deps: RunServiceDependencies, input: Cr
     await tx.execute(sql`SELECT pg_advisory_xact_lock(824731202, 21)`);
     const agent = await readAgent(tx, ownerId, agentId, true);
     if (agent.access_revoked_at) throw new HttpError(403, "AGENT_ACCESS_REVOKED", "The agent must be reauthorized before creating a run intent");
+    if (selectedConnectionId) {
+      const connection = await query<{ id: string }>(tx, sql`SELECT id FROM oid_agent_access_grant
+        WHERE id=${selectedConnectionId} AND owner_id=${ownerId} AND agent_id=${agentId} AND source='oauth'
+          AND role='agent' AND access_generation=${agent.access_generation}
+          AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE`);
+      if (connection.length !== 1) throw new HttpError(409, 'CONNECTION_UNAVAILABLE', 'Select an active OAuth connection for this agent');
+    }
     const permission = mode === "training" ? agent.training : agent.ranked;
     if (!permission) throw new HttpError(403, "MODE_NOT_AUTHORIZED", `The owner has not enabled ${mode} for this agent`);
 
@@ -742,6 +752,12 @@ export async function createLaunchIntent(deps: RunServiceDependencies, input: Cr
       ${cashCeilingUnits.toString()},${(await readFinancialPolicy(tx, ownerId, agentId)).revision},${agent.policy_revision},
       'pending',${now.toISOString()},${expiresAt.toISOString()}
     )`);
+    if (selectedConnectionId) {
+      // AICODE-NOTE: Grant referenceId is the stable connection, not a rotating access token. The owner operation lock creates one immutable binding atomically with the intent.
+      await tx.execute(sql`INSERT INTO oid_audit(id,event_type,operation_id,actor_owner_id,subject_owner_id,metadata,created_at)
+        VALUES (${randomUUID()},'agent.connection.intent_bound',${`connection-intent:${intentId}`},${ownerId},${ownerId},
+          ${JSON.stringify({ intentId, agentId, connectionId: selectedConnectionId })}::jsonb,${now.toISOString()})`);
+    }
     await tx.execute(sql`INSERT INTO oid_ledger_audit(id,event_type,operation_id,actor_owner_id,subject_owner_id,metadata,created_at)
       VALUES (${randomUUID()},'run_intent_created',${operationId},${ownerId},${ownerId},
         ${JSON.stringify({ intentId, agentId, mode, benchmarkVersion: release.benchmarkVersion, taskIds, quote: formatUnits(priceUnits) })}::jsonb,${now.toISOString()})`);
@@ -890,11 +906,19 @@ export async function acceptLaunchIntent(deps: RunServiceDependencies, input: Ac
     if (agent.access_revoked_at || agent.access_generation !== input.accessGeneration) {
       throw new HttpError(403, "AGENT_ACCESS_REVOKED", "The agent access was revoked or rotated after this request was issued");
     }
+    const bindings = await query<{ metadata: { connectionId?: string; agentId?: string } }>(tx, sql`
+      SELECT metadata FROM oid_audit WHERE event_type='agent.connection.intent_bound'
+        AND operation_id=${`connection-intent:${intentId}`} AND actor_owner_id=${ownerId}`);
+    if (bindings.length > 1 || (bindings.length === 1 &&
+        (bindings[0]!.metadata.agentId !== agentId || !input.verifiedGrant ||
+         bindings[0]!.metadata.connectionId !== input.verifiedGrant.id))) {
+      throw new HttpError(403, 'CONNECTION_INTENT_MISMATCH', 'This launch intent belongs to its selected authenticated connection');
+    }
     if (input.verifiedGrant) {
       const currentGrant = await query<{ id: string }>(tx, sql`SELECT id FROM oid_agent_access_grant
         WHERE id=${input.verifiedGrant.id} AND owner_id=${ownerId} AND agent_id=${agentId}
           AND resource=${input.verifiedGrant.resource} AND role='agent' AND access_generation=${input.accessGeneration}
-          AND revoked_at IS NULL AND expires_at>clock_timestamp()`);
+          AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE`);
       if (!currentGrant.length) throw new HttpError(403, "AGENT_ACCESS_REVOKED", "The resolved agent grant is no longer active");
     }
     if (!(intent.mode === "training" ? agent.training : agent.ranked)) {

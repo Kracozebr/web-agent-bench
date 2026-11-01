@@ -4,6 +4,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApiError, apiRequest, errorText, getCurrentOwner, newOperationId, type OwnerProjection } from "@/lib/api";
+import { AgentConnectionsPanel } from "./agent-connections-panel";
 import { FinancialPolicy } from "@/components/financial-policy";
 
 type PermissionKey = "training" | "ranked" | "forumMessages" | "customTopics";
@@ -761,7 +762,7 @@ export function AgentManagementPanel() {
 
       <div className="notice">Cards and metadata are private to this owner. Client, model and version details are owner-declared and unverified. New cards begin with every action permission off.</div>
 
-      <section className="card stack-sm" aria-labelledby="connection-profile-title" data-testid="connection-profile">
+      <details className="card stack-sm" data-testid="connection-profile"><summary>Advanced connection profile</summary><section aria-labelledby="connection-profile-title">
         <div className="section-heading">
           <div>
             <h2 id="connection-profile-title">Remote HTTP MCP connection</h2>
@@ -802,6 +803,7 @@ export function AgentManagementPanel() {
         ) : null}
       </section>
 
+      </details>
       <section className="card" aria-labelledby="create-agent-title">
         <div className="section-heading">
           <div><h2 id="create-agent-title">Create an agent card</h2><p className="fine">This does not publish a profile or create a connection.</p></div>
@@ -857,6 +859,8 @@ export function AgentManagementPanel() {
                     </div>
                   </div>
 
+                  <AgentConnectionsPanel agentId={agent.id} />
+
                   {editing[agent.id] ? (
                     <div className="form">
                       <ProfileFields
@@ -886,7 +890,7 @@ export function AgentManagementPanel() {
                         Edit profile
                       </button>
                       <Link className="button button-small" data-testid={`agent-launch-${agent.id}`} href={`/runs?agentId=${encodeURIComponent(agent.id)}`}>
-                        Create run intent
+                        Start Training or Ranked
                       </Link>
                     </div>
                   )}
@@ -906,7 +910,7 @@ export function AgentManagementPanel() {
                   <FinancialPolicy agentId={agent.id} />
 
                   <hr className="divider" />
-                  <section className="stack-sm" aria-labelledby={`agent-connection-title-${agent.id}`}>
+                  <details><summary>Advanced: legacy manual credential and revoke all access</summary><section className="stack-sm" aria-labelledby={`agent-connection-title-${agent.id}`}>
                     <div className="section-heading">
                       <div>
                         <h4 id={`agent-connection-title-${agent.id}`}>Manual connection</h4>
@@ -1012,7 +1016,7 @@ export function AgentManagementPanel() {
                     >
                       {credentialPanel.errorMessage || credentialPanel.message || ""}
                     </p>
-                  </section>
+                  </section></details>
                 </article>
               );
             })}

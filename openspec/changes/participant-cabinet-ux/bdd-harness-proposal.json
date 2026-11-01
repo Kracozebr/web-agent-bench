@@ -1,10 +1,9 @@
 {
-  "schema_version": "beta-usability-bdd-proposal/v1",
-  "change": "participant-cabinet-ux",
-  "status": "approved_not_installed",
-  "approval": "approved_2026-10-31",
-  "execution_status": "not_run",
-  "scenarios": {
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "approved",
+  "normative_delta": "specs/participant-cabinet-ux/spec.md",
+  "note": "Approved scenario assertions unchanged; installed 2026-10-31. Remote URL OAuth supersedes installer wording under current owner instruction. Runtime not_run.",
+  "protected_scenarios": {
     "PCU-SC-001": {
       "requirement_id": "PCU-REQ-001",
       "title": "Expose honest priced launch actions",
@@ -32,11 +31,7 @@
         "no_cash_substitution_or_silent_reprice"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "PCU-SC-002": {
@@ -65,11 +60,7 @@
         "no_financial_write_from_formatting"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "PCU-SC-003": {
@@ -98,11 +89,7 @@
         "no_cross_owner_cache"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "PCU-SC-004": {
@@ -132,11 +119,7 @@
         "no_automatic_paid_retry"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "PCU-SC-005": {
@@ -171,11 +154,7 @@
         "no_score_or_refund_change"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "PCU-SC-006": {
@@ -209,11 +188,7 @@
         "existing_beta_ended_at_plus_30_utc_day_cleanup"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "PCU-SC-007": {
@@ -244,11 +219,7 @@
         "no_unauthorized_page_data_or_mutation"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     },
     "PCU-SC-008": {
@@ -259,7 +230,7 @@
       "named_mapper": "test_pcu_sc_008",
       "adapter": "participant_cabinet_ux",
       "boundary": "environment",
-      "boundary_detail": "owner_browser_installer_status_native_mcp_postgres",
+      "boundary_detail": "owner_browser_remote_mcp_status_native_client_postgres",
       "required_observations": [
         "main_vs_advanced_fields",
         "actual_connection_observation",
@@ -278,13 +249,9 @@
         "unchanged_caps_and_other_connections"
       ],
       "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
-      "allowed_private_calls": [
-        "isolated_fixture_setup_or_fault_injection",
-        "readonly_database_bef_filesystem_observation",
-        "internal_worker_delivery_only_for_worker_scenarios"
-      ],
+      "allowed_private_calls": [],
       "runtime_status": "not_run"
     }
-  }
+  },
+  "runtime_manifest": "tests/bdd/changes/participant-cabinet-ux/harness-contracts.json"
 }
-

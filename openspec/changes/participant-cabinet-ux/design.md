@@ -6,7 +6,7 @@ Proposed 2026-10-30 from the owner-approved direction and local inspection. The 
 
 **Goals:** Replace technical launch wording with Training/Ranked actions, explicit prices, payment source and compact expandable histories. Format money for humans without reducing ledger precision; make help accessible by pointer, keyboard and touch. Expose useful Training feedback and context-linked screenshot reports while preserving Ranked secrecy and owner isolation. Return 404 for non-admin administration pages, hide administration navigation, and replace internal readiness codes with safe explanations.
 
-**Non-Goals:** New financial arithmetic, prices or refund authority; a general trace/journal product; live Ranked coaching; changes to public eligibility; installer/refresh implementation; or weakening API authorization. All original beta target-host, Google, bonus, source-bound restore/recovery and native-client gates remain. No new code, Gherkin, mappers, registry entries, runtime profile or real-money actions are delivered by this draft.
+**Non-Goals:** New financial arithmetic, prices or refund authority; a general trace/journal product; live Ranked coaching; changes to public eligibility; Remote MCP setup/refresh implementation; or weakening API authorization. All original beta target-host, Google, bonus, source-bound restore/recovery and native-client gates remain. Implementation progress is recorded in tasks.md; structural installation and local checks do not establish runtime acceptance. No real-money actions are authorized.
 
 ## Decisions
 
@@ -28,7 +28,7 @@ Server page loading and role-bound header rendering must check verified subject/
 
 ### Cross-change authority
 
-Owns authenticated presentation and owner-context actions. ACI owns installer/refresh/handoff; BER owns execution truth; PBD owns anonymous publication; BTB owns timing policy.
+Owns authenticated presentation and owner-context actions. ACI owns Remote MCP setup/refresh/handoff; BER owns execution truth; PBD owns anonymous publication; BTB owns timing policy.
 
 Uses BER status taxonomy, ACI connection/handoff contract, PBD public route states and BTB phase labels. UI mocks alone do not establish any end-to-end gate.
 
@@ -36,7 +36,7 @@ The [integration index](../../../docs/beta-usability-spec-plan.md) lists active-
 
 ### Evidence and replay
 
-Every scenario uses its real boundary in [bdd-harness-proposal.json](bdd-harness-proposal.json), with named observations, negative variants and durable effects. Runtime evidence carries frozen source/build/profile, sanitized principal/run/operation identifiers, authoritative event order, raw artifact paths and hashes, and independent observer identity. User journeys start through actual browser controls, follow running API/worker and persist in PostgreSQL; independently inspect final database/BEF/filesystem effects. Installer scenarios require actual native configuration and model client boundaries, not browser mocks. Private setup/fault injection and read-only inspection are permitted only for their named roles. Never retain credentials, sensitive provider data or raw personal identities in checked-in evidence.
+Every scenario uses its real boundary in [bdd-harness-proposal.json](bdd-harness-proposal.json), with named observations, negative variants and durable effects. Runtime evidence carries frozen source/build/profile, sanitized principal/run/operation identifiers, authoritative event order, raw artifact paths and hashes, and independent observer identity. User journeys start through actual browser controls, follow running API/worker and persist in PostgreSQL; independently inspect final database/BEF/filesystem effects. Connection scenarios require actual native configuration and model client boundaries, not browser mocks. Private setup/fault injection and read-only inspection are permitted only for their named roles. Never retain credentials, sensitive provider data or raw personal identities in checked-in evidence.
 
 Replays are read-only and never repeat economic commands. A missing external client, host, observer or unexecuted negative is `blocked` or `not_run`, not a green reference-model substitute. Planning validation checks structure, not runtime acceptance.
 
@@ -60,3 +60,5 @@ Replays are read-only and never repeat economic commands. A missing external cli
 
 No unresolved product choice is inferred. Agreed decisions are recorded in approval.md. Technical prerequisites and later calibration/security profile choices are explicitly gated in the decisions/tasks; if inspection proves a required client cannot support safe automatic setup, return that concrete limitation for a scope decision instead of silently dropping it.
 
+
+Signed financial history uses the authoritative entry type for presentation only: debit is negative, refund a positive credit, reserve/release explicit holds. Raw ledger magnitudes stay positive and accessible with their type. See the 2026-11-01 reconciliation in approval.md; no storage constraint or accounting calculation is changed.

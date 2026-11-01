@@ -36,8 +36,10 @@ export function AuthComplete() {
         setError(true);
       } else if (owner.admissionStatus === "pending") {
         router.replace("/activate");
+        router.refresh();
       } else {
         router.replace("/account");
+        router.refresh();
       }
     }).catch((reason: unknown) => {
       if (!active) return;

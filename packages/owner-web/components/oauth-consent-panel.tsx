@@ -3,11 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest, errorText, newOperationId } from "@/lib/api";
 
+import { exactPolicyLimit, type ConsentFinancialPolicy } from "@/lib/consent-financial-policy";
+
 type PermissionKey = "training" | "ranked" | "forumMessages" | "customTopics";
 type PermissionSet = Record<PermissionKey, boolean>;
 
 interface OAuthConsentContext {
   flowId: string;
+  redirectUri: string;
   client: { clientId: string; name: string };
   resource: string;
   scopes: string[];
@@ -17,15 +20,12 @@ interface OAuthConsentContext {
     permissions: PermissionSet;
     policyRevision: number;
   };
+  financialPolicy?: ConsentFinancialPolicy;
   expiresAt: string;
 }
 
 interface OAuthConsentDecisionResponse {
   redirectUrl: string;
-}
-
-interface ConnectionProfileResponse {
-  redirectUri: string;
 }
 
 type PageState = "loading" | "ready" | "error";
@@ -98,17 +98,14 @@ export function OAuthConsentPanel() {
     }
 
     let active = true;
-    void Promise.all([
-      apiRequest<OAuthConsentContext>("/api/owner/agents/oauth-consent-context", {
+    void apiRequest<OAuthConsentContext>("/api/owner/agents/oauth-consent-context", {
         method: "POST",
         referrerPolicy: "no-referrer",
         body: JSON.stringify({ oauth_query: oauthQuery.current }),
-      }),
-      apiRequest<ConnectionProfileResponse>("/api/identity/connection-profile", { referrerPolicy: "no-referrer" }),
-    ]).then(([response, profile]) => {
+      }).then((response) => {
       if (!active) return;
       setContext(response);
-      setConfiguredRedirectUri(profile.redirectUri);
+      setConfiguredRedirectUri(response.redirectUri);
       setPageState("ready");
     }).catch((reason: unknown) => {
       if (!active) return;
@@ -200,11 +197,27 @@ export function OAuthConsentPanel() {
 
               <section aria-labelledby="oauth-consent-scopes-title">
                 <h3 id="oauth-consent-scopes-title">Requested scopes</h3>
+                {context.scopes.includes('offline_access') ? <p className="fine">Keep this connection authorized by automatic token renewal. Access tokens expire after one hour; the refresh inactivity window is 30 days. Revoke this connection here to stop future access. This does not enable any action permission or provide access to your model-provider account.</p> : null}
                 {context.scopes.length ? (
                   <ul className="oauth-consent-scopes" data-testid="oauth-consent-scopes">
                     {context.scopes.map((scope) => <li key={scope}><code>{scope}</code></li>)}
                   </ul>
                 ) : <p className="fine" data-testid="oauth-consent-scopes">No additional scopes requested.</p>}
+              </section>
+
+              <section aria-labelledby="oauth-consent-financial-title" data-testid="oauth-consent-financial-policy">
+                <h3 id="oauth-consent-financial-title">Current spending limits</h3>
+                {context.financialPolicy?.token === "USDC" && context.financialPolicy.precision === 6 ? <>
+                  <p className="fine" data-testid="oauth-consent-financial-source">Snapshot of the server's owner-managed agent policy, revision {context.financialPolicy.revision}. {context.financialPolicy.configured ? "Policy configured." : "No spending policy configured; the server reports fail-closed limits."}</p>
+                  <dl className="kv-list">
+                    <dt>Per operation</dt><dd data-testid="oauth-consent-operation-limit">{exactPolicyLimit(context.financialPolicy.operationLimit)}</dd>
+                    <dt>Per UTC day</dt><dd data-testid="oauth-consent-day-limit">{exactPolicyLimit(context.financialPolicy.utcDayLimit)}</dd>
+                    <dt>Benchmark category</dt><dd data-testid="oauth-consent-category-benchmark">{exactPolicyLimit(context.financialPolicy.categoryLimits.benchmark)}</dd>
+                    <dt>Forum category</dt><dd data-testid="oauth-consent-category-forum">{exactPolicyLimit(context.financialPolicy.categoryLimits.forum)}</dd>
+                    <dt>Cash shortfall</dt><dd data-testid="oauth-consent-cash-shortfall">{context.financialPolicy.allowCashShortfall ? "Allowed by the current owner policy" : "Not allowed by the current owner policy"}</dd>
+                  </dl>
+                </> : <p className="notice" data-testid="oauth-consent-financial-unavailable">Financial policy is unavailable. Review the current agent policy before authorizing.</p>}
+                <p className="notice">Approving this connection does not raise spending limits, enable cash shortfall, or add action permissions. This snapshot is not a spending authorization. The server checks the current owner policy on each operation; later changes take effect without another consent.</p>
               </section>
 
               <section aria-labelledby="oauth-consent-permissions-title">

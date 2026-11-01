@@ -137,7 +137,8 @@ test("report binding, deletion arrays, and UTC retention survive real PostgreSQL
           reportClosureState: closure };
         const ownOperation = randomUUID().replaceAll("-", "");
         const created = await createSupportReport(dependencies, { kind: "owner", ownerId, requestId: "pg-report-regression" }, {
-          operationId: ownOperation, title: "Isolated report binding regression", body: "Synthetic forced-rollback report.", imageUploadIds: [ownUploadId]
+          operationId: ownOperation, title: "Isolated report binding regression", body: "Synthetic forced-rollback report.", imageUploadIds: [ownUploadId],
+          clientVersion: "Synthetic declared client 1.0"
         });
         const createdReportId = String(created.report.id);
         assert.equal(created.replayed, false);
@@ -151,6 +152,8 @@ test("report binding, deletion arrays, and UTC retention survive real PostgreSQL
         jsonRoundTrip = persisted.safe_context.requestId === "pg-report-regression" && persisted.metadata.imageCount === 1;
         positiveBinding = persisted.status === "attached" && persisted.report_id === createdReportId;
         assert.equal(jsonRoundTrip, true, "raw JSON report context and audit metadata must round-trip through PostgreSQL");
+        assert.equal(persisted.safe_context.clientVersionSource, "owner_declared_unverified",
+          "a submitted client version must not become a verified client identity");
         assert.equal(positiveBinding, true, "the ready screenshot must attach to its own report principal");
 
         await outerTx.execute(sql`INSERT INTO oid_agent(id,owner_id,name,description) VALUES(

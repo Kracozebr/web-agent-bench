@@ -1,9 +1,10 @@
 import { isLoopbackHost, type OwnerIdentityConfig } from './config.js';
 import { HttpError } from './http-error.js';
+import { REMOTE_MCP_PROTOCOLS, remoteConnectionSetup } from './agent-connection-profile.js';
 
 const CODEX_PROFILE = 'codex-local-manual-2025-06-18';
 const LEGACY_METHODS = new Set(['initialize', 'notifications/initialized', 'ping', 'tools/list', 'tools/call']);
-type SelectedTransport = 'strict' | 'codex-local' | 'beta-remote';
+type SelectedTransport = 'strict' | 'codex-local' | 'beta-remote' | 'remote-oauth';
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -20,6 +21,29 @@ export function selectAgentMcpTransport(config: OwnerIdentityConfig, manualCrede
   const message = object(body);
   const method = typeof message.method === 'string' ? message.method : '';
   const legacy = message.jsonrpc === '2.0' && Boolean(method) && !headers['mcp-method'];
+
+  if (config.mcpTransportProfile === 'remote-oauth-v1') {
+    remoteConnectionSetup(config);
+    if (message.jsonrpc !== '2.0' || !method || !acceptsStreamableHttp(headers.accept)) {
+      throw new HttpError(400, 'MCP_STREAMABLE_HTTP_REQUIRED', 'Use Streamable HTTP JSON-RPC with JSON and SSE response support');
+    }
+    const params = object(message.params);
+    const offered = method === 'initialize' ? params.protocolVersion : headers['mcp-protocol-version'];
+    if (typeof offered !== 'string' || !REMOTE_MCP_PROTOCOLS.includes(offered as typeof REMOTE_MCP_PROTOCOLS[number])) {
+      throw new HttpError(400, 'UNSUPPORTED_MCP_PROTOCOL', `Supported protocols: ${REMOTE_MCP_PROTOCOLS.join(', ')}`);
+    }
+    if (headers['mcp-protocol-version'] !== undefined && headers['mcp-protocol-version'] !== offered) {
+      throw new HttpError(400, 'UNSUPPORTED_MCP_PROTOCOL', 'Initialize and request protocol versions must match');
+    }
+    if (offered === '2026-07-28' && (headers['mcp-method'] !== method ||
+        (method === 'tools/call' && headers['mcp-name'] !== params.name))) {
+      throw new HttpError(400, 'MCP_STREAMABLE_HTTP_REQUIRED', 'Modern protocol requests require matching MCP method/name headers');
+    }
+    if (offered === '2025-06-18' && (headers['mcp-method'] !== undefined || !LEGACY_METHODS.has(method))) {
+      throw new HttpError(400, 'UNSUPPORTED_MCP_METHOD', 'Unsupported legacy remote method or routing header');
+    }
+    return 'remote-oauth';
+  }
 
   if (config.mcpTransportProfile === 'beta-remote-v1') {
     const manifest = config.betaManifest;

@@ -243,6 +243,7 @@ export function FinancialPolicy({ agentId }: { agentId: string }) {
               disabled={busy || loading}
             />
           </label>
+          <details><summary>How do financial limits work?</summary><p>Caps are checked against exact micro-USDC amounts, including values smaller than a cent. Rounded balance displays do not change validation. The UTC day resets at midnight UTC; a saved limit applies only after server confirmation.</p></details>
           <div className="notice notice-warning">Bonuses count toward these full-price limits. A zero cap blocks use under that limit; select “No limit” explicitly to remove a cap. Every change takes effect only after Save.</div>
           <div className="financial-cap-grid">
             <CapField id={`financial-policy-operation-limit-${agentId}`} testId={`financial-policy-operation-limit-${agentId}`} label="Per operation" value={draft.operationLimit} disabled={busy || loading} onChange={(value) => updateDraft("operationLimit", value)} />

@@ -7,6 +7,7 @@ import { HttpError } from "./http-error.js";
 import { getCurrentAgentTask, type CurrentTaskDependencies } from "./task-issuance.js";
 import { admitTaskAction, finishTask, getTaskActionState, TaskActionCommandSchema } from "./task-action-service.js";
 import { getOwnerRunFeedback } from "./task-feedback.js";
+import { listParticipantRuns, listParticipantIntents, parseCabinetPageQuery } from './participant-cabinet-service.js';
 import {
   acceptLaunchIntent,
   cancelLaunchIntent,
@@ -24,6 +25,7 @@ export interface RunOwnerContext {
 }
 
 export interface RunRouteDependencies extends RunServiceDependencies {
+  cabinetCursorSecret?: string;
   taskReleaseSource?: CurrentTaskDependencies["taskReleaseSource"];
   db: OwnerDatabase;
   publicOrigin: string;
@@ -118,6 +120,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDependenci
   const createIntentBody = z.object({
     operationId: z.string().regex(/^[A-Za-z0-9_-]{12,128}$/),
     agentId: z.string().uuid(),
+    selectedConnectionId: z.string().uuid().optional(),
     mode: z.enum(["training", "ranked"]),
     taskIds: z.array(z.string().min(1).max(8)).min(1).max(12),
     cashCeiling: z.string().regex(/^(?:0|[1-9][0-9]{0,77})(?:\.[0-9]{1,6})?$/),
@@ -208,6 +211,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDependenci
       const result = await createLaunchIntent(deps, {
         ownerId: context.owner.id,
         agentId: body.agentId,
+        ...(body.selectedConnectionId ? { selectedConnectionId: body.selectedConnectionId } : {}),
         mode: body.mode,
         taskIds: body.taskIds,
         cashCeiling: body.cashCeiling,
@@ -225,6 +229,10 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDependenci
       await deps.rateLimit(request, "run-intents", deps.rateLimitMax);
       const context = await ownerContext(request, deps);
       const query = request.query as Record<string, unknown>;
+      if (query.limit !== undefined || query.cursor !== undefined) {
+        return reply.header('Cache-Control','private, no-store').send(await listParticipantIntents(deps.db,context.owner.id,
+          parseCabinetPageQuery(query,true),deps.cabinetCursorSecret));
+      }
       if (Object.keys(query).some((key) => key !== "agentId")) throw new HttpError(400, "INVALID_REQUEST", "The request contains unsupported query fields");
       const intents = await listLaunchIntents(deps.db, context.owner.id, typeof query.agentId === "string" ? uuid(query.agentId, "agentId") : undefined);
       return reply.header("Cache-Control", "no-store").send({ intents });
@@ -258,6 +266,12 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDependenci
     try {
       await deps.rateLimit(request, "runs", deps.rateLimitMax);
       const context = await ownerContext(request, deps);
+      const query = request.query as Record<string, unknown>;
+      if (query.limit !== undefined || query.cursor !== undefined) {
+        return reply.header('Cache-Control','private, no-store').send(await listParticipantRuns(deps.db,context.owner.id,
+          parseCabinetPageQuery(query),deps.cabinetCursorSecret));
+      }
+      if (Object.keys(query).length) throw new HttpError(400,'INVALID_REQUEST','The request contains unsupported query fields');
       const runs = await listOwnerRuns(deps.db, context.owner.id);
       return reply.header("Cache-Control", "no-store").send({ runs });
     } catch (error) { return sendError(reply, error); }

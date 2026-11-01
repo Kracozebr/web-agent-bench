@@ -10,6 +10,9 @@ import type { OwnerIdentityConfig } from "./config.js";
 import type { OwnerDatabase } from "./db.js";
 import { agentAccessGrants, agentOauthAuthorizations, agentProfiles, authSchema, owners, siweChallenges } from "./schema.js";
 import { and, eq, gt, isNull } from "drizzle-orm";
+import { CONNECTION_ACCESS_TTL_SECONDS, CONNECTION_GRANT_TTL_SECONDS, CONNECTION_REFRESH_RETRY_SECONDS, connectionOAuthScopes, agentOAuthResource } from './agent-connection-profile.js';
+import { currentVerifiedConnectionRefreshGrant } from './agent-connection-refresh.js';
+import { externalConnectionAllowed, type AgentConnectionInvalidationStore } from './agent-connection-invalidation-state.js';
 
 interface SiweRequestContext {
   purpose: "signin";
@@ -39,9 +42,9 @@ export function withOAuthSelection<T>(context: OAuthSelectionContext, fn: () => 
   return oauthSelectionContext.run(context, fn);
 }
 
-export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase) {
+export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase, invalidationStore?: AgentConnectionInvalidationStore) {
   const publicUrl = new URL(config.publicOrigin);
-  const agentResource = `${config.publicOrigin}/api/agent`;
+  const agentResource = agentOAuthResource(config);
   const issuer = `${config.publicOrigin}/api/auth`;
   const googleProvider = config.googleClientId && config.googleClientSecret
     ? google({ clientId: config.googleClientId, clientSecret: config.googleClientSecret, prompt: "select_account" }) : undefined;
@@ -93,15 +96,16 @@ export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase) {
     },
     plugins: [jwt({ jwt: { issuer, audience: agentResource } }), mcp({
       resource: agentResource,
-      scopes: ["agent:operate"],
+      scopes: connectionOAuthScopes(config),
       loginPage: "/owner/agents/oauth-select",
       consentPage: "/owner/agents/oauth-consent",
       allowUnauthenticatedClientRegistration: false,
       allowDynamicClientRegistration: false,
-      grantTypes: ["authorization_code"],
+      grantTypes: config.mcpTransportProfile === 'remote-oauth-v1' ? ["authorization_code", "refresh_token"] : ["authorization_code"],
       codeExpiresIn: 600,
-      accessTokenExpiresIn: 3600,
-      refreshTokenReuseInterval: 0,
+      accessTokenExpiresIn: CONNECTION_ACCESS_TTL_SECONDS,
+      refreshTokenExpiresIn: CONNECTION_GRANT_TTL_SECONDS,
+      refreshTokenReuseInterval: config.mcpTransportProfile === 'remote-oauth-v1' ? CONNECTION_REFRESH_RETRY_SECONDS : 0,
       postLogin: {
         page: "/owner/agents/oauth-select",
         shouldRedirect: ({ user, session, isContinuation }: { user: { id: string }; session: { id: string }; isContinuation: boolean }) => {
@@ -120,7 +124,9 @@ export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase) {
         if (!user?.id || !referenceId) throw new Error("OAuth token has no authenticated owner or agent grant reference");
         const grant = await db.query.agentAccessGrants.findFirst({ where: and(
           eq(agentAccessGrants.id, referenceId), eq(agentAccessGrants.source, "oauth"),
-          isNull(agentAccessGrants.revokedAt), gt(agentAccessGrants.expiresAt, new Date())
+          isNull(agentAccessGrants.revokedAt),
+          ...(config.mcpTransportProfile === 'remote-oauth-v1' && currentVerifiedConnectionRefreshGrant() === referenceId
+            ? [] : [gt(agentAccessGrants.expiresAt, new Date())])
         ) });
         if (!grant) throw new Error("OAuth agent grant is not active");
         const authorization = await db.query.agentOauthAuthorizations.findFirst({ where: and(
@@ -138,6 +144,11 @@ export function createAuth(config: OwnerIdentityConfig, db: OwnerDatabase) {
         if (!profile || !owner || owner.authUserId !== user.id || owner.admissionStatus !== "admitted" ||
           profile.ownerId !== grant.ownerId || profile.accessGeneration !== grant.accessGeneration || profile.accessRevokedAt) {
           throw new Error("OAuth agent grant owner or generation binding is no longer valid");
+        }
+        // The verified refresh wrapper has already checked the external state before recording its own in-flight consumption.
+        if (currentVerifiedConnectionRefreshGrant() !== grant.id && !(await externalConnectionAllowed(invalidationStore,
+          { ownerId: grant.ownerId, agentId: grant.agentId, grantId: grant.id, accessGeneration: grant.accessGeneration }, db))) {
+          throw new Error('OAuth connection invalidated by authoritative operator state');
         }
         return {
           oid_owner_id: grant.ownerId,

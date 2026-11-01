@@ -14,7 +14,7 @@ const links = [
   { href: "/admin", label: "Administration" },
 ];
 
-export function SiteHeader() {
+export function SiteHeader({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
 
   return (
@@ -27,7 +27,7 @@ export function SiteHeader() {
         </span>
       </Link>
       <nav className="topnav" aria-label="Owner navigation">
-        {links.map((link) => (
+        {links.filter((link) => link.href !== "/admin" || isAdmin).map((link) => (
           <Link
             key={link.href}
             href={link.href}
