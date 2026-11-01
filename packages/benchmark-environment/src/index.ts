@@ -23,6 +23,7 @@ function healthDocument(runtime: ApplicationRuntime) {
       anvil: environment.anvilIdentity,
       facilitator: {
         address: environment.facilitatorAddress,
+        ...(environment.paymentRecipient ? { paymentRecipient: environment.paymentRecipient } : {}),
         facilitatorNodeVersion: environment.facilitatorIdentity.facilitatorNodeVersion,
         facilitatorPackageVersion: environment.facilitatorIdentity.facilitatorPackageVersion,
         dependencyVersions: environment.facilitatorIdentity.dependencyVersions,

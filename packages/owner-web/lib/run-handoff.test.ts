@@ -24,6 +24,9 @@ test('handoff completes one admitted run through waiting and prevents duplicate 
     'A null task is not proof that the run ended','run.terminal === true', 'follow retryAfterMs',
     'runs.task_action_status for the original actionId','Do not resubmit an ambiguous payment',
     'separate pay and retrieve actions, not purchase','report it as unresolved',
+    'make one final runs.current_task read for the same runId',
+    'perform the automatic private report and receipt steps below before ending',
+    'do not invent a terminal status, platform attribution or report receipt',
     'Do not change these limits or create another intent or run','Never infer scores from payment confirmation'])
     assert(prompt.includes(clause),`Missing execution boundary: ${clause}`);
 });

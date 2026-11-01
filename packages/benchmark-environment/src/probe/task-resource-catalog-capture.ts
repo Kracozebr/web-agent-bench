@@ -1,3 +1,4 @@
+import { capturePaymentMetadata } from './payment-row-metadata.js';
 /** Real local-fork x402 captures for two pinned resources and a cross-resource replay denial. */
 import { randomUUID, createHash } from 'node:crypto';
 import pg from 'pg';
@@ -47,7 +48,7 @@ async function readDurableRows(ctx: ProbeContext, session: { envId: string; gene
                            selected_offer_id,selected_amount_units::text,selected_resource_id,selected_resource_sha256
                       FROM bef_operation WHERE env_id=$1 AND generation_id=$2::uuid AND operation_id=$3::uuid`,
         [session.envId, session.generationId, operationId]),
-      client.query(`SELECT payer_address,network,asset_address,amount_units::text,facilitator_address,
+      client.query(`SELECT payer_address,network,asset_address,amount_units::text,facilitator_address,to_jsonb(bef_payment) ->> $$payment_recipient$$ AS payment_recipient,
                            transaction_hash,receipt_status,token_delta_units::text,payer_balance_before::text,
                            payer_balance_after::text,facilitator_balance_before::text,facilitator_balance_after::text
                       FROM bef_payment WHERE env_id=$1 AND generation_id=$2::uuid AND operation_id=$3::uuid`,
@@ -66,7 +67,7 @@ async function readDurableRows(ctx: ProbeContext, session: { envId: string; gene
     if (databaseRole !== ctx.database.databaseRole || transactionReadOnly !== 'on') throw new Error('task_resource_catalog_database_not_readonly');
     const result = {
       operation: operation.rows[0] as Record<string, unknown> | undefined ?? null,
-      payment: payment.rows[0] as Record<string, unknown> | undefined ?? null,
+      payment: payment.rows[0] ? capturePaymentMetadata(payment.rows[0] as Record<string, unknown>) : null,
       delivery: delivery.rows[0] as Record<string, unknown> | undefined ?? null,
       generationCount: counts.rows[0]?.generation_count ?? '0',
       purchaseCount: counts.rows[0]?.purchase_count ?? '0',

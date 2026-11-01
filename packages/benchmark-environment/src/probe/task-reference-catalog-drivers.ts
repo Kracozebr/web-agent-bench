@@ -1,3 +1,5 @@
+import { capturePaymentMetadata } from './payment-row-metadata.js';
+import { settlementSignerAddress } from './payment-identities.js';
 /** Actual public-catalog reference captures for S3 and M2. */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -200,7 +202,7 @@ async function databaseFacts(ctx: ProbeContext, session: GenerationSession, labe
                            selected_offer_id,selected_amount_units::text,selected_resource_id,selected_resource_sha256
                       FROM bef_operation WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY started_at,operation_id`,
         [session.envId, session.generationId]),
-      client.query(`SELECT operation_id::text,payer_address,network,asset_address,amount_units::text,facilitator_address,
+      client.query(`SELECT operation_id::text,payer_address,network,asset_address,amount_units::text,facilitator_address,to_jsonb(bef_payment) ->> $$payment_recipient$$ AS payment_recipient,
                            transaction_hash,receipt_status,token_delta_units::text,payer_balance_before::text,payer_balance_after::text,
                            facilitator_balance_before::text,facilitator_balance_after::text
                       FROM bef_payment WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY observed_at,operation_id`,
@@ -243,7 +245,7 @@ async function databaseFacts(ctx: ProbeContext, session: GenerationSession, labe
         participantCosts: countRow.participant_costs,
       },
       operations: operations.rows as Array<Record<string, unknown>>,
-      payments: payments.rows as Array<Record<string, unknown>>,
+      payments: payments.rows.map(capturePaymentMetadata) as Array<Record<string, unknown>>,
       deliveries: deliveries.rows as Array<Record<string, unknown>>,
       transactionCosts: costs.rows as Array<Record<string, unknown>>,
     };
@@ -512,7 +514,7 @@ export async function captureM2MinimumPurchase(ctx: ProbeContext): Promise<Recor
     operationId: challenge.operationId, variantId, label: 'task-reference-m2-settlement-receipt',
   });
   if (receipt.status.toLowerCase() !== '0x1' || receipt.transactionHash.toLowerCase() !== settlement.transaction.toLowerCase()
-    || receipt.from.toLowerCase() !== catalogRead.projection.facilitatorAddress.toLowerCase()) {
+    || receipt.from.toLowerCase() !== settlementSignerAddress(ctx)) {
     throw new Error('task_reference_m2_receipt_sender_or_status_mismatch');
   }
   const payer = session.payerAddress.toLowerCase();
@@ -555,7 +557,8 @@ export async function captureM2MinimumPurchase(ctx: ProbeContext): Promise<Recor
     || operation.selected_offer_id !== offer.id || operation.selected_amount_units !== offer.amount
     || operation.selected_resource_id !== definition.resourceId || operation.selected_resource_sha256 !== definition.resourceSha256
     || !payment || payment.receipt_status !== 'success' || payment.amount_units !== offer.amount || payment.token_delta_units !== offer.amount
-    || String(payment.payer_address).toLowerCase() !== payer || String(payment.facilitator_address).toLowerCase() !== payee
+    || String(payment.payer_address).toLowerCase() !== payer || String(payment.facilitator_address).toLowerCase() !== settlementSignerAddress(ctx)
+    || String(payment.payment_recipient ?? payment.facilitator_address).toLowerCase() !== payee
     || String(payment.transaction_hash).toLowerCase() !== settlement.transaction.toLowerCase()
     || delivery?.resource_id !== definition.resourceId || delivery.content_sha256 !== definition.resourceSha256
     || Number(delivery.content_bytes) !== pinnedContent.bytes.byteLength
@@ -565,7 +568,7 @@ export async function captureM2MinimumPurchase(ctx: ProbeContext): Promise<Recor
     || finalFacts.counts.selectedExecutionEvents !== '0' || !costRow) {
     throw new Error('task_reference_m2_durable_effect_correlation_mismatch');
   }
-  const facilitatorGasCost = parseCost(costRow, settlement.transaction, payee, manifest);
+  const facilitatorGasCost = parseCost(costRow, settlement.transaction, settlementSignerAddress(ctx), manifest);
   if (facilitatorGasCost.receiptBlockNumber !== BigInt(receipt.blockNumber).toString()
     || facilitatorGasCost.receiptBlockHash !== ensureBlockHash(receipt.blockHash, 'receipt')) {
     throw new Error('task_reference_m2_cost_receipt_identity_mismatch');

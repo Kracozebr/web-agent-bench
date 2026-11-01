@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { referencePaymentIdentityMatches } from './task-reference-payment-identity.js';
 import { canonicalTaskJson } from './task-release.js';
 import { V2ReferenceError, v2Require, type V2Action, type V2Block, type V2Document,
   type V2GoalProof, type V2RawDocument, type V2ReferenceContext, type V2State } from './task-reference-evidence-v2-types.js';
@@ -390,7 +391,7 @@ function validatePaidDelivery(ctx: V2ReferenceContext, readAction: V2Action, pay
   const receipt = obj(ctx.receipt(txHash), 'v2_advanced_payment_receipt_missing');
   v2Require(lower(receipt.transactionHash) === txHash && lower(receipt.status) === '0x1'
     && lower(receipt.to) === lower(assetAddress(ctx, 'USDC', 'v2_advanced_usdc_asset_missing'))
-    && lower(receipt.from) === lower(terms.payTo), 'v2_advanced_payment_receipt_binding_invalid');
+    && ADDRESS.test(String(receipt.from)), 'v2_advanced_payment_receipt_binding_invalid');
   logTransfer(ctx, receipt, String(terms.asset), ctx.generation.payerAddress, String(terms.payTo), amount,
     'v2_advanced_payment_transfer_log_invalid');
   const paymentRow = requireSingleById(databaseRows(ctx, 'payments-by-operation', payAction.operationId), 'payment_id',
@@ -398,7 +399,8 @@ function validatePaidDelivery(ctx: V2ReferenceContext, readAction: V2Action, pay
   v2Require(paymentRow.operation_id === payAction.operationId && lower(paymentRow.env_id) === lower(ctx.generation.envId)
     && paymentRow.generation_id === ctx.generation.generationId && lower(paymentRow.payer_address) === lower(ctx.generation.payerAddress)
     && paymentRow.network === terms.network && lower(paymentRow.asset_address) === lower(terms.asset)
-    && String(paymentRow.amount_units) === amount.toString() && lower(paymentRow.facilitator_address) === lower(terms.payTo)
+    && String(paymentRow.amount_units) === amount.toString()
+    && referencePaymentIdentityMatches(paymentRow, terms.payTo, receipt.from, component)
     && lower(paymentRow.transaction_hash) === txHash && paymentRow.receipt_status === 'success'
     && String(paymentRow.token_delta_units) === amount.toString(), 'v2_advanced_payment_db_binding_invalid');
   const deliveries = requireSingleById(databaseRows(ctx, 'deliveries-by-operation', payAction.operationId), 'delivery_id',

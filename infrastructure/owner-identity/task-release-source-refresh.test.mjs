@@ -4,8 +4,10 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { join } from 'node:path';
 import test from 'node:test';
 import { TaskCaseSchema, sha256CanonicalTaskJson } from '../../packages/owner-identity/src/task-release.ts';
-import { APPROVED_REFRESH_BASELINE, assertIdentityPreserved, assertMigrationInventoryPreserved, assertSemanticCasePreserved,
+import { APPROVED_REFRESH_BASELINE, APPROVED_RESTART_PAYMENT_MIGRATION, assertIdentityPreserved, assertMigrationInventoryPreserved, assertSemanticCasePreserved,
   assertUniformCaptureSources, currentCaseKeys, parseRefreshProfile, readPinned, semanticCaseCore } from './task-release-source-refresh.mjs';
+import {U1_NATIVE_GAS_RECONCILIATION,assertRefreshSemanticCasePreserved} from './task-release-source-refresh.mjs';
+import {NATIVE_GAS_RECONCILIATION} from './task-release-source-refresh.mjs';
 
 const baseline = JSON.parse(await readFile(new URL(`../../${APPROVED_REFRESH_BASELINE.path}`, import.meta.url)));
 const rehash = (taskCase) => { const { caseHash: _old, ...core } = taskCase; return { ...core, caseHash: sha256CanonicalTaskJson(core) }; };
@@ -99,6 +101,54 @@ test('migration inventory rejects removed, added or modified migrations', () => 
   assert.throws(() => assertMigrationInventoryPreserved([...rows, {path:'infrastructure/benchmark-environment/migrations/999_added.sql',sha256:'1'.repeat(64)}], baseline.sourceInputs), /refresh_migrations_changed/);
   const modified = structuredClone(rows); modified[0].sha256 = 'f'.repeat(64);
   assert.throws(() => assertMigrationInventoryPreserved(modified, baseline.sourceInputs), /refresh_migrations_changed/);
+});
+
+test('restart payment v2 permits only the approved exact 011 addition and preserves all ten old migrations', () => {
+  const restart = {...profile, schemaVersion:'bts-source-refresh-profile/v2',reason:'restart_payment_identity',approvedMigrationAddition:APPROVED_RESTART_PAYMENT_MIGRATION};
+  parseRefreshProfile(restart);
+  const old = baseline.sourceInputs.filter(r=>/^infrastructure\/benchmark-environment\/migrations\/[0-9]{3}_[a-z0-9_]+\.sql$/.test(r.path));
+  const current=[...old, APPROVED_RESTART_PAYMENT_MIGRATION];
+  assertMigrationInventoryPreserved(current,baseline.sourceInputs,restart);
+  for(const changed of [old,current.slice(1),[...current,APPROVED_RESTART_PAYMENT_MIGRATION],
+    [...current,{path:'infrastructure/benchmark-environment/migrations/012_unapproved.sql',sha256:'1'.repeat(64)}],
+    current.map((r,i)=>i===0?{...r,sha256:'f'.repeat(64)}:r),
+    current.map(r=>r.path===APPROVED_RESTART_PAYMENT_MIGRATION.path?{...r,sha256:'f'.repeat(64)}:r)]) {
+    assert.throws(()=>assertMigrationInventoryPreserved(changed,baseline.sourceInputs,restart),/refresh_migrations_changed/);
+  }
+  assert.throws(()=>assertMigrationInventoryPreserved(current,baseline.sourceInputs,profile),/refresh_migrations_changed/);
+  assert.throws(()=>parseRefreshProfile({...profile,reason:'restart_payment_identity'}),/refresh_profile_contract_invalid/);
+  for(const changed of [{...restart,schemaVersion:'bts-source-refresh-profile/v1'},
+    {...restart,reason:'s2_public_identity_disclosure'},
+    {...restart,approvedMigrationAddition:{...APPROVED_RESTART_PAYMENT_MIGRATION,sha256:'f'.repeat(64)}},
+    {...restart,approvedMigrationAddition:{...APPROVED_RESTART_PAYMENT_MIGRATION,path:'infrastructure/benchmark-environment/migrations/012_other.sql'}},
+    {...restart,approvedMigrationAddition:{...APPROVED_RESTART_PAYMENT_MIGRATION,skip:true}}])assert.throws(()=>parseRefreshProfile(changed));
+});
+
+test('U1 gas reconciliation requires explicit v3 opt-in; v1/v2 and other tasks stay exact',async()=>{
+ const restart={...profile,schemaVersion:'bts-source-refresh-profile/v2',reason:'restart_payment_identity',approvedMigrationAddition:APPROVED_RESTART_PAYMENT_MIGRATION};
+ const fee={...restart,schemaVersion:'bts-source-refresh-profile/v3',u1NativeGasReconciliation:U1_NATIVE_GAS_RECONCILIATION};
+ parseRefreshProfile(fee);
+ const {u1NativeGasReconciliation,...missing}=fee;assert.throws(()=>parseRefreshProfile(missing));
+ for(const bad of [{...fee,u1NativeGasReconciliation:'skip_fees'},{...fee,schemaVersion:'bts-source-refresh-profile/v2'},{...fee,reason:'s2_public_identity_disclosure'}])assert.throws(()=>parseRefreshProfile(bad));
+ const old=approved('U1'),changed=structuredClone(old);changed.referencePath.finalStateSha256='f'.repeat(64);
+ for(const p of [profile,restart])await assert.rejects(assertRefreshSemanticCasePreserved('.',rehash(changed),old,{profile:p}),/refresh_semantic_case_changed/);
+ const s1=approved('S1'),bad=structuredClone(s1);bad.referencePath.finalStateSha256='f'.repeat(64);
+ await assert.rejects(assertRefreshSemanticCasePreserved('.',rehash(bad),s1,{profile:fee}),/refresh_semantic_case_changed/);
+ for(const mutate of [c=>{c.taskDeadlineSeconds+=1},c=>{c.taskWeight=2},c=>{c.initialState.balances[0].amountUnits='1'}]){
+  const next=structuredClone(changed);mutate(next);
+  await assert.rejects(assertRefreshSemanticCasePreserved('.',rehash(next),old,{profile:fee,sourceInputs:[]}),/refresh_semantic_case_changed/);
+ }
+});
+
+test('generic receipt gas requires explicit v4, with finite task scope and exact unchanged cases',async()=>{
+ const p={...profile,schemaVersion:'bts-source-refresh-profile/v4',reason:'restart_payment_identity',approvedMigrationAddition:APPROVED_RESTART_PAYMENT_MIGRATION,nativeGasReconciliation:NATIVE_GAS_RECONCILIATION};
+ parseRefreshProfile(p);
+ const {nativeGasReconciliation,...missing}=p;assert.throws(()=>parseRefreshProfile(missing));
+ for(const bad of [{...p,nativeGasReconciliation:'ignore_gas'},{...p,u1NativeGasReconciliation:U1_NATIVE_GAS_RECONCILIATION},{...p,schemaVersion:'bts-source-refresh-profile/v3'}])assert.throws(()=>parseRefreshProfile(bad));
+ for(const original of baseline.cases.filter(c=>currentCaseKeys().includes(`${c.taskId}:${c.mode}`)))assert.equal(await assertRefreshSemanticCasePreserved('.',original,original,{profile:p}),null);
+ const m3=approved('M3'),bad=structuredClone(m3);bad.referencePath.finalStateSha256='f'.repeat(64);
+ await assert.rejects(assertRefreshSemanticCasePreserved('.',rehash(bad),m3,{profile:{...profile,schemaVersion:'bts-source-refresh-profile/v3',reason:'restart_payment_identity',approvedMigrationAddition:APPROVED_RESTART_PAYMENT_MIGRATION,u1NativeGasReconciliation:U1_NATIVE_GAS_RECONCILIATION}}),/refresh_semantic_case_changed/);
+ const unknown={...m3,taskId:'FUTURE'};await assert.rejects(assertRefreshSemanticCasePreserved('.',unknown,unknown,{profile:p}),/scope/);
 });
 
 test('contained pinned reader rejects a symlink resolving outside the selected root', async () => {

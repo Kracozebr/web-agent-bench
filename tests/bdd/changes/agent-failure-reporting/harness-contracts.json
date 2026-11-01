@@ -101,9 +101,9 @@
   "spec_snapshot": {
     "requirements": 3,
     "scenarios": 3,
-    "normative_clauses": 19,
+    "normative_clauses": 22,
     "requirement_clause_counts": {
-      "AFR-REQ-001": 7,
+      "AFR-REQ-001": 10,
       "AFR-REQ-002": 5,
       "AFR-REQ-003": 7
     },

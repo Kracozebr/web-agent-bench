@@ -5,6 +5,22 @@ import json
 import pytest
 from tests.bdd.adapters.agent_failure_reporting import physical, negative_reports, verify_intent_binding
 
+def test_preparation_failure_reader_rejects_early_terminal_wrong_fault_scope_and_unknown_predecessor():
+    from copy import deepcopy
+    from tests.bdd.adapters.agent_failure_reporting import verify_preparation_failure
+    packet = {'runId':'synthetic-run', 'run':{'status':'cancelled','cancellation_reason':'coordinator_preparation_failed','finished_at':'2026-11-01T00:03:01Z'},
+      'fault':{'kind':'successor_preparation_unavailable','interventions':[{'runId':'synthetic-run','taskId':'M1','mode':'unavailable','responseStatus':503,'requestedAt':'2026-11-01T00:00:01Z'}]},
+      'successorFailure':{'run_id':'synthetic-run','status':'cancelled','cancellation_reason':'coordinator_preparation_failed','finished_at':'2026-11-01T00:03:01Z',
+        'predecessor_task_id':'S1','predecessor_status':'failed','predecessor_known':True,'predecessor_fenced':True,'predecessor_finished_at':'2026-11-01T00:00:00Z',
+        'successor_task_id':'M1','successor_started_at':None,'successor_preparations':0,'successor_preparation_timeout_seconds':180}}
+    verify_preparation_failure(packet)
+    for key,value in [('predecessor_known',False),('predecessor_fenced',False),('successor_preparations',1),('successor_started_at','2026-11-01T00:00:10Z'),('successor_preparation_timeout_seconds',3600)]:
+        changed=deepcopy(packet);changed['successorFailure'][key]=value
+        with pytest.raises(AssertionError): verify_preparation_failure(changed)
+    for key,value in [('runId','foreign-run'),('taskId','H1'),('responseStatus',200),('requestedAt','2026-10-31T23:59:59Z')]:
+        changed=deepcopy(packet);changed['fault']['interventions'][0][key]=value
+        with pytest.raises(AssertionError): verify_preparation_failure(changed)
+
 def reference(root, name, payload):
     path = root / name
     path.parent.mkdir(parents=True, exist_ok=True)

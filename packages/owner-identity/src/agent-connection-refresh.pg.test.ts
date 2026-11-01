@@ -40,6 +40,7 @@ test('remote refresh keeps one connection, survives response loss, slides inacti
   const admin = postgres(source.href, { max: 1 });
   const config = loadConfig({ ...process.env, NODE_ENV: 'test', OID_DATABASE_URL: target.href,
     OID_AUTH_SECRET: 'disposable-fixture-auth-secret-at-least-thirty-two-characters', OID_MCP_TRANSPORT_PROFILE: 'remote-oauth-v1',
+    OID_MCP_CLIENT_ID: 'oid-fixture-remote-mcp-client',
     OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: 'false', OID_PUBLIC_ORIGIN: 'http://127.0.0.1:3000' });
   const { client, db } = createDatabase(config);
   let app: FastifyInstance | undefined;
@@ -48,7 +49,8 @@ test('remote refresh keeps one connection, survives response loss, slides inacti
     await admin.unsafe(`CREATE DATABASE "${databaseName}" TEMPLATE template0`);
     const runMigration = (profile: string) => spawnSync(process.execPath, ['--import', './packages/owner-identity/node_modules/tsx/dist/loader.mjs', 'packages/owner-identity/src/migrate.ts'],
       { cwd: '/workspace', env: { ...process.env, NODE_ENV: 'test', OID_DATABASE_URL: target.href, OID_AUTH_SECRET: config.authSecret,
-        OID_MCP_TRANSPORT_PROFILE: profile, OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: 'false', OID_PUBLIC_ORIGIN: config.publicOrigin }, encoding: 'utf8', timeout: 60_000 });
+        OID_MCP_TRANSPORT_PROFILE: profile, OID_MCP_CLIENT_ID: profile === 'remote-oauth-v1' ? config.mcpClientId : 'oid-local-mcp-client',
+        OID_LOCAL_BEF_TASK_COORDINATOR_ENABLED: 'false', OID_PUBLIC_ORIGIN: config.publicOrigin }, encoding: 'utf8', timeout: 60_000 });
     const legacyMigration = runMigration('strict-2026-07-28');
     assert.equal(legacyMigration.status, 0, 'Initial legacy fixture migration must succeed');
     const migration = runMigration('remote-oauth-v1');

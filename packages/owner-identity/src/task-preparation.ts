@@ -823,6 +823,10 @@ export async function beginSuccessorTaskPreparation(
   target = normalizeTarget(target);
   if (target.taskIndex < 1) fail(400, 'INVALID_SUCCESSOR_TASK_INDEX', 'A successor task index must be at least one');
   await assertSuccessorPredecessorReplay(deps, target);
+  // AICODE-NOTE: Bound environment selection by the saved database-time window.
+  // An unavailable service must not hide expiry forever before any intent exists.
+  // Repeat the same full locked proof at insertion to retain the race fence.
+  await deps.db.transaction(async (tx) => { await lockAndValidateCurrent(tx, target); });
   return beginTaskPreparationInternal(deps, target);
 }
 

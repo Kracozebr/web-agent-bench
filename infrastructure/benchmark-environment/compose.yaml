@@ -273,6 +273,9 @@ services:
         - "fetch('http://127.0.0.1:8545/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
   facilitator-a:
+    env_file:
+      - path: .local/payment-recipient.env
+        required: false
     <<: *node-runtime
     command: ["node", "packages/benchmark-environment/dist/facilitator.js"]
     environment:
@@ -304,6 +307,9 @@ services:
         - "fetch('http://127.0.0.1:4021/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
   facilitator-b:
+    env_file:
+      - path: .local/payment-recipient.env
+        required: false
     <<: *node-runtime
     command: ["node", "packages/benchmark-environment/dist/facilitator.js"]
     environment:
@@ -353,6 +359,9 @@ services:
     pids_limit: 64
 
   api:
+    env_file:
+      - path: .local/payment-recipient.env
+        required: false
     <<: *node-runtime
     command: ["node", "packages/benchmark-environment/dist/index.js"]
     environment:

@@ -3,6 +3,9 @@ services:
   runtime:
     environment:
       OID_GOOGLE_LOCAL_EXECUTOR_ENABLED: "${OID_GOOGLE_LOCAL_EXECUTOR_ENABLED:-false}"
+      OID_GOOGLE_LOCAL_REMOTE_MCP_ENABLED: "${OID_GOOGLE_LOCAL_REMOTE_MCP_ENABLED:-false}"
+      OID_GOOGLE_LOCAL_INITIALIZE_REMOTE_AUTHORITY: "${OID_GOOGLE_LOCAL_INITIALIZE_REMOTE_AUTHORITY:-false}"
+      OID_GOOGLE_LOCAL_MCP_CALLBACK_URI: "${OID_GOOGLE_LOCAL_MCP_CALLBACK_URI:-http://127.0.0.1:38765/callback/fCivY4zmEDfx}"
       BEF_API_HOST_PORT: "${BEF_API_HOST_PORT:-38783}"
       BEF_DATABASE_HOST_PORT: "${BEF_DATABASE_HOST_PORT:-56432}"
       BEF_SOURCE_PROXY_HOST_PORT: "${BEF_SOURCE_PROXY_HOST_PORT:-18544}"
@@ -11,6 +14,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - google-local-data:/local-google-data
+      - google-local-agent-invalidation:/local-agent-invalidation
       - google-local-coordinator:/workspace/.local/owner-identity/coordinator-runtime
       - google-local-coordinator:/workspace/.local/owner-identity/secrets/coordinator-runtime
     secrets:
@@ -26,3 +30,4 @@ secrets:
 volumes:
   google-local-data:
   google-local-coordinator:
+  google-local-agent-invalidation:

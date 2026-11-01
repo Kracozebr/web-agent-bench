@@ -5,7 +5,7 @@ import { dirname } from 'node:path';
 import { buildProjection } from './assemble-difficulty-v2-candidates.mjs';
 import { TaskCaseSchema, canonicalTaskJson, sha256CanonicalTaskJson, taskCaseHash } from '../../packages/owner-identity/src/task-release.ts';
 import { sourceDigests } from '../../packages/benchmark-environment/src/probe/environment.ts';
-import { assertSemanticCasePreserved, demand, loadSourceRefreshProfile, readPinned, REFRESH_BOUNDARY,
+import { assertRefreshSemanticCasePreserved, demand, loadSourceRefreshProfile, readPinned, REFRESH_BOUNDARY,
   REFRESH_POLICY_PATH, safeRelative, sha, verifySourceRefreshCandidate } from './task-release-source-refresh.mjs';
 
 async function main() {
@@ -17,6 +17,8 @@ async function main() {
   const captureId = randomUUID(), outputPrefix = `artifacts/runs/bts-difficulty-v2-case-candidates/${captureId}`;
   const baselineByKey = new Map(context.baseline.cases.map((c) => [`${c.taskId}:${c.mode}`, c]));
   const refs = new Map(), evidenceFiles = [], cases = [];
+  let u1GasProof=null;
+  const nativeGasProofs={};
   function remember(ref) {
     demand(safeRelative(ref.path) && /^[0-9a-f]{64}$/.test(ref.sha256), 'refresh_source_pin_invalid');
     const prior = refs.get(ref.path);
@@ -84,10 +86,13 @@ async function main() {
       objective: projection.objective, referencePath: { ...baseline.referencePath, evidence: referenceEvidence,
         actionCount: probe.participantActionCount, initialStateSha256: initialHash, finalStateSha256: finalHash } };
     const next = TaskCaseSchema.parse({ ...nextCore, caseHash: taskCaseHash(nextCore) });
-    assertSemanticCasePreserved(next, baseline);
+    const feeProof=await assertRefreshSemanticCasePreserved('/workspace',next,baseline,context);
+    if(feeProof){if(context.profile.schemaVersion==='bts-source-refresh-profile/v4')nativeGasProofs[`${row.taskId}:${row.mode}`]=feeProof;else u1GasProof=feeProof;}
     cases.push(next);
   }
   const candidate = { schemaVersion: 'bts-difficulty-v2-case-candidates/v1',
+    ...(u1GasProof?{u1NativeGasReconciliation:u1GasProof}:{}),
+    ...(context.profile.schemaVersion==='bts-source-refresh-profile/v4'?{nativeGasReconciliationProofs:nativeGasProofs}:{}),
     classification: 'typed_case_candidates_not_validated_release', status: 'complete_inventory_candidates', captureId,
     executionIdentity: context.identity, executionIdentityHash: context.identityHash,
     participantToolProtocol: 'separate_payment_delivery_v2', sourceUnchanged: true,

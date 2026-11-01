@@ -53,6 +53,8 @@ const agentRunContinuityOptIn = process.argv.includes("--agent-run-continuity-on
 // AICODE-NOTE: PDC performs real deadline/payment negatives only in a fresh disposable local fixture.
 const paidDeliveryCutoffOptIn = process.argv.includes("--paid-delivery-cutoff-only");
 const agentFailureReportingOptIn = process.argv.includes('--agent-failure-reporting-only');
+const afrPreparationFailureOptIn = process.env.OID_AFR_SUCCESSOR_PREPARATION_FAILURE === '1';
+if (afrPreparationFailureOptIn && !agentFailureReportingOptIn) throw new Error('afr_preparation_fault_requires_reporting_capture');
 const participantClientOptIn = process.argv.includes('--participant-client-only');
 const participantCabinetOptIn = participantClientOptIn || process.argv.includes('--participant-cabinet-only');
 const agentClientConnectionOptIn = participantClientOptIn || process.argv.includes('--agent-client-connection-only');
@@ -115,6 +117,7 @@ let sourceInputsBeforeCheckpoint;
 let recoveryFaultProxy;
 let recoveryObserverProxy;
 let receiptFaultProxy;
+let successorHealthFaultProxy;
 let genuineArtifactWritten = false;
 let betaOperationsArtifactWritten = false;
 let pdcActiveProfile = 'training';
@@ -350,7 +353,12 @@ async function startRuntime() {
       recoveryObserverProxy = await startBetaRecoveryObserverProxy({ upstreamHost: "host.docker.internal",
         upstreamPort: Number(process.env.BEF_DATABASE_HOST_PORT || "55432") });
     }
-    if (berUnknownGradingOptIn || agentFailureReportingOptIn) {
+    if (afrPreparationFailureOptIn) {
+      successorHealthFaultProxy = await (await import('./successor-health-fault-proxy.mjs')).startSuccessorHealthFaultProxy({
+        upstreamOrigin: `http://host.docker.internal:${process.env.BEF_API_HOST_PORT || '8783'}`,
+      });
+    }
+    if (berUnknownGradingOptIn || (agentFailureReportingOptIn && !afrPreparationFailureOptIn)) {
       receiptFaultProxy = await (await import("./ber-unknown-receipt-proxy.mjs")).startBerUnknownReceiptProxy({
         upstreamOrigin: `http://host.docker.internal:${process.env.BEF_LOCAL_RPC_A_HOST_PORT || "18545"}`,
       });
@@ -359,7 +367,8 @@ async function startRuntime() {
       automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn,
       ...(platformRecoveryOptIn || combinedRestoreOptIn ? { apiBaseUrl: recoveryFaultProxy.origin,
         observerDatabase: { host: "127.0.0.1", port: recoveryObserverProxy.port } } : {}),
-      ...(berUnknownGradingOptIn || agentFailureReportingOptIn ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
+      ...(afrPreparationFailureOptIn ? { apiBaseUrl: successorHealthFaultProxy.origin } : {}),
+      ...(berUnknownGradingOptIn || (agentFailureReportingOptIn && !afrPreparationFailureOptIn) ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
   }
   requireLoopbackOrigin(publicOrigin, "OID_PUBLIC_ORIGIN");
   requireLoopbackOrigin(apiOrigin, "OID_ACCEPTANCE_API_ORIGIN");
@@ -1238,7 +1247,24 @@ async function main() {
       if (agentFailureReportingOptIn) {
         phase = 'agent_failure_reporting_native_same_handoff';
         const {runAgentFailureReportingOwnerCase} = await import('./agent-failure-reporting-cases.mjs');
-        const result = await runAgentFailureReportingOwnerCase({...genuineCaptureInput,receiptFaultProxy});
+        const preparationFailureControl = afrPreparationFailureOptIn ? {
+          arm(ctx) {
+            successorHealthFaultProxy.arm(async () => {
+              const rows = await ctx.readonlyQuery(`SELECT r.id AS run_id,p.finished_at FROM oid_benchmark_run r
+                JOIN oid_run_task p ON p.run_id=r.id AND p.task_index=0 AND p.task_id='S1' AND p.status IN ('completed','failed') AND p.closure_status='closed'
+                JOIN oid_run_task_evaluation e ON e.run_id=p.run_id AND e.task_index=p.task_index AND e.closure_id=p.closure_id AND e.result_json->>'status'='known'
+                JOIN oid_task_preparation_intent i ON i.run_id=p.run_id AND i.task_index=p.task_index
+                JOIN oid_task_environment_lease l ON l.preparation_id=i.preparation_id AND l.lease_id=i.lease_id AND l.state='fenced'
+                JOIN oid_run_task n ON n.run_id=r.id AND n.task_index=1 AND n.task_id='M1' AND n.status='queued' AND n.started_at IS NULL
+                WHERE r.intent_id=$1 AND r.owner_id=$2 AND r.agent_id=$3 AND r.status='running'`, [ctx.intentId,ctx.ownerId,ctx.agentId]);
+              if (rows.length !== 1 || !rows[0].finished_at) return null;
+              return {runId:rows[0].run_id,taskIndex:0,predecessorFinishedAt:new Date(rows[0].finished_at).toISOString()};
+            });
+          },
+          snapshot: () => successorHealthFaultProxy.snapshot(),
+          reset: () => successorHealthFaultProxy.reset(),
+        } : undefined;
+        const result = await runAgentFailureReportingOwnerCase({...genuineCaptureInput,receiptFaultProxy,preparationFailureControl});
         const sourceHashesAfter = await collectSourceHashes();
         const map = rows => Object.fromEntries(rows.map(row => [row.path,row.sha256]));
         const inputHashesBefore = map(sourceHashesBefore),inputHashesAfter = map(sourceHashesAfter);
@@ -1929,6 +1955,7 @@ async function main() {
     await recoveryFaultProxy?.close().catch(() => undefined);
     await recoveryObserverProxy?.close().catch(() => undefined);
     await receiptFaultProxy?.close().catch(() => undefined);
+    await successorHealthFaultProxy?.close().catch(() => undefined);
   }
 }
 

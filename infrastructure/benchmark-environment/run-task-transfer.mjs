@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, connect } from "node:net";
+import { capturePorts } from './capture-ports.mjs';
 
 if (process.platform !== "linux") throw new Error("Run this capture through the Docker runtime");
 const captureArguments = process.argv.slice(2);
@@ -21,7 +22,8 @@ const h3Capture = captureArguments[0] === "--h3";
 const u1Capture = captureArguments[0] === "--u1";
 const u1V2Capture = captureArguments[0] === "--u1-v2";
 const targetEnvironment = referenceCases || fee3000ReverseSwap || nativeTaskCases || u1Capture || u1V2Capture ? "bef-env-b" : "bef-env-a";
-const targetProxyPort = referenceCases || fee3000ReverseSwap || nativeTaskCases || u1Capture || u1V2Capture ? 28545 : 18545;
+const publishedRpcPorts = capturePorts(process.env);
+const targetProxyPort = targetEnvironment === 'bef-env-b' ? publishedRpcPorts.rpcB : publishedRpcPorts.rpcA;
 const apiHostPort = process.env.BEF_API_HOST_PORT ?? "8783";
 if (!/^[1-9][0-9]{0,4}$/.test(apiHostPort) || Number(apiHostPort) > 65535) {
   throw new Error("BEF_API_HOST_PORT must be a valid TCP port");
@@ -60,8 +62,8 @@ const environment = {
   BEF_ADMIN_KEY: await secret("admin-key"),
   BEF_SERVICE_KEY: await secret("service-key"),
   BEF_SOURCE_PROXY_URL: `http://${hostname}:18544`,
-  BEF_LOCAL_RPC_PROXY_URL_BEF_ENV_A: "http://127.0.0.1:18545",
-  BEF_LOCAL_RPC_PROXY_URL_BEF_ENV_B: referenceCases || fee3000ReverseSwap || nativeTaskCases || u1Capture || u1V2Capture ? "http://127.0.0.1:28545" : `http://${hostname}:28545`,
+  BEF_LOCAL_RPC_PROXY_URL_BEF_ENV_A: targetEnvironment === 'bef-env-a' ? `http://127.0.0.1:${publishedRpcPorts.rpcA}` : `http://${hostname}:${publishedRpcPorts.rpcA}`,
+  BEF_LOCAL_RPC_PROXY_URL_BEF_ENV_B: targetEnvironment === 'bef-env-b' ? `http://127.0.0.1:${publishedRpcPorts.rpcB}` : `http://${hostname}:${publishedRpcPorts.rpcB}`,
   BEF_FACILITATOR_URL_BEF_ENV_A: `http://${hostname}:34021`,
   BEF_FACILITATOR_URL_BEF_ENV_B: `http://${hostname}:44021`,
 };

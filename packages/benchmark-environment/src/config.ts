@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { parsePaymentRecipient } from './payment-recipient.js';
 
 function requiredUrl(name: string): URL {
   const raw = process.env[name];
@@ -44,6 +45,7 @@ const EnvId = z.string().regex(/^[a-z][a-z0-9-]{1,31}$/);
 const Port = z.coerce.number().int().min(1).max(65535);
 
 export type ApiRuntimeConfig = {
+  paymentRecipient?: import('viem').Address | undefined;
   port: number;
   bindAddress: string;
   adminKey: string;
@@ -82,10 +84,11 @@ export function readApiConfig(manifest: import('./manifest.js').RuntimeManifest)
       facilitatorUrl: internalHttpUrl(`BEF_FACILITATOR_URL_${suffix}`, facilitatorHost),
     };
   });
-  return { port, bindAddress, adminKey, serviceKey, databaseUrl, sourceProxyUrl, envs };
+  return { port, bindAddress, adminKey, serviceKey, databaseUrl, sourceProxyUrl, envs, paymentRecipient: parsePaymentRecipient(process.env.BEF_PAYMENT_RECIPIENT) };
 }
 
 export type FacilitatorRuntimeConfig = {
+  paymentRecipient?: import('viem').Address | undefined;
   port: number;
   bindAddress: string;
   envId: string;
@@ -99,6 +102,7 @@ export function readFacilitatorConfig(manifest: import('./manifest.js').RuntimeM
   if (!environment) throw new Error('BEF_ENV_ID is not declared in the pinned manifest');
   return {
     port: Port.parse(process.env.BEF_FACILITATOR_PORT ?? '4021'),
+    paymentRecipient: parsePaymentRecipient(process.env.BEF_PAYMENT_RECIPIENT),
     bindAddress: process.env.BEF_FACILITATOR_BIND ?? '0.0.0.0',
     envId,
     rpcUrl: internalHttpUrl('BEF_ANVIL_ADMIN_RPC_URL', environment.anvilHost),

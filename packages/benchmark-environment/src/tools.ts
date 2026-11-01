@@ -1,3 +1,4 @@
+import { paymentRecipient, durablePaymentRecipient } from './payment-recipient.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { FastifyAdapter } from '@x402/fastify';
@@ -144,7 +145,7 @@ function expectedPaymentTerms(runtime: ApplicationRuntime, auth: AuthorizedReque
     network: runtime.manifest.x402.network,
     asset: runtime.manifest.x402.asset,
     amount: selected.offer.amount,
-    payTo: auth.env.facilitatorAddress,
+    payTo: paymentRecipient(auth.env),
     transferMethod: runtime.manifest.x402.assetTransferMethod,
   };
 }
@@ -166,7 +167,7 @@ function catalogResponse(runtime: ApplicationRuntime, auth: AuthorizedRequest, o
           network: runtime.manifest.x402.network,
           asset: runtime.manifest.x402.asset,
           amount: candidate.amount,
-          payTo: auth.env.facilitatorAddress,
+          payTo: paymentRecipient(auth.env),
           transferMethod: runtime.manifest.x402.assetTransferMethod,
           ...pinnedPaymentIdentity(runtime.manifest),
         },
@@ -199,7 +200,7 @@ function offerResponse(runtime: ApplicationRuntime, auth: AuthorizedRequest, ope
       network: runtime.manifest.x402.network,
       asset: runtime.manifest.x402.asset,
       amount: resourceDefinition.offers[0]!.amount,
-      payTo: auth.env.facilitatorAddress,
+      payTo: paymentRecipient(auth.env),
       transferMethod: runtime.manifest.x402.assetTransferMethod,
           ...pinnedPaymentIdentity(runtime.manifest),
     },
@@ -210,7 +211,7 @@ function offerResponse(runtime: ApplicationRuntime, auth: AuthorizedRequest, ope
         network: runtime.manifest.x402.network,
         asset: runtime.manifest.x402.asset,
         amount: candidate.amount,
-        payTo: auth.env.facilitatorAddress,
+        payTo: paymentRecipient(auth.env),
         transferMethod: runtime.manifest.x402.assetTransferMethod,
           ...pinnedPaymentIdentity(runtime.manifest),
       },
@@ -318,6 +319,7 @@ async function reconcilePaymentResponse(
       asset_address: string;
       amount_units: string;
       facilitator_address: string | null;
+      payment_recipient: string | null;
       payment_transaction_hash: string | null;
       payment_receipt_status: string;
       token_delta_units: string | null;
@@ -336,7 +338,7 @@ async function reconcilePaymentResponse(
               g.resource_variant,g.payer_address AS generation_payer_address,
               p.authorization_sha256 AS payment_authorization_sha256,p.payer_address,p.network,p.asset_address,
               (SELECT x.safe_request #>> '{paymentRequirements,payTo}' FROM bef_x402_observation x WHERE x.operation_id=o.operation_id AND x.phase='settle' ORDER BY x.observed_at ASC LIMIT 1) AS original_requirements_pay_to,
-              p.amount_units,p.facilitator_address,p.transaction_hash AS payment_transaction_hash,
+              p.amount_units,p.facilitator_address,p.payment_recipient,p.transaction_hash AS payment_transaction_hash,
               p.receipt_status AS payment_receipt_status,p.token_delta_units,p.payer_balance_before,p.payer_balance_after,
               p.facilitator_balance_before,p.facilitator_balance_after
          FROM bef_operation o
@@ -378,7 +380,8 @@ async function reconcilePaymentResponse(
         && BigInt(proof.payer_balance_before) - BigInt(proof.payer_balance_after) === amount
         && BigInt(proof.facilitator_balance_after) - BigInt(proof.facilitator_balance_before) === amount;
     } catch { exactBalances = false; }
-    const valid = proof.operation_receipt_status === 'success' && proof.payment_receipt_status === 'success'
+    const retainedPayee = durablePaymentRecipient(proof);
+    const valid = retainedPayee !== null && proof.operation_receipt_status === 'success' && proof.payment_receipt_status === 'success'
       && typeof transactionHash === 'string' && /^0x[0-9a-f]{64}$/i.test(transactionHash)
       && proof.payment_transaction_hash?.toLowerCase() === transactionHash.toLowerCase()
       && typeof proof.operation_authorization_sha256 === 'string'
@@ -388,7 +391,7 @@ async function reconcilePaymentResponse(
       && proof.payer_address?.toLowerCase() === auth.payerAddress.toLowerCase()
       && typeof proof.facilitator_address === 'string' && /^0x[0-9a-f]{40}$/i.test(proof.facilitator_address)
       && typeof proof.original_requirements_pay_to === 'string' && /^0x[0-9a-f]{40}$/i.test(proof.original_requirements_pay_to)
-      && proof.facilitator_address.toLowerCase() === proof.original_requirements_pay_to.toLowerCase()
+      && retainedPayee === proof.original_requirements_pay_to.toLowerCase()
       && proof.network === runtime.manifest.x402.network
       && proof.asset_address.toLowerCase() === runtime.manifest.x402.asset.toLowerCase()
       && proof.amount_units === selectedAmount
@@ -400,7 +403,7 @@ async function reconcilePaymentResponse(
       amount: selectedAmount,
       asset: proof.asset_address,
       network: proof.network,
-      payTo: proof.facilitator_address!,
+      payTo: retainedPayee!,
     });
     if (expectedMode === 'deferred_delivery'
       && proof.operation_response_sha256?.trim().toLowerCase() !== responseSha256(receiptBody)) return null;
@@ -726,7 +729,7 @@ export async function registerToolRoutes(
 
     const payer = auth.payerAddress;
     const token = runtime.manifest.contracts.usdc.address as Address;
-    const payTo = auth.env.facilitatorAddress;
+    const payTo = paymentRecipient(auth.env);
     if (!pinnedOfferRequirementsMatch({
       scheme: runtime.manifest.x402.scheme,
       network: runtime.manifest.x402.network,

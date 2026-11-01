@@ -2,22 +2,22 @@
   "schemaVersion": "arc-runtime-inputs/v1",
   "captures": {
     "controlled": {
-      "path": "artifacts/runs/agent-run-continuity-controlled/396226a1-1f9e-47e2-866c-5f49d008b2f3/capture.json",
-      "sha256": "4cce5f20355455a4e5800d0b2edccdec349ea234b8ae94831bc4ce8fda50d4f2"
+      "path": "artifacts/runs/agent-run-continuity-controlled/8cd569dd-2113-4d68-8e9b-ac187d8081f7/capture.json",
+      "sha256": "97438f846ac8b365cc5bec0c566e87faa2cb3cc24c99e3371bd17aa5bcdb00b3"
     },
     "native": {
-      "path": "artifacts/runs/agent-run-continuity-native/396226a1-1f9e-47e2-866c-5f49d008b2f3/capture.json",
-      "sha256": "e6079626cbfe614e87cbd334b404523d71b75dd84bcf0e03d5be8243e6e5713a"
+      "path": "artifacts/runs/agent-run-continuity-native/8cd569dd-2113-4d68-8e9b-ac187d8081f7/capture.json",
+      "sha256": "c70f73e039da4e6931318d8e5ede5324bb521f3a0535f16045c4347e4a0a6a10"
     }
   },
   "negativeReports": [
     {
-      "path": "artifacts/runs/agent-run-continuity-validation/identity-negative-report.json",
-      "sha256": "84d44036fe875e445dc118956b610c5d32e15e351c98922826e5a82af9f158fe"
+      "path": "artifacts/runs/agent-run-continuity-validation/28f229b7-cecd-405e-a5ec-63ea2f7fdaa8/identity-negative-report.json",
+      "sha256": "046b9591455c98f55ba7ecda24dcd953d035aa11172c8f180d5648d37fba0a63"
     },
     {
-      "path": "artifacts/runs/agent-run-continuity-validation/handoff-negative-report.json",
-      "sha256": "2aa6f3535467ae14b3445eb6fc381ec78881f383f650407181c3c383958e73ae"
+      "path": "artifacts/runs/agent-run-continuity-validation/28f229b7-cecd-405e-a5ec-63ea2f7fdaa8/handoff-negative-report.json",
+      "sha256": "34deb7a7dfd09dda1e3bbe689a077d34fc1c24035c74ff88e83cad636e31a113"
     }
   ],
   "historicalPreservation": {

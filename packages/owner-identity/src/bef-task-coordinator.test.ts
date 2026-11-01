@@ -17,11 +17,22 @@ import { activeTaskNeedsCancellation, activeTaskNeedsCancellationAfterRecovery, 
   predecessorFinishedBeforeOriginalDeadline, successorFailureCancellationReason, parseLocalBefTaskCoordinatorConfig,
   isExpiredKnownRunGap,cancelExpiredKnownRunGaps,isExpiredClosedUngradedTask,cancelExpiredClosedUngradedTasks,
   closedTaskEvaluationRetryExpired,CLOSED_TASK_EVALUATION_RETRY_MS,isBoundedClosedObservationRetry,classifyClosedObservationRecovery,
-  parseBetaBefTaskCoordinatorConfig,
+  parseBetaBefTaskCoordinatorConfig, environmentPaymentRecipient,
   BETA_BEF_RUN_SERVICE_POLICY, LOCAL_BEF_RUN_SERVICE_POLICY, PostgresLocalCoordinatorLease, taskIndexFromFenceResult, cleanupFailedLocalBefTaskCoordinatorStartup,
   writeSafeEvidence, type CoordinatorReservedSql } from './bef-task-coordinator.js';
 import type { PreparedTaskStartPort, TaskPreparationRecord } from './task-preparation.js';
 import { sha256CanonicalTaskJson } from './task-release.js';
+
+test('environment selection uses the canonical payment recipient independently of the signer and rejects invalid advertised identity', () => {
+  const signer = '0x' + '1'.repeat(40), recipient = '0x' + 'A'.repeat(40);
+  assert.equal(environmentPaymentRecipient({ address: signer, paymentRecipient: recipient }), recipient.toLowerCase());
+  assert.equal(environmentPaymentRecipient({ address: signer }), signer);
+  for (const invalid of [null, undefined, '', 'invalid', '0x' + '0'.repeat(40), 7]) {
+    assert.equal(environmentPaymentRecipient({ address: signer, paymentRecipient: invalid }), null);
+  }
+  assert.equal(environmentPaymentRecipient({ address: '0x' + '0'.repeat(40) }), null);
+  assert.equal(environmentPaymentRecipient(null), null);
+});
 
 const policy = {
   manifestSha256: 'a'.repeat(64),

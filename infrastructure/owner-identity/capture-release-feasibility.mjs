@@ -18,9 +18,14 @@ if (pinArguments.length !== 0) {
   EXPECTED.manifestSha256 = pinArguments[1];
   EXPECTED.applicationSourceSha256 = pinArguments[3];
 }
+function localRpcPort(name, fallback) {
+  const value = process.env[name] ?? String(fallback);
+  if (!/^[1-9][0-9]{0,4}$/.test(value) || Number(value) > 65535) throw new Error('invalid_local_rpc_host_port');
+  return Number(value);
+}
 const ENVIRONMENTS = [
-  { envId: 'bef-env-a', proxyPort: 18545 },
-  { envId: 'bef-env-b', proxyPort: 28545 },
+  { envId: 'bef-env-a', proxyPort: localRpcPort('BEF_LOCAL_RPC_A_HOST_PORT', 18545) },
+  { envId: 'bef-env-b', proxyPort: localRpcPort('BEF_LOCAL_RPC_B_HOST_PORT', 28545) },
 ];
 const EXPECTED_LOCAL_API_PORT = '38783';
 const observerHostPort = process.env.BEF_DATABASE_OBSERVER_HOST_PORT ?? '55432';

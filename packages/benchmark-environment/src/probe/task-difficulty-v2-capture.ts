@@ -1,3 +1,4 @@
+import { settlementSignerAddress } from './payment-identities.js';
 /**
  * One-task, one-mode local-fork reference captures for the unactivated
  * difficulty-v2 case input profile. Captures are evidence, never scores.
@@ -261,7 +262,7 @@ function exactTermsFromRead(readOffers: readonly SplitReadOffer[], resourceId: s
 function actualFacilitatorAddress(ctx: ProbeContext): string {
   const services = record(ctx.capability.services);
   const facilitator = record(services?.facilitator);
-  const address = requiredString(facilitator?.address, 'facilitator_address').toLowerCase();
+  const address = requiredString(facilitator?.paymentRecipient ?? facilitator?.address, 'facilitator_address').toLowerCase();
   if (!ADDRESS.test(address)) throw new Error('task_difficulty_v2_facilitator_address_invalid');
   return address;
 }
@@ -370,7 +371,7 @@ async function captureM1(ctx: ProbeContext, mode: DifficultyMode, source: Diffic
     environment: sessionProjection(session),
     reference: {
       resourceId: selection.resourceId, offerId: selection.offerId, amountUsdcUnits: selection.amountUsdcUnits,
-      facilitatorAddress: facilitator,
+      facilitatorAddress: facilitator, settlementSignerAddress: settlementSignerAddress(ctx),
       inspection: { operationId: read.operationId, rawResponsePath: read.rawResponsePath, rawResponseSha256: read.rawResponseSha256 },
       payment: { operationId: paid.operationId, transactionHash: paid.transactionHash, receipt: paid.paymentReceipt,
         facilitatorGas: paid.facilitatorGas },
@@ -487,7 +488,7 @@ async function captureH1(ctx: ProbeContext, mode: DifficultyMode, source: Diffic
     countedParticipantActions: participantActions.length,
     participantActions,
     environment: sessionProjection(session),
-    facilitatorAddress: facilitator,
+    facilitatorAddress: facilitator, settlementSignerAddress: settlementSignerAddress(ctx),
     initialState,
     finalState,
     initialDatabaseCounts: {
@@ -531,7 +532,7 @@ async function captureH1(ctx: ProbeContext, mode: DifficultyMode, source: Diffic
     countedParticipantActions: participantActions.length,
     participantActions,
     environment: sessionProjection(session),
-    facilitatorAddress: facilitator,
+    facilitatorAddress: facilitator, settlementSignerAddress: settlementSignerAddress(ctx),
     initialState,
     finalState,
     initialDatabaseCounts: {

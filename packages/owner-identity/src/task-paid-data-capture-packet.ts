@@ -1,3 +1,4 @@
+import { capturePaymentRecipient } from './capture-payment-recipient.js';
 import { publicInspectionQuotesMatch, publicPaymentIdentity } from './task-public-payment-quote.js';
 import { createHash } from 'node:crypto';
 import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase } from './task-release.js';
@@ -147,6 +148,17 @@ export function validatePaidDataCapturePacket(value: unknown): PaidDataCapturePa
   const after = bef.after as Record<string, unknown>;
   const censusRows = (key: string): unknown[] | null => Array.isArray(after[key]) ? after[key] as unknown[] : null;
   const censusPayments = censusRows('payments'), censusDeliveries = censusRows('deliveries'), censusCosts = censusRows('costs');
+  if (!censusPayments || !censusDeliveries || !censusCosts) fail('PAID_DATA_PACKET_INVALID');
+  for (const payment of censusPayments) {
+    if (!isRecord(payment)) fail('PAID_DATA_PACKET_INVALID');
+    if (payment.payment_recipient !== undefined && payment.payment_recipient !== null &&
+        (typeof payment.payment_recipient !== 'string' || !/^0x[0-9a-f]{40}$/i.test(payment.payment_recipient))) fail('PAID_DATA_PACKET_INVALID');
+  }
+  for (const action of value.ownerActions as PaidDataAction[]) {
+    const protocol=action.paymentProtocol;
+    if(protocol && Object.hasOwn(protocol,'paymentRecipient') &&
+        (typeof protocol.paymentRecipient!=='string'||!/^0x[0-9a-f]{40}$/i.test(protocol.paymentRecipient))) fail('PAID_DATA_PACKET_INVALID');
+  }
   if (coverage.actionCutoffSequence !== cutoff || coverage.ownerActionCount !== cutoff ||
       coverage.paidActionCount !== value.ownerActions.length || !censusPayments || !censusDeliveries || !censusCosts ||
       coverage.befPaymentCount !== censusPayments.length || coverage.deliveryCount !== censusDeliveries.length ||
@@ -328,7 +340,9 @@ export function projectPaidDataObservationBundle(packetValue: unknown, context: 
     if (status === 'rejected') observations.coverage.payments = coverageStatus === 'contradictory' ? 'contradictory' : 'incomplete';
 
     const payer = typeof payment.payer_address === 'string' ? payment.payer_address.toLowerCase() : null;
-    const facilitator = typeof payment.facilitator_address === 'string' ? payment.facilitator_address.toLowerCase() : null;
+    let facilitator: string;
+    try { facilitator=capturePaymentRecipient(action.paymentProtocol??{},payment).toLowerCase(); } catch { fail('PAID_DATA_PACKET_INVALID'); }
+    if (facilitator !== String(requirements.payTo).toLowerCase()) fail('PAID_DATA_PACKET_INVALID');
     const beforePayer = payment.payer_balance_before, afterPayer = payment.payer_balance_after;
     const beforeFacilitator = payment.facilitator_balance_before, afterFacilitator = payment.facilitator_balance_after;
     if (payer && beforePayer !== undefined && afterPayer !== undefined && facilitator && beforeFacilitator !== undefined && afterFacilitator !== undefined && tx) {

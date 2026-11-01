@@ -1,3 +1,4 @@
+import { readPublicPaymentRecipient } from './public-payment-recipient.js';
 /**
  * Internal owner adapter for one BEF generation preparation.
  *
@@ -1474,7 +1475,8 @@ export class BefTaskPreparationAdapter implements TaskPreparationAdapter {
       if (requiredRecipient !== null) {
         const facilitator = object(environments[0]!.facilitator);
         if (!ADDRESS.test(requiredRecipient) || typeof facilitator?.address !== 'string' ||
-            !ADDRESS.test(facilitator.address) || facilitator.address.toLowerCase() !== requiredRecipient.toLowerCase()) {
+            !ADDRESS.test(facilitator.address) || /^0x0{40}$/i.test(facilitator.address) ||
+            readPublicPaymentRecipient(facilitator) !== requiredRecipient.toLowerCase()) {
           return await reject('facilitator_pin', 'pin_mismatch');
         }
       }

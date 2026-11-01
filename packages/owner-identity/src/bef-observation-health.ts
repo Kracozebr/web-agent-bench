@@ -19,7 +19,7 @@ export function observationHealthMatches(value: unknown, expected: {
   if (value === undefined) return true; // Older action documents omitted health.
   if (!record(value)) return false;
   const allowed = ['boundary', 'envId', 'manifestSha256', 'applicationSourceSha256',
-    'facilitatorAddress', 'anvil', 'sdkVersions'];
+    'facilitatorAddress', 'paymentRecipient', 'anvil', 'sdkVersions'];
   if (!Object.keys(value).every((key) => allowed.includes(key)) ||
       value.boundary !== 'benchmark-environment-api' ||
       typeof value.envId !== 'string' || value.envId !== expected.environmentId ||
@@ -27,6 +27,11 @@ export function observationHealthMatches(value: unknown, expected: {
       typeof value.applicationSourceSha256 !== 'string' || value.applicationSourceSha256 !== expected.applicationSourceSha256) return false;
   if (Object.hasOwn(value, 'facilitatorAddress') &&
       (typeof value.facilitatorAddress !== 'string' || !/^0x[0-9a-f]{40}$/i.test(value.facilitatorAddress))) return false;
+  // AICODE-NOTE: Public payee metadata is separate from the gas signer. An
+  // explicitly malformed field never becomes the legacy signer fallback.
+  if (Object.hasOwn(value, 'paymentRecipient') &&
+      (typeof value.paymentRecipient !== 'string' || !/^0x[0-9a-f]{40}$/i.test(value.paymentRecipient)
+        || /^0x0{40}$/i.test(value.paymentRecipient))) return false;
   if (Object.hasOwn(value, 'anvil') && !stringFields(value.anvil,
     ['clientVersion', 'chainId', 'executionNetwork', 'hardFork', 'forkBlockNumber', 'forkBlockHash'])) return false;
   return !Object.hasOwn(value, 'sdkVersions') || stringFields(value.sdkVersions, ['core', 'evm', 'viem']);

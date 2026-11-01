@@ -325,7 +325,7 @@ function rpcResult(url: URL, request: Record<string, unknown>, options: { baseli
 }
 
 function makeFetch(intent: TaskPreparationIntentPins, options: {
-  losePutReply?: boolean; baselineMismatch?: boolean; baselineMalformedAbiResult?: boolean; facilitatorAddress?: string;
+  losePutReply?: boolean; baselineMismatch?: boolean; baselineMalformedAbiResult?: boolean; facilitatorAddress?: string; paymentRecipient?: unknown;
   sourceHealthHttpStatuses?: Array<number | null>; localHealthHttpStatuses?: Array<number | null>; sourceHealthMalformedBody?: string;
   sourceHealthResponseVariant?: 'rpc_error' | 'correlation_invalid' | 'item_shape_invalid' | 'result_missing' | 'batch_shape_invalid';
   sourceRpcPinMismatch?: boolean;
@@ -353,7 +353,8 @@ function makeFetch(intent: TaskPreparationIntentPins, options: {
         environments: [{ envId: environmentId, anvil: {
           clientVersion: 'anvil/v1.8.6', chainId: '0x2105', executionNetwork: 'ethereum', hardFork: 'Prague',
           forkBlockNumber: '0x64', forkBlockHash,
-        }, facilitator: { address: options.facilitatorAddress ?? donorAddress } }],
+        }, facilitator: { address: options.facilitatorAddress ?? donorAddress,
+          ...(Object.hasOwn(options, 'paymentRecipient') ? { paymentRecipient: options.paymentRecipient } : {}) } }],
       });
     }
     if (url.pathname === '/healthz' && url.hostname === 'source.test') {
@@ -681,6 +682,25 @@ test('a case-pinned payment recipient must match the selected environment before
   const prepared = await matchingAdapter.prepare({ intent, dispatchId: 'dispatch-matching-payee-environment' });
   assert.equal(prepared.status, 'prepared');
   assert.equal(matchingEnvironment.putCount, 1);
+  const rotated = makeFetch(intent, { facilitatorAddress: `0x${'8'.repeat(40)}`, paymentRecipient: donorAddress });
+  const rotatedResult = await new BefTaskPreparationAdapter(testDependencies(release, rotated.fetch, []))
+    .prepare({ intent, dispatchId: 'dispatch-canonical-payee-rotated-signer' });
+  assert.equal(rotatedResult.status, 'prepared');
+  assert.equal(rotated.putCount, 1);
+  for (const facilitatorAddress of ['invalid', `0x${'0'.repeat(40)}`]) {
+    const invalid = makeFetch(intent, { facilitatorAddress, paymentRecipient: donorAddress });
+    const result = await new BefTaskPreparationAdapter(testDependencies(release, invalid.fetch, []))
+      .prepare({ intent, dispatchId: 'dispatch-invalid-gas-signer' });
+    assert.deepEqual(result, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
+    assert.equal(invalid.putCount, 0);
+  }
+  for (const paymentRecipient of [null, '', 'invalid', `0x${'0'.repeat(40)}`, `0x${'8'.repeat(40)}`]) {
+    const invalid = makeFetch(intent, { facilitatorAddress: donorAddress, paymentRecipient });
+    const result = await new BefTaskPreparationAdapter(testDependencies(release, invalid.fetch, []))
+      .prepare({ intent, dispatchId: 'dispatch-invalid-public-payee' });
+    assert.deepEqual(result, { status: 'unknown', reasonCode: 'preparation_identity_mismatch' });
+    assert.equal(invalid.putCount, 0, 'invalid advertised payee cannot fall back to matching gas signer');
+  }
 });
 
 test('preparation PUT HTTP503 preserves only the fixed producer fixture phase/class and never resends', async () => {

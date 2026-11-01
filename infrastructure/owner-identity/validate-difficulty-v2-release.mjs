@@ -11,7 +11,7 @@ import { TaskCaseSchema, TaskReleaseManifestSchema, canonicalTaskJson, sha256Can
   taskBenchmarkHash, taskPolicyHash, validateTaskReleaseCandidate } from '../../packages/owner-identity/src/task-release.ts';
 import { loadCurrentTaskReleaseInputPins, loadPinnedTaskReleaseInputPins }
   from './current-task-release-pins.mjs';
-import { assertSemanticCasePreserved, verifySourceRefreshCandidate } from './task-release-source-refresh.mjs';
+import { assertRefreshSemanticCasePreserved, verifySourceRefreshCandidate } from './task-release-source-refresh.mjs';
 
 const root = '/workspace';
 const POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
@@ -76,7 +76,7 @@ function currentCaseKeys() {
     ...CURRENT_TRAINING_TASK_IDS.map((taskId) => `${taskId}:training`)].sort(compare);
 }
 
-function caseInventory(candidateCases, manifest, frozenCandidate, refresh = null) {
+async function caseInventory(root, candidateCases, manifest, frozenCandidate, refresh = null) {
   demand(candidateCases.schemaVersion === 'bts-difficulty-v2-case-candidates/v1'
     && candidateCases.participantToolProtocol === 'separate_payment_delivery_v2'
     && Array.isArray(candidateCases.cases), 'case_candidate_contract_invalid');
@@ -88,7 +88,7 @@ function caseInventory(candidateCases, manifest, frozenCandidate, refresh = null
   demand(canonicalTaskJson([...keys].sort(compare)) === canonicalTaskJson(expectedKeys), 'case_candidate_inventory_mismatch');
   if (refresh) {
     const approved = new Map(refresh.baseline.cases.map((c) => [`${c.taskId}:${c.mode}`, c]));
-    for (const taskCase of parsedCases) assertSemanticCasePreserved(taskCase, approved.get(`${taskCase.taskId}:${taskCase.mode}`));
+    for (const taskCase of parsedCases) await assertRefreshSemanticCasePreserved(root, taskCase, approved.get(`${taskCase.taskId}:${taskCase.mode}`), refresh);
   } else {
   const frozenByKey = new Map(frozenCandidate.cases.map((taskCase) => [`${taskCase.taskId}:${taskCase.mode}`, taskCase]));
   demand(candidateCases.frozenCandidateBaseline?.path === FROZEN_CANDIDATE.path
@@ -188,7 +188,7 @@ async function main() {
     && taskBenchmarkHash(originalManifest) === originalManifest.benchmarkHash,
   'original_release_manifest_hash_mismatch');
   const refresh = casesCandidate.sourceRefreshProfile ? await verifySourceRefreshCandidate(root, casesCandidate) : null;
-  const parsedCases = caseInventory(casesCandidate, originalManifest, frozenCaseCandidate, refresh);
+  const parsedCases = await caseInventory(root, casesCandidate, originalManifest, frozenCaseCandidate, refresh);
   demand(minimumReview.candidate?.path === CASES.path && minimumReview.candidate?.sha256 === CASES.sha256
     && minimumReview.executionIdentityHash === originalManifest.executionIdentityHash,
   'minimum_review_candidate_or_identity_mismatch');

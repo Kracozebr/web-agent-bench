@@ -577,7 +577,7 @@ async function captureCensus(port: BefS3ReadOnlyPostgresPort, environmentId: str
         WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY event_sequence LIMIT ${MAX_ROWS + 1}`,
       [environmentId, generationId]));
       const paymentRows = pgRows(await query(`SELECT payment_id::text,operation_id::text,env_id,generation_id::text,payer_address,
-          network,asset_address,amount_units::text,facilitator_address,transaction_hash,receipt_status,token_delta_units::text,
+          network,asset_address,amount_units::text,facilitator_address,payment_recipient,transaction_hash,receipt_status,token_delta_units::text,
           observed_at::text FROM public.bef_payment WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY observed_at,payment_id LIMIT ${MAX_ROWS + 1}`,
       [environmentId, generationId]));
       const deliveryRows = pgRows(await query(`SELECT d.delivery_id::text,d.operation_id::text,o.env_id,o.generation_id::text,
@@ -617,7 +617,11 @@ async function captureCensus(port: BefS3ReadOnlyPostgresPort, environmentId: str
           'started_at', 'completed_at'])),
         selectedExecutions: selectedRows.map((row) => projection(row, ['operation_id', 'env_id', 'generation_id', 'action_kind', 'transaction_hash', 'outcome'])),
         selectedEvents: selectedEventRows.map((row) => projection(row, ['event_sequence', 'event_id', 'operation_id', 'env_id', 'generation_id', 'event_kind', 'transaction_hash', 'created_at'])),
-        payments: paymentRows.map((row) => projection(row, ['payment_id', 'operation_id', 'env_id', 'generation_id', 'payer_address', 'network', 'asset_address', 'amount_units', 'facilitator_address', 'transaction_hash', 'receipt_status', 'token_delta_units', 'observed_at'])),
+        payments: paymentRows.map((row) => ({
+          ...projection(row, ['payment_id', 'operation_id', 'env_id', 'generation_id', 'payer_address', 'network', 'asset_address', 'amount_units', 'facilitator_address', 'transaction_hash', 'receipt_status', 'token_delta_units', 'observed_at']),
+          // AICODE-NOTE: SQL NULL marks legacy captures; do not rewrite their sealed shape.
+          ...(row.payment_recipient == null ? {} : { payment_recipient: row.payment_recipient }),
+        })),
         deliveries: deliveryRows.map((row) => projection(row, ['delivery_id', 'operation_id', 'env_id', 'generation_id', 'resource_id', 'content_sha256', 'content_bytes', 'delivered_at'])),
         costs: costRows.map((row) => projection(row, ['operation_id', 'env_id', 'generation_id', 'transaction_hash', 'payer_address', 'payer_role', 'receipt_status', 'gas_used', 'effective_gas_price_wei', 'gas_cost_wei', 'manifest_sha256', 'created_at'])),
         denials: denialRows.map((row) => projection(row, ['denial_id', 'env_id', 'generation_id', 'operation_id', 'route', 'reason_code', 'request_sha256', 'protected_state_sha256', 'created_at'])),

@@ -92,12 +92,30 @@ def physical(reference, root=ROOT):
     need(not [x for x in requests if x['sequence'] > report_calls[0]['sequence'] and x['projection'].get('toolName') in {'runs.accept_launch_intent','runs.task_action','runs.finish_task'}], 'AFR reporting never restarts benchmark effects')
     retry = one([x for x in p['mcp'] if x['name'] == 'support.report'], 'AFR independently exercised unchanged retry')
     need(retry['body']['replayed'] is True and retry['body']['report']['id'] == report['id'], 'AFR durable report deduplication')
+    if p.get('failureBoundary') == 'successor_preparation_unavailable':
+        verify_preparation_failure(p)
+        return p
     fault = p['fault']; need(fault['interventions'], 'AFR actual observer failure injection')
     for intervention in fault['interventions']:
         need(intervention['runId'] == p['runId'] and intervention['taskId'] == 'H1' and intervention['mode'] == 'missing' and intervention['deliveredReceipt'] is None and int(intervention['originalReceipt']['status'], 16) == 1, 'AFR successful chain receipt withheld only from observer')
     h1 = one([x for x in p['failureTasks'] if x['task_id'] == 'H1'], 'AFR H1 failure task')
     need(not h1['evaluation_present'] and date(run['finished_at']) >= date(h1['evaluation_retry_deadline']) and (date(h1['evaluation_retry_deadline']) - date(h1['closed_at'])).total_seconds() == 180, 'AFR original 180-second unknown grace without invented grade')
     return p
+
+def verify_preparation_failure(p):
+    """Additional physical boundary; never reinterpret a missing chain receipt as this fault."""
+    run, fault, row = p['run'], p['fault'], p['successorFailure']
+    need(run['status'] == 'cancelled' and run['cancellation_reason'] == 'coordinator_preparation_failed', 'AFR bounded preparation terminal reason')
+    need(fault.get('kind') == 'successor_preparation_unavailable' and fault.get('interventions'), 'AFR actual preparation health fault')
+    need(row['run_id'] == p['runId'] and row['status'] == run['status'] and row['cancellation_reason'] == run['cancellation_reason'], 'AFR preparation PG binding')
+    need(row['predecessor_task_id'] == 'S1' and row['predecessor_status'] in {'completed','failed'} and row['predecessor_known'] is True and row['predecessor_fenced'] is True, 'AFR known fenced predecessor')
+    need(row['successor_task_id'] == 'M1' and row['successor_started_at'] is None and row['successor_preparations'] == 0, 'AFR unavailable successor never started')
+    seconds = row['successor_preparation_timeout_seconds']
+    need(isinstance(seconds, int) and 1 <= seconds <= 3600, 'AFR pinned preparation timeout')
+    need(date(row['finished_at']) == date(run['finished_at']) and (date(row['finished_at']) - date(row['predecessor_finished_at'])).total_seconds() >= seconds, 'AFR terminalization after pinned window')
+    for intervention in fault['interventions']:
+        need(intervention['runId'] == p['runId'] and intervention['taskId'] == 'M1' and intervention['mode'] == 'unavailable' and intervention['responseStatus'] == 503, 'AFR exact successor health fault')
+        need(date(row['predecessor_finished_at']) <= date(intervention['requestedAt']) <= date(run['finished_at']), 'AFR preparation fault timing')
 
 def negative_reports(inputs, root=ROOT):
     covered = set()

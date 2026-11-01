@@ -13,6 +13,10 @@ services:
       - "host.docker.internal:host-gateway"
     tmpfs:
       - "/workspace/.local/owner-identity:rw,noexec,nosuid,nodev,size=8m,mode=0700"
+    volumes:
+      # AICODE-NOTE: Keep credentials in tmpfs while exposing only the public,
+      # hash-validated current release pointer hidden by that parent mount.
+      - ../../.local/owner-identity/current-task-release.json:/workspace/.local/owner-identity/current-task-release.json:ro
     secrets:
       - bef_admin_key
       - bef_database_observer_password

@@ -11,7 +11,7 @@ const sourceBlockHash = 'b'.repeat(64);
 const forkBlockHash = `0x${'c'.repeat(64)}`;
 const facilitatorAddress = `0x${'1'.repeat(40)}`;
 
-function setup() {
+function setup(facilitator: Record<string, unknown> = { address: facilitatorAddress }) {
   let activeLease = false;
   let sourceHash = sourceBlockHash;
   const manifest = {
@@ -55,7 +55,7 @@ function setup() {
         applicationSourceSha256: manifest.release.applicationSourceSha256,
         environments: [{ envId: 'env1', anvil: { clientVersion: 'anvil/v1.3.0', chainId: 8453,
           executionNetwork: 'base', hardFork: 'cancun', forkBlockNumber: '100', forkBlockHash },
-          facilitator: { address: facilitatorAddress } }] }), { headers: { 'content-type': 'application/json' } });
+          facilitator }] }), { headers: { 'content-type': 'application/json' } });
     }
     throw new Error('unexpected_test_fetch_url');
   }) as typeof fetch;
@@ -88,4 +88,19 @@ test('beta readiness fails closed when the pinned source block observation chang
     state.manifest.release.manifestHash);
   assert.equal(result.ready, false);
   assert.equal(result.reason, 'beta_source_block_pin_mismatch');
+});
+
+test('beta readiness accepts a distinct public payee and rejects malformed advertised identity without signer fallback', async () => {
+  const state = setup({ address: facilitatorAddress, paymentRecipient: `0x${'2'.repeat(40)}` });
+  assert.equal((await state.provider.isPreparedForRelease(state.manifest.release.releaseIdentity, state.manifest.release.manifestHash)).ready, true);
+  for (const address of ['invalid', `0x${'0'.repeat(40)}`]) {
+    const invalid = setup({ address, paymentRecipient: `0x${'2'.repeat(40)}` });
+    assert.equal((await invalid.provider.isPreparedForRelease(invalid.manifest.release.releaseIdentity, invalid.manifest.release.manifestHash)).ready, false);
+  }
+  for (const paymentRecipient of [null, '', 'invalid', `0x${'0'.repeat(40)}`, 7]) {
+    const invalid = setup({ address: facilitatorAddress, paymentRecipient });
+    const result = await invalid.provider.isPreparedForRelease(invalid.manifest.release.releaseIdentity, invalid.manifest.release.manifestHash);
+    assert.equal(result.ready, false);
+    assert.equal(result.reason, 'beta_environment_execution_identity_mismatch');
+  }
 });

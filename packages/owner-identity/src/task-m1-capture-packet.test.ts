@@ -25,6 +25,25 @@ test('synthetic packet validates and parses without changing its canonical bytes
   assert.deepEqual(parseM1CapturePacket(bytes), packet);
 });
 
+test('canonical recipient stays pinned when a restarted facilitator uses another transaction signer',()=>{
+ const packet=validM1PaymentPacket(), signer=`0x${'a'.repeat(40)}`;
+ for(const action of packet.ownerActions){if(action.actionKind==='pay'&&action.paymentProtocol){action.paymentProtocol.paymentRecipient=action.paymentProtocol.facilitatorAddress;action.paymentProtocol.facilitatorAddress=signer;}}
+ for(const payment of packet.bef.after.payments){payment.payment_recipient=payment.facilitator_address;payment.facilitator_address=signer;}
+ for(const cost of packet.bef.after.costs){cost.payer_address=signer;cost.transaction_from=signer;cost.receipt_from=signer;}
+ packet.bef.before=structuredClone(packet.bef.after);
+ packet.bef.censusSha256=digest(Buffer.from(canonicalTaskJson(packet.bef.before)));
+ for(const proof of packet.rpc.paymentProofs as Record<string,any>[]){proof.transaction.from=signer;proof.receipt.from=signer;}
+ assert.doesNotThrow(()=>projectM1PacketObservations(packet,m1Context(packet)));
+ const substituted=structuredClone(packet);substituted.bef.after.payments[0]!.payment_recipient=signer;
+ assert.throws(()=>projectM1PacketObservations(substituted,m1Context(substituted)));
+ const wrongGas=structuredClone(packet),wrongSender=packet.bef.after.payments[0]!.payment_recipient;
+ (wrongGas.rpc.paymentProofs as Record<string,any>[])[0]!.transaction.from=wrongSender;
+ (wrongGas.rpc.paymentProofs as Record<string,any>[])[0]!.receipt.from=wrongSender;
+ wrongGas.bef.after.costs[0]!.payer_address=wrongSender;wrongGas.bef.after.costs[0]!.transaction_from=wrongSender;wrongGas.bef.after.costs[0]!.receipt_from=wrongSender;
+ wrongGas.bef.before=structuredClone(wrongGas.bef.after);wrongGas.bef.censusSha256=digest(Buffer.from(canonicalTaskJson(wrongGas.bef.before)));
+ assert.throws(()=>projectM1PacketObservations(wrongGas,m1Context(wrongGas)));
+});
+
 test('actual pinned public environment manifest bytes hash-bind and derive the first resource pin', () => {
   const manifestBytes = readFileSync(new URL('../../../infrastructure/benchmark-environment/manifest.json', import.meta.url));
   const expectedSha256 = digest(manifestBytes);

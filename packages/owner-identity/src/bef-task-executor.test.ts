@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   BefTaskExecutor,
+  paymentRecipientForHealth,
   classifyBefTaskActionResponse,
   classifyReadOnlyBefTaskActionResponse,
   classifySplitPayBefTaskActionResponse,
@@ -20,6 +21,14 @@ import { recordTaskActionReceipt, TaskActionCommandSchema } from './task-action-
 import type { TaskActionCommand } from './task-action-service.js';
 
 const operationId = 'bef_operation_0123456789';
+test('payment recipient is independent of the gas signer and invalid advertised identity cannot fall back', () => {
+  const signer = '0x' + '1'.repeat(40), recipient = '0x' + '2'.repeat(40);
+  assert.equal(paymentRecipientForHealth({ facilitatorAddress: signer, paymentRecipient: recipient }), recipient);
+  assert.equal(paymentRecipientForHealth({ facilitatorAddress: signer }), signer);
+  for (const value of [undefined, null, '', 'invalid', '0x' + '0'.repeat(40)]) {
+    assert.equal(paymentRecipientForHealth({ facilitatorAddress: signer, paymentRecipient: value as string }), null);
+  }
+});
 const txHash = `0x${'a'.repeat(64)}`;
 const response = {
   outcome: 'success', operationId,
@@ -258,7 +267,7 @@ function challengeResponse() {
   });
 }
 
-test('split pay sends one challenge and one signed POST to the same pinned pay operation without reading a fresh offer', async () => {
+test('split pay sends one pinned payment to the canonical recipient with an independently rotated gas signer', async () => {
   const calls: Array<{ url: URL; init: RequestInit }> = [];
   const result = await dispatchSplitPaymentRequest({
     fetch: async (input, init = {}) => {
@@ -272,11 +281,14 @@ test('split pay sends one challenge and one signed POST to the same pinned pay o
     command: splitPayCommand,
     reference: { kind: 'pay', readHandle: { kind: 'offer', operationId: readOperationId }, acceptedTerms },
     policy: x402Policy,
-    selected: { resource, offer: resource.offers[0]! }, health,
+    selected: { resource, offer: resource.offers[0]! }, health: { ...health,
+      facilitatorAddress: '0x' + '7'.repeat(40), paymentRecipient: payToAddress },
     idempotencyKey: 'task-action-501',
   });
 
   assert.equal(result.status, 'observed');
+  assert.equal(result.paymentProtocol?.paymentRecipient, payToAddress);
+  assert.equal(result.paymentProtocol?.facilitatorAddress, '0x' + '7'.repeat(40));
   assert.deepEqual(calls.map((call) => [call.init.method, call.url.pathname]), [
     ['POST', '/tools/test-env/pay'], ['POST', '/tools/test-env/pay'],
   ]);

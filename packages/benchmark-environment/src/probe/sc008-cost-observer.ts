@@ -1,3 +1,4 @@
+import { capturePaymentMetadata } from './payment-row-metadata.js';
 /**
  * SC-008 read-only DB driver. It binds one operation to generation,
  * payment, selected execution, and its durable cost row in one read-only
@@ -46,7 +47,7 @@ export async function observeSc008CostOperation(
       ),
       client.query(
         `SELECT operation_id::text,env_id,generation_id::text,payer_address,network,asset_address,
-                amount_units::text,facilitator_address,transaction_hash
+                amount_units::text,facilitator_address,to_jsonb(bef_payment) ->> $$payment_recipient$$ AS payment_recipient,transaction_hash
            FROM bef_payment
           WHERE env_id=$1 AND generation_id=$2 AND operation_id=$3::uuid`,
         [identity.envId, identity.generationId, identity.operationId],
@@ -90,7 +91,7 @@ export async function observeSc008CostOperation(
       rows: {
         operation: operation.rows,
         generation: generation.rows,
-        payment: payment.rows,
+        payment: payment.rows.map(capturePaymentMetadata),
         selectedExecution: selectedExecution.rows,
         cost: cost.rows,
       },

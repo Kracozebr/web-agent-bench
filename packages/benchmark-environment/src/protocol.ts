@@ -1,3 +1,4 @@
+import { paymentRecipient } from './payment-recipient.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { HTTPFacilitatorClient, x402HTTPResourceServer, x402ResourceServer } from '@x402/core/server';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
@@ -51,7 +52,7 @@ export async function createPaymentProtocol(
   const accepts = {
     scheme: manifest.x402.scheme,
     network: manifest.x402.network,
-    payTo: environment.facilitatorAddress,
+    payTo: paymentRecipient(environment),
     price: (context: { adapter: { getBody?: () => unknown } }) => {
       const body = context.adapter.getBody?.();
       const selected = selectedPinnedResourceOffer(manifest, body);

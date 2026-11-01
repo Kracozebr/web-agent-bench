@@ -9,12 +9,19 @@ import { executionIdentityFromManifest, schemaLineage } from '../../packages/own
 import { verifyRetainedTaskFeasibility } from '../../packages/owner-identity/src/task-feasibility-evidence.ts';
 import { verifyTaskReferenceEvidenceV2 } from '../../packages/owner-identity/src/task-reference-evidence-v2.ts';
 import { sourceDigests } from '../../packages/benchmark-environment/src/probe/environment.ts';
+import { assertU1FeeReconciliation,assertU1FeeSemanticCore,assertNativeFeeSemanticCore,assertNativeFeeReconciliation } from './u1-fee-reconciliation.mjs';
 
 export const APPROVED_REFRESH_BASELINE = Object.freeze({
   path: 'artifacts/runs/bts-difficulty-v2-case-candidates/0b68e103-c296-45f9-a97a-b6b8f14a44e5/candidate-cases.json',
   sha256: '4c66c32fb00de697b46317ad6a90dd0e0ed5b63812f9545a0fc5b03d94fc5356',
 });
 export const REFRESH_BOUNDARY = 'actual_tool_http_x402_local_evm_application_store';
+export const U1_NATIVE_GAS_RECONCILIATION = 'exact_verified_participant_gas_v1';
+export const NATIVE_GAS_RECONCILIATION = 'exact_verified_participant_gas_v1';
+export const APPROVED_RESTART_PAYMENT_MIGRATION = Object.freeze({
+  path: 'infrastructure/benchmark-environment/migrations/011_public_payment_recipient.sql',
+  sha256: '5596a70231924c55999ae8a631a8dc8fc9ce1372acfd852ba95455651b6418bb',
+});
 export const REFRESH_POLICY_PATH = 'infrastructure/owner-identity/task-release-local-policy.json';
 export const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export function demand(value, code) { if (!value) throw new Error(code); }
@@ -52,12 +59,23 @@ export async function readPinned(root, path, expectedHash = null, parse = true) 
   } finally { await handle.close(); }
 }
 export function parseRefreshProfile(value) {
+  const feeProfile = value?.schemaVersion === 'bts-source-refresh-profile/v3';
+  const nativeFeeProfile = value?.schemaVersion === 'bts-source-refresh-profile/v4';
+  const restartProfile = nativeFeeProfile || feeProfile || value?.schemaVersion === 'bts-source-refresh-profile/v2';
   demand(keys(value, ['schemaVersion', 'classification', 'reason', 'approvedBaseline', 'feasibilityVerification',
-    'rawIntegrity', 'expectedApplicationSourceSha256', 'expectedProbeSourceSha256', 'expectedManifestSha256']),
+    'rawIntegrity', 'expectedApplicationSourceSha256', 'expectedProbeSourceSha256', 'expectedManifestSha256',
+    ...(restartProfile ? ['approvedMigrationAddition'] : []), ...(feeProfile ? ['u1NativeGasReconciliation'] : []),
+    ...(nativeFeeProfile ? ['nativeGasReconciliation'] : [])]),
   'refresh_profile_fields_invalid');
-  demand(value.schemaVersion === 'bts-source-refresh-profile/v1'
+  demand((restartProfile
+    ? value.reason === 'restart_payment_identity'
+      && keys(value.approvedMigrationAddition, ['path', 'sha256'])
+      && equal(value.approvedMigrationAddition, APPROVED_RESTART_PAYMENT_MIGRATION)
+    : value.schemaVersion === 'bts-source-refresh-profile/v1'
+      && ['ber_diagnostic_source_refresh', 's2_public_identity_disclosure'].includes(value.reason))
+    && (!feeProfile || value.u1NativeGasReconciliation === U1_NATIVE_GAS_RECONCILIATION)
+    && (!nativeFeeProfile || value.nativeGasReconciliation === NATIVE_GAS_RECONCILIATION)
     && value.classification === 'explicit_new_source_profile_not_release_acceptance'
-    && ['ber_diagnostic_source_refresh', 's2_public_identity_disclosure'].includes(value.reason)
     && equal(artifactPin(value.approvedBaseline), APPROVED_REFRESH_BASELINE)
     && HASH.test(value.expectedApplicationSourceSha256) && HASH.test(value.expectedProbeSourceSha256)
     && HASH.test(value.expectedManifestSha256), 'refresh_profile_contract_invalid');
@@ -88,10 +106,17 @@ export function assertIdentityPreserved(identity, approved) {
   delete left.applicationSchemaVersion; delete right.applicationSchemaVersion;
   demand(equal(left, right), 'refresh_non_source_execution_identity_changed');
 }
-export function assertMigrationInventoryPreserved(current, approvedSourceInputs) {
+export function assertMigrationInventoryPreserved(current, approvedSourceInputs, profile) {
   const approved = approvedSourceInputs.filter((r) => /^infrastructure\/benchmark-environment\/migrations\/[0-9]{3}_[a-z0-9_]+\.sql$/.test(r.path));
   const sorted = (rows) => [...rows].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  demand(approved.length > 0 && equal(sorted(current), sorted(approved)), 'refresh_migrations_changed');
+  if (profile !== undefined) parseRefreshProfile(profile);
+  const restart = ['bts-source-refresh-profile/v2','bts-source-refresh-profile/v3','bts-source-refresh-profile/v4'].includes(profile?.schemaVersion);
+  // AICODE-NOTE: This finite approved profile permits exactly one nullable
+  // metadata migration. No old migration byte, semantic case field or other
+  // refresh profile inherits an exception.
+  const expected = restart ? [...approved, APPROVED_RESTART_PAYMENT_MIGRATION] : approved;
+  demand(approved.length > 0 && (!restart || approved.length === 10)
+    && equal(sorted(current), sorted(expected)), 'refresh_migrations_changed');
 }
 export function assertUniformCaptureSources(captures, profile) {
   demand(Array.isArray(captures) && captures.length === currentCaseKeys().length, 'refresh_fifteen_captures_required');
@@ -130,7 +155,7 @@ export async function loadSourceRefreshProfile(root, ref) {
   const approvedPolicy = baseline.sourceInputs.find((r) => r.path === REFRESH_POLICY_PATH);
   demand(approvedPolicy?.sha256 === policyInput.sha256, 'refresh_policy_or_prices_changed');
   const lineage = await schemaLineage(root, profile.expectedApplicationSourceSha256);
-  assertMigrationInventoryPreserved(lineage.migrationFiles, baseline.sourceInputs);
+  assertMigrationInventoryPreserved(lineage.migrationFiles, baseline.sourceInputs, profile);
   const identity = executionIdentityFromManifest(manifest, profile.expectedManifestSha256,
     profile.expectedApplicationSourceSha256, policy.profileId, lineage.derivedVersion);
   assertIdentityPreserved(identity, baseline.executionIdentity);
@@ -153,7 +178,33 @@ export async function loadSourceRefreshProfile(root, ref) {
   const sourceInputs = [ref, profile.approvedBaseline, profile.feasibilityVerification, witnessRef,
     profile.rawIntegrity, retained, { path: manifestPath, sha256: profile.expectedManifestSha256 },
     { path: REFRESH_POLICY_PATH, sha256: policyInput.sha256 }, ...lineage.migrationFiles];
+  if (['bts-source-refresh-profile/v3','bts-source-refresh-profile/v4'].includes(profile.schemaVersion)) {
+    const helperPath='infrastructure/owner-identity/u1-fee-reconciliation.mjs';
+    sourceInputs.push({path:helperPath,sha256:(await readPinned(root,helperPath,null,false)).sha256});
+    const oldU1=baseline.cases.find(c=>c.taskId==='U1'&&c.mode==='ranked');
+    demand(oldU1,'refresh_approved_u1_missing');
+    const oldCases=profile.schemaVersion==='bts-source-refresh-profile/v4'?baseline.cases:[oldU1];
+    for(const c of oldCases)sourceInputs.push({path:c.referencePath.evidence.path,sha256:c.referencePath.evidence.sha256});
+  }
   return { profile, baseline, identity, identityHash, feasibility, integrity, witnessRef, policy, sourceInputs };
+}
+
+export async function assertRefreshSemanticCasePreserved(root,candidate,approved,context) {
+  if(context.profile.schemaVersion==='bts-source-refresh-profile/v4'){
+    parseRefreshProfile(context.profile);
+    demand(currentCaseKeys().includes(`${candidate.taskId}:${candidate.mode}`),'refresh_native_fee_case_scope_invalid');
+    try{assertSemanticCasePreserved(candidate,approved);return null;}catch{/* Only the final hash may differ, proven below. */}
+    assertNativeFeeSemanticCore(candidate,approved,assertSemanticCasePreserved);
+    return assertNativeFeeReconciliation({root,candidate,approved,context,strictAssert:assertSemanticCasePreserved,
+      profilePolicy:{path:REFRESH_POLICY_PATH,sha256:context.sourceInputs.find(r=>r.path===REFRESH_POLICY_PATH).sha256}});
+  }
+  if(context.profile.schemaVersion!=='bts-source-refresh-profile/v3'||candidate.taskId!=='U1'||candidate.mode!=='ranked'){
+    assertSemanticCasePreserved(candidate,approved);return null;
+  }
+  parseRefreshProfile(context.profile);
+  assertU1FeeSemanticCore(candidate,approved,assertSemanticCasePreserved);
+  return assertU1FeeReconciliation({root,candidate,approved,context,strictAssert:assertSemanticCasePreserved,
+    profilePolicy:{path:REFRESH_POLICY_PATH,sha256:context.sourceInputs.find(r=>r.path===REFRESH_POLICY_PATH).sha256}});
 }
 
 /** Independent validation branch: no producer boolean can substitute for fifteen raw semantic proofs. */
@@ -164,9 +215,14 @@ export async function verifySourceRefreshCandidate(root, candidate) {
     && equal(candidate.cases.map((c) => `${c.taskId}:${c.mode}`).sort(), currentCaseKeys()), 'refresh_candidate_identity_invalid');
   const approved = new Map(context.baseline.cases.map((c) => [`${c.taskId}:${c.mode}`, c]));
   const captures = new Map(context.integrity.captures.map((c) => [`${c.taskId}:${c.mode}`, c]));
+  const nativeGasProofs={};
   for (const taskCase of candidate.cases) {
     const key = `${taskCase.taskId}:${taskCase.mode}`;
-    assertSemanticCasePreserved(taskCase, approved.get(key));
+    const feeProof=await assertRefreshSemanticCasePreserved(root,taskCase,approved.get(key),context);
+    if(feeProof){
+      if(context.profile.schemaVersion==='bts-source-refresh-profile/v4')nativeGasProofs[key]=feeProof;
+      else demand(equal(feeProof,candidate.u1NativeGasReconciliation),'refresh_u1_fee_proof_mismatch');
+    }
     const envelope = (await readPinned(root, taskCase.referencePath.evidence.path, taskCase.referencePath.evidence.sha256)).value;
     demand(equal(envelope.probe, captures.get(key).probe), 'refresh_case_not_bound_to_fresh_capture');
     const result = await verifyTaskReferenceEvidenceV2({ repositoryRoot: root, identity: context.identity,
@@ -174,6 +230,7 @@ export async function verifySourceRefreshCandidate(root, candidate) {
       profilePolicy: { path: REFRESH_POLICY_PATH, sha256: context.sourceInputs.find((r) => r.path === REFRESH_POLICY_PATH).sha256 } });
     demand(result.status === 'verified', 'refresh_independent_reference_not_verified');
   }
+  if(context.profile.schemaVersion==='bts-source-refresh-profile/v4')demand(equal(nativeGasProofs,candidate.nativeGasReconciliationProofs),'refresh_native_fee_proof_map_mismatch');
   for (const ref of context.sourceInputs) demand(candidate.sourceInputs.some((r) => equal(r, ref)), 'refresh_candidate_omits_profile_source');
   return context;
 }

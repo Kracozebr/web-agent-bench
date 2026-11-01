@@ -232,10 +232,17 @@ function safeResponse(kind:string,v:J):J{
     payment:pick(v.payment,['transactionHash','receiptStatus','amount','asset','network','payTo'])};
   return pick(v,['operationId','resourceId','contentType','contentHash']);
 }
-function safeProtocol(v:unknown):J|null{
+export function projectPaidDataPaymentProtocol(v:unknown):J|null{
   if(!rec(v))return null;const keys=['schema','resourceId','offerId','resourceSha256','amountUnits','network','asset','readHandle','acceptedTerms',
     'befOperationId','payOperationId','deliveryMatchesPinnedResource','befServerSdkVersions','ownerSignerSdkVersions','challengeResponseSha256',
-    'challengeHeaderSha256','x402Version'];const o:J={};for(const k of keys)if(v[k]!==undefined)o[k]=valueSafe(v[k]);return o;
+    'challengeHeaderSha256','x402Version'];const o:J={};for(const k of keys)if(v[k]!==undefined)o[k]=valueSafe(v[k]);
+  // AICODE-NOTE: Legacy collector packets omitted the signer. Preserve that
+  // byte shape; modern payee presence binds both public identities instead.
+  if(Object.hasOwn(v,'paymentRecipient')){
+    o.paymentRecipient=valueSafe(v.paymentRecipient);
+    if(Object.hasOwn(v,'facilitatorAddress'))o.facilitatorAddress=valueSafe(v.facilitatorAddress);
+  }
+  return o;
 }
 function actionPayloadHash(runId:string,index:number,cmd:TaskActionCommand):string{return hjson({runId,taskIndex:index,command:cmd})}
 const EVIDENCE_KEYS=new Set(['schema','actionId','runId','taskIndex','actionSequence','ownerOperationId','actionKind','commandSha256','environmentId',
@@ -303,7 +310,7 @@ async function loadActions(root:string,run:J,p:Prep,runId:string,index:number,cu
     const packet:PaidDataAction={actionId:row.id,actionSequence:n,ownerOperationId:row.operation_id,actionKind:cmd.kind,
       commandSha256:row.payload_hash.toLowerCase(),receiptStatus:row.receipt_status as PaidDataAction['receiptStatus'],actionEvidence:er,
       befOperationId:befId,transactionHash:tx,rawResponseSha256:rawHash,safeResponse:response?safeResponse(cmd.kind,response):null,
-      paymentProtocol:safeProtocol(protocol),retrievedContent:retrieved};
+      paymentProtocol:projectPaidDataPaymentProtocol(protocol),retrievedContent:retrieved};
     const item:Loaded={row,command:cmd,packet,response};out.push(item);byId.set(row.id,item);
   }
   for(const item of out){
@@ -353,7 +360,7 @@ async function captureCensus(port:BefPaidDataReadOnlyPostgresPort,env:string,gen
       "trim(selected_resource_sha256) selected_resource_sha256,payment_response_mode FROM bef_operation "+
       "WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY started_at,operation_id LIMIT 2049",[env,generation]),'observer_census_unavailable');
     const payments=getRows(await query("SELECT payment_id::text,operation_id::text,env_id,generation_id::text,payer_address,network,asset_address,"+
-      "amount_units::text,facilitator_address,transaction_hash,receipt_status,token_delta_units::text,observed_at::text,"+
+      "amount_units::text,facilitator_address,to_jsonb(bef_payment)->>'payment_recipient' AS payment_recipient,transaction_hash,receipt_status,token_delta_units::text,observed_at::text,"+
       "payer_balance_before::text,payer_balance_after::text,facilitator_balance_before::text,facilitator_balance_after::text "+
       "FROM bef_payment WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY observed_at,payment_id LIMIT 2049",[env,generation]),'observer_census_unavailable');
     const deliveries=getRows(await query("SELECT d.delivery_id::text,d.operation_id::text,o.env_id,o.generation_id::text,d.resource_id,"+
@@ -385,7 +392,7 @@ async function captureCensus(port:BefPaidDataReadOnlyPostgresPort,env:string,gen
         'selected_resource_id','selected_resource_sha256','payment_response_mode'])),
       payments:payments.map((r)=>project(r,['payment_id','operation_id','env_id','generation_id','payer_address','network','asset_address','amount_units',
         'facilitator_address','transaction_hash','receipt_status','token_delta_units','observed_at','payer_balance_before','payer_balance_after',
-        'facilitator_balance_before','facilitator_balance_after'])),
+        'facilitator_balance_before','facilitator_balance_after',...(r.payment_recipient!=null?['payment_recipient']:[])])),
       deliveries:deliveries.map((r)=>project(r,['delivery_id','operation_id','env_id','generation_id','resource_id','content_sha256','byte_count','delivered_at'])),
       costs:costs.map((r)=>project(r,['operation_id','env_id','generation_id','transaction_hash','payer_address','payer_role','receipt_status',
         'transaction_from','receipt_from','receipt_block_number','receipt_block_hash','gas_used','effective_gas_price_wei','gas_cost_wei',
@@ -447,7 +454,8 @@ async function paymentEffects(rpc:RpcRecorder,payments:J[],costs:J[],actions:{ro
       try{transfers.push(decodeM1TransferLog(log,logToken!,String(logAsset.assetId),participant))}catch{badLog=true;break}
     }
     if(badLog){out.push({...base,verification:'contradictory',reasonCode:'rpc_transfer_log_mismatch'});continue}
-    const matching=transfers.filter((t)=>t.assetId===asset.assetId&&t.from===participant&&t.to===facilitator&&
+    const recipient=addr(payment.payment_recipient??payment.facilitator_address);
+    const matching=transfers.filter((t)=>t.assetId===asset.assetId&&t.from===participant&&t.to===recipient&&
       String(t.amountUnits)===String(payment.amount_units));
     const costRows=costs.filter((c)=>String(c.operation_id).toLowerCase()===operationId),cost=costRows.length===1?costRows[0]:null;
     const gasCost=(gas*gasPrice).toString();
@@ -552,7 +560,7 @@ function validateOperationLinks(census:Census,actions:{row:ActionRow;command:Tas
       if(paymentRows.length===1){const payment=paymentRows[0]!;
         if(txHash(payment.transaction_hash)!==txHash(a.packet.transactionHash)||String(payment.amount_units)!==String(protocol?.amountUnits)||
           String(payment.network)!==String(protocol?.network)||addr(payment.asset_address)!==addr(protocol?.asset)||
-          addr(payment.facilitator_address)!==addr(accepted?.payTo))issues.push('payment_record_mismatch');
+          addr(payment.payment_recipient??payment.facilitator_address)!==addr(accepted?.payTo))issues.push('payment_record_mismatch');
       }
       const x402=census.x402Observations.filter((v)=>String(v.operation_id).toLowerCase()===id);
       if(x402.length&&(!rec(protocol)||!x402.some((v)=>rec(v.requirements)&&String(v.requirements.network)===String(protocol.network)&&

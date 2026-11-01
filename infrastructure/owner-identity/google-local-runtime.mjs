@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, lstat } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { prepareGoogleLocalCoordinator } from './google-local-coordinator.mjs';
@@ -12,6 +12,15 @@ let phase = 'validate_private_configuration';
 const children = [];
 let stopping = false;
 const executorEnabled = process.env.OID_GOOGLE_LOCAL_EXECUTOR_ENABLED === 'true';
+const remoteMcpEnabled = process.env.OID_GOOGLE_LOCAL_REMOTE_MCP_ENABLED === 'true';
+const initializeRemoteAuthority = process.env.OID_GOOGLE_LOCAL_INITIALIZE_REMOTE_AUTHORITY === 'true';
+for (const key of ['OID_GOOGLE_LOCAL_REMOTE_MCP_ENABLED', 'OID_GOOGLE_LOCAL_INITIALIZE_REMOTE_AUTHORITY']) {
+  if (!['true', 'false', undefined].includes(process.env[key])) throw new Error('remote_mcp_opt_in_invalid');
+}
+if (initializeRemoteAuthority && !remoteMcpEnabled) throw new Error('remote_mcp_initialization_requires_opt_in');
+// AICODE-NOTE: Native Codex 0.165.0 appends this endpoint-derived callback ID.
+const remoteCallbackUri = process.env.OID_GOOGLE_LOCAL_MCP_CALLBACK_URI ?? 'http://127.0.0.1:38765/callback/fCivY4zmEDfx';
+if (remoteMcpEnabled && !/^http:\/\/127\.0\.0\.1:38765\/callback(?:\/[A-Za-z0-9_-]{1,100})?$/.test(remoteCallbackUri)) throw new Error('remote_mcp_callback_invalid');
 if (!['true', 'false', undefined].includes(process.env.OID_GOOGLE_LOCAL_EXECUTOR_ENABLED)) throw new Error('executor_opt_in_invalid');
 function child(command, args, env) {
   const value = spawn(command, args, { cwd: root, env, stdio: 'ignore' });
@@ -95,13 +104,52 @@ async function main() {
     OID_LOCAL_GOOGLE_QUALIFICATION_ENABLED: 'true', OID_LOCAL_REPORT_ACCEPTANCE_ENABLED: 'true',
     OID_LOCAL_REPORT_CAPTURE_ROOT: captureRoot, OID_BETA_REPORT_CLOSURE_STATE_FILE: closureStatePath,
     OID_PRIVATE_DATA_DIR: resolve(captureRoot, 'private-data'),
-    OID_MCP_TRANSPORT_PROFILE: executorEnabled ? 'codex-local-manual-2025-06-18' : 'strict-2026-07-28' };
+    OID_MCP_TRANSPORT_PROFILE: remoteMcpEnabled ? 'remote-oauth-v1' : executorEnabled ? 'codex-local-manual-2025-06-18' : 'strict-2026-07-28',
+    ...(remoteMcpEnabled ? { OID_MCP_CLIENT_ID: 'oid-google-codex-remote-v1', OID_MCP_CLIENT_REDIRECT_URI: remoteCallbackUri } : {}) };
   for (const key of ['OID_GOOGLE_FIXTURE_ORIGIN', 'OID_ADMIN_PROVIDER', 'OID_ADMIN_SUBJECT', 'OID_BETA_MANIFEST_FILE',
     'OID_BETA_BEF_TASK_COORDINATOR_CONFIG', 'NODE_OPTIONS', 'OID_LOCAL_REPORT_CAPTURE_BASE']) delete apiEnv[key];
   if (process.env.OID_GOOGLE_LOCAL_DIAGNOSTICS === 'true') apiEnv.NODE_OPTIONS = '--import=/workspace/.local/owner-identity/google-token-diagnostic.mjs';
   if (state.adminSubject) { apiEnv.OID_ADMIN_PROVIDER = 'google'; apiEnv.OID_ADMIN_SUBJECT = state.adminSubject; }
   phase = 'api_build'; await command('pnpm', ['--filter', '@web-agent-bench/owner-identity', 'build'], apiEnv);
   phase = 'schema_migration'; await command('pnpm', ['--filter', '@web-agent-bench/owner-identity', 'migrate'], apiEnv);
+  if (remoteMcpEnabled) {
+    phase = 'remote_mcp_operator_authority';
+    const authorityRoot = resolve('/local-agent-invalidation', state.databaseName);
+    await mkdir(authorityRoot, { recursive: true, mode: 0o700 });
+    const identityPath = resolve(authorityRoot, 'authority-identity.json');
+    const journalPath = resolve(authorityRoot, 'journal.json'), floorPath = resolve(authorityRoot, 'floor.json');
+    let authority;
+    try {
+      const info = await lstat(identityPath);
+      if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) !== 0) throw new Error('remote_mcp_authority_identity_invalid');
+      authority = JSON.parse(await readFile(identityPath, 'utf8'));
+    } catch (error) {
+      if (error.code !== 'ENOENT' || !initializeRemoteAuthority) throw new Error('remote_mcp_authority_explicit_initialization_required');
+      for (const path of [journalPath, floorPath]) {
+        const existing = await lstat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+        if (existing) throw new Error('remote_mcp_authority_partial_state_requires_reconciliation');
+      }
+      const security = new Client({ connectionString: databaseUrl.href }); await security.connect();
+      try {
+        const prior = (await security.query(`SELECT
+          (SELECT count(*)::int FROM oid_audit WHERE event_type='agent.connection.invalidation_reconciled') AS receipts,
+          (SELECT count(*)::int FROM oid_agent_access_grant WHERE source='oauth' AND resource=$1) AS grants`, ['http://127.0.0.1:3000/api/agent/mcp'])).rows[0];
+        if (prior.receipts !== 0 || prior.grants !== 0) throw new Error('remote_mcp_authority_recovery_required');
+      } finally { await security.end(); }
+      authority = { schemaVersion: 'google-local-agent-invalidation-identity/v1', databaseName: state.databaseName, journalId: randomUUID() };
+      await writeFile(identityPath, JSON.stringify(authority)+'\n', { flag: 'wx', mode: 0o600 });
+      const { initializeAgentConnectionInvalidationState } = await import('../../packages/owner-identity/dist/agent-connection-invalidation-state.js');
+      await initializeAgentConnectionInvalidationState({ journalPath, floorPath, journalId: authority.journalId });
+    }
+    if (authority.schemaVersion !== 'google-local-agent-invalidation-identity/v1' || authority.databaseName !== state.databaseName ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(authority.journalId ?? '') ||
+        Object.keys(authority).some(key => !['schemaVersion','databaseName','journalId'].includes(key))) throw new Error('remote_mcp_authority_identity_invalid');
+    const { createAgentConnectionInvalidationStore } = await import('../../packages/owner-identity/dist/agent-connection-invalidation-state.js');
+    await createAgentConnectionInvalidationStore({ journalPath, floorPath, expectedJournalId: authority.journalId }).read();
+    apiEnv.OID_AGENT_INVALIDATION_JOURNAL_FILE = journalPath;
+    apiEnv.OID_AGENT_INVALIDATION_FLOOR_FILE = floorPath;
+    apiEnv.OID_AGENT_INVALIDATION_JOURNAL_ID = authority.journalId;
+  }
   state.initialized = true; await writeFile(statePath, JSON.stringify(state) + '\n', { mode: 0o600 });
   if (executorEnabled) {
     phase = 'prepare_synthetic_executor';
@@ -109,7 +157,12 @@ async function main() {
     phase = 'activate_verified_local_release';
     const { validateAndActivatePinnedRelease } = await import('../../packages/owner-acceptance/src/genuine-s1-cases.mjs');
     const observerUrl = new URL(process.env.OID_OBSERVER_DATABASE_URL); observerUrl.pathname = '/' + state.databaseName;
-    await validateAndActivatePinnedRelease({repositoryRoot:root,databaseUrl:databaseUrl.href,observerDatabaseUrl:observerUrl.href});
+    const activated = await validateAndActivatePinnedRelease({repositoryRoot:root,databaseUrl:databaseUrl.href,observerDatabaseUrl:observerUrl.href});
+    phase = 'verify_current_payment_readiness';
+    const { verifyGoogleLocalPaymentReadiness } = await import('./google-local-payment-readiness.mjs');
+    await verifyGoogleLocalPaymentReadiness({databaseUrl:databaseUrl.href,
+      releaseIdentity:activated.releaseIdentity,manifestHash:activated.manifestHash,
+      coordinatorConfigPath:resolve(root,apiEnv.OID_LOCAL_BEF_TASK_COORDINATOR_CONFIG)});
   }
   const webEnv = { ...process.env, NODE_ENV: 'production', OID_API_URL: 'http://127.0.0.1:8784', NEXT_TELEMETRY_DISABLED: '1' };
   for (const key of ['OID_AUTH_SECRET', 'OID_DATABASE_URL', 'OID_OBSERVER_DATABASE_URL', 'OID_GOOGLE_CLIENT_SECRET', 'OID_GOOGLE_CLIENT_ID', 'NODE_OPTIONS']) delete webEnv[key];
@@ -120,7 +173,8 @@ async function main() {
   await waitHttp('http://127.0.0.1:3000/api/identity/config', async r => r.ok && (await r.json()).googleMode === 'google');
   await writeFile(resolve(stateRoot, 'ready.json'), JSON.stringify({ schemaVersion: 'real-google-local-ready/v1',
     status:'ready', databaseName: state.databaseName, publicOrigin: 'http://127.0.0.1:3000', googleMode: 'google',
-    adminConfigured: Boolean(state.adminSubject), executorEnabled, readyAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+    adminConfigured: Boolean(state.adminSubject), executorEnabled, remoteMcpEnabled,
+    mcpTransportProfile: apiEnv.OID_MCP_TRANSPORT_PROFILE, readyAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
   console.log(JSON.stringify({ event: 'google_local_ready', publicOrigin: 'http://127.0.0.1:3000', googleMode: 'google', adminConfigured: Boolean(state.adminSubject) }));
   for (const value of [api, web]) value.once('exit', () => { if (!stopping) { stop(); process.exitCode = 1; } });
 }

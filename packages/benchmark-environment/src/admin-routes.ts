@@ -276,6 +276,7 @@ export function registerAdminRoutes(
             nodeVersion: facilitator.facilitatorNodeVersion,
             packageVersion: facilitator.facilitatorPackageVersion,
             address: environment.facilitatorAddress,
+            ...(environment.paymentRecipient ? { paymentRecipient: environment.paymentRecipient } : {}),
             chainId: facilitator.chainId,
             forkBlockHash: facilitator.forkBlockHash,
             dependencyVersions: facilitator.dependencyVersions,

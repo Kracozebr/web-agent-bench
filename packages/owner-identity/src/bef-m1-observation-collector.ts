@@ -298,7 +298,7 @@ async function captureCensus(port:BefM1ReadOnlyPostgresPort,envId:string,generat
       WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY created_at,operation_id LIMIT ${MAX_ROWS+1}`,[envId,generationId]),'observer_census_unavailable');
     const events=safeRows(await query(`SELECT event_sequence::text,event_id::text,operation_id::text,env_id,generation_id::text,event_kind,transaction_hash,created_at::text
       FROM public.bef_selected_execution_event WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY event_sequence LIMIT ${MAX_ROWS+1}`,[envId,generationId]),'observer_census_unavailable');
-    const payments=safeRows(await query(`SELECT payment_id::text,operation_id::text,env_id,generation_id::text,payer_address,network,asset_address,amount_units::text,facilitator_address,
+    const payments=safeRows(await query(`SELECT payment_id::text,operation_id::text,env_id,generation_id::text,payer_address,network,asset_address,amount_units::text,facilitator_address,to_jsonb(bef_payment)->>'payment_recipient' AS payment_recipient,
       transaction_hash,receipt_status,token_delta_units::text,observed_at::text,payer_balance_before::text,payer_balance_after::text,
       facilitator_balance_before::text,facilitator_balance_after::text FROM public.bef_payment WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY observed_at,payment_id LIMIT ${MAX_ROWS+1}`,
       [envId,generationId]),'observer_census_unavailable');
@@ -329,7 +329,7 @@ async function captureCensus(port:BefM1ReadOnlyPostgresPort,envId:string,generat
       selectedExecutions:selected.map((r)=>project(r,['operation_id','env_id','generation_id','action_kind','transaction_hash','outcome'])),
       selectedEvents:events.map((r)=>project(r,['event_sequence','event_id','operation_id','env_id','generation_id','event_kind','transaction_hash','created_at'])),
       payments:payments.map((r)=>project(r,['payment_id','operation_id','env_id','generation_id','payer_address','network','asset_address','amount_units','facilitator_address','transaction_hash',
-        'receipt_status','token_delta_units','observed_at','payer_balance_before','payer_balance_after','facilitator_balance_before','facilitator_balance_after'])),
+        'receipt_status','token_delta_units','observed_at','payer_balance_before','payer_balance_after','facilitator_balance_before','facilitator_balance_after',...(r.payment_recipient!=null?['payment_recipient']:[])])),
       deliveries:deliveries.map((r)=>project(r,['delivery_id','operation_id','env_id','generation_id','resource_id','content_sha256','content_bytes','delivered_at'])),
       costs:costs.map((r)=>project(r,['operation_id','env_id','generation_id','transaction_hash','payer_address','payer_role','receipt_status','transaction_from','receipt_from','receipt_block_number',
         'receipt_block_hash','gas_used','effective_gas_price_wei','gas_cost_wei','modeled_gas_fee_usdc_units','manifest_sha256','created_at'])),
@@ -777,7 +777,8 @@ async function makePaymentProofs(rpc:RpcRecorder,interval:Interval,census:Census
       String(cost.receipt_block_number)!==receiptBlock.toString()||normalizeHash(cost.receipt_block_hash)!==receiptBlockHash||
       String(cost.gas_used)!==gasUsed.toString()||String(cost.effective_gas_price_wei)!==effectiveGasPrice.toString()||String(cost.gas_cost_wei)!==(gasUsed*effectiveGasPrice).toString()||
       String(cost.manifest_sha256).toLowerCase()!==envManifestHash||decimal(cost.modeled_gas_fee_usdc_units)===null)throw new Unavailable('rpc_mapping_incomplete');
-    const relatedLogs=globalLogs.get(txHash)??[];const matching=relatedLogs.filter((log)=>log.assetId==='USDC'&&log.from===participant&&log.to===facilitator&&String(log.amountUnits)===String(payment.amount_units));
+    const recipient=normalizeAddress(payment.payment_recipient??payment.facilitator_address);if(!recipient)throw new Unavailable('rpc_mapping_incomplete');
+    const relatedLogs=globalLogs.get(txHash)??[];const matching=relatedLogs.filter((log)=>log.assetId==='USDC'&&log.from===participant&&log.to===recipient&&String(log.amountUnits)===String(payment.amount_units));
     if(matching.length!==1)throw new Unavailable('rpc_mapping_incomplete');
     const receiptTransfers:Json[]=[];
     for(const rawLog of receiptRaw.logs){if(!isRecord(rawLog))throw new Unavailable('rpc_observation_unavailable');const address=normalizeAddress(rawLog.address);const assetId=address?assetByAddress.get(address):undefined;

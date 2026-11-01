@@ -5,8 +5,33 @@ import { canonicalTaskJson, sha256CanonicalTaskJson, type TaskCase } from './tas
 import { PaidDataCapturePacketError, parsePaidDataCapturePacket, projectPaidDataCaptureCandidate, projectPaidDataObservationBundle,
   validatePaidDataCapturePacket, validatePaidDataCapturePacketPins } from './task-paid-data-capture-packet.js';
 import { fixturePayload, fixtureRetrievedResponse, paymentOperationIds, validPaidDataCapturePacket } from './task-paid-data-capture-packet.fixture.js';
+import {projectPaidDataPaymentProtocol} from './bef-paid-data-observation-collector.js';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
+
+test('actual collector protocol projection retains modern pay and retrieve identities through H1 packet projection',()=>{
+ const {packet,context}=closedUnrequestedSecondPayment('H1');
+ const signer=`0x${'a'.repeat(40)}`,payee=`0x${'3'.repeat(40)}`;
+ for(const action of packet.ownerActions){
+  const old=action.paymentProtocol;
+  if(!old)continue;
+  const legacy=projectPaidDataPaymentProtocol(old);
+  assert.deepEqual(projectPaidDataPaymentProtocol({...old,facilitatorAddress:signer}),legacy);
+  action.paymentProtocol=projectPaidDataPaymentProtocol({...old,paymentRecipient:payee,...(action.actionKind==='pay'?{facilitatorAddress:signer}:{})});
+  assert.equal(action.paymentProtocol!.paymentRecipient,payee);
+ }
+ const census=packet.bef.after as Record<string,any>;
+ for(const payment of census.payments){payment.payment_recipient=payee;payment.facilitator_address=signer;}
+ validatePaidDataCapturePacket(packet);
+ const candidate=projectPaidDataObservationBundle(packet,context);
+ assert.equal(candidate.observations!.payments.length,2);
+ assert.ok(candidate.observations!.payments.every(p=>p.status==='settled'&&p.requirements.recipient===payee));
+ assert.ok(candidate.observations!.stateMutations.every(m=>!m.key.startsWith(signer)));
+ const bad=structuredClone(packet),pay=bad.ownerActions.find(a=>a.actionKind==='pay')!;
+ pay.paymentProtocol=projectPaidDataPaymentProtocol({...pay.paymentProtocol,paymentRecipient:null});
+ assert.equal(pay.paymentProtocol!.paymentRecipient,null);
+ assert.throws(()=>validatePaidDataCapturePacket(bad),PaidDataCapturePacketError);
+});
 
 function closedUnrequestedSecondPayment(taskId: 'M1'|'M2'|'H1'|'H3'|'U1' = 'H1') {
   const packet=validPaidDataCapturePacket();

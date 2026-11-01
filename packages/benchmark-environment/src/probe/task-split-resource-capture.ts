@@ -1,3 +1,4 @@
+import { settlementSignerAddress } from './payment-identities.js';
 /**
  * Participant-facing capture helpers for the separate pay/retrieve protocol.
  * These helpers produce evidence for observed local-fork behavior only; they
@@ -174,7 +175,7 @@ export function buildSplitRetrieveHeaders(session: GenerationSession): Record<st
 function facilitatorAddress(ctx: ProbeContext): string {
   const services = record(ctx.capability.services);
   const facilitator = record(services?.facilitator);
-  return validAddress(facilitator?.address, 'facilitator_address');
+  return validAddress(facilitator?.paymentRecipient ?? facilitator?.address, 'facilitator_address');
 }
 
 function manifestResource(manifest: RuntimeManifest, resourceId: string) {
@@ -633,7 +634,7 @@ export async function payAndRetrieveSplitResource(
     && event.to.toLowerCase() === facilitator
     && event.amount === BigInt(expectedTerms.amount));
   if (receipt.status.toLowerCase() !== '0x1' || receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase()
-    || receipt.from.toLowerCase() !== facilitator || transfers.length !== 1) {
+    || receipt.from.toLowerCase() !== settlementSignerAddress(ctx) || transfers.length !== 1) {
     throw new Error('task_split_settlement_receipt_or_transfer_mismatch');
   }
   const settlementBlock = await ctx.rpc.block({
@@ -659,7 +660,7 @@ export async function payAndRetrieveSplitResource(
   const payment = paymentRows[0]!;
   if (payment.receipt_status !== 'success' || String(payment.transaction_hash).toLowerCase() !== transactionHash.toLowerCase()
     || String(payment.payer_address).toLowerCase() !== session.payerAddress.toLowerCase()
-    || String(payment.facilitator_address).toLowerCase() !== facilitator
+    || String(payment.facilitator_address).toLowerCase() !== settlementSignerAddress(ctx)
     || String(payment.network) !== expectedTerms.network
     || String(payment.asset_address).toLowerCase() !== expectedTerms.asset.toLowerCase()
     || String(payment.amount_units) !== expectedTerms.amount || String(payment.token_delta_units) !== expectedTerms.amount) {
@@ -676,7 +677,7 @@ export async function payAndRetrieveSplitResource(
     || !x402ObservationMatches(paySnapshot, challengeOperationId, transactionHash)) {
     throw new Error('task_split_pay_durable_settlement_proof_mismatch');
   }
-  const facilitatorGas = facilitatorCost(paidFacts, challengeOperationId, transactionHash, facilitator);
+  const facilitatorGas = facilitatorCost(paidFacts, challengeOperationId, transactionHash, settlementSignerAddress(ctx));
   if (paidFacts.transactionCosts.some((row) => String(row.operation_id) === challengeOperationId && row.payer_role === 'participant')) {
     throw new Error('task_split_participant_gas_cost_present');
   }
@@ -731,7 +732,7 @@ export async function payAndRetrieveSplitResource(
     || String(finalSnapshot.deliveries[0]!.content_sha256).toLowerCase() !== resource.resourceSha256.toLowerCase()) {
     throw new Error('task_split_delivery_readonly_snapshot_mismatch');
   }
-  facilitatorCost(deliveredFacts, challengeOperationId, transactionHash, facilitator);
+  facilitatorCost(deliveredFacts, challengeOperationId, transactionHash, settlementSignerAddress(ctx));
   if (deliveredFacts.transactionCosts.some((row) => String(row.operation_id) === challengeOperationId && row.payer_role === 'participant')) {
     throw new Error('task_split_participant_gas_cost_present');
   }

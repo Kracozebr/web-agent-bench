@@ -207,10 +207,17 @@ test('successor preparation is ordered, replay-bound, deadline-bounded, and does
     const expiredPolicy = await configuredFixture({ successorPreparationTimeoutSeconds: 1 });
     await finalizePredecessor(expiredPolicy);
     await wait(1_100);
-    await assert.rejects(beginSuccessorTaskPreparation(dependenciesFor(expiredPolicy.environmentId), {
+    let expiredSelectorCalls = 0;
+    const expiredDependencies = dependenciesFor(expiredPolicy.environmentId);
+    expiredDependencies.environmentSelector = { async selectEnvironment() {
+      expiredSelectorCalls += 1;
+      throw new Error('local_bef_coordinator_no_free_compatible_environment');
+    } };
+    await assert.rejects(beginSuccessorTaskPreparation(expiredDependencies, {
       runId: expiredPolicy.runId, taskIndex: 1,
       claimId: (await client`SELECT claim_id FROM oid_run_dispatch_claim WHERE run_id=${expiredPolicy.runId}`)[0]!.claim_id,
     }), (error: { code?: string }) => error.code === 'SUCCESSOR_PREPARATION_WINDOW_EXPIRED');
+    assert.equal(expiredSelectorCalls, 0, 'environment unavailability cannot mask the pinned successor expiry');
     assert.equal(await hasSuccessorPreparation(expiredPolicy.runId), false);
 
     const crossedDeadline = await configuredFixture({ overallDeadlineSecondsFromNow: 3 });

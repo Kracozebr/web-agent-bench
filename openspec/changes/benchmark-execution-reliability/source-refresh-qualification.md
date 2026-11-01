@@ -1,5 +1,15 @@
 # Source refresh prerequisite for BER-005/007
 
+Version note, 2026-11-02: the captures below describe historical qualification
+profiles. The later approved additive migration and exact receipt-backed native
+gas comparison are recorded in [payment-schema-qualification-proposal.md](payment-schema-qualification-proposal.md),
+[u1-fee-reconciliation-qualification-proposal.md](u1-fee-reconciliation-qualification-proposal.md)
+and [native-gas-qualification-extension.md](native-gas-qualification-extension.md).
+Old profiles keep their original strict assertions. Profile v4 applies the
+approved exact comparison to the current finite fifteen cases; no numeric
+tolerance, task-goal or limit change is introduced. Current qualification and
+local acceptance results are in [restart-regression-repair.md](restart-regression-repair.md).
+
 This implementation note records tooling and evidence boundaries. It does not change task goals,
 grading, prices, deadlines, or the approved BDD contract. Runtime acceptance remains blocked until
 fresh evidence passes the production verifiers and independent replay.

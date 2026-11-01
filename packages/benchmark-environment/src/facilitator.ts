@@ -1,3 +1,4 @@
+import { retainedPaymentActors } from './payment-recipient.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -240,7 +241,7 @@ async function recordX402(pool: pg.Pool, context: RequestContext, phase: 'verify
   );
 }
 
-async function bindPayment(pool: pg.Pool, context: RequestContext, body: z.infer<typeof FacilitatorRequest>, facilitatorAddress: string): Promise<void> {
+async function bindPayment(pool: pg.Pool, context: RequestContext, body: z.infer<typeof FacilitatorRequest>, facilitatorAddress: string, configuredPaymentRecipient?: string): Promise<void> {
   const details = payloadDetails(body.paymentPayload);
   const generation = await pool.query<{ payer_address: string }>(
     `SELECT payer_address FROM bef_generation WHERE env_id=$1 AND generation_id=$2 AND status='active' AND expires_at>clock_timestamp()`,
@@ -259,17 +260,18 @@ async function bindPayment(pool: pg.Pool, context: RequestContext, body: z.infer
   );
   if (!operation.rowCount) throw new Error('Payment does not match the durable operation authorization');
   const payment = await pool.query(
-    `INSERT INTO bef_payment(payment_id,operation_id,env_id,generation_id,authorization_sha256,payer_address,network,asset_address,amount_units,facilitator_address,transaction_hash,receipt_status)
-     SELECT $1,o.operation_id,o.env_id,o.generation_id,$2,$3,$4,$5,$6,$7,o.transaction_hash,o.receipt_status
+    `INSERT INTO bef_payment(payment_id,operation_id,env_id,generation_id,authorization_sha256,payer_address,network,asset_address,amount_units,facilitator_address,transaction_hash,receipt_status,payment_recipient)
+     SELECT $1,o.operation_id,o.env_id,o.generation_id,$2,$3,$4,$5,$6,$7,o.transaction_hash,o.receipt_status,$11
        FROM bef_operation o WHERE o.operation_id=$8 AND o.env_id=$9 AND o.generation_id=$10
      ON CONFLICT(operation_id) DO UPDATE SET
        payer_address=COALESCE(bef_payment.payer_address,EXCLUDED.payer_address),
        facilitator_address=EXCLUDED.facilitator_address,
        transaction_hash=COALESCE(bef_payment.transaction_hash,EXCLUDED.transaction_hash)
      WHERE bef_payment.authorization_sha256=EXCLUDED.authorization_sha256
+       AND COALESCE(bef_payment.payment_recipient,bef_payment.facilitator_address)=COALESCE(EXCLUDED.payment_recipient,EXCLUDED.facilitator_address)
      RETURNING payment_id`,
     [randomUUID(), authorizationHash, details.payer, body.paymentRequirements.network, body.paymentRequirements.asset.toLowerCase(),
-      body.paymentRequirements.amount, facilitatorAddress.toLowerCase(), context.operationId, context.envId, context.generationId],
+      body.paymentRequirements.amount, facilitatorAddress.toLowerCase(), context.operationId, context.envId, context.generationId, configuredPaymentRecipient ? body.paymentRequirements.payTo.toLowerCase() : null],
   );
   if (!payment.rowCount) throw new Error('Payment authorization conflicts with the durable operation');
 }
@@ -327,7 +329,7 @@ async function persistBroadcastHash(
   }));
 }
 
-function supportedRequestChecks(body: z.infer<typeof FacilitatorRequest>, manifest: RuntimeManifest, facilitatorAddress: string, selectedAmount: string): { supported: boolean; checks: Record<string, boolean> } {
+function supportedRequestChecks(body: z.infer<typeof FacilitatorRequest>, manifest: RuntimeManifest, publicRecipient: string, selectedAmount: string): { supported: boolean; checks: Record<string, boolean> } {
   const requirements = body.paymentRequirements;
   const acceptedValue = body.paymentPayload.accepted;
   const accepted = isRecord(acceptedValue) ? acceptedValue : {};
@@ -353,7 +355,7 @@ function supportedRequestChecks(body: z.infer<typeof FacilitatorRequest>, manife
     requirementSchemePinned: requirements.scheme === manifest.x402.scheme,
     requirementAssetPinned: equalAddress(requirements.asset, manifest.x402.asset),
     requirementAmountPinned: requirements.amount === selectedAmount,
-    requirementPayToIsFacilitator: equalAddress(requirements.payTo, facilitatorAddress),
+    requirementPayToIsPinnedRecipient: equalAddress(requirements.payTo, publicRecipient),
     requirementTimeoutBounded: requirements.maxTimeoutSeconds <= manifest.x402.maxTimeoutSeconds,
     requirementTransferMethodPinned: requirements.extra?.assetTransferMethod === manifest.x402.assetTransferMethod,
     requirementPaymentFlowAuthorization: requirements.extra?.paymentFlow === 'authorization',
@@ -404,6 +406,8 @@ export async function startFacilitator(): Promise<void> {
   await database.query('SELECT 1');
   const privateKey = generatePrivateKey();
   const account = privateKeyToAccount(privateKey);
+  // AICODE-NOTE: Stable public payee is not the ephemeral gas signer. Never persist its private key.
+  const publicPayee = config.paymentRecipient ?? account.address;
   facilitatorStartupPhase = 'anvil_identity';
   await assertAnvilIdentity(config.rpcUrl, manifest);
   const fundFacilitator = async (): Promise<void> => {
@@ -579,7 +583,7 @@ export async function startFacilitator(): Promise<void> {
     if (!sameSecret(request.headers['x-bef-service-key'], config.serviceKey)) return reply.code(403).send({ error: 'forbidden' });
     try {
       return {
-        envId: config.envId, address: account.address, network: manifest.x402.network, manifestSha256,
+        envId: config.envId, address: account.address, ...(config.paymentRecipient ? { paymentRecipient: publicPayee } : {}), network: manifest.x402.network, manifestSha256,
         facilitatorNodeVersion: nodeVersion, facilitatorPackageVersion: packageVersion,
         dependencyVersions,
         ...(await assertAnvilIdentity(config.rpcUrl, manifest)),
@@ -675,13 +679,14 @@ export async function startFacilitator(): Promise<void> {
         asset_address: string;
         amount_units: string;
         facilitator_address: string | null;
+        payment_recipient: string | null;
         payment_transaction_hash: string | null;
       };
       const selected = await client.query<OriginalPaymentRow>(
         `SELECT o.operation_id,o.generation_id,o.request_sha256,o.status AS operation_status,o.transaction_hash AS operation_transaction_hash,
                 o.authorization_sha256 AS operation_authorization_sha256,g.payer_address AS generation_payer_address,
                 p.authorization_sha256,p.payer_address,p.network,p.asset_address,p.amount_units,
-                p.facilitator_address,p.transaction_hash AS payment_transaction_hash
+                p.facilitator_address,p.payment_recipient,p.transaction_hash AS payment_transaction_hash
            FROM bef_operation o JOIN bef_payment p
              ON p.operation_id=o.operation_id AND p.env_id=o.env_id AND p.generation_id=o.generation_id
            JOIN bef_generation g ON g.env_id=o.env_id AND g.generation_id=o.generation_id
@@ -702,7 +707,7 @@ export async function startFacilitator(): Promise<void> {
         network: original.network,
         assetAddress: original.asset_address,
         amountUnits: original.amount_units,
-        originalPayToAddress: original.facilitator_address,
+        originalPayToAddress: original.payment_recipient ?? original.facilitator_address,
         operationTransactionHash: original.operation_transaction_hash,
         paymentTransactionHash: original.payment_transaction_hash,
       };
@@ -729,7 +734,10 @@ export async function startFacilitator(): Promise<void> {
       const payer = original.payer_address as Address;
       // This value is deliberately read from the original payment row. A facilitator
       // process restart can create a different signer; recovery must keep the old payTo.
-      const originalPayTo = original.facilitator_address as Address;
+      const originalActors = retainedPaymentActors(original);
+      if (!originalActors) return await finish({ accepted: false, reasonCode: 'durable_payment_binding_mismatch', deliveryState: 'not_changed', durable });
+      const originalPayTo = originalActors.payee;
+      const originalSigner = originalActors.signer;
       let receipt: TransactionReceipt;
       try {
         await assertAnvilIdentity(config.rpcUrl, manifest);
@@ -747,7 +755,7 @@ export async function startFacilitator(): Promise<void> {
       if (receipt.transactionHash.toLowerCase() !== txHash.toLowerCase()) {
         return await finish({ accepted: false, reasonCode: 'original_receipt_hash_mismatch', deliveryState: 'not_changed', durable, observations: { receipt: receiptProof } });
       }
-      if (receipt.from.toLowerCase() !== originalPayTo.toLowerCase() || receipt.to?.toLowerCase() !== asset.toLowerCase() ||
+      if (receipt.from.toLowerCase() !== originalSigner.toLowerCase() || receipt.to?.toLowerCase() !== asset.toLowerCase() ||
           !/^0x[0-9a-f]{64}$/i.test(receipt.blockHash) || receipt.blockNumber < 1n) {
         return await finish({ accepted: false, reasonCode: 'original_receipt_transaction_binding_mismatch', deliveryState: 'not_changed', durable, observations: { receipt: receiptProof } });
       }
@@ -759,10 +767,10 @@ export async function startFacilitator(): Promise<void> {
         requestSha256: original.request_sha256,
       };
       const costIdentity = facilitatorCostIdentity(
-        reconciliationContext, txHash, originalPayTo, manifestSha256, manifest.feePolicy,
+        reconciliationContext, txHash, originalSigner, manifestSha256, manifest.feePolicy,
       );
       await insertUnknownTransactionCost(client, costIdentity);
-      const costObservation = await observeFacilitatorCost(txHash, originalPayTo, receipt);
+      const costObservation = await observeFacilitatorCost(txHash, originalSigner, receipt);
       if (costObservation) await finalizeTransactionCost(client, costIdentity, costObservation);
       if (receipt.status === 'reverted') {
         const paymentUpdate = await client.query(
@@ -898,7 +906,7 @@ export async function startFacilitator(): Promise<void> {
         || parsed.data.paymentRequirements.amount !== selectedPinned.offer.amount) {
         return reply.code(409).send({ error: 'offer_choice_mismatch' });
       }
-      const requestSupport = supportedRequestChecks(parsed.data, manifest, account.address, selectedPinned.offer.amount);
+      const requestSupport = supportedRequestChecks(parsed.data, manifest, publicPayee, selectedPinned.offer.amount);
       if (!requestSupport.supported) return reply.code(400).send({
         error: 'unsupported_payment_requirements',
         reasonCode: parsed.data.paymentRequirements.scheme !== manifest.x402.scheme ||
@@ -925,7 +933,7 @@ export async function startFacilitator(): Promise<void> {
       manifest, selected.rows[0], context.requestSha256, phase, parsed.data.paymentRequirements,
     );
     if (!selectedOffer) return reply.code(409).send({ error: 'offer_choice_mismatch' });
-    const requestSupport = supportedRequestChecks(parsed.data, manifest, account.address, selectedOffer.amount);
+    const requestSupport = supportedRequestChecks(parsed.data, manifest, publicPayee, selectedOffer.amount);
     if (!requestSupport.supported) return reply.code(400).send({
       error: 'unsupported_payment_requirements',
       reasonCode: parsed.data.paymentRequirements.scheme !== manifest.x402.scheme ||
@@ -971,7 +979,7 @@ export async function startFacilitator(): Promise<void> {
     if (phase === 'settle') {
       try {
         await assertAnvilIdentity(config.rpcUrl, manifest);
-        await withEnvironmentAdvisoryLock(database, context.envId, () => bindPayment(database, context, body, account.address));
+        await withEnvironmentAdvisoryLock(database, context.envId, () => bindPayment(database, context, body, account.address, config.paymentRecipient));
       } catch {
         return reply.code(409).send({ error: 'durable_settlement_binding_failed' });
       }

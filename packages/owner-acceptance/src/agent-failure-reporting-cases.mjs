@@ -125,17 +125,21 @@ export async function captureAgentFailureReporting(input){
 
 /** One actual production UI handoff: native agent runs tasks, observes real unknown, reports without a second turn. */
 export async function runAgentFailureReportingOwnerCase(input){
- need(input.receiptFaultProxy&&input.automaticWorkerEvaluation===true,'AFR_REAL_WORKER_FAULT_REQUIRED');
+ need((input.receiptFaultProxy||input.preparationFailureControl)&&input.automaticWorkerEvaluation===true,'AFR_REAL_WORKER_FAULT_REQUIRED');
+ need(!(input.receiptFaultProxy&&input.preparationFailureControl),'AFR_ONE_FAULT_BOUNDARY_REQUIRED');
  const execute=async ctx=>{
   const handoff=await readAgentFailureProductionHandoff(ctx),clipboard=handoff.clipboard;
-  const fault=input.receiptFaultProxy;let beforeReportingSnapshot,confirmedRunId,terminalCapture;
-  fault.setTargetPredicate(({transactionHash})=>findAgentFailureReceiptTarget(ctx,transactionHash));fault.setMode('missing');
+  const preparationFailure=input.preparationFailureControl;
+  const fault=preparationFailure??input.receiptFaultProxy;let beforeReportingSnapshot,confirmedRunId,terminalCapture;
+  if(preparationFailure)await preparationFailure.arm(ctx);
+  else {fault.setTargetPredicate(({transactionHash})=>findAgentFailureReceiptTarget(ctx,transactionHash));fault.setMode('missing');}
   try{
    const nativeRunner=createArcNativeIntentRunner({repoRoot:ctx.repoRoot,captureId:input.captureId,enabledTools:ARC_NATIVE_REPORT_TOOLS,
     onResponseProjection:async({response})=>{
      if(beforeReportingSnapshot)return;
      const terminal=[response.projection.result,...(response.projection.content??[])].find(value=>value?.run?.terminal===true);
      const id=terminal?.run?.runId,args=platformFailureReportArguments({terminal,runId:id});need(args,'AFR_NATIVE_TERMINAL_REASON');
+     if(preparationFailure)need(terminal.run.terminalReason==='coordinator_preparation_failed'||terminal.run.cancellationReason==='coordinator_preparation_failed','AFR_PREPARATION_FAILURE_REASON');
      const rows=await ctx.readonlyQuery('SELECT id FROM oid_benchmark_run WHERE id=$1 AND intent_id=$2 AND owner_id=$3 AND agent_id=$4',[id,ctx.intentId,ctx.ownerId,ctx.agentId]);need(rows.length===1,'AFR_NATIVE_TERMINAL_SCOPE');
      need((await ctx.readonlyQuery('SELECT id FROM oid_support_report WHERE owner_id=$1 AND operation_id=$2',[ctx.ownerId,args.operationId])).length===0,'AFR_REPORT_PRECEDES_TERMINAL_CAPTURE');
      const snapshot=await domainSnapshot(ctx.readonlyQuery,id);confirmedRunId=id;terminalCapture=terminal;beforeReportingSnapshot=snapshot;
@@ -148,8 +152,19 @@ export async function runAgentFailureReportingOwnerCase(input){
    need(beforeReportingSnapshot&&confirmedRunId&&nativeCompleted.nativeObservationErrors.length===0,'AFR_TERMINAL_OBSERVATION_FAILED');
    need(fault.snapshot().interventions.length>0,'AFR_ACTUAL_OBSERVER_FAULT_MISSING');
    const proof=await captureAgentFailureReporting({...ctx,adminPage:input.adminPage,runId:confirmedRunId,browserAdmission:{clicked:true,...ctx.launchIntentHttp},nativeCompleted,beforeReportingSnapshot,handoff});
-   proof.terminalBeforeReport=terminalCapture;proof.fault=fault.snapshot();proof.nativeExecutionMode='same_production_handoff';ctx.captureProgress(proof);return proof;
-  }finally{fault.setMode('pass');}
+   proof.terminalBeforeReport=terminalCapture;proof.fault=fault.snapshot();proof.failureBoundary=preparationFailure?'successor_preparation_unavailable':'closed_task_observation_unavailable';
+   if(preparationFailure){
+    const rows=await ctx.readonlyQuery(`SELECT r.id AS run_id,r.status,r.cancellation_reason,r.finished_at::text,r.successor_preparation_timeout_seconds,
+      p.task_id AS predecessor_task_id,p.finished_at::text AS predecessor_finished_at,p.status AS predecessor_status,
+      n.task_id AS successor_task_id,n.status AS successor_status,n.started_at::text AS successor_started_at,
+      (SELECT count(*)::int FROM oid_task_preparation_intent i WHERE i.run_id=r.id AND i.task_index=n.task_index) AS successor_preparations,
+      EXISTS(SELECT 1 FROM oid_run_task_evaluation e WHERE e.run_id=r.id AND e.task_index=p.task_index AND e.result_json->>'status'='known') AS predecessor_known,
+      EXISTS(SELECT 1 FROM oid_task_preparation_intent i JOIN oid_task_environment_lease l ON l.preparation_id=i.preparation_id AND l.lease_id=i.lease_id WHERE i.run_id=r.id AND i.task_index=p.task_index AND l.state='fenced') AS predecessor_fenced
+      FROM oid_benchmark_run r JOIN oid_run_task p ON p.run_id=r.id AND p.task_index=0 JOIN oid_run_task n ON n.run_id=r.id AND n.task_index=1 WHERE r.id=$1`,[confirmedRunId]);
+    need(rows.length===1,'AFR_PREPARATION_FAILURE_PG');proof.successorFailure=rows[0];
+   }
+   proof.nativeExecutionMode='same_production_handoff';ctx.captureProgress(proof);return proof;
+  }finally{if(preparationFailure)await preparationFailure.reset();else fault.setMode('pass');}
  };
  const result=await runGenuineS1OwnerCase({...input,continuityCase:'native_handoff',continuityTaskIds:['S1','M1','H1'],
   taskId:'M1',exactQuoteBonusFunding:true,bonusCodeFunding:true,bddProbes:false,onGenuineLaunchIntentReady:execute});

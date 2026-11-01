@@ -1,3 +1,5 @@
+import { capturePaymentMetadata } from './payment-row-metadata.js';
+import { settlementSignerAddress } from './payment-identities.js';
 /**
  * Dedicated public-tool reference observations for BTS S2 and M1.
  * These captures prove observed tool/chain/application facts only. They never
@@ -259,7 +261,7 @@ export async function readCaseDatabaseFacts(
                       FROM bef_operation WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY started_at,operation_id`,
         [session.envId, session.generationId]),
       client.query(`SELECT operation_id::text,payer_address,network,asset_address,amount_units::text,
-                           facilitator_address,transaction_hash,receipt_status,token_delta_units::text,
+                           facilitator_address,to_jsonb(bef_payment) ->> $$payment_recipient$$ AS payment_recipient,transaction_hash,receipt_status,token_delta_units::text,
                            payer_balance_before::text,payer_balance_after::text,
                            facilitator_balance_before::text,facilitator_balance_after::text
                       FROM bef_payment WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY observed_at,operation_id`,
@@ -311,7 +313,7 @@ export async function readCaseDatabaseFacts(
         participantCosts: countsRow.participant_costs,
       },
       operations: operations.rows as Array<Record<string, unknown>>,
-      payments: payments.rows as Array<Record<string, unknown>>,
+      payments: payments.rows.map(capturePaymentMetadata) as Array<Record<string, unknown>>,
       deliveries: deliveries.rows as Array<Record<string, unknown>>,
       transactionCosts: transactionCosts.rows as Array<Record<string, unknown>>,
     };
@@ -649,14 +651,14 @@ export async function captureM1SinglePurchase(ctx: ProbeContext, options: {
     || operation.selected_resource_id !== definition.resourceId || operation.selected_resource_sha256 !== definition.resourceSha256
     || payment.receipt_status !== 'success' || payment.amount_units !== offer.amount || payment.token_delta_units !== offer.amount
     || String(payment.payer_address).toLowerCase() !== session.payerAddress.toLowerCase()
-    || String(payment.facilitator_address).toLowerCase() !== payTo.toLowerCase()
+    || String(payment.payment_recipient ?? payment.facilitator_address).toLowerCase() !== payTo.toLowerCase()
     || String(payment.transaction_hash).toLowerCase() !== settlement.transaction.toLowerCase()
     || delivery.resource_id !== definition.resourceId || delivery.content_sha256 !== definition.resourceSha256
     || delivery.content_bytes !== String(resource.bytes.byteLength)
     || transactionCost.payer_role !== 'facilitator' || transactionCost.receipt_status !== 'success'
-    || String(transactionCost.payer_address).toLowerCase() !== payTo.toLowerCase()
-    || String(transactionCost.transaction_from).toLowerCase() !== payTo.toLowerCase()
-    || String(transactionCost.receipt_from).toLowerCase() !== payTo.toLowerCase()
+    || String(transactionCost.payer_address).toLowerCase() !== settlementSignerAddress(ctx)
+    || String(transactionCost.transaction_from).toLowerCase() !== settlementSignerAddress(ctx)
+    || String(transactionCost.receipt_from).toLowerCase() !== settlementSignerAddress(ctx)
     || transactionCost.gas_used !== gasUsed.toString()
     || transactionCost.effective_gas_price_wei !== effectiveGasPriceWei.toString()
     || transactionCost.gas_cost_wei !== actualGasCostWei.toString()

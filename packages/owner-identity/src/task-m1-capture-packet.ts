@@ -1,3 +1,4 @@
+import { capturePaymentRecipient } from './capture-payment-recipient.js';
 import { publicPaymentQuoteMatches, publicInspectionQuotesMatch, publicPaymentIdentity } from './task-public-payment-quote.js';
 import { createHash } from 'node:crypto';
 import { canonicalTaskJson, type DataComponentValidator, type EvidenceReference, type TaskCase } from './task-release.js';
@@ -247,7 +248,7 @@ function validateCensus(value: unknown): M1CaptureCensus {
   for (const value of census.payments as JsonRecord[]) {
     const row = record(value, ['payment_id','operation_id','env_id','generation_id','payer_address','network','asset_address','amount_units',
       'facilitator_address','transaction_hash','receipt_status','token_delta_units','observed_at','payer_balance_before','payer_balance_after',
-      'facilitator_balance_before','facilitator_balance_after']);
+      'facilitator_balance_before','facilitator_balance_after', ...(Object.hasOwn(value,'payment_recipient')?['payment_recipient']:[])]);
     if (typeof row.payment_id !== 'string' || !UUID.test(row.payment_id) || paymentIds.has(row.payment_id) || typeof row.operation_id !== 'string' ||
         !operationIds.has(row.operation_id) || paymentOperationIds.has(row.operation_id) ||
         row.env_id !== generation.env_id || row.generation_id !== generation.generation_id || typeof row.network !== 'string' ||
@@ -256,6 +257,7 @@ function validateCensus(value: unknown): M1CaptureCensus {
         typeof row.transaction_hash !== 'string' || !TX.test(row.transaction_hash) || row.receipt_status !== 'success' ||
         ![row.amount_units,row.token_delta_units,row.payer_balance_before,row.payer_balance_after,row.facilitator_balance_before,row.facilitator_balance_after]
           .every((item) => typeof item === 'string' && UINT.test(item)) || !timestamp(row.observed_at)) fail('M1_CAPTURE_PACKET_INVALID');
+    if (row.payment_recipient !== undefined && row.payment_recipient !== null && (typeof row.payment_recipient !== 'string' || !ADDRESS.test(row.payment_recipient))) fail('M1_CAPTURE_PACKET_INVALID');
     paymentIds.add(row.payment_id);
     paymentOperationIds.add(row.operation_id);
   }
@@ -426,12 +428,14 @@ function validateAction(value: unknown): M1CaptureAction {
 
 function validateRejectedPaymentProtocol(action: JsonRecord): void {
   const protocol = action.paymentProtocol;
+  if(isRecord(protocol)&&Object.hasOwn(protocol,'paymentRecipient')&&(typeof protocol.paymentRecipient!=='string'||!ADDRESS.test(protocol.paymentRecipient)))fail('M1_CAPTURE_PACKET_INVALID');
   if (!isRecord(protocol)) fail('M1_CAPTURE_PACKET_INVALID');
   if (action.actionKind === 'inspect_catalog' || action.actionKind === 'inspect_offer') fail('M1_CAPTURE_PACKET_INVALID');
   if (action.actionKind === 'pay') {
+    if (Object.hasOwn(protocol,'paymentRecipient') && (typeof protocol.paymentRecipient !== 'string' || !ADDRESS.test(protocol.paymentRecipient))) fail('M1_CAPTURE_PACKET_INVALID');
     const allowed = ['schema','resourceId','offerId','resourceSha256','amountUnits','network','asset','readHandle','acceptedTerms','befServerSdkVersions',
       'ownerSignerSdkVersions','facilitatorAddress','payerAddress','challengeResponseSha256','challengeHeaderSha256','befOperationId','settlementObserved',
-      'settlementMatchesPins','transactionHash','settlementHeaderSha256'];
+      'settlementMatchesPins','transactionHash','settlementHeaderSha256','paymentRecipient'];
     if (Object.keys(protocol).some((key) => !allowed.includes(key)) || protocol.schema !== 'bef-x402-split-payment-observation-v1' ||
         !boundedString(protocol.resourceId,128) || !boundedString(protocol.offerId,128) || typeof protocol.resourceSha256 !== 'string' || !HASH.test(protocol.resourceSha256) ||
         typeof protocol.amountUnits !== 'string' || !UINT.test(protocol.amountUnits) || !boundedString(protocol.network,128) || typeof protocol.asset !== 'string' ||
@@ -449,7 +453,7 @@ function validateRejectedPaymentProtocol(action: JsonRecord): void {
       if (protocol[key] !== undefined && (typeof protocol[key] !== 'string' || !HASH.test(protocol[key]))) fail('M1_CAPTURE_PACKET_INVALID');
     }
   } else if (action.actionKind === 'retrieve') {
-    const allowed = ['schema','payOperationId','resourceId','resourceSha256','contentSha256','deliveryMatchesPinnedResource'];
+    const allowed = ['schema','payOperationId','resourceId','resourceSha256','contentSha256','deliveryMatchesPinnedResource','paymentRecipient'];
     if (Object.keys(protocol).some((key) => !allowed.includes(key)) || !boundedString(protocol.resourceId,128) ||
         typeof protocol.resourceSha256 !== 'string' || !HASH.test(protocol.resourceSha256) || protocol.deliveryMatchesPinnedResource === true) {
       fail('M1_CAPTURE_PACKET_INVALID');
@@ -486,12 +490,14 @@ function validateOfferList(value: unknown): void {
 
 function validatePaymentProtocol(action: JsonRecord): void {
   const protocol = action.paymentProtocol;
+  if(isRecord(protocol)&&Object.hasOwn(protocol,'paymentRecipient')&&(typeof protocol.paymentRecipient!=='string'||!ADDRESS.test(protocol.paymentRecipient)))fail('M1_CAPTURE_PACKET_INVALID');
   if (action.actionKind === 'inspect_catalog' || action.actionKind === 'inspect_offer') return;
   if (!isRecord(protocol)) fail('M1_CAPTURE_PACKET_INVALID');
   if (action.actionKind === 'pay') {
+    if (Object.hasOwn(protocol,'paymentRecipient') && (typeof protocol.paymentRecipient !== 'string' || !ADDRESS.test(protocol.paymentRecipient))) fail('M1_CAPTURE_PACKET_INVALID');
     const allowed = ['schema','resourceId','offerId','resourceSha256','amountUnits','network','asset','readHandle','acceptedTerms','befServerSdkVersions',
       'ownerSignerSdkVersions','facilitatorAddress','payerAddress','challengeResponseSha256','challengeHeaderSha256','befOperationId','settlementObserved',
-      'settlementMatchesPins','transactionHash','settlementHeaderSha256'];
+      'settlementMatchesPins','transactionHash','settlementHeaderSha256','paymentRecipient'];
     if (Object.keys(protocol).some((key) => !allowed.includes(key)) ||
         !['schema','resourceId','offerId','resourceSha256','amountUnits','network','asset','readHandle','acceptedTerms','befServerSdkVersions',
           'ownerSignerSdkVersions','facilitatorAddress','payerAddress','challengeResponseSha256','challengeHeaderSha256','befOperationId',
@@ -518,7 +524,7 @@ function validatePaymentProtocol(action: JsonRecord): void {
       if (typeof protocol[key] !== 'string' || !HASH.test(protocol[key])) fail('M1_CAPTURE_PACKET_INVALID');
     }
   } else {
-    if (Object.keys(protocol).some((key) => !['schema','payOperationId','resourceId','resourceSha256','contentSha256','deliveryMatchesPinnedResource'].includes(key)) ||
+    if (Object.keys(protocol).some((key) => !['schema','payOperationId','resourceId','resourceSha256','contentSha256','deliveryMatchesPinnedResource','paymentRecipient'].includes(key)) ||
         !['schema','payOperationId','resourceId','resourceSha256','deliveryMatchesPinnedResource'].every((key) => key in protocol) ||
         protocol.schema !== 'bef-x402-retrieve-observation-v1' || typeof protocol.payOperationId !== 'string' || !UUID.test(protocol.payOperationId) ||
         !boundedString(protocol.resourceId,128) || typeof protocol.resourceSha256 !== 'string' || !HASH.test(protocol.resourceSha256) ||
@@ -774,6 +780,7 @@ function validateRejectedPurchaseOperation(
   }
 
   const protocol = action.paymentProtocol;
+  if(isRecord(protocol)&&Object.hasOwn(protocol,'paymentRecipient')&&(typeof protocol.paymentRecipient!=='string'||!ADDRESS.test(protocol.paymentRecipient)))fail('M1_CAPTURE_PACKET_INVALID');
   const recordedId = action.befOperationId?.toLowerCase() ?? null;
   const protocolId = typeof protocol.befOperationId === 'string' ? protocol.befOperationId.toLowerCase() : null;
   demand(recordedId === protocolId);
@@ -875,7 +882,7 @@ function projectSingleM1PacketObservations(
     payProtocol.offerId === operation.selected_offer_id && payProtocol.resourceSha256 === operation.selected_resource_sha256 &&
     payProtocol.amountUnits === operation.selected_amount_units && payProtocol.network === requirements.network &&
     isRecord(observedTerms) && addressEqual(payProtocol.asset, observedTerms.asset) &&
-    addressEqual(payProtocol.facilitatorAddress, requirements.recipient));
+    addressEqual(Object.hasOwn(payProtocol,'paymentRecipient')?payProtocol.paymentRecipient:payProtocol.facilitatorAddress, requirements.recipient));
   demand(payResponse.operationId === operation.operation_id && payResponse.status === 'payment_confirmed' &&
     isRecord(payResponse.payment) && payResponse.payment.receiptStatus === 'success' && payResponse.payment.transactionHash === operation.transaction_hash &&
     payResponse.payment.amount === operation.selected_amount_units && addressEqual(payResponse.payment.asset, payProtocol.asset) &&
@@ -931,7 +938,7 @@ function projectSingleM1PacketObservations(
   demand(paymentRow.receipt_status === 'success' && paymentTxHash.toLowerCase() === txHash &&
     paymentRow.amount_units === requirements.amountUnits && paymentRow.token_delta_units === requirements.amountUnits &&
     paymentRow.network === requirements.network && String(paymentRow.asset_address).toLowerCase() === asset.address.toLowerCase() &&
-    String(paymentRow.payer_address).toLowerCase() === payerAddress && String(paymentRow.facilitator_address).toLowerCase() === payTo &&
+    String(paymentRow.payer_address).toLowerCase() === payerAddress && capturePaymentRecipient(payProtocol,paymentRow).toLowerCase() === payTo &&
     BigInt(String(paymentRow.payer_balance_before)) - BigInt(String(paymentRow.payer_balance_after)) === BigInt(requirements.amountUnits) &&
     BigInt(String(paymentRow.facilitator_balance_after)) - BigInt(String(paymentRow.facilitator_balance_before)) === BigInt(requirements.amountUnits));
   const transactionFrom = String(transaction.from);
@@ -986,6 +993,7 @@ function projectSingleM1PacketObservations(
     const matchingRetrieve = retrieveActions.filter((action) => {
       const response = action.participantToolResponse;
       const protocol = action.paymentProtocol;
+  if(isRecord(protocol)&&Object.hasOwn(protocol,'paymentRecipient')&&(typeof protocol.paymentRecipient!=='string'||!ADDRESS.test(protocol.paymentRecipient)))fail('M1_CAPTURE_PACKET_INVALID');
       if (response === null || protocol === null || response.operationId !== operation.operation_id ||
           response.resourceId !== taskCase.objective.component.resourceId || response.contentType !== packet.bef.resourcePin.contentType ||
           response.contentHash !== packet.bef.resourcePin.resourceSha256 || typeof response.contentBytes !== 'string' || !isRecord(response.content) ||

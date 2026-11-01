@@ -6,6 +6,7 @@ import { isIP } from 'node:net';
 import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { HttpError } from './http-error.js';
 import { readBetaOperationsMode } from './beta-operations-control.js';
 import { readBetaStorageObservation } from './beta-operations-observability.js';
 import type { OwnerDatabase } from './db.js';
@@ -975,6 +976,15 @@ export async function handoffCommittedSuccessor(input: {
 function parseJsonObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
+export function environmentPaymentRecipient(facilitator: Record<string, unknown> | null): string | null {
+  if (!facilitator) return null;
+  // AICODE-NOTE: Payment recipient is pinned independently of the ephemeral gas signer.
+  // Legacy health may omit the field; a present invalid value must never fall back.
+  const value = Object.prototype.hasOwnProperty.call(facilitator, 'paymentRecipient')
+    ? facilitator.paymentRecipient : facilitator.address;
+  return typeof value === 'string' && ADDRESS.test(value) && !/^0x0{40}$/i.test(value)
+    ? value.toLowerCase() : null;
+}
 function exactRequiredRecipient(taskCase: TaskCase): string | null {
   switch (taskCase.taskId) {
     case 'M1': return taskCase.objective.paymentRequirements.recipient;
@@ -1104,11 +1114,10 @@ function buildEnvironmentSelector(input: {
             typeof anvil.hardFork !== 'string' || anvil.hardFork.toLowerCase() !== localAnvil.hardFork.toLowerCase() ||
             numericIdentity(anvil.forkBlockNumber) !== BigInt(localAnvil.forkBlockNumber) ||
             typeof anvil.forkBlockHash !== 'string' || anvil.forkBlockHash.toLowerCase() !== localAnvil.forkBlockHash.toLowerCase() ||
-            (requiredRecipient !== null && (typeof facilitator.address !== 'string' ||
-              !ADDRESS.test(facilitator.address) || facilitator.address.toLowerCase() !== requiredRecipient))) continue;
+            (requiredRecipient !== null && environmentPaymentRecipient(facilitator) !== requiredRecipient)) continue;
         return environment.envId;
       }
-      throw new Error('local_bef_coordinator_no_free_compatible_environment');
+      throw new HttpError(503, 'TASK_ENVIRONMENT_UNAVAILABLE', 'No free compatible environment matches the sealed task identity');
     },
   };
 }
@@ -1589,6 +1598,17 @@ async function createBefTaskCoordinatorCore(input: {
         WHERE run_id=${runId} AND task_index=${target.taskIndex}`) as unknown as Array<{ preparation_id: string }>;
       await lease.assertHeld();
       const code = errorCode(error);
+      const reasonCode = code && /^[A-Z][A-Z0-9_]{0,100}$/.test(code) ? code : 'SUCCESSOR_PREPARATION_UNAVAILABLE';
+      const diagnosticKey = `successor:${runId}:${target.taskIndex}`;
+      if (observationProgress.get(diagnosticKey) !== reasonCode) {
+        await writeSafeEvidence(projectRoot, 'lifecycle', runId, {
+          schemaVersion: 'local-bef-successor-preparation-progress/v1',
+          classification: 'internal_worker_progress_not_task_grade_or_platform_attribution',
+          runId, taskIndex: target.taskIndex, stage: 'successor_preparation', reasonCode,
+        }, evidenceDirectory).catch(() => undefined);
+        observationProgress.set(diagnosticKey, reasonCode);
+        if (observationProgress.size > 128) observationProgress.delete(observationProgress.keys().next().value!);
+      }
       if (code === 'SUCCESSOR_OVERALL_TIME_EXHAUSTED') {
         const exactPreparation = preparation ?? (intentRows[0]
           ? await getTaskPreparation(input.db, intentRows[0].preparation_id)

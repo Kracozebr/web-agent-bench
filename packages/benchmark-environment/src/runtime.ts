@@ -11,6 +11,7 @@ import { loadManifest, type LoadedManifest, type RuntimeManifest } from './manif
 import { poolFor, registerManifest, verifySchema, withEnvironmentAdvisoryLock, withTransaction } from './db.js';
 import { EphemeralSignerStore } from './ephemeral-signer-store.js';
 import { PreparationResponseStore } from './preparation-state.js';
+import { verifyPaymentRecipient } from './payment-recipient.js';
 
 const { Pool } = pg;
 
@@ -20,6 +21,7 @@ export type RuntimeEnvironment = {
   observerRpcUrl: string;
   facilitatorUrl: string;
   facilitatorAddress: Address;
+  paymentRecipient?: Address | undefined;
   anvilIdentity: AnvilIdentity;
   facilitatorIdentity: Record<string, unknown>;
 };
@@ -361,12 +363,14 @@ export async function loadApplicationRuntime(): Promise<ApplicationRuntime> {
         actualFacilitatorVersions.viem !== manifest.local.versions.viem) {
       throw new Error('Private facilitator installed SDK versions do not match the manifest');
     }
+    const publicPayee = verifyPaymentRecipient(config.paymentRecipient, facilitatorIdentity);
     envs.set(envConfig.id, {
       id: envConfig.id,
       adminRpcUrl: envConfig.adminRpcUrl,
       observerRpcUrl: envConfig.observerRpcUrl,
       facilitatorUrl: envConfig.facilitatorUrl,
       facilitatorAddress: facilitatorIdentity.address as Address,
+      paymentRecipient: config.paymentRecipient ? publicPayee : undefined,
       anvilIdentity,
       facilitatorIdentity: { ...facilitatorIdentity, ...facilitatorHealth },
     });

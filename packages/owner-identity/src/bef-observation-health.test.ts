@@ -27,3 +27,15 @@ test('inspection health rejects changed identity, unknown fields and malformed o
     assert.equal(observationHealthMatches(value, expected), false);
   }
 });
+
+test('modern observation health carries a distinct public payee without replacing the gas signer', () => {
+  const modern={...complete,paymentRecipient:`0x${'3'.repeat(40)}`};
+  assert.notEqual(modern.paymentRecipient,modern.facilitatorAddress);
+  assert.equal(observationHealthMatches(modern,expected),true);
+  assert.equal(observationHealthMatches(complete,expected),true);
+  for(const paymentRecipient of [undefined,null,'',false,123,'invalid',`0x${'0'.repeat(40)}`]) {
+    assert.equal(observationHealthMatches({...modern,paymentRecipient},expected),false);
+  }
+  assert.equal(observationHealthMatches({...modern,facilitatorAddress:'invalid'},expected),false);
+  assert.equal(observationHealthMatches({...modern,paymentRecipientProof:true},expected),false);
+});

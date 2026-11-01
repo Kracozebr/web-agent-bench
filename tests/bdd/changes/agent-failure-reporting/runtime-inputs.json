@@ -2,22 +2,22 @@
   "schemaVersion": "afr-runtime-inputs/v1",
   "captures": {
     "reporting": {
-      "path": "artifacts/runs/agent-failure-reporting/b841a84d-5364-4a7a-887c-66da3a5a0937/capture.json",
-      "sha256": "fdb3c91e99880c0d5be49fcd48acbe5bd64c4b244e55ab93bc5229e433ddf1e7"
+      "path": "artifacts/runs/agent-failure-reporting/ad69a1a9-741f-442c-972c-2d0d2b2c63bd/capture.json",
+      "sha256": "da2a3d651493d2d1ce5e0d3053afb1b48290acbde62db490d9c299fe1127776e"
     }
   },
   "negativeReports": [
     {
-      "path": "artifacts/runs/agent-failure-reporting-validation/auth-pg-report.json",
-      "sha256": "f5179524c4445b2124bde99b70ff0cebc6a5eb54227a6cb5a60dad71c6884aca"
+      "path": "artifacts/runs/restart-fix-validation/dcfb0794-830b-4d4e-aacd-1376e8c74c69/auth-pg-report.json",
+      "sha256": "78b10c4f5d660883cb3032a6553fc9054c680f7b28a8925fb12fe9acb11acd05"
+    },
+    {
+      "path": "artifacts/runs/restart-fix-validation/dcfb0794-830b-4d4e-aacd-1376e8c74c69/policy-report.json",
+      "sha256": "47abe58591fc1b54b6ce1c7ad9efc679b3f7abd6c1c9a4443bc87da59922c3fe"
     },
     {
       "path": "artifacts/runs/agent-failure-reporting-validation/native-config-report.json",
       "sha256": "c1eeb68aba2a42eae6ad6cbf5e67ce0e4b8b3f0deaa348f6795ed4d1839d16e6"
-    },
-    {
-      "path": "artifacts/runs/agent-failure-reporting-validation/policy-report.json",
-      "sha256": "5a92f2976c7fc8661ae6bc1f79777719ee805f2f0780758546d8f7adbe4109d5"
     }
   ],
   "runtimeStatus": "passed_all_three_local_mandatory_gates"

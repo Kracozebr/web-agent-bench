@@ -765,7 +765,7 @@ async function proveSettlement(ctx: ProbeContext, session: GenerationSession, op
     || String(payment.receipt_status) !== 'success'
     || String(payment.network) !== requirements.network
     || String(payment.asset_address).toLowerCase() !== requirements.asset.toLowerCase()
-    || String(payment.facilitator_address).toLowerCase() !== requirements.payTo.toLowerCase()
+    || String(payment.payment_recipient ?? payment.facilitator_address).toLowerCase() !== requirements.payTo.toLowerCase()
     || BigInt(String(payment.amount_units)) !== amount
     || String(payment.payer_address).toLowerCase() !== session.payerAddress.toLowerCase()
     || (operation.transaction_hash && String(operation.transaction_hash).toLowerCase() !== transactionHash.toLowerCase())

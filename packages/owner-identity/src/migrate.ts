@@ -308,7 +308,7 @@ async function main() {
       }
       for (const [index, registeredClient] of (config.mcpClientRegistry ?? []).entries()) {
         const clientHash = createHash("sha256").update(registeredClient.clientId).digest("hex").slice(0, 32);
-        const clientDbId = config.betaManifest ? `oid-beta-mcp-${clientHash}` : index === 0 ? "oid-local-mcp-client-v1" : `oid-mcp-client-${clientHash}`;
+        const clientDbId = remoteResource ? `oid-remote-mcp-${clientHash}` : config.betaManifest ? `oid-beta-mcp-${clientHash}` : index === 0 ? "oid-local-mcp-client-v1" : `oid-mcp-client-${clientHash}`;
         const resourceLinkId = remoteResource ? `oid-remote-mcp-resource-${clientHash}` : config.betaManifest ? `oid-beta-mcp-resource-${clientHash}` : index === 0 ? "oid-local-mcp-client-resource-v1" : `oid-mcp-resource-${clientHash}`;
         await tx.unsafe(
           `INSERT INTO oid_oauth_client(

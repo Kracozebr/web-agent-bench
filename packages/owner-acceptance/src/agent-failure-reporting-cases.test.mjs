@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import {platformFailureReportArguments,buildNativeFailureReportingPrompt,verifyFailureRunIntent,readAgentFailureProductionHandoff,findAgentFailureReceiptTarget} from './agent-failure-reporting-cases.mjs';
 const runId='11111111-1111-4111-8111-111111111111',agentId='22222222-2222-4222-8222-222222222222',actionId='33333333-3333-4333-8333-333333333333';
 const terminal={run:{runId,status:'cancelled',terminal:true,terminalReason:null,cancellationReason:'coordinator_evaluation_unknown'},task:null};
+
+test('bounded successor preparation failure reports after authoritative terminal refresh, never from elapsed time alone',()=>{
+ const waiting={run:{runId,status:'running',terminal:false,terminalReason:null,cancellationReason:null,overallDeadline:'2000-01-01T00:00:00Z'},task:null,state:'awaiting_terminal'};
+ assert.equal(platformFailureReportArguments({runId,terminal:waiting}),null);
+ const closed={...waiting,run:{...waiting.run,status:'cancelled',terminal:true,cancellationReason:'coordinator_preparation_failed'}};
+ const args=platformFailureReportArguments({runId,terminal:closed});
+ assert.deepEqual(args,{operationId:'afr_'+runId.replaceAll('-',''),title:'Platform run failure',body:'Server-confirmed platform failure; runStatus=cancelled; reason=coordinator_preparation_failed.',runId});
+ assert.deepEqual(platformFailureReportArguments({runId,terminal:closed}),args);
+ assert.equal(platformFailureReportArguments({runId,terminal:{...closed,run:{...closed.run,cancellationReason:'coordinator_run_deadline'}}}),null);
+});
 test('only authoritative terminal platform categories create a deterministic safe private report',()=>{
  const input={terminal,runId,taskId:'H1',actionId,hiddenRankedAnswer:'never-copy',authorization:'never-copy'};
  const args=platformFailureReportArguments(input);

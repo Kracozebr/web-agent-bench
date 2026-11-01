@@ -1,3 +1,5 @@
+import { capturePaymentMetadata } from './payment-row-metadata.js';
+import { settlementSignerAddress } from './payment-identities.js';
 /**
  * H3 paid-reference to route-selected swap foundation.
  * This captures one isolated local-fork generation; it is not task acceptance.
@@ -131,7 +133,7 @@ async function readPurchaseDatabaseRows(ctx: ProbeContext, session: GenerationSe
                            transaction_hash,selected_resource_id,selected_resource_sha256,selected_offer_id,selected_amount_units::text
                       FROM bef_operation WHERE env_id=$1 AND generation_id=$2::uuid AND operation_id=$3::uuid`,
         [session.envId, session.generationId, operationId]),
-      client.query(`SELECT operation_id::text,payer_address,network,asset_address,amount_units::text,facilitator_address,
+      client.query(`SELECT operation_id::text,payer_address,network,asset_address,amount_units::text,facilitator_address,to_jsonb(bef_payment) ->> $$payment_recipient$$ AS payment_recipient,
                            transaction_hash,receipt_status,token_delta_units::text,payer_balance_before::text,payer_balance_after::text,
                            facilitator_balance_before::text,facilitator_balance_after::text
                       FROM bef_payment WHERE env_id=$1 AND generation_id=$2::uuid AND operation_id=$3::uuid`,
@@ -152,7 +154,7 @@ async function readPurchaseDatabaseRows(ctx: ProbeContext, session: GenerationSe
     }
     const rows = {
       operation: operation.rows[0] as Record<string, unknown>,
-      payment: payment.rows[0] as Record<string, unknown>,
+      payment: capturePaymentMetadata(payment.rows[0] as Record<string, unknown>),
       delivery: delivery.rows[0] as Record<string, unknown>,
       transactionCost: cost.rows[0] as Record<string, unknown>,
     };
@@ -376,7 +378,7 @@ export async function purchasePinnedResourceInSession(ctx: ProbeContext, session
     || payment.receipt_status !== 'success' || String(payment.amount_units) !== offer.amount
     || String(payment.token_delta_units) !== offer.amount
     || String(payment.payer_address).toLowerCase() !== session.payerAddress.toLowerCase()
-    || String(payment.facilitator_address).toLowerCase() !== catalog.facilitatorAddress.toLowerCase()
+    || String(payment.facilitator_address).toLowerCase() !== settlementSignerAddress(ctx)
     || String(payment.transaction_hash).toLowerCase() !== transactionHash.toLowerCase()) {
     throw new Error('task_h3_purchase_database_or_delivery_binding_mismatch');
   }
@@ -388,7 +390,7 @@ export async function purchasePinnedResourceInSession(ctx: ProbeContext, session
     event.from.toLowerCase() === session.payerAddress.toLowerCase()
     && event.to.toLowerCase() === catalog.facilitatorAddress.toLowerCase() && event.amount === BigInt(offer.amount));
   if (receipt.status.toLowerCase() !== '0x1' || receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase()
-    || receipt.from.toLowerCase() !== catalog.facilitatorAddress.toLowerCase() || tokenTransfers.length !== 1) {
+    || receipt.from.toLowerCase() !== settlementSignerAddress(ctx) || tokenTransfers.length !== 1) {
     throw new Error('task_h3_payment_receipt_or_transfer_mismatch');
   }
   const payerUsdcAfter = await readUsdcBalance(ctx, session.payerAddress, receipt.blockNumber, operationId, `${input.label}-payer-usdc-after`);
@@ -408,7 +410,7 @@ export async function purchasePinnedResourceInSession(ctx: ProbeContext, session
     || String(dbOperation.transaction_hash).toLowerCase() !== transactionHash.toLowerCase()) {
     throw new Error('task_h3_purchase_operation_row_mismatch');
   }
-  const facilitatorGas = validateFacilitatorCost(dbRows.transactionCost, transactionHash, catalog.facilitatorAddress, manifest);
+  const facilitatorGas = validateFacilitatorCost(dbRows.transactionCost, transactionHash, settlementSignerAddress(ctx), manifest);
   if (facilitatorGas.receiptBlockNumber !== BigInt(receipt.blockNumber).toString()
     || facilitatorGas.receiptBlockHash !== receipt.blockHash.toLowerCase()) throw new Error('task_h3_facilitator_receipt_binding_mismatch');
 
@@ -428,7 +430,7 @@ export async function purchasePinnedResourceInSession(ctx: ProbeContext, session
     operationId, transactionHash: transactionHash.toLowerCase(), paymentId: payment.payment_id,
     deliveryId: delivery.delivery_id, resourceId: definition.resourceId, resourceSha256: definition.resourceSha256,
     offerId: offer.id, amountUnits: offer.amount, contentBytes: pinned.bytes.byteLength,
-    deliveryProjection, envelope: paidBody, facilitatorAddress: catalog.facilitatorAddress,
+    deliveryProjection, envelope: paidBody, facilitatorAddress: catalog.facilitatorAddress, settlementSignerAddress: settlementSignerAddress(ctx),
     facilitatorGas, receipt: {
       transactionHash: receipt.transactionHash, blockNumber: BigInt(receipt.blockNumber).toString(),
       blockHash: receipt.blockHash.toLowerCase(), gasUsed: uint(receipt.gasUsed, 'facilitator_gas_used').toString(),

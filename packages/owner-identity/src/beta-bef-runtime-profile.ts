@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readPublicPaymentRecipient } from './public-payment-recipient.js';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
 import type { BetaDeploymentManifest } from './beta-profile.js';
@@ -172,8 +173,9 @@ async function liveEnvironment(fetchImpl: typeof fetch, environment: BetaBefEnvi
       numeric(anvil.chainId) !== BigInt(policy.localAnvil.chainId) || anvil.executionNetwork !== policy.localAnvil.executionNetwork ||
       anvil.hardFork !== policy.localAnvil.hardFork || numeric(anvil.forkBlockNumber) !== BigInt(policy.localAnvil.forkBlockNumber) ||
       typeof anvil.forkBlockHash !== 'string' || anvil.forkBlockHash.toLowerCase() !== policy.localAnvil.forkBlockHash.toLowerCase() ||
-      typeof facilitator.address !== 'string' || !ADDRESS.test(facilitator.address) ||
-      (taskCase && exactRecipient(taskCase) !== null && facilitator.address.toLowerCase() !== exactRecipient(taskCase)!.toLowerCase())) {
+      typeof facilitator.address !== 'string' || !ADDRESS.test(facilitator.address) || /^0x0{40}$/i.test(facilitator.address) ||
+      readPublicPaymentRecipient(facilitator) === null ||
+      (taskCase && exactRecipient(taskCase) !== null && readPublicPaymentRecipient(facilitator) !== exactRecipient(taskCase)!.toLowerCase())) {
     throw new Error('beta_environment_execution_identity_mismatch');
   }
   return { manifestSha256: body.manifestSha256.toLowerCase(), applicationSourceSha256: body.applicationSourceSha256.toLowerCase(),

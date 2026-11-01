@@ -191,6 +191,7 @@ interface HealthIdentity {
   applicationSourceSha256: string;
   envId: string;
   facilitatorAddress?: string;
+  paymentRecipient?: string;
   anvil?: {
     clientVersion: string;
     chainId: string;
@@ -329,6 +330,11 @@ function parseJson(bytes: Uint8Array): Record<string, unknown> | null {
   } catch { return null; }
 }
 
+export function paymentRecipientForHealth(health: Pick<HealthIdentity, 'facilitatorAddress' | 'paymentRecipient'>): string | null {
+  const value = Object.prototype.hasOwnProperty.call(health, 'paymentRecipient') ? health.paymentRecipient : health.facilitatorAddress;
+  return typeof value === 'string' && /^0x[0-9a-f]{40}$/i.test(value) && !/^0x0{40}$/i.test(value) ? value : null;
+}
+
 function healthIdentity(value: unknown, binding: BefTaskSessionBinding): HealthIdentity | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
@@ -342,6 +348,9 @@ function healthIdentity(value: unknown, binding: BefTaskSessionBinding): HealthI
   const facilitator = (found as Record<string, unknown>).facilitator;
   const facilitatorAddress = facilitator && typeof facilitator === 'object' && !Array.isArray(facilitator)
     ? (facilitator as Record<string, unknown>).address : undefined;
+  const hasPaymentRecipient = facilitator && typeof facilitator === 'object' && Object.prototype.hasOwnProperty.call(facilitator, 'paymentRecipient');
+  const paymentRecipient = hasPaymentRecipient ? (facilitator as Record<string, unknown>).paymentRecipient : undefined;
+  if (hasPaymentRecipient && !paymentRecipientForHealth({ paymentRecipient: paymentRecipient as string })) return null;
   const rawAnvil = (found as Record<string, unknown>).anvil;
   const anvil = rawAnvil && typeof rawAnvil === 'object' && !Array.isArray(rawAnvil)
     ? rawAnvil as Record<string, unknown> : null;
@@ -364,6 +373,7 @@ function healthIdentity(value: unknown, binding: BefTaskSessionBinding): HealthI
     boundary: 'benchmark-environment-api', manifestSha256: body.manifestSha256,
     applicationSourceSha256: body.applicationSourceSha256, envId: binding.envId,
     ...(typeof facilitatorAddress === 'string' && /^0x[0-9a-f]{40}$/i.test(facilitatorAddress) ? { facilitatorAddress } : {}),
+    ...(hasPaymentRecipient ? { paymentRecipient: paymentRecipient as string } : {}),
     ...(anvilFields ? { anvil: anvilFields } : {}),
     ...(sdkVersions ? { sdkVersions } : {}),
   };
@@ -372,7 +382,7 @@ function healthIdentity(value: unknown, binding: BefTaskSessionBinding): HealthI
 export function privateAnvilHealthMatches(health: HealthIdentity, policy: PinnedX402Policy): boolean {
   const anvil = health.anvil;
   const versions = health.sdkVersions;
-  if (!anvil || !versions || !health.facilitatorAddress) return false;
+  if (!anvil || !versions || !health.facilitatorAddress || !paymentRecipientForHealth(health)) return false;
   const expectedClient = `anvil/v${policy.localAnvil.anvilVersion}`.toLowerCase();
   let chainId: bigint;
   let forkBlock: bigint;
@@ -706,10 +716,11 @@ export async function dispatchSplitPaymentRequest(input: {
   const payPath = `/tools/${binding.envId}/pay`;
   const termsMatch = acceptedTermsMatchPins(reference, {
     policy, resourceId: command.resourceId, offerId: command.offerId, amount: selected.offer.amount,
-    payTo: health.facilitatorAddress ?? '',
+    payTo: paymentRecipientForHealth(health) ?? '',
   });
   const baseProtocol = {
     schema: 'bef-x402-split-payment-observation-v1',
+    ...(health.paymentRecipient !== undefined ? { paymentRecipient: health.paymentRecipient } : {}),
     resourceId: command.resourceId,
     offerId: command.offerId,
     resourceSha256: selected.resource.resourceSha256,
@@ -769,7 +780,7 @@ export async function dispatchSplitPaymentRequest(input: {
     declaration = signer.parsePaymentRequired(challengeHeaders, challengeBody);
     requirements = paymentRequirementMatchesPins({
       declaration, expectedResourceId: command.resourceId, expectedOffer: selected.offer, policy,
-      facilitatorAddress: health.facilitatorAddress, expectedPath: payPath,
+      facilitatorAddress: paymentRecipientForHealth(health) ?? '', expectedPath: payPath,
     });
     if (!requirements || requirements.scheme !== reference.acceptedTerms.scheme ||
         requirements.network !== reference.acceptedTerms.network ||
@@ -829,7 +840,7 @@ export async function dispatchSplitPaymentRequest(input: {
   const classified = classifySplitPayBefTaskActionResponse({
     status: paidResponse.status, headerOperationId, body, rawResponseSha256, expectedOperationId: challengeHeaderId,
     settlement, payerAddress: binding.payerAddress, network: policy.network, asset: policy.asset,
-    amount: selected.offer.amount, payTo: health.facilitatorAddress,
+    amount: selected.offer.amount, payTo: paymentRecipientForHealth(health) ?? '',
     ...(participantToolResponse ? { participantToolResponse } : {}),
   });
   const transactionHash = typeof bodyPayment?.transactionHash === 'string' && TX_HASH.test(bodyPayment.transactionHash)
@@ -923,6 +934,7 @@ export async function dispatchSplitRetrieveRequest(input: {
     environmentHealth: health,
     paymentProtocol: {
       schema: 'bef-x402-retrieve-observation-v1', payOperationId: operationId,
+      ...(health.paymentRecipient !== undefined ? { paymentRecipient: health.paymentRecipient } : {}),
       resourceId: resource.resourceId, resourceSha256: resource.resourceSha256,
       contentSha256: deliveryMatches ? resource.resourceSha256 : undefined,
       deliveryMatchesPinnedResource: deliveryMatches,
@@ -1499,6 +1511,7 @@ export class BefTaskExecutor {
       environmentHealth: health,
       paymentProtocol: {
         schema: 'bef-x402-purchase-observation-v1',
+        ...(health.paymentRecipient !== undefined ? { paymentRecipient: health.paymentRecipient } : {}),
         resourceId: command.resourceId,
         offerId: command.offerId,
         ...(policy ? { befServerSdkVersions: policy.sdkVersions } : {}),
@@ -1542,7 +1555,7 @@ export class BefTaskExecutor {
       ? offerBody.operationId : null;
     if (offerResponse.status !== 200 || !offerOperationId || !health.facilitatorAddress || !pinnedOfferResponseMatches({
       body: offerBody, command, pinnedResource: selected.resource, pinnedOffer: selected.offer,
-      policy, facilitatorAddress: health.facilitatorAddress,
+      policy, facilitatorAddress: paymentRecipientForHealth(health) ?? '',
     })) {
       return { ...baseObservation, status: 'rejected_before_execution', reasonCode: 'task_x402_offer_pin_mismatch',
         httpStatus: offerResponse.status, rawResponseSha256: offerHash,
@@ -1590,7 +1603,7 @@ export class BefTaskExecutor {
       declaration = signer.parsePaymentRequired(challengeHeaders, challengeBody);
       requirements = paymentRequirementMatchesPins({
         declaration, expectedResourceId: command.resourceId, expectedOffer: selected.offer, policy,
-        facilitatorAddress: health.facilitatorAddress, expectedPath: purchasePath,
+        facilitatorAddress: paymentRecipientForHealth(health) ?? '', expectedPath: purchasePath,
       });
       if (!requirements) throw new Error('task_x402_challenge_scope_mismatch');
       authorization = await signer.createAuthorization(declaration, requirements);
@@ -1663,6 +1676,7 @@ export class BefTaskExecutor {
       ...(participantToolResponse ? { participantToolResponse } : {}),
       paymentProtocol: {
         schema: 'bef-x402-purchase-observation-v1', resourceId: command.resourceId, offerId: command.offerId,
+        ...(health.paymentRecipient !== undefined ? { paymentRecipient: health.paymentRecipient } : {}),
         befServerSdkVersions: policy.sdkVersions,
         ownerSignerSdkVersions: OWNER_X402_SIGNER_SDK_VERSIONS,
         resourceSha256: selected.resource.resourceSha256, amountUnits: selected.offer.amount,

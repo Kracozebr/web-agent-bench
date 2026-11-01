@@ -5,7 +5,7 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sourceDigests } from '../../packages/benchmark-environment/src/probe/environment.ts';
-import { APPROVED_REFRESH_BASELINE, readPinned } from './task-release-source-refresh.mjs';
+import { APPROVED_REFRESH_BASELINE, APPROVED_RESTART_PAYMENT_MIGRATION, U1_NATIVE_GAS_RECONCILIATION, NATIVE_GAS_RECONCILIATION, readPinned } from './task-release-source-refresh.mjs';
 import { qualificationArtifactPath } from './qualification-output-paths.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -15,15 +15,22 @@ const CURRENT = ['.local/owner-identity/current-task-release.json','infrastructu
 function need(value, code) { if (!value) throw new Error(code); }
 export function parseQualificationArguments(args) {
   if (args.length === 0 || args.length === 1 && args[0] === '--plan') return { execute: false };
+  const reconcileU1NativeGas = args.length === 9 && args[7] === '--restart-payment-identity' && args[8] === '--reconcile-u1-native-gas';
+  const reconcileNativeGas = args.length === 9 && args[7] === '--restart-payment-identity' && args[8] === '--reconcile-native-gas';
+  const restartPaymentIdentity = (args.length === 8 && args[7] === '--restart-payment-identity') || reconcileU1NativeGas || reconcileNativeGas;
+  if (restartPaymentIdentity) args = args.slice(0, 7);
   need(args.length === 7 && args[0] === '--execute' && args[1] === '--application-sha256' && args[3] === '--probe-sha256' &&
     args[5] === '--manifest-sha256' && [args[2],args[4],args[6]].every((value) => /^[0-9a-f]{64}$/.test(value)), 'qualification_usage');
-  return { execute: true, application: args[2], probe: args[4], manifest: args[6] };
+  return { execute: true, application: args[2], probe: args[4], manifest: args[6], ...(restartPaymentIdentity ? { restartPaymentIdentity: true } : {}), ...(reconcileU1NativeGas ? {reconcileU1NativeGas:true} : {}), ...(reconcileNativeGas ? {reconcileNativeGas:true} : {}) };
 }
 async function main() {
   need(process.platform === 'linux' && process.cwd() === '/workspace', 'qualification_docker_required');
   const root = '/workspace', options = parseQualificationArguments(process.argv.slice(2));
   const digests = await sourceDigests(root), manifest = sha(await readFile('infrastructure/benchmark-environment/manifest.json'));
   const plan = { schemaVersion: 'bts-source-refresh-qualification-plan/v1', executionRequested: options.execute,
+    ...(options.restartPaymentIdentity ? { qualificationReason: 'restart_payment_identity', approvedMigrationAddition: APPROVED_RESTART_PAYMENT_MIGRATION } : {}),
+    ...(options.reconcileU1NativeGas ? { u1NativeGasReconciliation: U1_NATIVE_GAS_RECONCILIATION } : {}),
+    ...(options.reconcileNativeGas ? { nativeGasReconciliation: NATIVE_GAS_RECONCILIATION } : {}),
     expectedApplicationSourceSha256: digests.appSourceSha256, expectedProbeSourceSha256: digests.probeSourceSha256,
     expectedManifestSha256: manifest, approvedBaseline: APPROVED_REFRESH_BASELINE, cases: JOBS,
     stages: ['fresh_readonly_feasibility','independent_feasibility_verification','fifteen_serial_fenced_references',
@@ -125,8 +132,11 @@ async function main() {
     }
     const index = await save('source-index.json', { schemaVersion: 'bts-difficulty-v2-artifact-inputs/v1', captures: report.references });
     report.integrity = outputPin(await step('raw_integrity', 'infrastructure/owner-identity/verify-difficulty-v2-artifacts.mjs', ['--source-index',index.path,'--sha256',index.sha256]), 'verification.json');
-    const profile = await save('refresh-profile.json', { schemaVersion: 'bts-source-refresh-profile/v1',
-      classification: 'explicit_new_source_profile_not_release_acceptance', reason: 's2_public_identity_disclosure', approvedBaseline: APPROVED_REFRESH_BASELINE,
+    const profile = await save('refresh-profile.json', { schemaVersion: options.reconcileNativeGas ? 'bts-source-refresh-profile/v4' : options.reconcileU1NativeGas ? 'bts-source-refresh-profile/v3' : options.restartPaymentIdentity ? 'bts-source-refresh-profile/v2' : 'bts-source-refresh-profile/v1',
+      classification: 'explicit_new_source_profile_not_release_acceptance', reason: options.restartPaymentIdentity ? 'restart_payment_identity' : 's2_public_identity_disclosure', approvedBaseline: APPROVED_REFRESH_BASELINE,
+      ...(options.restartPaymentIdentity ? { approvedMigrationAddition: APPROVED_RESTART_PAYMENT_MIGRATION } : {}),
+      ...(options.reconcileU1NativeGas ? { u1NativeGasReconciliation: U1_NATIVE_GAS_RECONCILIATION } : {}),
+      ...(options.reconcileNativeGas ? { nativeGasReconciliation: NATIVE_GAS_RECONCILIATION } : {}),
       feasibilityVerification: report.feasibility, rawIntegrity: report.integrity, expectedApplicationSourceSha256: digests.appSourceSha256,
       expectedProbeSourceSha256: digests.probeSourceSha256, expectedManifestSha256: manifest });
     report.cases = outputPin(await step('case_assembly', 'infrastructure/owner-identity/assemble-source-refresh-candidates.mjs', ['--refresh-profile',profile.path,'--sha256',profile.sha256]), 'candidate-cases.json');

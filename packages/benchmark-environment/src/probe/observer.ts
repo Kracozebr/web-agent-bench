@@ -1,3 +1,4 @@
+import { capturePaymentMetadata } from './payment-row-metadata.js';
 import pg from 'pg';
 import { sanitizeValue, type EvidenceWriter } from './evidence.js';
 import { sha256Bytes } from './evidence.js';
@@ -295,7 +296,7 @@ export class DatabaseObserver {
       if (operationIds.length) {
         payments = await client.query(
           `SELECT payment_id, operation_id, env_id, generation_id, payer_address, network,
-                  asset_address, amount_units, facilitator_address, transaction_hash,
+                  asset_address, amount_units, facilitator_address,to_jsonb(bef_payment) ->> $$payment_recipient$$ AS payment_recipient, transaction_hash,
                   receipt_status, token_delta_units, observed_at
            FROM bef_payment WHERE operation_id = ANY($1::uuid[]) ORDER BY observed_at`,
           [operationIds],
@@ -320,7 +321,7 @@ export class DatabaseObserver {
           [operationIds],
         );
       } else {
-        payments = await client.query('SELECT payment_id, operation_id, env_id, generation_id, payer_address, network, asset_address, amount_units, facilitator_address, transaction_hash, receipt_status, token_delta_units, observed_at FROM bef_payment WHERE generation_id=$1 ORDER BY observed_at', [selector.generationId]);
+        payments = await client.query('SELECT payment_id, operation_id, env_id, generation_id, payer_address, network, asset_address, amount_units, facilitator_address,to_jsonb(bef_payment) ->> $$payment_recipient$$ AS payment_recipient, transaction_hash, receipt_status, token_delta_units, observed_at FROM bef_payment WHERE generation_id=$1 ORDER BY observed_at', [selector.generationId]);
         deliveries = await client.query('SELECT delivery_id, operation_id, resource_id, content_sha256, content_bytes, delivered_at FROM bef_delivery WHERE operation_id IN (SELECT operation_id FROM bef_operation WHERE generation_id=$1) ORDER BY delivered_at', [selector.generationId]);
         denials = await client.query('SELECT denial_id, env_id, generation_id, operation_id, route, reason_code, request_sha256, protected_state_sha256, created_at FROM bef_denial WHERE generation_id=$1 ORDER BY created_at', [selector.generationId]);
         x402Observations = await client.query(
@@ -333,7 +334,7 @@ export class DatabaseObserver {
       rows = {
         generation: generation.rows as Record<string, unknown>[],
         operations: operations.rows as Record<string, unknown>[],
-        payments: payments.rows as Record<string, unknown>[],
+        payments: payments.rows.map(capturePaymentMetadata) as Record<string, unknown>[],
         deliveries: deliveries.rows as Record<string, unknown>[],
         denials: denials.rows as Record<string, unknown>[],
         x402Observations: x402Observations.rows as Record<string, unknown>[],

@@ -1,3 +1,4 @@
+import { settlementSignerAddress } from './payment-identities.js';
 /** One ranked M2 local-fork reference using separate catalog, pay, and retrieve actions. */
 import type { RuntimeManifest } from '../manifest.js';
 import type { GenerationSession, ProbeContext } from './runner.js';
@@ -88,7 +89,7 @@ function pinnedOffer(manifest: RuntimeManifest, selected: CatalogOfferObservatio
 function facilitatorAddress(ctx: ProbeContext): string {
   const services = record(ctx.capability.services);
   const facilitator = record(services?.facilitator);
-  const address = requiredString(facilitator?.address, 'facilitator_address').toLowerCase();
+  const address = requiredString(facilitator?.paymentRecipient ?? facilitator?.address, 'facilitator_address').toLowerCase();
   if (!ADDRESS.test(address)) throw new Error('task_difficulty_v2_m2_facilitator_address_invalid');
   return address;
 }
@@ -228,7 +229,7 @@ export async function captureM2DifficultyV2Task(
     || String(payment!.operation_id) !== paid.operationId || String(payment!.amount_units) !== pin.amount
     || String(payment!.token_delta_units) !== pin.amount
     || String(payment!.transaction_hash).toLowerCase() !== paid.transactionHash.toLowerCase()
-    || String(payment!.facilitator_address).toLowerCase() !== facilitator
+    || String(payment!.facilitator_address).toLowerCase() !== settlementSignerAddress(ctx)
     || String(delivery!.operation_id) !== paid.operationId || delivery!.resource_id !== selected.resourceId
     || String(delivery!.content_sha256).toLowerCase() !== pin.resourceSha256.toLowerCase()
     || Number(delivery!.content_bytes) !== Buffer.from(paid.deliveryProjection.projection.contentBytes, 'base64').byteLength) {
@@ -269,7 +270,7 @@ export async function captureM2DifficultyV2Task(
     selectedOffer: {
       resourceId: selected.resourceId, offerId: selected.offerId, dataType: selected.dataType,
       amountUsdcUnits: selected.advertisedTotalPriceUsdcUnits, resourceSha256: pin.resourceSha256,
-      schema: pin.schema, facilitatorAddress: facilitator,
+      schema: pin.schema, facilitatorAddress: facilitator, settlementSignerAddress: settlementSignerAddress(ctx),
     },
     payment: {
       operationId: paid.operationId, transactionHash: paid.transactionHash,
