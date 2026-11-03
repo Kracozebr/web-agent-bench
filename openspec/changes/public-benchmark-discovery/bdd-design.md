@@ -1,8 +1,8 @@
 # BDD design packet: public-benchmark-discovery
 
-Workflow: [docs/task-design.md](../../../docs/task-design.md). **Status: implementation and listed assertions approved on 2026-10-31.** All 6 mandatory runtime gates: `not_run`.
+Workflow: [docs/task-design.md](../../../docs/task-design.md). **Status: implementation and listed assertions approved on 2026-10-31.** The active-delta contract and generated mirrors are installed; the executable PBD boundary adapter is still missing. A preflight records `blocked`; all 6 mandatory runtime gates remain `not_run` until the adapter, real boundary captures and independent replay are available. See the active [acceptance record](../../../tests/bdd/changes/public-benchmark-discovery/acceptance-evidence.json).
 
-**Normative proposed delta:** [spec](specs/public-benchmark-discovery/spec.md). **Target main after eventual approved sync:** `openspec/specs/public-benchmark-discovery/spec.md`. **Proposed contracts:** [bdd-harness-proposal.json](bdd-harness-proposal.json). No executable registry, Gherkin, mapper, adapter or runtime capture is installed by this packet.
+**Normative proposed delta:** [spec](specs/public-benchmark-discovery/spec.md). **Target main after eventual approved sync:** `openspec/specs/public-benchmark-discovery/spec.md`. **Approved contract inventory:** [bdd-harness-proposal.json](bdd-harness-proposal.json). The generated active-delta contract and Gherkin/mapper mirrors are traceability artifacts; they do not constitute runtime capture or acceptance.
 
 ## Intent
 
@@ -25,7 +25,7 @@ All rows are mandatory `environment` gates. Mapper module proposed for later imp
 
 ## Semantic harness contract
 
-Install the approved per-scenario entries into `tests/bdd/harness-contracts.json` only in a later apply. Every required observation and negative variant must have an independent replay derivation from raw capture, explicit outcome and missing-evidence handling. Producer counters or assertions alone are not sufficient. A variant not exercised keeps its mandatory gate non-passing. Stable IDs in the old BRL/BTS/BPC/AAP packets remain; integration extends those proofs rather than renaming old scenarios or resetting their status.
+Install the approved per-scenario entries in the separate active-delta contract at `tests/bdd/changes/public-benchmark-discovery/harness-contracts.json`; do not edit the synchronized-main contract. Every required observation and negative variant must have an independent replay derivation from raw capture, explicit outcome and missing-evidence handling. Producer counters or assertions alone are not sufficient. A variant not exercised keeps its mandatory gate non-passing. Stable IDs in the old BRL/BTS/BPC/AAP packets remain; integration extends those proofs rather than renaming old scenarios or resetting their status.
 
 ## Execution design
 

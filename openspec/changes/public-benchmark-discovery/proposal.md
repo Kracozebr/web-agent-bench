@@ -1,12 +1,13 @@
 ## Why
 
-The root currently redirects to sign-in, task descriptions are not discoverable, and public results collapse unavailable service and empty data into one message. The owner approved public task-family descriptions and scoring rules while retaining private Ranked variants and answers.
+The root currently redirects to sign-in, task descriptions are not discoverable, and public results collapse unavailable service and empty data into one message. As Web3 agents gain access to money, smart contracts, and paid services, the industry needs an independent way to compare whether they execute safely, economically, and reliably. The owner approved public task-family descriptions and scoring rules while retaining private Ranked variants and answers.
 
 Status: implementation and listed BDD assertions approved on 2026-10-31 after independent review. Planning validation and approval are separate from runtime acceptance. See [approval](approval.md) and the [cross-change index](../../../docs/beta-usability-spec-plan.md).
 
 ## What Changes
 
 - Provide an anonymous product homepage, twelve task-family descriptions, public rubrics/penalties and clear Training/Ranked pricing.
+- Position the product as independent evaluation infrastructure, not entertainment or a competition; state that results come from an isolated simulation and do not certify mainnet or production safety.
 - Publish only an explicitly authored allowlisted description/rubric projection; retain sealed cases, baseline fixtures and reference answers privately.
 - Keep the minimal existing public agent/best-result views and distinguish valid empty results, qualification restrictions and unready publication.
 - Include accessible navigation, metadata and favicon without expanding into the full historical leaderboard product.

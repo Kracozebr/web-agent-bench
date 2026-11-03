@@ -4,9 +4,9 @@ Proposed 2026-10-30 from the owner-approved direction and local inspection. The 
 
 ## Goals / Non-Goals
 
-**Goals:** Provide an anonymous product homepage, twelve task-family descriptions, public rubrics/penalties and clear Training/Ranked pricing. Publish only an explicitly authored allowlisted description/rubric projection; retain sealed cases, baseline fixtures and reference answers privately. Keep the minimal existing public agent/best-result views and distinguish valid empty results, qualification restrictions and unready publication. Include accessible navigation, metadata and favicon without expanding into the full historical leaderboard product.
+**Goals:** Position Web3 Agent Bench as independent reliability, safety and performance evaluation infrastructure. Explain the Web3 infrastructure gap created as agents gain access to money, smart contracts and paid services, and the current lack of a widely accepted independent comparison method. Provide an anonymous product homepage, twelve task-family descriptions, public rubrics/penalties and prices from a validated active release. Publish only an explicitly authored allowlisted description/rubric projection; retain sealed cases, baseline fixtures and reference answers privately. Keep the minimal existing public agent/best-result views and distinguish valid empty results, qualification restrictions and unready publication. Include accessible navigation, metadata and favicon without expanding into the full historical leaderboard product.
 
-**Non-Goals:** Full historical/search/forum leaderboard scope, changed scoring/weights, publication of exact Ranked fixtures or solutions, new visibility triggers, private report/owner disclosure, and automatic cohort activation. All original beta target-host, Google, bonus, source-bound restore/recovery and native-client gates remain. No new code, Gherkin, mappers, registry entries, runtime profile or real-money actions are delivered by this draft.
+**Non-Goals:** Full historical/search/forum leaderboard scope, changed scoring/weights, publication of exact Ranked fixtures or solutions, new visibility triggers, private report/owner disclosure, and automatic cohort activation. All original beta target-host, Google, bonus, source-bound restore/recovery and native-client gates remain. This change adds no new scoring or admission authority, durable business records, real-money actions, or cohort activation.
 
 ## Decisions
 
@@ -36,7 +36,17 @@ Owns anonymous discovery and the existing bounded public-results presentation. I
 
 Can be authored in parallel. Eligible runtime publication requires BER complete ranked evidence and the existing configured cohort-release manifest; no automatic relaxation of qualification network guards.
 
-The [integration index](../../../docs/beta-usability-spec-plan.md) lists active-delta overlap and the approval-time reconciliation. These new drafts do not supersede approved active requirements merely because they are newer. Before implementation, record exact affected legacy requirement/scenario mappings and approve coherent amendments to those active deltas; keep IDs and prior evidence history. No sync/archive is authorized here.
+The [integration index](../../../docs/beta-usability-spec-plan.md) lists active-delta overlap. This implementation keeps each existing authority intact and adds public explanatory projections and navigation only:
+
+| Existing authority | PBD integration | Preserved boundary |
+|---|---|---|
+| BTS-REQ-001/002/004; BTS-SC-001/002/007/008 | Public task copy and version/price projection use the current 12 Ranked / S1-M1-H1 Training catalog and allowlisted public rubric metadata. | No change to release admission, Training issuance, sealed cases, feedback timing, weights, or grading. |
+| BLP-REQ-001–003/009–011; BLP-SC-013/015–017 | Reuse the existing minimal public agent/result read model; add discovery links and disclose the approved interpretation rules. | No new visibility trigger, result formula, history board, private-card disclosure, or cache rule. Runtime result eligibility and first-public-action semantics remain owned by BLP/BPC. |
+| BPC-REQ-014 / BPC-SC-025 public-card contract; BPC-SC-023 beta release bundle | Reuse the existing marker-bound public list/detail read model and keep public discovery distinct from beta readiness. | No weakened marker/eligibility rules or API auth, no target/client gate promotion, and no writes from public GET routes. |
+
+These mappings reconcile the PBD packet without changing any legacy requirement/scenario ID or result history. The 2026-10-31 approval covers the unchanged six PBD scenarios and these listed assertions; any additional behavior or scenario requires renewed approval. Sync/archive remain prohibited until mandatory runtime gates pass.
+
+The public catalog API projects only validated active-release version, task IDs, weights and prices plus the separately authored safe task allowlist. It omits release identity, hashes, manifests and case data. When release metadata is absent, inconsistent or unready, explanatory content remains available but the UI does not invent a version or price.
 
 ### Evidence and replay
 
@@ -58,7 +68,7 @@ Replays are read-only and never repeat economic commands. A missing external cli
 3. Prepare compatible migrations/config changes with an existing unified pre-migration backup of bonuses, results, reports, screenshots and evidence. Rehearse restore with writes disabled, original identities and retries preserved.
 4. Qualify locally on frozen source, independently replay, then repeat required target/client gates before release. Missing host/domain or client access blocks that gate, not documentation work.
 5. Roll back via disabled feature/profile and scoped configuration restoration without erasing journals, original evidence, account/ledger/report data or unobserved effects. Preserve outstanding fences/holds and revoked credentials on restore.
-6. Sync/archive only after approved mandatory gates pass under docs/task-design.md; this planning work performs neither.
+6. Sync/archive only after approved mandatory gates pass under docs/task-design.md. Content implementation alone does not close runtime acceptance.
 
 ## Open Questions
 

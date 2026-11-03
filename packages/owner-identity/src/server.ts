@@ -31,6 +31,7 @@ import { consumeRunCancellationOutbox, expireQueuedRuns } from "./run-service.js
 import type { RunServiceDependencies } from "./run-service.js";
 import { unavailableTaskExecutionReadinessProvider, type TaskExecutionReadiness } from "./task-release.js";
 import { registerPublicRankedRoutes } from "./public-ranked.js";
+import { registerPublicBenchmarkCatalogRoutes } from "./public-benchmark-catalog.js";
 import { createPostgresTaskReleaseProvider, createPostgresTaskReleaseQuerySource } from "./task-store.js";
 import { closeExpiredTaskActions } from "./task-action-service.js";
 import { cleanupFailedLocalBefTaskCoordinatorStartup, createLocalBefTaskCoordinator,
@@ -535,14 +536,15 @@ async function start() {
   const betaOperationsEnabled = config.betaManifest !== undefined || config.localReportAcceptanceEnabled;
   const operationsPrivateDataDir = config.betaManifest?.storage.privateDataDir ??
     (config.localReportAcceptanceEnabled ? config.privateDataDir : undefined);
+  const admissionReleaseProvider = config.betaManifest
+    ? pinBetaRunReleaseProvider(createPostgresTaskReleaseProvider(db), config.betaManifest)
+    : createPostgresTaskReleaseProvider(db);
   const runServiceDependencies = {
     db,
     betaOperationsEnabled,
     ...(betaOperationsEnabled && operationsPrivateDataDir ? { privateDataDir: operationsPrivateDataDir } : {}),
     bonusOnly: config.betaManifest !== undefined,
-    admissionReleaseProvider: config.betaManifest
-      ? pinBetaRunReleaseProvider(createPostgresTaskReleaseProvider(db), config.betaManifest)
-      : createPostgresTaskReleaseProvider(db),
+    admissionReleaseProvider,
     taskReleaseSource,
     executionReadinessProvider: betaBefTaskCoordinator?.readinessProvider ?? unavailableTaskExecutionReadinessProvider,
     ...(config.betaManifest ? BETA_BEF_RUN_SERVICE_POLICY : {}),
@@ -695,6 +697,10 @@ async function start() {
 
   // AICODE-NOTE: Public qualification reads use only request.raw.socket.remoteAddress. Fastify trustProxy stays false; a shared proxy cannot enforce an end-user allowlist.
   registerPublicRankedRoutes(app, { db, config });
+  registerPublicBenchmarkCatalogRoutes(app, {
+    provider: admissionReleaseProvider,
+    resultsConfigured: config.betaManifest !== undefined,
+  });
 
   app.get("/healthz", async (_request, reply) => {
     await db.execute(sql`SELECT 1`);

@@ -1,11 +1,11 @@
 # Public benchmark explanation and results
 
-Status: approved for implementation on 2026-10-31. Runtime for all 6 scenarios: `not_run`. [Design](../../design.md), [BDD packet](../../bdd-design.md), [approval](../../approval.md).
+Status: approved for implementation on 2026-10-31; implementation in progress. Runtime for all 6 scenarios: `not_run`. [Design](../../design.md), [BDD packet](../../bdd-design.md), [approval](../../approval.md).
 
 ## ADDED Requirements
 
 ### Requirement: PBD-REQ-001 Explain the product before sign-in
-Anonymous root and benchmark navigation SHALL explain participant-owned agents, simulated bonus-only environment, Google signup, installation, Training/Ranked prices and what results measure. Public copy SHALL NOT claim real-money, mainnet or production safety. Metadata and a favicon SHALL render on public and cabinet pages. Public rules SHALL state that Ranked prohibits human solution assistance/manual execution, while pre-start setup and technical confirmations that do not choose/edit the solution are allowed; Training is exempt. Owner-side autonomy SHALL not be described as independently verified.
+Anonymous root and benchmark navigation SHALL explain participant-owned agents, the simulated bonus-only environment, Google signup, installation, Training/Ranked prices and what results measure. The homepage SHALL position the product as independent reliability, safety and performance evaluation infrastructure for Web3 AI agents, using the exact headline “Independent Reliability, Safety & Performance Benchmark for Web3 AI Agents” and explaining that access to money, smart contracts and paid services creates an infrastructure problem without a widely accepted independent comparison of agent safety, economy and reliability. Public copy SHALL NOT claim real-money, mainnet or production safety. Metadata and a favicon SHALL render on public and cabinet pages. Public rules SHALL state that Ranked prohibits human solution assistance/manual execution, while pre-start setup and technical confirmations that do not choose/edit the solution are allowed; Training is exempt. Owner-side autonomy SHALL not be described as independently verified.
 
 Scenario setup: Anonymous browser and healthy public web runtime
 

@@ -18,19 +18,27 @@ type ResultState =
   | { kind: 'loading' }
   | { kind: 'ready'; agent: PublicAgent }
   | { kind: 'missing' }
+  | { kind: 'restricted' }
   | { kind: 'unavailable' };
 
 export default function PublicAgentPage() {
   const params = useParams<{ agentId: string }>();
   const agentId = params.agentId;
   const [result, setResult] = useState<ResultState>({ kind: 'loading' });
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
+    setResult({ kind: 'loading' });
     void fetch(`/api/public/agents/${encodeURIComponent(agentId)}`, { cache: 'no-store', credentials: 'same-origin' })
       .then(async (response) => {
+        if (response.status === 403) {
+          if (active) setResult({ kind: 'restricted' });
+          return;
+        }
         if (response.status === 404) {
-          if (active) setResult({ kind: 'missing' });
+          const body = await response.json().catch(() => ({})) as { error?: { code?: string } };
+          if (active) setResult({ kind: body.error?.code === 'NOT_FOUND' ? 'missing' : 'unavailable' });
           return;
         }
         if (!response.ok) throw new Error('public_result_unavailable');
@@ -39,7 +47,7 @@ export default function PublicAgentPage() {
       })
       .catch(() => { if (active) setResult({ kind: 'unavailable' }); });
     return () => { active = false; };
-  }, [agentId]);
+  }, [agentId, attempt]);
 
   if (result.kind === 'loading') {
     return <section className="page-shell"><p className="fine" role="status">Loading published result…</p></section>;
@@ -48,7 +56,10 @@ export default function PublicAgentPage() {
     return <section className="page-shell"><p className="empty-state" role="status">This published result was not found.</p></section>;
   }
   if (result.kind === 'unavailable') {
-    return <section className="page-shell"><p className="notice notice-warning" role="status">This network cannot read qualification results, or the results service is not ready.</p></section>;
+    return <section className="page-shell stack-sm"><div className="notice notice-warning" role="status"><p>The public results service is not configured or is temporarily unavailable.</p><button className="button button-small" onClick={() => setAttempt((value) => value + 1)}>Retry</button></div></section>;
+  }
+  if (result.kind === 'restricted') {
+    return <section className="page-shell stack-sm"><div className="notice notice-warning" role="status"><p>Published results cannot be read from this network. Qualification restrictions remain in effect.</p><button className="button button-small" onClick={() => setAttempt((value) => value + 1)}>Retry</button></div></section>;
   }
 
   const { agent } = result;

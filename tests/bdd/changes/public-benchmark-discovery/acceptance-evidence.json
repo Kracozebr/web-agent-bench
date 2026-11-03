@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "change": "public-benchmark-discovery",
+  "lifecycle_phase": "active-delta",
+  "normative_source": "openspec/changes/public-benchmark-discovery/specs/*/spec.md",
+  "acceptance_state": "blocked",
+  "execution_started": false,
+  "command_executed": false,
+  "blocked_prerequisites": [
+    {
+      "code": "target_host_profile_https_not_selected",
+      "detail": "Approval records the target host, domain and HTTPS profile as unresolved."
+    },
+    {
+      "code": "public_boundary_capture_and_independent_observer_not_profiled",
+      "detail": "No source-pinned PBD browser/API capture with independent read-only replay is available."
+    },
+    {
+      "code": "authoritative_ranked_handoff_capture_not_available",
+      "detail": "No PBD-linked coordinator handoff, best-pointer comparison and public-cache replay capture is available."
+    }
+  ],
+  "scenario_results": {
+    "PBD-SC-001": "not_run",
+    "PBD-SC-002": "not_run",
+    "PBD-SC-003": "not_run",
+    "PBD-SC-004": "not_run",
+    "PBD-SC-005": "not_run",
+    "PBD-SC-006": "not_run"
+  }
+}

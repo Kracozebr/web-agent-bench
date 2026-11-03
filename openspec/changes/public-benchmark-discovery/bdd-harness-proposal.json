@@ -1,10 +1,14 @@
 {
   "schema_version": "beta-usability-bdd-proposal/v1",
   "change": "public-benchmark-discovery",
-  "status": "approved_not_installed",
+  "status": "approved",
   "approval": "approved_2026-10-31",
   "execution_status": "not_run",
-  "scenarios": {
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/public-benchmark-discovery/harness-contracts.json",
+  "normative_delta": "specs/public-benchmark-discovery/spec.md",
+  "protected_scenarios": {
     "PBD-SC-001": {
       "requirement_id": "PBD-REQ-001",
       "title": "Explain the product before sign-in",
@@ -225,4 +229,3 @@
     }
   }
 }
-
