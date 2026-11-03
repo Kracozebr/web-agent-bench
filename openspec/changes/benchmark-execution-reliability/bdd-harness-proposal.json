@@ -1,6 +1,6 @@
 {
   "normative_delta": "specs/benchmark-execution-reliability/spec.md",
-  "note": "Owner approved all five reviewed packets/assertions2026-10-31; reliability first. Semantic scenario setup preserved before header to match existing adjacent WHEN/THEN parser.",
+  "note": "Owner approved all five reviewed packets/assertions2026-10-31; reliability first. Semantic scenario setup preserved before header to match existing adjacent WHEN/THEN parser. Owner explicitly approved all-fifteen strict admitted-action observation and BER-SC-009–012 on 2026-11-02; runtime acceptance remains not_run.",
   "proposal_schema": "bdd-harness-contract-proposal/v1",
   "protected_scenarios": {
     "BER-SC-001": {
@@ -246,6 +246,127 @@
       "requirement_id": "BER-REQ-008",
       "runtime_status": "not_run",
       "title": "Attribute failures with bounded diagnostic evidence"
+    },
+    "BER-SC-009": {
+      "adapter": "benchmark_execution_reliability",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_participant_mcp_bef_owner_postgres_rpc_census",
+      "durable_effects": [
+        "immutable_chosen_command_and_effect_history",
+        "complete_independent_family_census"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ber_sc_009",
+      "negative_variants": [
+        "all_fifteen_paths_all_nine_kinds",
+        "objective_and_off_goal_scoped_reads",
+        "wrong_recipient_amount_route_allowance",
+        "noop_and_reverted_actions",
+        "protocol_disabled_purchase",
+        "foreign_or_invalid_reference",
+        "late_action_rejected"
+      ],
+      "required_observations": [
+        "all_admitted_sequences_accounted",
+        "scope_denials_unchanged",
+        "no_automatic_repair"
+      ],
+      "requirement_id": "BER-REQ-009",
+      "runtime_status": "not_run",
+      "title": "Observe every admitted learning action across all fifteen variants"
+    },
+    "BER-SC-010": {
+      "adapter": "benchmark_execution_reliability",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_independent_observer_unchanged_evaluator_postgres",
+      "durable_effects": [
+        "no_fabricated_zero_or_success",
+        "unchanged_task_rubric"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ber_sc_010",
+      "negative_variants": [
+        "s1_exact_wrong_extra_and_reserve",
+        "s2_s3_paid_delivery_mutation",
+        "s4_mutate_then_restore",
+        "paid_only_unrelated_chain_action",
+        "missing_or_changed_receipt_row_hash_generation",
+        "missing_read_or_block_observation",
+        "contradictory_or_truncated_census"
+      ],
+      "required_observations": [
+        "known_effects_reach_existing_rubric",
+        "missing_or_contradictory_stays_unknown"
+      ],
+      "requirement_id": "BER-REQ-010",
+      "runtime_status": "not_run",
+      "title": "Grade known effects and preserve unknown observations"
+    },
+    "BER-SC-011": {
+      "adapter": "benchmark_execution_reliability",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_split_payment_delivery_rpc_owner_status",
+      "durable_effects": [
+        "one_economic_effect_per_operation",
+        "no_double_count_or_ambiguous_payment_replacement"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ber_sc_011",
+      "negative_variants": [
+        "confirmed_pay_without_retrieve",
+        "rejected_or_late_retrieve",
+        "wrong_scoped_resource_read",
+        "lost_action_response",
+        "repeated_status_and_finish",
+        "chain_gas_with_payment"
+      ],
+      "required_observations": [
+        "payment_not_delivery",
+        "immutable_action_status_evidence",
+        "separate_principal_gas_service_cost"
+      ],
+      "requirement_id": "BER-REQ-011",
+      "runtime_status": "not_run",
+      "title": "Preserve separate payment delivery and single-count costs"
+    },
+    "BER-SC-012": {
+      "adapter": "benchmark_execution_reliability",
+      "allowed_private_calls": [],
+      "boundary": "environment",
+      "boundary_detail": "actual_worker_coordinator_restart_bef_postgres_sealed_evidence",
+      "durable_effects": [
+        "one_evaluation_and_settlement",
+        "no_admission_debit_aggregate_report_duplication"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "gate": "environment",
+      "mandatory": true,
+      "named_mapper": "test_ber_sc_012",
+      "negative_variants": [
+        "deadline_at_dispatch_and_receipt",
+        "restart_after_confirmation_before_observe_seal_evaluate",
+        "duplicate_reconcile_finalize",
+        "composite_child_replay",
+        "unreconciled_action_at_cutoff",
+        "known_handoff_next_task_and_explicit_terminal"
+      ],
+      "required_observations": [
+        "stable_closure_and_cutoff",
+        "append_only_evidence",
+        "next_task_and_explicit_terminal"
+      ],
+      "requirement_id": "BER-REQ-012",
+      "runtime_status": "not_run",
+      "title": "Recover admitted-action observation closure and handoff"
     }
   },
   "review_status": "approved",

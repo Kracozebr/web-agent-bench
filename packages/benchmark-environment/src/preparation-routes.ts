@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { Address, Hex } from 'viem';
 import { resetAnvilFork } from './chain.js';
+import {createPreparationDiagnostics,PreparationHttpFailure} from './preparation-diagnostics.js';
 import { withEnvironmentAdvisoryLock, withTransaction, runTokenHash } from './db.js';
 import {
   GenerationFixtureFailure,
@@ -68,7 +69,7 @@ async function recoverFacilitator(runtime: ApplicationRuntime, environment: Runt
     body: JSON.stringify({ manifestSha256: runtime.loadedManifest.sha256 }),
     signal: AbortSignal.timeout(30_000),
   });
-  if (!response.ok) throw new Error('facilitator_recovery_failed');
+  if (!response.ok) throw new PreparationHttpFailure(response.status);
   const result = await response.json() as unknown;
   if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('facilitator_recovery_response_invalid');
   const body = result as Record<string, unknown>;
@@ -154,6 +155,7 @@ export function registerPreparationRoutes(app: FastifyInstance, runtime: Applica
       const requestSha256 = preparationRequestHash(pins);
       const expiresInSeconds = runtime.manifest.guardrails.maxTrialSeconds;
       let attemptedGenerationId: string | null = null;
+      const preparationDiagnostics=createPreparationDiagnostics();
 
       try {
         const result = await withEnvironmentAdvisoryLock(runtime.pool, envId, async () => {
@@ -171,17 +173,17 @@ export function registerPreparationRoutes(app: FastifyInstance, runtime: Applica
           const readiness = await preparationReadiness(runtime, envId);
           if (readiness !== 'ready') return { kind: readiness as 'active' | 'unfinished' | 'unresolved' };
 
-          const reserved = await withTransaction(runtime.pool, async (client) =>
-            reservePreparation(client, pins));
+          const reserved = await preparationDiagnostics.at('reserve_preparation',()=>withTransaction(runtime.pool, async (client) =>
+            reservePreparation(client, pins)));
           if (reserved !== 'created') return { kind: 'identity_conflict' as const };
 
           let generationId: string | null = null;
           try {
             // A new task always starts from a reset fork. The environment lock
             // remains held across reset, facilitator recovery, and fixture setup.
-            const resetIdentity = await resetAnvilFork(environment.adminRpcUrl, runtime.config.sourceProxyUrl, runtime.manifest);
-            await recoverFacilitator(runtime, environment);
-            await recordPreparationResetProof(runtime.pool, {
+            const resetIdentity = await resetAnvilFork(environment.adminRpcUrl, runtime.config.sourceProxyUrl, runtime.manifest,preparationDiagnostics.at);
+            await preparationDiagnostics.at('recover_facilitator',()=>recoverFacilitator(runtime, environment));
+            await preparationDiagnostics.at('persist_reset_proof',()=>recordPreparationResetProof(runtime.pool, {
               preparationId,
               envId,
               resetIdentity: {
@@ -189,7 +191,7 @@ export function registerPreparationRoutes(app: FastifyInstance, runtime: Applica
                 manifestSha256: runtime.loadedManifest.sha256,
                 facilitatorRecovered: true,
               },
-            });
+            }));
 
             generationId = randomUUID();
             attemptedGenerationId = generationId;
@@ -257,13 +259,9 @@ export function registerPreparationRoutes(app: FastifyInstance, runtime: Applica
             runtime.preparationResponses.erasePreparation(envId, preparationId);
             if (generationId) runtime.signerStore.eraseGeneration({ envId, generationId });
             await markPreparationUnknown(runtime.pool, { preparationId, envId }).catch(() => undefined);
-            const fixturePhase = error instanceof GenerationFixtureFailure ? error.phase : 'unknown';
-            const fixtureCauseClass = error instanceof GenerationFixtureFailure ? error.causeClass : null;
             return {
               kind: 'failed' as const,
-              fixturePhase,
-              fixtureCauseClass,
-              fixtureAdminRpc: error instanceof GenerationFixtureFailure ? error.adminRpcDiagnostic : null,
+              ...preparationDiagnostics.failure(error),
               fixtureState: 'unknown' as const,
             };
           }
@@ -293,14 +291,17 @@ export function registerPreparationRoutes(app: FastifyInstance, runtime: Applica
             fixturePhase: result.fixturePhase,
             fixtureCauseClass: result.fixtureCauseClass,
             fixtureAdminRpc: result.fixtureAdminRpc,
+            preparationProgress:result.preparationProgress,
+            ...('preparationSqlState' in result?{preparationSqlState:result.preparationSqlState}:{}),
+            ...('preparationHttpStatus' in result?{preparationHttpStatus:result.preparationHttpStatus}:{}),
             fixtureState: result.fixtureState,
           });
         }
         return reply.code(201).send(result.response);
-      } catch {
+      } catch(error) {
         runtime.preparationResponses.erasePreparation(envId, preparationId);
         if (attemptedGenerationId) runtime.signerStore.eraseGeneration({ envId, generationId: attemptedGenerationId });
-        return reply.code(503).send({ error: 'preparation_unavailable', outcome: 'unknown' });
+        return reply.code(503).send({ error: 'preparation_unavailable', outcome: 'unknown',...preparationDiagnostics.failure(error) });
       }
     },
   );

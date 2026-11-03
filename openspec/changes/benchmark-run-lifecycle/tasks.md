@@ -49,7 +49,7 @@
 
 ## 7. Feedback and handoff
 
-- [ ] 7.1 Implement scoped run/feedback read models with closed S3/M2/H3/U1 reason-category allowlists and no exact case parameters/solution, compact ranked scores/error reasons without a participant tool-call journal, and training-versus-ranked release points without reference-solution leakage. Gate: environment BRL-SC-016.
+- [x] 7.1 Implement scoped run/feedback read models and expose stored evaluations through the agent's existing `runs.current_task` response: selected open Training results after each task evaluation; Ranked results only after run termination, including known task grades when terminal run status is unknown. Preserve closed S3/M2/H3/U1 reason-category allowlists, omit exact case parameters/solutions and the participant tool-call journal, and never rerun grading during reads. Gate: environment BRL-SC-016 passed with isolated PostgreSQL and read-only observer evidence.
 - [ ] 7.2 Atomically establish/preserve the shared BLP-REQ-011 marker with complete-verified-ranked terminal state and idempotent eligibility handoff including immutable achieving-version metadata; other outcomes cannot publish a card. Gate: environment BRL-SC-017 and BLP-SC-017.
 - [ ] 7.3 Implement coordinator event replay comparison and missing-artifact reporting without replaying external actions or overwriting original bundles. Gate: environment BRL-SC-018.
 

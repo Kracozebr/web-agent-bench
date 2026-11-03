@@ -1,4 +1,5 @@
 import { makeChainCaptureFixture } from './task-chain-capture-packet.fixture.js';
+import { makeAdmittedActionsCaptureFixture } from './task-admitted-actions-capture-packet.fixture.js';
 import { validPaidDataCapturePacket } from './task-paid-data-capture-packet.fixture.js';
 import { createS3CapturePacketFixture } from './task-s3-capture-packet.fixture.js';
 import { canonicalTaskJson } from './task-release.js';
@@ -360,6 +361,20 @@ test('observation sink accepts strict chain, paid-data and S3 packets and reject
    assert.deepEqual(await ports.evidenceSink.write(packet),retained);
    await assert.rejects(ports.evidenceSink.write({...packet,schemaVersion:'bts-unreviewed-capture/v1'}),/bef_observer_packet_invalid/);
    await assert.rejects(ports.evidenceSink.write({...packet,signature:'must-not-be-retained'}));
+  }
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('bounded observation storage retains the three reviewed family schemas without claiming runtime effect proof',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bef-admitted-observation-packets-'));
+ try{
+  const {ports}=await makePorts(root),fixture=await makeAdmittedActionsCaptureFixture();
+  for(const packet of [fixture.paid,fixture.chain,fixture.packet]){
+   const retained=await ports.evidenceSink.write(packet);
+   assert.match(retained.sha256,/^[0-9a-f]{64}$/);
+   assert.deepEqual(await ports.evidenceSink.write(packet),retained);
+   await assert.rejects(ports.evidenceSink.write({...packet,signature:'synthetic-never-an-actual-signature'}));
+   await assert.rejects(ports.evidenceSink.write({...packet,schemaVersion:'bts-unreviewed-family/v1'}));
   }
  }finally{await rm(root,{recursive:true,force:true});}
 });

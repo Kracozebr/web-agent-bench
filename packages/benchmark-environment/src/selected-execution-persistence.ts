@@ -7,6 +7,8 @@ import type { PoolClient } from 'pg';
 import type { Address, Hex } from 'viem';
 import {
   parseSelectedAction,
+  parseRecipientCodeObservation,
+  type RecipientCodeObservation,
   type ExecutionMeasurement,
   type ExecutionPersistence,
   type ExecutionSnapshot,
@@ -571,6 +573,17 @@ async function appendEvent(
   );
 }
 
+export type RecipientGuardOperationBinding={operationId:string;environmentId:string;generationId:string;requestSha256:string;operationKind:string;actionKind:string;selectedAction:unknown;operationTransactionHash:unknown;selectedTransactionHash:unknown;prestate:unknown;intent:unknown;measurement:unknown};
+/** Structural proof is only bound here; grading still requires an independent historical source observation. */
+export function validateRecipientGuardOperationBinding(value:unknown,binding:RecipientGuardOperationBinding):RecipientCodeObservation{
+ const proof=parseRecipientCodeObservation(value),action=selectedAction(binding.selectedAction,binding.actionKind);
+ if(binding.operationKind!=='swap'||action.kind!=='swap'||proof.operationId!==binding.operationId.toLowerCase()||proof.environmentId!==binding.environmentId||
+  proof.generationId!==binding.generationId.toLowerCase()||proof.requestSha256!==binding.requestSha256.trim().toLowerCase()||proof.recipient!==action.recipient.toLowerCase()||
+  binding.operationTransactionHash!==null||binding.selectedTransactionHash!==null||binding.prestate!==null||binding.intent!==null||binding.measurement!==null)
+  fail('execution_persistence_recipient_guard_binding_conflict');
+ return proof;
+}
+
 /**
  * Every method uses the supplied transaction client and refuses to repair a
  * contradictory operation/hash binding. SQL exceptions are allowed to reach
@@ -1029,8 +1042,28 @@ export class PostgresExecutionPersistence implements ExecutionPersistence {
     return { kind: 'unknown', transactionHash: target.transactionHash, observationSha256: evidenceHash, observationRef };
   }
 
-  async rejectBeforeBroadcast(client: PoolClient, operationId: string, reasonCode: string): Promise<void> {
+  async rejectBeforeBroadcast(client: PoolClient, operationId: string, reasonCode: string,recipientCodeObservation?:RecipientCodeObservation): Promise<void> {
     const safeReason = /^[a-z0-9_]{1,80}$/.test(reasonCode) ? reasonCode : 'execution_rejected';
+    let checkedRecipientObservation:RecipientCodeObservation|undefined;
+    if(safeReason==='selected_recipient_must_be_eoa'||recipientCodeObservation!==undefined){
+      if(safeReason!=='selected_recipient_must_be_eoa'||recipientCodeObservation===undefined)fail('execution_persistence_recipient_guard_invalid');
+      const original=await client.query<OperationRow&SelectedExecutionRow&{operation_transaction_hash:string|null}>(
+        `SELECT o.operation_id,o.env_id,o.generation_id,o.participant_id,o.operation_kind,o.status,o.request_sha256,o.receipt_status,
+          o.transaction_hash AS operation_transaction_hash,e.action_kind,e.selected_action_json,e.prestate_json,e.transaction_intent_json,e.measurement_json,e.transaction_hash,e.outcome,e.reason_code
+         FROM bef_operation o JOIN bef_selected_execution e ON e.operation_id=o.operation_id AND e.env_id=o.env_id AND e.generation_id=o.generation_id
+         WHERE o.operation_id=$1 FOR UPDATE OF o,e`,[operationId]);
+      const row=original.rows[0];if(!row||original.rows.length!==1)fail('execution_persistence_recipient_guard_binding_conflict');
+      checkedRecipientObservation=validateRecipientGuardOperationBinding(recipientCodeObservation,{operationId:row!.operation_id,environmentId:row!.env_id,generationId:row!.generation_id,
+        requestSha256:row!.request_sha256,operationKind:row!.operation_kind,actionKind:row!.action_kind,selectedAction:row!.selected_action_json,
+        operationTransactionHash:row!.operation_transaction_hash,selectedTransactionHash:row!.transaction_hash,prestate:row!.prestate_json,intent:row!.transaction_intent_json,measurement:row!.measurement_json});
+      if(row!.status==='rejected'){
+        const events=await client.query<{event_json:unknown}>(`SELECT event_json FROM bef_selected_execution_event WHERE operation_id=$1 AND env_id=$2 AND generation_id=$3 AND event_kind='rejected_before_broadcast' ORDER BY event_sequence LIMIT 2`,[operationId,row!.env_id,row!.generation_id]);
+        if(row!.outcome!=='rejected'||row!.reason_code!==safeReason||row!.receipt_status!=='not_submitted'||events.rows.length!==1||
+          canonicalJson(decodeJson(events.rows[0]!.event_json))!==canonicalJson({reasonCode:safeReason,recipientCodeObservation:checkedRecipientObservation}))fail('execution_persistence_recipient_guard_replay_conflict');
+        return;
+      }
+      if(!['accepted','awaiting_payment'].includes(row!.status)||row!.outcome!=='prepared'||row!.receipt_status!=='not_submitted')fail('execution_persistence_recipient_guard_binding_conflict');
+    }
     const updated = await client.query<OperationRow>(
       `UPDATE bef_operation SET status='rejected',receipt_status='not_submitted',completed_at=clock_timestamp()
         WHERE operation_id=$1 AND status IN ('accepted','awaiting_payment') AND transaction_hash IS NULL
@@ -1060,7 +1093,7 @@ export class PostgresExecutionPersistence implements ExecutionPersistence {
       generationId: operation!.generation_id,
       eventKind: 'rejected_before_broadcast',
       transactionHash: null,
-      event: { reasonCode: safeReason },
+      event: { reasonCode: safeReason,...(checkedRecipientObservation?{recipientCodeObservation:checkedRecipientObservation}:{}) },
     });
   }
 

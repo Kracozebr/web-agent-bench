@@ -13,7 +13,7 @@ const OFFICIAL_EVIDENCE_CLONE_PREFIX = 'official-evidence/';
 const OFFICIAL_EVIDENCE_SOURCE_MANIFEST_PATH = 'evidence/official-evidence-manifest.json';
 const OFFICIAL_EVIDENCE_MANIFEST_PATH = 'operator/official-evidence-manifest.json';
 const OFFICIAL_EVIDENCE_RECEIPT_PATH = 'operator/official-evidence-restore.json';
-const MAX_OFFICIAL_EVIDENCE_FILES = 8192;
+const MAX_OFFICIAL_EVIDENCE_FILES = 16384;
 const MAX_OFFICIAL_EVIDENCE_ENTRIES = 16384;
 const REPORT_TABLES = new Set([
   'oid_support_report',

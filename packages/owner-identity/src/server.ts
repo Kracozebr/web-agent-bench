@@ -13,6 +13,10 @@ import { registerBetaOperationsRoutes } from "./beta-operations-routes.js";
 import { registerBetaUsageSupportRoutes } from "./beta-usage-support-routes.js";
 import { pinnedBetaClientRegistryFromManifest } from "./beta-usage-support-export.js";
 import { registerSupportReportRoutes } from "./report-routes.js";
+import { registerDiagnosticRoutes } from './mcp-diagnostics-routes.js';
+import { enforceApiMutationOrigin } from './api-mutation-origin.js';
+import { registerDiagnosticIngress } from './mcp-diagnostics-ingress.js';
+import { cleanupDiagnosticRetention, type DiagnosticDependencies } from './mcp-diagnostics-service.js';
 import { registerSupportReportMcpTools } from "./report-mcp.js";
 import { createReportClosureStateStore } from "./report-closure-state.js";
 import { runReportHousekeeping, runReportRetentionCleanup, type ReportServiceDependencies } from "./report-service.js";
@@ -36,7 +40,7 @@ import { acquireCoordinatorForStartup } from "./coordinator-startup.js";
 import { pinBetaRunReleaseProvider } from "./beta-bef-runtime-profile.js";
 import { createAuth, siweRequestFingerprint, withSiweRequest } from "./auth.js";
 import { loadConfig, getGoogleMode, isPathOutsideDirectory } from "./config.js";
-import { createDatabase } from "./db.js";
+import { createDatabase, createDiagnosticDatabase } from "./db.js";
 import { HttpError } from "./http-error.js";
 import { responseError as mapResponseError } from "./http-error-response.js";
 import {
@@ -59,6 +63,7 @@ import {
 
 const config = loadConfig();
 const { db, client } = createDatabase(config);
+let diagnosticDatabase:ReturnType<typeof createDiagnosticDatabase>|undefined;
 const invalidationOptions = {
   journalPath: process.env.OID_AGENT_INVALIDATION_JOURNAL_FILE,
   floorPath: process.env.OID_AGENT_INVALIDATION_FLOOR_FILE,
@@ -505,18 +510,8 @@ async function start() {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Cache-Control", "no-store");
-    const pathname = new URL(request.url, config.publicOrigin).pathname;
-    // AICODE-NOTE: Remote agent HTTP acceptance has no browser Origin header; its route authenticates the bearer principal and rejects a mismatched optional Origin.
-    const isAgentRunAcceptance = /^\/api\/agent\/run-intents\/[0-9a-f-]{36}\/accept$/i.test(pathname);
-    const isAgentTaskOperation = /^\/api\/agent\/runs\/[0-9a-f-]{36}\/tasks\/(?:[0-9]|1[01])\/(?:actions|finish)$/i.test(pathname);
-    const isAgentSupportReportMutation = request.method === "POST" &&
-      /^\/api\/agent\/(?:reports|report-images\/uploads|report-images\/uploads\/[0-9a-f-]{36}\/(?:chunks|finish))$/i.test(pathname);
-    if (pathname.startsWith("/api/") && request.method !== "GET" && request.method !== "HEAD" &&
-      !pathname.startsWith("/api/auth/") && pathname !== "/api/agent/mcp" && !isAgentRunAcceptance &&
-      !isAgentTaskOperation && !isAgentSupportReportMutation) {
-      try { await requireOrigin(request); }
-      catch (error) { return responseError(reply, error); }
-    }
+    try { await enforceApiMutationOrigin(request, config.publicOrigin, requireOrigin); }
+    catch (error) { return responseError(reply, error); }
   });
 
   const taskReleaseSource = createPostgresTaskReleaseQuerySource(db);
@@ -554,6 +549,8 @@ async function start() {
     ...(config.localBefTaskCoordinatorEnabled ? LOCAL_BEF_RUN_SERVICE_POLICY : {})
   } satisfies RunServiceDependencies & { taskReleaseSource: ReturnType<typeof createPostgresTaskReleaseQuerySource> };
   let reportServiceDependencies: ReportServiceDependencies | undefined;
+  let diagnosticServiceDependencies:DiagnosticDependencies|undefined;
+  let diagnosticMaintenance:Promise<unknown>|undefined;
   if (config.betaManifest || config.localReportAcceptanceEnabled) {
     if (!config.privateDataDir || !config.betaReportClosureStateFile) throw new Error("report_closure_state_path_missing");
     reportServiceDependencies = {
@@ -561,8 +558,13 @@ async function start() {
       privateDataDir: resolve(config.privateDataDir),
       reportClosureState: createReportClosureStateStore(config.betaReportClosureStateFile)
     };
+    diagnosticDatabase=createDiagnosticDatabase(config);
+    diagnosticServiceDependencies={db:diagnosticDatabase.db,reportClosureState:reportServiceDependencies.reportClosureState};
   }
   const agentRouteDependencies: AgentRouteDependencies = {
+    ...(diagnosticServiceDependencies ? {diagnosticIngress:registerDiagnosticIngress(app, diagnosticServiceDependencies, {
+      actionDb:db,authorizationDb:db
+    })} : {}),
     ...(invalidationStore ? { invalidationStore } : {}),
     ...(acceptanceMcpObserver ? { observeAgentMcp: acceptanceMcpObserver.observe } : {}),
     db,
@@ -633,6 +635,15 @@ async function start() {
   });
 
   if (reportServiceDependencies) {
+    registerDiagnosticRoutes(app, {
+      service: diagnosticServiceDependencies!,
+      oauth: { db, config, ...(invalidationStore ? { invalidationStore } : {}) },
+      resolveOwner: async request => {
+        const session = await authenticated(request);
+        return { ownerId: (await ownerFor(session)).owner.id, authSessionId: session.session.id };
+      },
+      requireAdmin, requireOrigin, rateLimit
+    });
     registerSupportReportRoutes(app, {
       db, service: reportServiceDependencies, publicOrigin: config.publicOrigin,
       agentRequestHosts: allowedAgentRequestHosts(config), rateLimitMax: config.authRateLimitMax,
@@ -1433,7 +1444,11 @@ async function start() {
       try { await closeExpiredTaskActions({ db }, runMaintenanceBatchSize); }
       catch (error) { requestSafeLog(error); }
       if (reportServiceDependencies) {
-        try { await runReportHousekeeping(reportServiceDependencies); }
+        try { await runReportHousekeeping(reportServiceDependencies);
+          if(diagnosticServiceDependencies&&!diagnosticMaintenance){
+            diagnosticMaintenance=cleanupDiagnosticRetention(diagnosticServiceDependencies).catch(requestSafeLog).finally(()=>{diagnosticMaintenance=undefined;});
+          }
+        }
         catch (error) { requestSafeLog(error); }
       }
     })();
@@ -1457,9 +1472,14 @@ async function start() {
     }
     await runMaintenanceInFlight;
     await taskCoordinator?.stop();
+    await diagnosticDatabase?.client.end({timeout:2});
+    await diagnosticMaintenance;
   });
   app.setErrorHandler((error, _request, reply) => responseError(reply, error));
-  if (reportServiceDependencies) await runReportRetentionCleanup(reportServiceDependencies);
+  if (reportServiceDependencies) {
+    await runReportRetentionCleanup(reportServiceDependencies);
+    await cleanupDiagnosticRetention(diagnosticServiceDependencies!);
+  }
   if (taskCoordinator && !taskCoordinator.ownsLease()) {
     throw new Error("bef_task_coordinator_lease_lost_before_api_listen");
   }
@@ -1487,5 +1507,6 @@ start().catch(async (error: unknown) => {
     startupCoordinatorForCleanup, () => client.end(),
   )) requestSafeLog(cleanupError);
   startupCoordinatorForCleanup = undefined;
+  await diagnosticDatabase?.client.end({timeout:2}).catch(requestSafeLog);
   process.exitCode = 1;
 });

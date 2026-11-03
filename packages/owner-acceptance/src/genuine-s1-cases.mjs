@@ -1026,6 +1026,18 @@ async function performGenuineActorActions(context, task) {
   if (output.taskIds.length === 1) output.taskDisclosure = disclosure;
   record('strict_preparation_start_and_agent_task_disclosure', 'verified', { taskIndex: context.taskIndex, taskId,
     environmentId: task.environmentId, mode: task.mode });
+  if (context.input.berAdmittedMatrixProfile !== undefined) {
+    // AICODE-NOTE: Fixed learning-action controls use the same real scoped MCP surface;
+    // known failed task grades remain valid worker results, not harness failures.
+    const {performBerMatrixActions}=await import('./ber-matrix-controller.mjs');
+    return performBerMatrixActions(context,task);
+  }
+  if (context.input.berAdmittedS1PayOnly === true) {
+    // AICODE-NOTE: Exact reviewed learning-mistake smoke, not a substitute
+    // command inside the response-loss hook or a change to the reference solver.
+    const {performBerAdmittedS1PayOnly}=await import('./ber-admitted-actions-cases.mjs');
+    return performBerAdmittedS1PayOnly(context,task);
+  }
   let answer;
   if (taskId === 'S1') {
     demand(conditions?.tokenAssetId === 'USDC' && conditions?.sender === 'participant' && /^0x[0-9a-f]{40}$/i.test(conditions.recipient ?? ''),
@@ -2386,15 +2398,20 @@ async function captureAndEvaluateTrainingTask(context) {
     }
   }
   if (beforeAction) await beforeAction(task);
-  const { answer } = await performGenuineActorActions({ ...context, mode }, task);
-  const finishOperationId = randomUUID();
-  const finish = await agentRequest({ publicOrigin: input.publicOrigin,
+  const actorResult = await performGenuineActorActions({ ...context, mode }, task);
+  const { answer } = actorResult;
+  const matrixControlled=input.berAdmittedMatrixProfile!==undefined;
+  const controlledFinish=(input.berAdmittedS1PayOnly===true||matrixControlled)?actorResult.berMcpFinishFact:null;
+  demand((input.berAdmittedS1PayOnly!==true&&!matrixControlled)||controlledFinish?.transport==='actual_mcp_reference_sdk','ber_controlled_mcp_finish_required');
+  const finishOperationId = controlledFinish?.operationId ?? randomUUID();
+  const finish = controlledFinish?{status:controlledFinish.httpStatus}:await agentRequest({ publicOrigin: input.publicOrigin,
     path: '/api/agent/runs/' + runId + '/tasks/' + taskIndex + '/finish', method: 'POST', bearer,
     body: { operationId: finishOperationId, ...(answer ? { answer } : {}) } });
   const finishFact = { taskIndex, taskId, kind: 'finish', operationId: finishOperationId, httpStatus: finish.status };
   output.participantActions.push(finishFact);
   const closed = await waitForClosedTask(observerPool, runId, taskIndex);
   const closedTask = closed.tasks.find((row) => row.task_index === taskIndex);
+  if(controlledFinish)demand(closedTask?.closure_id===controlledFinish.closureId,'ber_s1_mcp_closure_identity_mismatch');
   demand(closedTask?.closure_status === 'closed' && BigInt(closedTask.reconciled_action_sequence ?? 0) >= BigInt(closedTask.action_cutoff_sequence ?? -1),
     'finish_cutoff_or_reconciliation_unconfirmed');
   finishFact.closureId = closedTask.closure_id;
@@ -3631,6 +3648,10 @@ async function runGenuineOwnerRunCase(input) {
       record(output.blocker.stage, 'blocked', { reasonCode: output.blocker.reasonCode });
     }
   } finally {
+    if(input.berAdmittedMatrixProfile!==undefined&&runId){
+      const {closeBerMatrixRunSession}=await import('./ber-matrix-controller.mjs');
+      await closeBerMatrixRunSession(runId);
+    }
     actorCredential = '';
     if (bddContext?.extraAgents) for (const agent of bddContext.extraAgents) agent.bearer = '';
     if (runId && observerPool && output.runCompletion?.status !== 'verified' &&

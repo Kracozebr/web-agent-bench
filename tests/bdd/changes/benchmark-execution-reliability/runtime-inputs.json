@@ -29,5 +29,23 @@
       "path": "artifacts/runs/ber-h1-cutoff-assembly/c6b1b44c-2748-4e37-8412-e895e3eef7fc/assembly.json",
       "sha256": "fb89b3c6164eda66061bc8d2868bdd469f5561afbbc98f96b1d98366f4450070"
     }
+  },
+  "blocked": {
+    "BER-SC-009": {
+      "runtimeStatus": "not_run",
+      "reason": "approved_all_fifteen_learning_observation_physical_capture_pending"
+    },
+    "BER-SC-010": {
+      "runtimeStatus": "not_run",
+      "reason": "approved_all_fifteen_learning_observation_physical_capture_pending"
+    },
+    "BER-SC-011": {
+      "runtimeStatus": "not_run",
+      "reason": "approved_all_fifteen_learning_observation_physical_capture_pending"
+    },
+    "BER-SC-012": {
+      "runtimeStatus": "not_run",
+      "reason": "approved_all_fifteen_learning_observation_physical_capture_pending"
+    }
   }
 }

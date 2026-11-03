@@ -1,3 +1,4 @@
+import {keccak256} from 'viem';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -10,6 +11,7 @@ import type { TaskActionEvidenceSink } from './bef-task-executor.js';
 import type { OwnerDatabase } from './db.js';
 import { addFixture } from './task-run-completion.test-fixture.js';
 import { sha256CanonicalTaskJson } from './task-release.js';
+import { recordTaskActionReceipt } from './task-action-service.js';
 
 const enabled = process.env.OID_BETA_PLATFORM_RECOVERY_PG_TEST === '1';
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -23,11 +25,15 @@ interface MonitorFixture {
   command: Record<string, unknown>; selectedAction: Record<string, unknown>; requestSha256: string;
 }
 
-async function insertMonitorAction(client: ReturnType<typeof postgres>, fixture: Awaited<ReturnType<typeof addFixture>>): Promise<MonitorFixture> {
+async function insertMonitorAction(client: ReturnType<typeof postgres>, fixture: Awaited<ReturnType<typeof addFixture>>,
+  kind: 'transfer' | 'swap' = 'transfer'): Promise<MonitorFixture> {
   const actionId = randomUUID();
   const grantId = randomUUID();
   const ownerOperationId = 'owner_action_' + randomUUID().replaceAll('-', '');
-  const command = { kind: 'transfer', amountUnits: '1', recipient: RECIPIENT, gasLimit: '21000' };
+  const command = kind === 'swap'
+    ? { kind: 'swap', inputAssetId: 'WETH', outputAssetId: 'USDC', feeTier: 500,
+      amountInUnits: '1', amountOutMinimumUnits: '0', recipient: RECIPIENT, gasLimit: '200000' }
+    : { kind: 'transfer', amountUnits: '1', recipient: RECIPIENT, gasLimit: '21000' };
   const payloadHash = sha256CanonicalTaskJson({ runId: fixture.runId, taskIndex: 0, command });
   const manifest = fixture.record.manifest as { executionIdentity: { environmentManifestSha256: string; x402ServiceSha256: string } };
   const manifestSha256 = manifest.executionIdentity.environmentManifestSha256;
@@ -42,17 +48,19 @@ async function insertMonitorAction(client: ReturnType<typeof postgres>, fixture:
     [grantId, fixture.ownerId, fixture.agentId, 'grant_' + randomUUID().replaceAll('-', '')]);
   await client.unsafe("INSERT INTO oid_run_task_action(id,run_id,task_index,owner_id,agent_id,access_generation,grant_id,task_id," +
     "environment_id,action_sequence,operation_id,payload_hash,action_kind,command_json) " +
-    "VALUES($1,$2,0,$3,$4,1,$5,'S1',$6,1,$7,$8,'transfer',$9::jsonb)",
+    "VALUES($1,$2,0,$3,$4,1,$5,'S1',$6,1,$7,$8,$9,$10::jsonb)",
     [actionId, fixture.runId, fixture.ownerId, fixture.agentId, grantId, fixture.environmentId, ownerOperationId,
-      payloadHash, JSON.stringify(command)]);
+      payloadHash, kind, JSON.stringify(command)]);
   await client.unsafe("INSERT INTO oid_run_task_action_outbox(action_id,status,delivered_at) VALUES($1,'delivered',clock_timestamp())", [actionId]);
   await client.unsafe("INSERT INTO oid_run_task_action_receipt(action_id) VALUES($1)", [actionId]);
   return {
     actionId, runId: fixture.runId, ownerId: fixture.ownerId, agentId: fixture.agentId,
     environmentId: fixture.environmentId, generationId: fixture.generationId, participantId: 'synthetic-participant',
     operationId: randomUUID(), ownerOperationId, payloadHash, manifestSha256, applicationSourceSha256, command,
-    selectedAction: { kind: 'transfer', token: '0x3333333333333333333333333333333333333333',
-      amountUnits: '1', recipient: RECIPIENT, gasLimit: '21000' }, requestSha256,
+    selectedAction: kind === 'swap' ? { kind: 'swap', inputAssetId: 'WETH', outputAssetId: 'USDC', fee: 500,
+      amountInUnits: '1', amountOutMinimumUnits: '0', recipient: RECIPIENT, gasLimit: '200000' }
+      : { kind: 'transfer', token: '0x3333333333333333333333333333333333333333',
+        amountUnits: '1', recipient: RECIPIENT, gasLimit: '21000' }, requestSha256,
   };
 }
 
@@ -61,14 +69,14 @@ function sourceRow(fixture: MonitorFixture, outcome: 'success' | 'unknown'): Rec
   return {
     operation_id: fixture.operationId, env_id: fixture.environmentId, generation_id: fixture.generationId,
     participant_id: fixture.participantId, idempotency_key_sha256: sha256('task-action-' + fixture.actionId),
-    request_sha256: fixture.requestSha256, operation_kind: 'transfer',
+    request_sha256: fixture.requestSha256, operation_kind: fixture.command.kind,
     status: settled ? 'settled' : 'settlement_unknown', transaction_hash: settled ? TX_HASH : null,
     receipt_status: settled ? 'success' : 'unknown', response_sha256: null, generation_status: 'active',
     generation_manifest_sha256: fixture.manifestSha256, environment_manifest_sha256: fixture.manifestSha256,
-    selected_action_kind: 'transfer', selected_action_json: fixture.selectedAction,
-    selected_action_event_count: 1, selected_action_event_kind: 'transfer',
+    selected_action_kind: fixture.command.kind, selected_action_json: fixture.selectedAction,
+    selected_action_event_count: 1, selected_action_event_kind: fixture.command.kind,
     selected_action_event_action: fixture.selectedAction, selected_action_event_request_sha256: fixture.requestSha256,
-    selected_action_event_json: { actionKind: 'transfer', selectedAction: fixture.selectedAction,
+    selected_action_event_json: { actionKind: fixture.command.kind, selectedAction: fixture.selectedAction,
       requestSha256: fixture.requestSha256 },
     selected_outcome: settled ? 'success' : null, selected_transaction_hash: settled ? TX_HASH : null,
     selected_measurement_json: settled ? {
@@ -227,6 +235,78 @@ test('the monitor resumes after restart and sends expired recovery to fencing be
     assert.equal(recoveredPacket?.receiptGasUsed, '21000');
     assert.equal(recoveredPacket?.receiptEffectiveGasPriceWei, '7');
 
+    // AICODE-NOTE: Real owner SQL/receipt guards below, synthetic BEF observer
+    // rows only. This reproduces identity loss without an actor or redispatch.
+    for (const sourceHashMode of ['absent', 'matching', 'conflicting', 'selected_conflicting'] as const) {
+      const knownFixture = await addFixture(client, { actionOpen: true, fence: false });
+      const knownAction = await insertMonitorAction(client, knownFixture, 'swap');
+      await recordTaskActionReceipt({ db: ownerDb }, { actionId: knownAction.actionId,
+        status: 'unknown', evidenceHash: sha256('original-unknown:' + knownAction.actionId),
+        evidencePath: 'synthetic-platform-recovery/original-' + knownAction.actionId + '.json', transactionHash: TX_HASH });
+      const beforeMoney = Number((await client.unsafe('SELECT count(*)::int AS count FROM oid_ledger_entry WHERE owner_id=$1', [knownAction.ownerId]))[0]!.count);
+      const otherHash = '0x' + '9'.repeat(64);
+      const source = { ...sourceRow(knownAction, 'unknown'), selected_outcome: 'settlement_unknown',
+        transaction_hash: sourceHashMode === 'absent' ? null : sourceHashMode === 'conflicting' ? otherHash : TX_HASH,
+        selected_transaction_hash: sourceHashMode === 'absent' ? null :
+          sourceHashMode === 'conflicting' || sourceHashMode === 'selected_conflicting' ? otherHash : TX_HASH };
+      const writes: Array<{ path: string; sha256: string; packet: unknown }> = [];
+      const controlledPorts = recoveryPorts({ environmentId: knownAction.environmentId, initialSource: source, writes });
+      const process = createBetaPlatformRecoveryMonitor({ db: ownerDb, observationPorts: controlledPorts.ports,
+        actionEvidenceSink: controlledPorts.ports.evidenceSink as TaskActionEvidenceSink });
+      await process.tick();
+      const ambiguous = await readMonitorState(observer, knownAction);
+      assert.equal(ambiguous.receipt_status, 'unknown', sourceHashMode);
+      assert.equal(ambiguous.transaction_hash, TX_HASH, sourceHashMode + ': original hash is never erased/replaced');
+      assert.equal(Number(ambiguous.action_count), 1);
+      assert.equal(Number(ambiguous.recovery_window_ms), 180_000);
+      assert.equal(Number(ambiguous.owner_ledger_count), beforeMoney);
+      assert.equal(Number(ambiguous.refund_count), 0);
+      const conflicting = sourceHashMode === 'conflicting' || sourceHashMode === 'selected_conflicting';
+      assert.equal(Number(ambiguous.receipt_revision), conflicting ? 1 : 2,
+        sourceHashMode + ': conflicts cannot create a replacement receipt revision');
+      assert.equal(Number(ambiguous.observation_count), conflicting ? 0 : 1);
+      if (!conflicting) {
+        const packet = writes.at(-1)!.packet as Record<string, unknown>;
+        assert.equal(packet.status, 'unknown');
+        assert.equal(packet.transactionHash, TX_HASH);
+        assert.equal(packet.befOperationId, knownAction.operationId);
+        assert.equal(packet.ownerOperationId, knownAction.ownerOperationId);
+      } else {
+        assert.equal(writes.length, 1, 'only incident evidence may exist; contradictory operation proof is not written');
+        controlledPorts.setSource({ ...sourceRow(knownAction, 'success'), transaction_hash: otherHash,
+          selected_transaction_hash: otherHash });
+        await process.tick();
+        const stillOriginal = await readMonitorState(observer, knownAction);
+        assert.equal(stillOriginal.receipt_revision, ambiguous.receipt_revision);
+        assert.equal(stillOriginal.transaction_hash, TX_HASH);
+        assert.equal(writes.length, 1, 'even an apparently terminal conflicting source cannot replace the original');
+      }
+      controlledPorts.setSource(sourceRow(knownAction, 'success'));
+      const sameActionAfterRestart = createBetaPlatformRecoveryMonitor({ db: ownerDb,
+        observationPorts: controlledPorts.ports, actionEvidenceSink: controlledPorts.ports.evidenceSink as TaskActionEvidenceSink });
+      await sameActionAfterRestart.tick();
+      const resolved = await readMonitorState(observer, knownAction);
+      assert.equal(resolved.receipt_status, 'observed');
+      assert.equal(resolved.recovery_status, 'recovered');
+      assert.equal(resolved.transaction_hash, TX_HASH);
+      assert.equal(Number(resolved.action_count), 1);
+      assert.equal(Number(resolved.receipt_revision), Number(ambiguous.receipt_revision) + 1);
+      assert.equal(Number(resolved.recovery_window_ms), 180_000);
+      assert.equal(Number(resolved.owner_ledger_count), beforeMoney);
+      assert.equal(Number(resolved.refund_count), 0);
+      const finalPacket = writes.at(-1)!.packet as Record<string, unknown>;
+      assert.equal(finalPacket.ownerOperationId, knownAction.ownerOperationId);
+      assert.equal(finalPacket.befOperationId, knownAction.operationId);
+      assert.equal(finalPacket.actionId, knownAction.actionId);
+      assert.equal(finalPacket.transactionHash, TX_HASH);
+      await sameActionAfterRestart.tick();
+      const repeated = await readMonitorState(observer, knownAction);
+      assert.equal(repeated.receipt_revision, resolved.receipt_revision);
+      assert.equal(repeated.reconciliation_count, resolved.reconciliation_count);
+      assert.equal(repeated.observation_count, resolved.observation_count);
+      assert.equal(Number(repeated.owner_ledger_count), beforeMoney);
+    }
+
     const lateFixture = await addFixture(client, { actionOpen: true, fence: false });
     const lateAction = await insertMonitorAction(client, lateFixture);
     await client.unsafe("WITH clock AS (SELECT clock_timestamp() AS at) " +
@@ -261,6 +341,25 @@ test('the monitor resumes after restart and sends expired recovery to fencing be
     assert.equal(Number(afterLateUnknown.action_count), 1);
     assert.equal(Number(afterLateUnknown.reconciliation_count), 0);
     assert.equal(lateWrites.length, 0);
+    // AICODE-NOTE: Actual owner persistence; synthetic structured BEF guard rows, never a chain/no-execution acceptance claim.
+    for(const mode of ['valid_guard','bad_guard','known_original'] as const){
+      const guardFixture=await addFixture(client,{actionOpen:true,fence:false}),createdGuardAction=await insertMonitorAction(client,guardFixture,'swap'),guardAction={...createdGuardAction,selectedAction:{...createdGuardAction.command}};
+      if(mode==='known_original')await recordTaskActionReceipt({db:ownerDb},{actionId:guardAction.actionId,status:'unknown',evidenceHash:sha256('original-known:'+guardAction.actionId),evidencePath:'synthetic-platform-recovery/original-'+guardAction.actionId+'.json',transactionHash:TX_HASH});
+      const before=Number((await client.unsafe('SELECT count(*)::int AS count FROM oid_ledger_entry WHERE owner_id=$1',[guardAction.ownerId]))[0]!.count),writes:Array<{path:string;sha256:string;packet:unknown}>=[],code='0x6000' as const;
+      const observation={schemaVersion:'bef-selected-recipient-code-observation/v1',environmentId:guardAction.environmentId,generationId:guardAction.generationId,operationId:guardAction.operationId,requestSha256:guardAction.requestSha256,recipient:RECIPIENT,blockNumber:'1',blockHash:'0x'+'b'.repeat(64),code,codeKeccak256:keccak256(code)};
+      if(mode==='bad_guard')observation.operationId=randomUUID();
+      const initial={actionKind:'swap',selectedAction:guardAction.selectedAction,requestSha256:guardAction.requestSha256},event=(kind:string,seq:string,eventJson:unknown)=>({eventId:randomUUID(),eventSequence:seq,operationId:guardAction.operationId,environmentId:guardAction.environmentId,generationId:guardAction.generationId,eventKind:kind,transactionHash:null,eventJson});
+      const source={...sourceRow(guardAction,'unknown'),status:'rejected',receipt_status:'not_submitted',selected_outcome:'rejected',selected_measurement_json:null,
+        selected_reason_code:'selected_recipient_must_be_eoa',selected_prestate_json:null,selected_transaction_intent_json:null,guard_event_count:2,guard_costs_count:0,guard_payments_count:0,guard_deliveries_count:0,
+        guard_events:[event('selected_action_bound','1',initial),event('rejected_before_broadcast','2',{reasonCode:'selected_recipient_must_be_eoa',recipientCodeObservation:observation})]};
+      const ports=recoveryPorts({environmentId:guardAction.environmentId,initialSource:source,writes}),process=createBetaPlatformRecoveryMonitor({db:ownerDb,observationPorts:ports.ports,actionEvidenceSink:ports.ports.evidenceSink as TaskActionEvidenceSink});
+      await process.tick();const rows=await client.unsafe('SELECT receipt_status,transaction_hash,receipt_revision,evidence_hash FROM oid_run_task_action_receipt WHERE action_id=$1',[guardAction.actionId]);
+      const expected=mode==='valid_guard'?'rejected_before_execution':'unknown';assert.equal(rows[0]!.receipt_status,expected);assert.equal(rows[0]!.transaction_hash,mode==='known_original'?TX_HASH:null);assert(writes.length>=1);
+      const retained=writes.find(w=>w.sha256===rows[0]!.evidence_hash&&(w.packet as Record<string,unknown>).actionId===guardAction.actionId);assert(retained,'the durable receipt selects the original operation evidence, separately from incident diagnostics');const packet=retained!.packet as Record<string,unknown>;assert.equal(packet.status,expected);if(mode==='valid_guard')assert.deepEqual(packet.rejectionProof,{schemaVersion:'bef-selected-recipient-code-guard/v1',reasonCode:'selected_recipient_must_be_eoa',operationId:guardAction.operationId,requestSha256:guardAction.requestSha256});else assert.equal(Object.hasOwn(packet,'rejectionProof'),false);
+      assert.equal(packet.transactionHash,mode==='known_original'?TX_HASH:undefined);assert.equal(Number((await client.unsafe('SELECT count(*)::int AS count FROM oid_ledger_entry WHERE owner_id=$1',[guardAction.ownerId]))[0]!.count),before);assert.equal(Number((await client.unsafe('SELECT count(*)::int AS count FROM oid_run_task_action WHERE run_id=$1',[guardAction.runId]))[0]!.count),1);
+      await process.tick();const repeated=await client.unsafe('SELECT receipt_revision,evidence_hash FROM oid_run_task_action_receipt WHERE action_id=$1',[guardAction.actionId]);assert.equal(repeated[0]!.receipt_revision,rows[0]!.receipt_revision);assert.equal(repeated[0]!.evidence_hash,rows[0]!.evidence_hash,'unknown retries retain the identical operation evidence rather than minting an outcome');
+    }
+
   } finally {
     await observer?.end();
     await client.end();

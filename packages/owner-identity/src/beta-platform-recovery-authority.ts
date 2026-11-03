@@ -1,3 +1,4 @@
+import {validateRejectedRecipientCode,type RejectedSwapGuardMarker} from './task-rejected-swap-proof.js';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { BefReadOnlyPostgresPort } from './bef-observation-ports.js';
@@ -52,6 +53,8 @@ export interface BetaPlatformRecoveryActionBinding {
   leaseStatus: string;
 }
 
+export type BefRecoveryRecipientCodeGuard={eventCount:number;costsCount:number;paymentsCount:number;deliveriesCount:number;selectedReasonCode:string|null;selectedPrestate:unknown;selectedTransactionIntent:unknown;events:unknown};
+
 export interface BefRecoveryOperationSnapshot {
   operationId: string;
   environmentId: string;
@@ -80,9 +83,11 @@ export interface BefRecoveryOperationSnapshot {
   deliveryContentSha256: string | null;
   paymentTransactionHash: string | null;
   paymentReceiptStatus: string | null;
+  recipientCodeGuard?: BefRecoveryRecipientCodeGuard;
 }
 
 export type OperationClassification = {
+  rejectionProof?: RejectedSwapGuardMarker;
   status: 'observed' | 'rejected_before_execution' | 'unknown';
   transactionHash?: string;
   outcome?: 'success' | 'reverted';
@@ -91,6 +96,23 @@ export type OperationClassification = {
   receiptEffectiveGasPriceWei?: string;
   toolResponse?: Record<string, unknown>;
 };
+
+/** Identity retention is not proof of an effect: an unknown classification stays unknown. */
+export function selectRecoveryTransactionIdentity(
+  action: Pick<BetaPlatformRecoveryActionBinding, 'receiptTransactionHash'>,
+  source: Pick<BefRecoveryOperationSnapshot, 'transactionHash' | 'selectedTransactionHash'> | null,
+  classification: Pick<OperationClassification, 'transactionHash'>,
+): { status: 'consistent'; transactionHash?: string } | { status: 'conflict' } {
+  const original = action.receiptTransactionHash?.toLowerCase();
+  const hashes = [action.receiptTransactionHash, source?.transactionHash,
+    source?.selectedTransactionHash, classification.transactionHash].filter((value): value is string => value !== null && value !== undefined);
+  if (hashes.some(value => !/^0x[0-9a-f]{64}$/i.test(value)) ||
+      new Set(hashes.map(value => value.toLowerCase())).size > 1) return { status: 'conflict' };
+  const transactionHash = original ?? classification.transactionHash?.toLowerCase();
+  // A raw source hash without a known original/classified effect is not promoted
+  // to an authoritative owner receipt merely because it appeared in a query.
+  return { status: 'consistent', ...(transactionHash ? { transactionHash } : {}) };
+}
 
 function hash(value: unknown): string {
   return createHash('sha256').update(canonicalTaskJson(value)).digest('hex');
@@ -242,6 +264,7 @@ export async function readBefRecoveryOperation(
       selected_action_event_request_sha256: string | null; selected_action_event_json: unknown;
       selected_outcome: string | null; selected_transaction_hash: string | null; selected_measurement_json: unknown;
       delivery_content_sha256: string | null; payment_transaction_hash: string | null; payment_receipt_status: string | null;
+      selected_reason_code:string|null;selected_prestate_json:unknown;selected_transaction_intent_json:unknown;guard_event_count:number;guard_events:unknown;guard_costs_count:number;guard_payments_count:number;guard_deliveries_count:number;
     }>(await read(`SELECT operation.operation_id::text,operation.env_id,operation.generation_id::text,operation.participant_id,
         trim(operation.idempotency_key_sha256) AS idempotency_key_sha256,trim(operation.request_sha256) AS request_sha256,
         operation.operation_kind,operation.status,operation.transaction_hash,operation.receipt_status,
@@ -253,7 +276,9 @@ export async function readBefRecoveryOperation(
         bound_event.event_json AS selected_action_event_json,
         selected.outcome AS selected_outcome,selected.transaction_hash AS selected_transaction_hash,
         selected.measurement_json AS selected_measurement_json,delivery.content_sha256 AS delivery_content_sha256,
-        payment.transaction_hash AS payment_transaction_hash,payment.receipt_status AS payment_receipt_status
+        payment.transaction_hash AS payment_transaction_hash,payment.receipt_status AS payment_receipt_status,
+        selected.reason_code AS selected_reason_code,selected.prestate_json AS selected_prestate_json,selected.transaction_intent_json AS selected_transaction_intent_json,
+        guard_census.event_count AS guard_event_count,guard_census.events AS guard_events,guard_census.costs_count AS guard_costs_count,guard_census.payments_count AS guard_payments_count,guard_census.deliveries_count AS guard_deliveries_count
       FROM public.bef_operation operation
       JOIN public.bef_generation generation ON generation.env_id=operation.env_id AND generation.generation_id=operation.generation_id
       JOIN public.bef_environment environment ON environment.env_id=operation.env_id
@@ -268,6 +293,21 @@ export async function readBefRecoveryOperation(
         WHERE event.operation_id=operation.operation_id AND event.env_id=operation.env_id
           AND event.generation_id=operation.generation_id AND event.event_kind='selected_action_bound'
       ) bound_event ON true
+      LEFT JOIN LATERAL (
+        SELECT count(*)::int AS event_count,
+          jsonb_agg(jsonb_build_object('eventId',event.event_id::text,'eventSequence',event.event_sequence::text,
+            'operationId',event.operation_id::text,'environmentId',event.env_id,'generationId',event.generation_id::text,
+            'eventKind',event.event_kind,'transactionHash',event.transaction_hash,'eventJson',event.event_json) ORDER BY event.event_sequence) AS events,
+          (SELECT count(*)::int FROM public.bef_transaction_cost cost WHERE cost.operation_id=operation.operation_id
+            AND cost.env_id=operation.env_id AND cost.generation_id=operation.generation_id) AS costs_count,
+          (SELECT count(*)::int FROM public.bef_payment payment WHERE payment.operation_id=operation.operation_id) AS payments_count,
+          (SELECT count(*)::int FROM public.bef_delivery delivery WHERE delivery.operation_id=operation.operation_id) AS deliveries_count
+        FROM public.bef_selected_execution_event event
+        WHERE event.operation_id=operation.operation_id AND event.env_id=operation.env_id AND event.generation_id=operation.generation_id
+          AND EXISTS(SELECT 1 FROM public.bef_selected_execution_event guard_event WHERE guard_event.operation_id=operation.operation_id
+            AND guard_event.env_id=operation.env_id AND guard_event.generation_id=operation.generation_id
+            AND guard_event.event_kind='rejected_before_broadcast' AND guard_event.event_json ? 'recipientCodeObservation')
+      ) guard_census ON true
       LEFT JOIN public.bef_delivery delivery ON delivery.operation_id=operation.operation_id
       LEFT JOIN public.bef_payment payment ON payment.operation_id=operation.operation_id
       WHERE operation.env_id=$1 AND operation.generation_id=$2::uuid AND operation.participant_id=$3
@@ -276,6 +316,10 @@ export async function readBefRecoveryOperation(
     if (found.length > 1) throw new Error('beta_platform_recovery_bef_operation_conflict');
     const row = found[0];
     if (!row) return null;
+    // AICODE-NOTE: Keep legacy source objects and signed hashes byte-compatible: no new absent/null fields.
+    const guardEvents=row.guard_events;
+    const hasRecipientGuard=Array.isArray(guardEvents)&&guardEvents.some(e=>isObject(e)&&isObject(e.eventJson)&&Object.hasOwn(e.eventJson,'recipientCodeObservation'));
+    const recipientCodeGuard=hasRecipientGuard?{eventCount:row.guard_event_count,costsCount:row.guard_costs_count,paymentsCount:row.guard_payments_count,deliveriesCount:row.guard_deliveries_count,selectedReasonCode:row.selected_reason_code,selectedPrestate:row.selected_prestate_json,selectedTransactionIntent:row.selected_transaction_intent_json,events:guardEvents}:undefined;
     const selectedActionEventSha256 = isObject(row.selected_action_event_json)
       ? hash(row.selected_action_event_json) : null;
     if (!UUID.test(row.operation_id) || row.env_id !== action.environmentId || row.generation_id.toLowerCase() !== action.generationId ||
@@ -304,6 +348,7 @@ export async function readBefRecoveryOperation(
         selectedTransactionHash: row.selected_transaction_hash, selectedMeasurement: row.selected_measurement_json,
         deliveryContentSha256: row.delivery_content_sha256, paymentTransactionHash: row.payment_transaction_hash,
         paymentReceiptStatus: row.payment_receipt_status,
+        ...(recipientCodeGuard?{recipientCodeGuard}:{}),
       };
     }
     return {
@@ -321,8 +366,39 @@ export async function readBefRecoveryOperation(
       selectedTransactionHash: row.selected_transaction_hash, selectedMeasurement: row.selected_measurement_json,
       deliveryContentSha256: row.delivery_content_sha256, paymentTransactionHash: row.payment_transaction_hash,
       paymentReceiptStatus: row.payment_receipt_status,
+        ...(recipientCodeGuard?{recipientCodeGuard}:{}),
     };
   });
+}
+
+/** New marker authority comes only from the original append-only two-event/no-execution partition. */
+function recoveredRecipientGuardMarker(action:BetaPlatformRecoveryActionBinding,source:BefRecoveryOperationSnapshot):RejectedSwapGuardMarker|null{
+ try{
+  const g=source.recipientCodeGuard;if(action.actionKind!=='swap'||action.receiptTransactionHash!==null||!g||g.eventCount!==2||g.costsCount!==0||g.paymentsCount!==0||g.deliveriesCount!==0||
+    g.selectedReasonCode!=='selected_recipient_must_be_eoa'||g.selectedPrestate!==null||g.selectedTransactionIntent!==null||source.selectedMeasurement!==null||
+    !Array.isArray(g.events)||g.events.length!==2)return null;
+  const events=g.events;if(!events.every(isObject))return null;const first=events[0]!,last=events[1]!;
+  const fields=['eventId','eventSequence','operationId','environmentId','generationId','eventKind','transactionHash','eventJson'].sort().join(',');
+  for(const [index,e]of events.entries())if(Object.keys(e).sort().join(',')!==fields||!UUID.test(String(e.eventId))||
+    !/^[1-9][0-9]*$/.test(String(e.eventSequence))||e.operationId!==source.operationId||e.environmentId!==source.environmentId||e.generationId!==source.generationId||
+    e.transactionHash!==null||e.eventKind!==(index===0?'selected_action_bound':'rejected_before_broadcast'))return null;
+  if(first.eventId===last.eventId||BigInt(String(last.eventSequence))<=BigInt(String(first.eventSequence))||
+    !isObject(first.eventJson)||canonicalTaskJson(first.eventJson)!==canonicalTaskJson({actionKind:'swap',selectedAction:source.selectedAction,requestSha256:source.requestSha256})||
+    !isObject(last.eventJson)||Object.keys(last.eventJson).sort().join(',')!=='reasonCode,recipientCodeObservation'||last.eventJson.reasonCode!=='selected_recipient_must_be_eoa')return null;
+  const proof=validateRejectedRecipientCode(last.eventJson.recipientCodeObservation),command=TaskActionCommandSchema.safeParse(action.command);
+  if(!command.success||command.data.kind!=='swap'||proof.environmentId!==action.environmentId||proof.generationId!==action.generationId||
+    proof.operationId!==source.operationId||proof.requestSha256!==source.requestSha256||proof.recipient!==command.data.recipient.toLowerCase()||
+    (source.selectedActionEventSha256!==undefined&&source.selectedActionEventSha256!==null&&hash(first.eventJson)!==source.selectedActionEventSha256))return null;
+  return{schemaVersion:'bef-selected-recipient-code-guard/v1',reasonCode:'selected_recipient_must_be_eoa',operationId:source.operationId,requestSha256:source.requestSha256};
+ }catch{return null;}
+}
+
+function rejectedSwapInputMatches(command:TaskActionCommand,value:unknown):boolean{
+ if(command.kind!=='swap'||!isObject(value))return false;
+ // AICODE-NOTE: The prebroadcast row stores the original typed input (feeTier), not a postmine measurement (fee).
+ const expected={kind:'swap',inputAssetId:command.inputAssetId,outputAssetId:command.outputAssetId,feeTier:command.feeTier??500,
+  amountInUnits:command.amountInUnits,amountOutMinimumUnits:command.amountOutMinimumUnits,recipient:command.recipient.toLowerCase(),gasLimit:command.gasLimit};
+ return canonicalTaskJson(value)===canonicalTaskJson(expected);
 }
 
 export function classifyBefRecoveryOperation(
@@ -346,13 +422,14 @@ export function classifyBefRecoveryOperation(
       source.selectedActionEventRequestSha256?.toLowerCase() !== source.requestSha256.toLowerCase() ||
       !isObject(source.selectedAction) || !isObject(source.selectedActionEventAction) ||
       canonicalTaskJson(source.selectedActionEventAction) !== canonicalTaskJson(source.selectedAction) ||
-      !selectedActionMatches(parsedCommand.data as Exclude<TaskActionCommand, { kind: 'purchase' }>, source.selectedAction)) {
+      !(source.status==='rejected'&&parsedCommand.data.kind==='swap'?rejectedSwapInputMatches(parsedCommand.data,source.selectedAction):selectedActionMatches(parsedCommand.data as Exclude<TaskActionCommand, { kind: 'purchase' }>, source.selectedAction))) {
     return { status: 'unknown' };
   }
 
   const txHash = source.transactionHash?.toLowerCase() ?? null;
   if (source.status === 'rejected' && source.receiptStatus === 'not_submitted' && txHash === null &&
       source.selectedOutcome === 'rejected' && source.selectedTransactionHash === null) {
+    if(parsedCommand.data.kind==='swap'){const rejectionProof=recoveredRecipientGuardMarker(action,source);return rejectionProof?{status:'rejected_before_execution',rejectionProof}:{status:'unknown'};}
     return { status: 'rejected_before_execution' };
   }
 
@@ -443,7 +520,7 @@ export function makeRecoveryEvidencePacket(action: BetaPlatformRecoveryActionBin
   status: SafeTaskActionEvidence['status']; reasonCode: string; befOperationId?: string; transactionHash?: string;
   outcome?: 'success' | 'reverted'; receiptStatus?: 'success' | 'reverted'; rawResponseSha256?: string;
   receiptGasUsed?: string; receiptEffectiveGasPriceWei?: string;
-  toolResponse?: Record<string, unknown>; recoverySource?: RecoverySourceEvidence;
+  toolResponse?: Record<string, unknown>; recoverySource?: RecoverySourceEvidence; rejectionProof?:RejectedSwapGuardMarker;
 }): RecoveryActionEvidence {
   return {
     schema: 'bef-task-action-observation-v1', actionId: action.actionId, runId: action.runId,
@@ -461,6 +538,7 @@ export function makeRecoveryEvidencePacket(action: BetaPlatformRecoveryActionBin
     ...(input.receiptEffectiveGasPriceWei ? { receiptEffectiveGasPriceWei: input.receiptEffectiveGasPriceWei } : {}),
     ...(input.toolResponse ? { participantToolResponse: input.toolResponse } : {}),
     ...(input.recoverySource ? { recoverySource: input.recoverySource } : {}),
+    ...(input.rejectionProof ? { rejectionProof: input.rejectionProof } : {}),
   };
 }
 
@@ -674,11 +752,14 @@ export function createRecoveryAuthorityRuntime(context: RecoveryAuthorityContext
       catch (error) { sourceError = error; }
       if (source) {
         const classification = classifyBefRecoveryOperation(action, source);
+        const identity = selectRecoveryTransactionIdentity(action, source, classification);
         const snapshotHash = recoverySourceSnapshotHash(source);
-        if (snapshotHash !== value.sourceSnapshotHash || classification.status !== value.status ||
-            (classification.transactionHash ?? undefined) !== value.transactionHash ||
+        if (identity.status === 'conflict' || snapshotHash !== value.sourceSnapshotHash || classification.status !== value.status ||
+            identity.transactionHash !== value.transactionHash ||
             canonicalTaskJson(classification.toolResponse ?? null) !== canonicalTaskJson(value.toolResponse ?? null)) return null;
       } else {
+        const identity = selectRecoveryTransactionIdentity(action, null, {});
+        if (identity.status === 'conflict' || identity.transactionHash !== value.transactionHash) return null;
         if (value.status !== 'unknown' || !value.sourceCode) return null;
         if (value.sourceCode === 'platform_original_operation_absent_after_fence') {
           if (sourceError !== undefined || action.receiptStatus !== 'pending' || value.clockExcludedMs !== 0 ||

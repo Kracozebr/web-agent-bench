@@ -243,27 +243,27 @@ test('official evidence restore copies every manifest file and writes a bound op
   } finally { await rm(parent, { recursive: true, force: true }); }
 });
 
-test('official evidence restore accepts exactly 8192 files and rejects 8193 before materialization', async () => {
+test('official evidence restore accepts exactly 16384 files and rejects 16385 before materialization', async () => {
   const bytes = Buffer.from('x');
-  for (const count of [8192, 8193]) {
+  for (const count of [16384, 16385]) {
     const parent = await mkdtemp(join(tmpdir(), 'bpc-official-restore-count-'));
     try {
       const files = Array.from({ length: count }, (_, index) => ({
         path: `evidence/official/artifacts/run/${index}.json`, role: 'action_receipt_evidence',
         bytes: bytes.length, sha256: sha256(bytes),
       }));
-      const sourceFiles = count === 8192 ? files.map((file) => ({ path: file.path, bytes })) : [];
+      const sourceFiles = count === 16384 ? files.map((file) => ({ path: file.path, bytes })) : [];
       const fixture = await officialFixture(parent, { files, sourceFiles });
-      if (count === 8193) {
+      if (count === 16385) {
         await assert.rejects(restoreOfficialEvidenceFiles(fixture.input),
           /beta_backup_restore_official_evidence_manifest_binding_invalid/);
         await assert.rejects(lstat(join(fixture.restoreRoot, 'official-evidence')), { code: 'ENOENT' });
       } else {
         const result = await restoreOfficialEvidenceFiles(fixture.input);
-        assert.equal(result.verifiedOfficialEvidenceFiles.length, 8192);
+        assert.equal(result.verifiedOfficialEvidenceFiles.length, 16384);
         assert.equal(result.officialEvidenceManifestSha256, fixture.manifestSha256);
         const receipt = JSON.parse(await readFile(join(fixture.restoreRoot, ...result.officialEvidenceRestoreReceipt.path.split('/')), 'utf8'));
-        assert.equal(receipt.fileCount, 8192);
+        assert.equal(receipt.fileCount, 16384);
         assert.deepEqual(receipt.files, result.verifiedOfficialEvidenceFiles);
         for (const file of result.verifiedOfficialEvidenceFiles) {
           assert.equal(await readFile(join(fixture.restoreRoot, ...file.path.split('/')), 'utf8'), 'x');

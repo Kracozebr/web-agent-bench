@@ -19,6 +19,7 @@ import {
   readBetaPlatformRecoveryFenceSet,
   recoverySourceSnapshotHash,
   recoverySourceEvidenceForOperation,
+  selectRecoveryTransactionIdentity,
   safeBefObserverFailureCode,
   writeRecoveryEvidence,
   type BetaPlatformRecoveryActionBinding,
@@ -180,6 +181,12 @@ export function createBetaPlatformRecoveryMonitor(options: BetaPlatformRecoveryM
     const classification = source ? classifyBefRecoveryOperation(action, source) : { status: 'unknown' as const };
     if (source && !isTerminalBefRecoverySource(source) && classification.status === 'unknown' && !allowFencedUnknown) return 'unchanged';
     if (!source && !sourceCode) return 'unchanged';
+    const identity = selectRecoveryTransactionIdentity(action, source, classification);
+    // AICODE-NOTE: Preserve the already bound transaction even when BEF still
+    // reports settlement_unknown. A contradictory source must not replace it or
+    // create a new receipt/evidence revision for a different transaction.
+    if (identity.status === 'conflict') return 'unchanged';
+    const transactionHash = identity.transactionHash;
     const recoverySource = source && classification.status === 'observed'
       ? recoverySourceEvidenceForOperation(source) ?? undefined : undefined;
     if (source && classification.status === 'observed' && !recoverySource) return 'unchanged';
@@ -190,22 +197,21 @@ export function createBetaPlatformRecoveryMonitor(options: BetaPlatformRecoveryM
       status: classification.status,
       reasonCode,
       ...(source && UUID.test(source.operationId) ? { befOperationId: source.operationId } : {}),
-      ...(classification.transactionHash ? { transactionHash: classification.transactionHash } :
-        !source && action.receiptTransactionHash ? { transactionHash: action.receiptTransactionHash } : {}),
+      ...(transactionHash ? { transactionHash } : {}),
       ...(classification.outcome ? { outcome: classification.outcome } : {}),
       ...(classification.receiptStatus ? { receiptStatus: classification.receiptStatus } : {}),
       ...(classification.receiptGasUsed ? { receiptGasUsed: classification.receiptGasUsed } : {}),
       ...(classification.receiptEffectiveGasPriceWei ? { receiptEffectiveGasPriceWei: classification.receiptEffectiveGasPriceWei } : {}),
       ...(classification.toolResponse ? { toolResponse: classification.toolResponse } : {}),
       ...(recoverySource ? { recoverySource } : {}),
+      ...(classification.rejectionProof ? { rejectionProof:classification.rejectionProof } : {}),
     });
     const evidencePath = action.receiptEvidenceHash === file.sha256 && action.receiptEvidencePath
       ? action.receiptEvidencePath : file.path;
     const evidence = runtime.issue('operation', { runId: action.runId, actionId: action.actionId,
       environmentId: action.environmentId, operationId: action.ownerOperationId, payloadHash: action.payloadHash,
       evidenceHash: file.sha256, evidencePath, status: classification.status, clockExcludedMs,
-      ...(classification.transactionHash ? { transactionHash: classification.transactionHash } :
-        !source && action.receiptTransactionHash ? { transactionHash: action.receiptTransactionHash } : {}),
+      ...(transactionHash ? { transactionHash } : {}),
       ...(classification.toolResponse ? { toolResponse: classification.toolResponse } : {}),
       ...(source ? { sourceSnapshotHash: recoverySourceSnapshotHash(source) } : {}),
       ...(sourceCode ? { sourceCode } : {}) });

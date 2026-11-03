@@ -30,3 +30,45 @@ Timing measurement infrastructure is approved, but exact calibrated numerical ru
 ## Delivery and verification
 
 Use actual browser controls through the running API/worker to independently verified durable PostgreSQL/BEF/file effects for user E2E. Native-client gates require the participant's actual model client. Preserve source/build/profile pins, paths/hashes, unknown states, existing financial source/refund authority, revocation and unified backup/restore. Sync/archive only when the applicable approved mandatory gates really pass.
+
+## Approved admitted-learning-action observation repair
+
+Owner approval received 2026-11-02, Europe/Moscow:
+«Да, исправить и проверить все 15 вариантов».
+
+This approves the exact scope in
+`admitted-learning-actions-observation-proposal.md`: independent observation of
+every supported admitted read, paid/delivery and chain action across Training
+S1/M1/H1 and all twelve Ranked variants, including valid learning mistakes;
+BDD BER-SC-009–012, their real adapters and adversarial proof checks; fresh
+fifteen-variant qualification followed by actual native Codex Training/Ranked
+and browser/PostgreSQL verification. The source-confirmed paid-only completeness
+risks and existing composite union are included, without claiming a demonstrated
+exploit or an already passing path.
+
+Task goals, evaluator predicates, scores, prices, quotas, deadlines, schema,
+identity/scope and safety fences remain unchanged. Do not add a task-goal
+admission allowlist, skip admitted effects or manufacture zero/success when
+evidence is missing. Preserve the historical cancelled run and its absent grades;
+no regrade, deletion or retroactive relabelling is authorized. Approval authorizes
+implementation and the listed checks, not runtime acceptance, beta promotion,
+sync/archive or commit/push before the required successful E2E gates.
+
+## Approved official backup file-count amendment, 2026-11-03
+
+Owner approved: «Да, увеличить до 16 384 и проверить restore».
+Fresh complete read-only discovery of the original Google DB retained 9,612
+hash-verified official/provenance files for 18 runs; required source metadata
+brings the checkpoint source count to 9,616, exceeding the prior 8,192 cap.
+Discovery proof: `.local/mcd-current-original-discovery-a9c93309-4d5a-4ec6-a731-8b226581b157/inventory.json`,
+SHA-256 `56289540464c66ed927419e5900913ee6f0e95dbf849cb312dbf9a20decd1e92`.
+
+Increase only the official evidence source-file cap to 16,384 consistently in
+checkpoint, restore and independent replay verification. Check 16,384 accepted /
+16,385 rejected before materialization, followed by fresh complete unified backup
+and cold restore with independently verified SQL, results, bonuses, reports,
+screenshots and file hashes. Retain 64 MiB per file, 2 GiB total and 16 MiB
+manifest, path/hash/encryption safeguards, helper-authority exclusion policy and
+external native revocation journal preservation. Restored writes and target
+activation are not authorized by this count amendment. Approval is implementation
+scope; runtime restore acceptance remains unproven until the actual fresh run.

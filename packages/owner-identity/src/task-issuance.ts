@@ -7,6 +7,7 @@ import { getTaskExecutionContext } from "./task-execution-binding.js";
 import { z } from "zod";
 import { TaskFinishAnswerSchemas } from "./task-action-service.js";
 import type { RunStatus } from "./run-service.js";
+import { getAgentRunFeedback, type TaskFeedback } from "./task-feedback.js";
 
 export function issuedTaskAnswerContract(taskId: string): Record<string, unknown> {
   const schema = taskId === 'S2' ? TaskFinishAnswerSchemas.S2 : taskId === 'S3' ? TaskFinishAnswerSchemas.S3 : null;
@@ -96,6 +97,7 @@ export interface CurrentAgentTaskResponse {
   run: { runId: string; status: RunStatus; terminal: boolean; terminalReason: string | null; cancellationReason: string | null };
   state: CurrentTaskRunState;
   retryAfterMs: number | null;
+  feedback?: TaskFeedback[];
 }
 
 interface CurrentRunRow {
@@ -188,10 +190,12 @@ export async function getCurrentAgentTask(
             allowed: boolean; task_live?: boolean; run_live?: boolean;
           }>;
       if (!current[0]?.allowed) throw new HttpError(403, 'AGENT_ACCESS_REVOKED', 'Current agent access is required');
-      if (task && (!current[0].task_live || !current[0].run_live)) {
-        return currentRunResponse(runId, run, current[0].run_live ? 'reconciling_actions' : 'awaiting_terminal');
-      }
-      return currentRunResponse(runId, run, state, task);
+      const response = task && (!current[0].task_live || !current[0].run_live)
+        ? currentRunResponse(runId, run, current[0].run_live ? 'reconciling_actions' : 'awaiting_terminal')
+        : currentRunResponse(runId, run, state, task);
+      const feedback = await getAgentRunFeedback(tx, runId, run.mode, response.run.terminal);
+      if (feedback) response.feedback = feedback;
+      return response;
     };
     const runState = RUN_READ_STATES[run.status];
     if (runState) return respond(runState);

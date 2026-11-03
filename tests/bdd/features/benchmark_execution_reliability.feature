@@ -53,3 +53,27 @@ Feature: Benchmark execution reliability approved scenarios
     Given the approved environment setup for "BER-SC-008"
     When an owner opens results and compares native tool failures with persisted admissions, receipts and evaluations
     Then the projection SHALL show eight evaluated Ranked tasks as their original records, mark four other tasks unevaluated, identify the MCP contract defect separately, and avoid attributing unissued or platform-unknown tasks to agent failure
+
+  @req_ber_req_009 @scn_ber_sc_009 @gate_environment @mandatory
+  Scenario: Observe every admitted learning action across all fifteen variants
+    Given the approved environment setup for "BER-SC-009"
+    When all fifteen paths exercise every scope-valid current kind, objective and nonobjective reads, wrong recipient amount route or allowance, no-op or reverted actions and unchanged protocol reference or deadline denials
+    Then every admitted sequence SHALL have its original independently verified effect or explicit unknown, scoped denials SHALL retain no execution effect, and no goal-based rejection automatic repair or skipped-kind completeness SHALL occur
+
+  @req_ber_req_010 @scn_ber_sc_010 @gate_environment @mandatory
+  Scenario: Grade known effects and preserve unknown observations
+    Given the approved environment setup for "BER-SC-010"
+    When exact and wrong-effect task controls reach grading and receipt row hash generation read block or census evidence is removed altered contradictory or truncated
+    Then complete facts SHALL produce only the existing task-specific known grade while incomplete or contradictory facts SHALL retain unknown without a fabricated evaluation or silent repair
+
+  @req_ber_req_011 @scn_ber_sc_011 @gate_environment @mandatory
+  Scenario: Preserve separate payment delivery and single-count costs
+    Given the approved environment setup for "BER-SC-011"
+    When confirmed payment has no retrieval or rejected late retrieval, wrong scoped reads, lost action response, repeated status or finish and mixed chain gas with paid actions
+    Then payment SHALL not imply delivery, original action and receipt identities SHALL remain immutable, and actual principal gas and service charges SHALL stay separate without duplicate economic effect or cost
+
+  @req_ber_req_012 @scn_ber_sc_012 @gate_environment @mandatory
+  Scenario: Recover admitted-action observation closure and handoff
+    Given the approved environment setup for "BER-SC-012"
+    When deadline crosses dispatch or receipt, restart interrupts confirmed effects before observation seal or evaluation, and duplicate reconciliation finalization composite replay or unresolved-cutoff controls execute
+    Then closure and source identities SHALL remain stable with one evaluation or settlement, known results SHALL hand off to the next task and explicit terminal state, and missing reconstruction proof SHALL remain unknown without new effects or duplicate writes

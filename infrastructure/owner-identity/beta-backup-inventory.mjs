@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { validateDiagnosticAuthorityPolicy } from './beta-backup-diagnostic-authority.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -53,6 +54,7 @@ export async function inspectBackupFile(root, path, kind) {
 }
 
 export function validateBackupInventory(value) {
+  validateDiagnosticAuthorityPolicy(value?.restoreDataPolicy);
   const sealed = value?.schemaVersion === 'beta-backup-inventory/v2';
   if (!value || (!sealed && value.schemaVersion !== 'beta-backup-inventory/v1') ||
       !UUID.test(value.checkpointId ?? '') ||
@@ -61,6 +63,7 @@ export function validateBackupInventory(value) {
       !Array.isArray(value.files) || !Array.isArray(value.reportDeletionReceipts)) fail('invalid_inventory');
   const capturedAt = timestamp(value.capturedAt);
   if (!HASH.test(value.reconciliationEvidenceSha256 ?? '') || !HASH.test(value.databaseTotalsSha256 ?? '')) fail('missing_reconciliation_binding');
+  if(value.restoreDataPolicy&&value.restoreDataPolicy.sourceDatabaseTotalsSha256!==value.databaseTotalsSha256)fail('diagnostic_authority_source_totals_mismatch');
   const paths = new Set();
   let databases = 0;
   let sealedBundles = 0;

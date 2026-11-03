@@ -109,16 +109,20 @@ export async function assertAnvilIdentity(rpcUrl: string, manifest: RuntimeManif
   };
 }
 
-export async function resetAnvilFork(rpcUrl: string, sourceProxyUrl: string, manifest: RuntimeManifest): Promise<AnvilIdentity> {
-  await assertAnvilIdentity(rpcUrl, manifest);
+export type AnvilResetPhase='reset_identity_before'|'reset_rpc'|'reset_identity_after';
+export async function resetAnvilFork(rpcUrl: string, sourceProxyUrl: string, manifest: RuntimeManifest,
+  atPhase:<T>(phase:AnvilResetPhase,work:()=>Promise<T>)=>Promise<T>=async(_phase,work)=>work()): Promise<AnvilIdentity> {
+  await atPhase('reset_identity_before',()=>assertAnvilIdentity(rpcUrl, manifest));
   const params = [{
     forking: {
       jsonRpcUrl: sourceProxyUrl,
       blockNumber: Number(BigInt(manifest.local.forkBlock)),
     },
   }];
-  const result = await adminRpc(rpcUrl, 'anvil_reset', params);
-  if (result !== null && result !== true) throw new Error('Private Anvil fork reset returned an unexpected acknowledgement');
-  return assertAnvilIdentity(rpcUrl, manifest);
+  await atPhase('reset_rpc',async()=>{
+    const result = await adminRpc(rpcUrl, 'anvil_reset', params);
+    if (result !== null && result !== true) throw new Error('Private Anvil fork reset returned an unexpected acknowledgement');
+  });
+  return atPhase('reset_identity_after',()=>assertAnvilIdentity(rpcUrl, manifest));
 }
 

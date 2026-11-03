@@ -1,0 +1,242 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "normative_delta": "specs/mcp-call-diagnostics/spec.md",
+  "note": "Owner explicitly authorized implementation with subagents on 2026-11-02 after six-point spec revision. Runtime gates remain not_run.",
+  "protected_scenarios": {
+    "MCD-SC-001": {
+      "requirement_id": "MCD-REQ-001",
+      "title": "Retain failures before and after action admission",
+      "named_mapper": "test_mcd_sc_001",
+      "adapter": "mcp_call_diagnostics",
+      "boundary": "environment",
+      "boundary_detail": "real_mcp_ingress_sdk_handler_executor_postgres_restart",
+      "gate": "environment",
+      "mandatory": true,
+      "allowed_private_calls": [],
+      "required_observations": [
+        "stage_and_error_identity",
+        "source_local_timings",
+        "validated_links",
+        "survives_restart"
+      ],
+      "negative_variants": [
+        "malformed_json_rpc",
+        "sdk_rejected_fields",
+        "expired_or_revoked_auth",
+        "handler_failure",
+        "dispatch_failure",
+        "duplicate_operation"
+      ],
+      "durable_effects": [
+        "sanitized_records_persist",
+        "rejected_calls_no_action_or_funding"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "runtime_status": "not_run"
+    },
+    "MCD-SC-002": {
+      "requirement_id": "MCD-REQ-002",
+      "title": "Retain client failures and report them automatically",
+      "named_mapper": "test_mcd_sc_002",
+      "adapter": "mcp_call_diagnostics",
+      "boundary": "environment",
+      "boundary_detail": "actual_native_cli_helper_oauth_pkce_private_outbox_deterministic_delivery_admin_ui_postgres_owner_import",
+      "gate": "environment",
+      "mandatory": true,
+      "allowed_private_calls": [],
+      "required_observations": [
+        "native_call_events",
+        "helper_oauth_scope_and_revocation",
+        "native_case_trace_carrier",
+        "canonical_case_identity",
+        "automatic_report_and_watermark_receipt",
+        "admin_report_visible",
+        "deduplicated_delivery",
+        "blocked_delivery_zero_report_writes"
+      ],
+      "negative_variants": [
+        "client_only_validation",
+        "refused_endpoint_and_recovery",
+        "lost_admission_response",
+        "lost_report_response",
+        "crash_with_active_known_run",
+        "owner_import_races_helper",
+        "late_run_binding_and_batches",
+        "same_key_different_payload",
+        "missing_consent_wrong_scope_audience",
+        "helper_denied_task_admin_diagnostic_read",
+        "foreign_case_header_or_hidden_trace_carrier",
+        "revoked_auth",
+        "restart_and_restore",
+        "failed_report_retry_no_recursion"
+      ],
+      "durable_effects": [
+        "bounded_diagnostics_retained",
+        "one_canonical_report_with_verified_watermarks_on_authorized_delivery",
+        "denied_authorization_zero_new_report_writes_pending_auth",
+        "no_additional_run_payment_or_closure"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "runtime_status": "not_run"
+    },
+    "MCD-SC-003": {
+      "requirement_id": "MCD-REQ-003",
+      "title": "Attribute only failures supported by causal evidence",
+      "named_mapper": "test_mcd_sc_003",
+      "adapter": "mcp_call_diagnostics",
+      "boundary": "environment",
+      "boundary_detail": "issued_schema_contract_trusted_observations_qualified_client_reproducer_readonly_projection",
+      "gate": "environment",
+      "mandatory": true,
+      "allowed_private_calls": [],
+      "required_observations": [
+        "schema_contract_compatibility",
+        "positive_matrix_categories",
+        "classification_evidence",
+        "reject_all_unknown_projection",
+        "unknown_preserved",
+        "business_hashes_unchanged"
+      ],
+      "negative_variants": [
+        "positive_client_contract",
+        "positive_platform_contract",
+        "positive_client_runtime",
+        "positive_platform_runtime",
+        "positive_external_dependency",
+        "positive_expected_policy_denial",
+        "contradictory_or_missing_evidence",
+        "all_unknown_projection_mutation"
+      ],
+      "durable_effects": [
+        "exact_category_for_every_complete_positive",
+        "all_unknown_positive_projection_rejected",
+        "original_grades_receipts_ledger_unchanged",
+        "no_diagnostic_refund"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "runtime_status": "not_run"
+    },
+    "MCD-SC-004": {
+      "requirement_id": "MCD-REQ-004",
+      "title": "Verify private diagnostic views and ownership checks",
+      "named_mapper": "test_mcd_sc_004",
+      "adapter": "mcp_call_diagnostics",
+      "boundary": "environment",
+      "boundary_detail": "owner_admin_browser_authenticated_diagnostic_api_postgres",
+      "gate": "environment",
+      "mandatory": true,
+      "allowed_private_calls": [],
+      "required_observations": [
+        "own_rows_visible",
+        "admin_authorized",
+        "foreign_denied",
+        "source_trust_visible",
+        "diagnostic_trigger_distinct"
+      ],
+      "negative_variants": [
+        "foreign_owner",
+        "anonymous",
+        "task_agent_read",
+        "forged_run_action_reference",
+        "client_claim_of_server_authority",
+        "completed_run_with_client_errors",
+        "ordinary_failed_grade_only",
+        "error_free_capture"
+      ],
+      "durable_effects": [
+        "no_foreign_import",
+        "no_read_triggered_business_write",
+        "no_report_for_grade_only_or_error_free_capture",
+        "no_fabricated_platform_attribution"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "runtime_status": "not_run"
+    },
+    "MCD-SC-005": {
+      "requirement_id": "MCD-REQ-005",
+      "title": "Preserve privacy and explicit incomplete coverage",
+      "named_mapper": "test_mcd_sc_005",
+      "adapter": "mcp_call_diagnostics",
+      "boundary": "environment",
+      "boundary_detail": "actual_collectors_shared_quota_transactions_replicas_importer_local_spool",
+      "gate": "environment",
+      "mandatory": true,
+      "allowed_private_calls": [],
+      "required_observations": [
+        "canaries_absent",
+        "exact_finite_bounds",
+        "independently_proven_dominance",
+        "shared_quota_reservations",
+        "anonymous_fixed_buckets",
+        "gap_markers",
+        "no_duplicate_effect"
+      ],
+      "negative_variants": [
+        "canaries_in_messages_keys_codes_identifiers",
+        "maximal_envelope_and_strict_2048_2049_rejection",
+        "canonical_case_events_4096_4097",
+        "bundle_8mib_and_over",
+        "reachable_exact_over_or_proven_dominated_quotas",
+        "rotating_session_ids",
+        "concurrent_helper_import_replica_reservations",
+        "anonymous_overflow_fixed_buckets",
+        "truncated_input",
+        "parser_or_storage_failure"
+      ],
+      "durable_effects": [
+        "bounded_allowlisted_records_only",
+        "shared_reserved_and_committed_quota_enforced",
+        "no_per_request_anonymous_overflow_allocation",
+        "no_retained_evidence_eviction",
+        "incomplete_coverage_explicit",
+        "economic_effect_once_only_or_unresolved",
+        "configured_ceilings_unchanged_schema_storage_dominance_independently_replayed"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "runtime_status": "not_run"
+    },
+    "MCD-SC-006": {
+      "requirement_id": "MCD-REQ-006",
+      "title": "Restore diagnostic evidence without execution authority",
+      "named_mapper": "test_mcd_sc_006",
+      "adapter": "mcp_call_diagnostics",
+      "boundary": "environment",
+      "boundary_detail": "server_received_checkpoint_cold_restore_separate_offline_client_spool_resume_expiry",
+      "gate": "environment",
+      "mandatory": true,
+      "allowed_private_calls": [],
+      "required_observations": [
+        "server_received_inventory_and_hashes",
+        "remote_pending_excluded",
+        "partial_retained",
+        "write_disabled",
+        "revocation_retained",
+        "separate_retention_boundaries",
+        "case_batch_report_identity_retained"
+      ],
+      "negative_variants": [
+        "interrupted_upload_checkpoint",
+        "missing_or_tampered_received_evidence",
+        "remote_pending_absent_from_server",
+        "stopped_or_uninstalled_helper",
+        "local_30_day_expiry",
+        "server_intake_closed",
+        "historical_aggregate_only",
+        "revoked_helper",
+        "independent_client_server_restore"
+      ],
+      "durable_effects": [
+        "received_server_diagnostics_match",
+        "remote_files_not_claimed_backed_up",
+        "local_expiry_and_receipts_enforced_on_resume",
+        "business_history_preserved",
+        "no_duplicate_report",
+        "no_execution_or_access_restoration"
+      ],
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "runtime_status": "not_run"
+    }
+  },
+  "review_status": "approved",
+  "runtime_manifest": "tests/bdd/changes/mcp-call-diagnostics/harness-contracts.json"
+}

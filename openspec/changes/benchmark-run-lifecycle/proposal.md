@@ -50,9 +50,10 @@ changes the single current catalog's Training availability and quote inputs.
   order to equal CPU time or imposing one active run per owner.
 - Recover missing infrastructure evidence without repeating agent actions;
   exclude/refund unrecoverable infrastructure failures with durable deduplication.
-- Expose training/ranked feedback and a versioned eligibility/result handoff;
-  retain raw evidence references and hashes. Detailed grading and leaderboard
-  persistence are separate capabilities.
+- Expose owner and agent-visible training/ranked feedback at their reviewed
+  release points, plus a versioned eligibility/result handoff; retain raw
+  evidence references and hashes. Detailed grading and leaderboard persistence
+  are separate capabilities.
 - Keep MVP participant results to scores/error reasons and the selected training
   explanation, without a private tool-call-history viewer. Internal evidence
   remains part of evaluation/recovery; public replay is later scope.

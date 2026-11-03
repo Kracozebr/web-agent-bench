@@ -1,15 +1,18 @@
 import { publicInspectionQuotesMatch, publicPaymentIdentity } from './task-public-payment-quote.js';
+import { loadAdmittedActionRows, validateAdmittedActionCensus, readAdmittedActionEvidenceFile,
+  type AdmittedActionCensus } from './bef-admitted-action-census.js';
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
 import { decodeM1TransferLog, m1PreparationHealthMatches, parseM1PreparationEvidence } from './bef-m1-observation-collector.js';
+import { parseS4PreparationEvidence, validateS4PreparationFixtureEvidence } from './bef-s4-observation-collector.js';
 import { readOnlyToolResponseMatches } from './bef-task-executor.js';
 import { TaskActionCommandSchema, type TaskActionCommand } from './task-action-service.js';
 import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase, type TaskReleaseQuerySource } from './task-release.js';
 import { splitPayRequestSha256 } from './task-m1-capture-packet.js';
-import { projectPaidDataCaptureCandidate, projectPaidDataObservationBundle, validatePaidDataCapturePacket, type PaidDataAction, type PaidDataCapturePacket,
+import { projectPaidDataCaptureCandidate, projectPaidDataObservationBundle, validatePaidDataCapturePacket, validatePaidFamilyCapturePacket, type PaidDataAction, type PaidDataCapturePacket,
   type PaidDataObservationCandidate } from './task-paid-data-capture-packet.js';
 import type { TaskObservationBundleCandidate } from './task-observation-store.js';
 
@@ -46,7 +49,8 @@ export type BefPaidDataUnavailableCode='invalid_target'|'unsupported_task'|'owne
   'observer_census_unavailable'|'observer_census_changed'|'rpc_identity_mismatch'|'rpc_observation_unavailable'|'rpc_mapping_incomplete'|'capture_evidence_unavailable';
 export type BefPaidDataCollectionResult={status:'unavailable';reasonCode:BefPaidDataUnavailableCode}|
   {status:'candidate';candidate:TaskObservationBundleCandidate;paidDataCandidate:PaidDataObservationCandidate;boundary:import('./task-paid-data-capture-packet.js').ChainObservationBoundary;
-    evidence:EvidenceReference;classification:'run_bound_observations_candidate_not_grade';packet:PaidDataCapturePacket};
+    evidence:EvidenceReference;classification:'run_bound_observations_candidate_not_grade';packet:PaidDataCapturePacket;census?:AdmittedActionCensus;
+    taskCase?:TaskCase;closureAnswer?:unknown;participantAddress?:string};
 class Unavailable extends Error{constructor(readonly reasonCode:BefPaidDataUnavailableCode){super(reasonCode)}}
 function stop(code:BefPaidDataUnavailableCode):never{throw new Unavailable(code)}
 function unavailable(reasonCode:BefPaidDataUnavailableCode):BefPaidDataCollectionResult{return {status:'unavailable',reasonCode}}
@@ -127,7 +131,12 @@ async function preparationEvidence(root:string,p:Prep,runId:string,index:number,
   if(!fixture||!baseline||fixture.path===baseline.path||fixture.sha256===baseline.sha256)stop('preparation_unavailable');
   const [fb,bb]=await Promise.all([readFile(root,fixture.path,PREP,256*1024,'preparation_unavailable',fixture.sha256),
     readFile(root,baseline.path,PREP,256*1024,'preparation_unavailable',baseline.sha256)]);
-  const f=parseM1PreparationEvidence(fb,'fixture'),b=parseM1PreparationEvidence(bb,'baseline'),pins=prepPins(p,runId,index);
+  // S4 retains one public, exactly ABI-bound fixture approval. Its full legacy
+  // predicates must pass before using its narrow calldata-aware parser.
+  if(c.taskId==='S4')validateS4PreparationFixtureEvidence({fixtureBytes:fb,baselineBytes:bb,
+    preparation:p,runId,taskIndex:index,taskCase:c});
+  const parser=c.taskId==='S4'?parseS4PreparationEvidence:parseM1PreparationEvidence;
+  const f=parser(fb,'fixture'),b=parser(bb,'baseline'),pins=prepPins(p,runId,index);
   for(const [doc,kind] of [[f,'fixture'],[b,'baseline']] as const)
     if(!rec(doc)||doc.schemaVersion!=='owner-bef-task-preparation-evidence/v1'||doc.kind!==kind||doc.preparationId!==p.preparation_id||
       doc.environmentId!==p.environment_id||doc.publicPinsSha256!==pins||!rec(doc.evidence))stop('preparation_unavailable');
@@ -577,8 +586,8 @@ function validateOperationLinks(census:Census,actions:{row:ActionRow;command:Tas
   return issues
 }type Context={run:J;taskCase:TaskCase;prep:Prep;cutoff:number;reconciled:number;closure:J;binding:J;
   preparation:{fixture:EvidenceReference;baseline:EvidenceReference;number:string;blockHash:string};manifest:Manifest;actions:Loaded[];
-  actionCount:number;executionIdentity:J};
-async function loadContext(deps:BefPaidDataObservationCollectorDependencies,target:{runId:string;taskIndex:number},tx:Tx):Promise<Context>{
+  actionCount:number;executionIdentity:J;census?:AdmittedActionCensus};
+async function loadContext(deps:BefPaidDataObservationCollectorDependencies,target:{runId:string;taskIndex:number},tx:Tx,family=false):Promise<Context>{
   await tx.execute(sql.raw('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'));
   const runSql="SELECT r.owner_id::text,r.agent_id::text,r.mode,r.task_ids,r.release_identity,r.manifest_hash,r.status run_status,"+
     "r.cancellation_reason,t.task_id,t.status task_status,t.closure_status,t.closure_id::text,t.closure_operation_id,t.closure_payload_hash,"+
@@ -587,7 +596,7 @@ async function loadContext(deps:BefPaidDataObservationCollectorDependencies,targ
   const runs=await ownerRows<J>(tx,runSql),run=runs[0];if(!run)stop('owner_cutoff_unavailable');
   const ids=parse(run.task_ids,'owner_cutoff_mismatch');
   const taskId=String(run.task_id);
-  if(!['M1','M2','H1','H3','U1'].includes(taskId)||!['training','ranked'].includes(String(run.mode))||
+  if(!(family?['S1','S2','S3','S4','M1','M2','M3','M4','H1','H2','H3','U1']:['M1','M2','H1','H3','U1']).includes(taskId)||!['training','ranked'].includes(String(run.mode))||
     run.run_status!=='running'||run.cancellation_reason!==null||!Array.isArray(ids)||ids[target.taskIndex]!==taskId)stop('unsupported_task');
   if(run.task_status!=='active'||run.closure_status!=='closed'||typeof run.closure_id!=='string'||run.action_cutoff_sequence===null)
     stop('owner_cutoff_unavailable');
@@ -595,13 +604,20 @@ async function loadContext(deps:BefPaidDataObservationCollectorDependencies,targ
   if(cutoff===null||reconciled===null||cutoff>MAX_ACTIONS)stop('owner_cutoff_mismatch');
   if(reconciled<cutoff)stop('reconciliation_pending');
   if(!UUID.test(run.closure_id))stop('owner_cutoff_mismatch');
-  const closureRows=await ownerRows<J>(tx,"SELECT id::text,operation_id,payload_hash,reason,action_cutoff_sequence::text,"+
+  const closureRows=await ownerRows<J>(tx,"SELECT id::text,operation_id,payload_hash,reason,answer_json,action_cutoff_sequence::text,"+
     "owner_id::text,agent_id::text FROM oid_run_task_closure WHERE id='"+run.closure_id+"' AND run_id='"+target.runId+
     "' AND task_index="+target.taskIndex);
   const closure=closureRows[0];
   if(!closure||closure.owner_id!==run.owner_id||closure.agent_id!==run.agent_id||seq(closure.action_cutoff_sequence)!==cutoff||
     closure.operation_id!==run.closure_operation_id||closure.payload_hash!==run.closure_payload_hash||closure.reason!==run.closure_reason)
     stop('owner_cutoff_mismatch');
+  if(family){
+    const answer=parse(closure.answer_json,'owner_cutoff_mismatch');
+    const expected=closure.reason==='agent_finish'
+      ? hjson({action:'task_finish',runId:target.runId,taskIndex:target.taskIndex,answer})
+      : hjson({runId:target.runId,taskIndex:target.taskIndex,reason:closure.reason});
+    if(expected!==String(closure.payload_hash).toLowerCase())stop('owner_cutoff_mismatch');
+  }
   const prepSql="SELECT i.preparation_id::text,i.claim_id::text,i.lease_id::text,i.environment_id,i.release_identity,i.manifest_hash,"+
     "i.task_id,i.case_id,i.case_hash,i.initial_state_sha256,i.execution_identity_hash,i.environment_manifest_sha256,i.application_source_hash,"+
     "i.created_at,l.state lease_state,o.status observation_status,o.generation_id::text,o.participant_id,o.payer_address,"+
@@ -637,18 +653,32 @@ async function loadContext(deps:BefPaidDataObservationCollectorDependencies,targ
     "LEFT JOIN LATERAL (SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash FROM oid_run_task_action_reconciliation "+
     "WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true WHERE a.run_id='"+target.runId+"' AND a.task_index="+target.taskIndex+
     " ORDER BY a.action_sequence";
-  const actionRows=await ownerRows<ActionRow>(tx,actionSql);
+  const actionRows=family?await loadAdmittedActionRows(tx,target):await ownerRows<ActionRow>(tx,actionSql);
   const m=await loadManifest(deps.repositoryRoot,prep,release);
   const preparation=await preparationEvidence(deps.repositoryRoot,prep,target.runId,target.taskIndex,taskCase);
-  const loaded=await loadActions(deps.repositoryRoot,run,prep,target.runId,target.taskIndex,cutoff,actionRows,m);
   const taskBinding={ownerId:run.owner_id,agentId:run.agent_id,runId:target.runId,environmentId:prep.environment_id,
     releaseIdentity:run.release_identity,manifestHash:run.manifest_hash,caseId:taskCase.caseId,caseHash:taskCase.caseHash,
     rubricHash:taskCase.rubricHash,taskId:taskCase.taskId};
+  // AICODE-NOTE: Identity coverage includes every admitted family before the paid verifier
+  // partitions its own rows. This census is not an effect or whole-task completeness proof.
+  const census=family?await validateAdmittedActionCensus({
+    binding:taskBinding as import('./task-evaluator.js').TaskEvidenceBinding,taskIndex:target.taskIndex,
+    execution:{preparationId:prep.preparation_id,leaseId:prep.lease_id,generationId:prep.generation_id!,
+      environmentId:prep.environment_id,environmentManifestHash:prep.environment_manifest_sha256.toLowerCase(),
+      applicationSourceHash:prep.application_source_hash.toLowerCase(),executionIdentityHash:prep.execution_identity_hash.toLowerCase(),
+      initialStateSha256:prep.initial_state_sha256.toLowerCase()},
+    closure:{closureId:String(closure.id),operationId:typeof closure.operation_id==='string'?closure.operation_id:null,
+      payloadHash:String(closure.payload_hash).toLowerCase(),reason:String(closure.reason) as 'agent_finish'|'task_deadline'|'run_deadline',
+      actionCutoffSequence:cutoff,reconciledActionSequence:reconciled},
+    rows:actionRows as import('./bef-admitted-action-census.js').AdmittedActionRow[],
+    readActionEvidence:reference=>readAdmittedActionEvidenceFile(deps.repositoryRoot,reference)
+  }):undefined;
+  const loaded=await loadActions(deps.repositoryRoot,run,prep,target.runId,target.taskIndex,cutoff,actionRows,m);
   return {run,taskCase,prep,cutoff,reconciled,closure,binding:taskBinding,preparation,manifest:m,actions:loaded.items,
-    actionCount:loaded.allCount,executionIdentity:release.manifest.executionIdentity as unknown as J}
+    actionCount:loaded.allCount,executionIdentity:release.manifest.executionIdentity as unknown as J,...(census?{census}:{})}
 }
-async function collectLocked(deps:BefPaidDataObservationCollectorDependencies,target:{runId:string;taskIndex:number},tx:Tx):Promise<BefPaidDataCollectionResult>{
-  const c=await loadContext(deps,target,tx),p=c.prep,participant=addr(p.payer_address);
+async function collectLocked(deps:BefPaidDataObservationCollectorDependencies,target:{runId:string;taskIndex:number},tx:Tx,family=false):Promise<BefPaidDataCollectionResult>{
+  const c=await loadContext(deps,target,tx,family),p=c.prep,participant=addr(p.payer_address);
   if(!participant)stop('preparation_unavailable');
   const postgres=deps.postgresByEnvironment[p.environment_id],rpcPort=deps.rpcByEnvironment[p.environment_id];
   if(!postgres||!rpcPort||postgres.environmentId!==p.environment_id||rpcPort.environmentId!==p.environment_id)stop('source_not_configured');
@@ -688,7 +718,7 @@ async function collectLocked(deps:BefPaidDataObservationCollectorDependencies,ta
     paidActionCount:c.actions.length,befPaymentCount:before.census.payments.length,deliveryCount:before.census.deliveries.length,
     costCount:before.census.costs.length,rpcPaymentProofCount:effects.filter((x)=>x.verification==='observed').length,
     status:contradiction?'contradictory' as const:incomplete?'partial' as const:'observed' as const};
-  const packetValue:PaidDataCapturePacket={schemaVersion:'bts-paid-data-run-observation-capture/v1',classification:'run_bound_observations_candidate_not_grade',
+  const packetValue:PaidDataCapturePacket={schemaVersion:family?'bts-paid-family-observation-capture/v1':'bts-paid-data-run-observation-capture/v1',classification:'run_bound_observations_candidate_not_grade',
     binding:c.binding as PaidDataCapturePacket['binding'],
     closure:{closureId:String(c.closure.id),actionCutoffSequence:c.cutoff,reconciledActionSequence:c.reconciled,
       reason:String(c.closure.reason),operationId:typeof c.closure.operation_id==='string'?c.closure.operation_id:null,
@@ -701,25 +731,34 @@ async function collectLocked(deps:BefPaidDataObservationCollectorDependencies,ta
     manifest:{sha256:c.manifest.sha256,paymentPolicy:c.manifest.policy,catalog:c.manifest.catalog,componentReferences:caseComponents(c.taskCase)},
     ownerActions:c.actions.map((a)=>a.packet),bef:{session:before.session,before:before.census,after:after.census,
       censusSha256:hjson(before.census)},rpc:{localChainId:chain.toString(),baselineBlock:baseline,finalBlock,paymentEffects:effects},coverage};
-  let packet:PaidDataCapturePacket;try{packet=validatePaidDataCapturePacket(packetValue)}catch{return stop('capture_evidence_unavailable')}
+  const validatePacket=family?validatePaidFamilyCapturePacket:validatePaidDataCapturePacket;
+  let packet:PaidDataCapturePacket;try{packet=validatePacket(packetValue)}catch{return stop('capture_evidence_unavailable')}
   const actionResponses=new Map(c.actions.filter((a)=>a.response!==null).map((a)=>[a.row.id,a.response!]));
   const projectionContext={taskCase:c.taskCase,binding:c.binding as import('./task-evaluator.js').TaskEvidenceBinding,
     captureEvidence:{path:OBS+'pending.json',sha256:'0'.repeat(64),boundary:BOUNDARY},
     assets:c.manifest.assets as unknown as Array<{assetId:string;kind:'native'|'erc20';chainId:number;address:string|null}>,actionResponses};
   let projected:TaskObservationBundleCandidate;try{projected=projectPaidDataObservationBundle(packet,projectionContext)}catch{return stop('capture_evidence_unavailable')}
   packet.coverage.observationCutoffSequence=projected.observationCutoffSequence;
-  try{packet=validatePaidDataCapturePacket(packet)}catch{return stop('capture_evidence_unavailable')}
+  try{packet=validatePacket(packet)}catch{return stop('capture_evidence_unavailable')}
   if(hasSecret(packet)||Buffer.byteLength(canonicalTaskJson(packet),'utf8')>MAX_PACKET)stop('capture_evidence_unavailable');
   let evidence:EvidenceReference|null;try{evidence=evidenceRef(await deps.evidenceSink.write(packet))}catch{return stop('capture_evidence_unavailable')}
   if(!evidence||!evidence.path.startsWith(OBS))stop('capture_evidence_unavailable');
   let paidDataCandidate:PaidDataObservationCandidate;try{paidDataCandidate=projectPaidDataCaptureCandidate(packet,c.taskCase)}catch{return stop('rpc_mapping_incomplete')}
   let candidate:TaskObservationBundleCandidate;try{candidate=projectPaidDataObservationBundle(packet,{...projectionContext,captureEvidence:evidence})}catch{return stop('rpc_mapping_incomplete')}
   const boundary={...paidDataCandidate.boundary,observationCutoffSequence:candidate.observationCutoffSequence};
-  return {status:'candidate',candidate,paidDataCandidate,boundary,evidence,classification:'run_bound_observations_candidate_not_grade',packet}
+  return {status:'candidate',candidate,paidDataCandidate,boundary,evidence,classification:'run_bound_observations_candidate_not_grade',packet,
+    ...(c.census?{census:c.census,taskCase:c.taskCase,closureAnswer:parse(c.closure.answer_json,'owner_cutoff_mismatch'),participantAddress:participant}:{})}
 }
 export async function collectBefPaidDataObservationCandidate(deps:BefPaidDataObservationCollectorDependencies,
   target:{runId:string;taskIndex:number}):Promise<BefPaidDataCollectionResult>{
   if(!UUID.test(target.runId)||!Number.isSafeInteger(target.taskIndex)||target.taskIndex<0||target.taskIndex>11)return unavailable('invalid_target');
   try{return await deps.db.transaction(async(tx)=>collectLocked(deps,target,tx))}
+  catch(e){if(e instanceof Unavailable)return unavailable(e.reasonCode);return unavailable('owner_cutoff_unavailable')}
+}
+/** Paid facts on the actual task, for the strict paid+chain admitted-action root only. */
+export async function collectBefPaidFamilyObservationCandidate(deps:BefPaidDataObservationCollectorDependencies,
+  target:{runId:string;taskIndex:number}):Promise<BefPaidDataCollectionResult>{
+  if(!UUID.test(target.runId)||!Number.isSafeInteger(target.taskIndex)||target.taskIndex<0||target.taskIndex>11)return unavailable('invalid_target');
+  try{return await deps.db.transaction(async(tx)=>collectLocked(deps,target,tx,true))}
   catch(e){if(e instanceof Unavailable)return unavailable(e.reasonCode);return unavailable('owner_cutoff_unavailable')}
 }

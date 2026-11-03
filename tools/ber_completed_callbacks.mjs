@@ -4,17 +4,41 @@ import {createRequire} from 'node:module';
 import {createHash,randomUUID} from 'node:crypto';
 import {readFile,mkdir,writeFile} from 'node:fs/promises';
 import {resolve,relative} from 'node:path';
-const {Pool}=createRequire('/workspace/packages/owner-acceptance/package.json')('pg');
 const canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([k,x])=>[k,canon(x)])):v;
 const hash=v=>createHash('sha256').update(JSON.stringify(canon(v))).digest('hex');
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const SOURCE_PATHS=['tools/ber_completed_callbacks.mjs','packages/owner-identity/src/task-run-completion.ts',
+  'packages/owner-identity/src/task-action-service.ts','packages/owner-identity/dist/task-action-service.js',
   'packages/owner-identity/src/task-successor-activation.ts','packages/owner-identity/src/task-ranked-handoff.ts',
   'packages/owner-identity/src/task-sealed-evidence-source.ts','packages/owner-identity/src/task-store.ts',
   'packages/owner-identity/dist/task-run-completion.js','packages/owner-identity/dist/task-successor-activation.js',
   'packages/owner-identity/dist/task-ranked-handoff.js','packages/owner-identity/dist/task-sealed-evidence-source.js',
   'packages/owner-identity/dist/task-store.js'];
+
+// AICODE-NOTE: This selects retained receipt bytes, never reconstructs an execution or advances a revision.
+export function selectCompletedReceiptReplay(rows,target){
+ const actions=rows.actions.filter(a=>a.run_id===target.runId&&a.owner_id===target.ownerId&&a.agent_id===target.agentId)
+  .sort((a,b)=>a.task_index-b.task_index||Number(a.action_sequence)-Number(b.action_sequence));
+ assert.ok(actions.length>0);
+ const action=actions[0],receipts=rows.receipts.filter(r=>r.action_id===action.id);assert.equal(receipts.length,1);
+ const receipt=receipts[0],tasks=rows.tasks.filter(t=>t.run_id===target.runId&&t.task_index===action.task_index);assert.equal(tasks.length,1);
+ assert.ok(['observed','rejected_before_execution','unknown'].includes(receipt.receipt_status));
+ assert.ok(Number.isInteger(receipt.receipt_revision)&&receipt.receipt_revision>0);assert.match(receipt.evidence_hash,/^[a-f0-9]{64}$/);
+ assert.equal(receipt.tool_response_json===null,receipt.tool_response_hash===null);
+ if(receipt.tool_response_json!==null)assert.equal(hash(receipt.tool_response_json),receipt.tool_response_hash);
+ const history=rows.reconciliations.filter(r=>r.action_id===action.id&&r.revision===receipt.receipt_revision);assert.equal(history.length,1);
+ for(const field of ['receipt_status','evidence_hash','evidence_path','transaction_hash','tool_response_hash'])assert.deepEqual(history[0][field],receipt[field]);
+ assert.deepEqual(history[0].tool_response_json,receipt.tool_response_json);
+ const request={actionId:action.id,status:receipt.receipt_status,evidenceHash:receipt.evidence_hash};
+ for(const[field,key]of [['evidence_path','evidencePath'],['transaction_hash','transactionHash'],['tool_response_json','toolResponse']])
+  if(receipt[field]!==null)request[key]=structuredClone(receipt[field]);
+ const task=tasks[0];assert.equal(task.closure_status,'closed');assert.ok(BigInt(action.action_sequence)<=BigInt(task.action_cutoff_sequence));
+ return{request,expected:{actionId:action.id,actionSequence:String(action.action_sequence),receiptRevision:receipt.receipt_revision,
+  receiptStatus:receipt.receipt_status,reconciledActionSequence:String(task.reconciled_action_sequence),closureStatus:task.closure_status,replayed:true}};
+}
+
+export function verifyCompletedReceiptReplay(response,error,expected){assert.equal(error,null);assert.deepEqual(response,expected);}
 
 async function snapshot(pool,target,raw=false){
  const client=await pool.connect();
@@ -26,7 +50,7 @@ async function snapshot(pool,target,raw=false){
   assert.equal(rows.run.length,1);const run=rows.run[0];assert.equal(run.owner_id,target.ownerId);assert.equal(run.agent_id,target.agentId);
   assert.equal(run.status,'completed');assert.equal(run.mode,'ranked');assert.equal(run.terminal_reason,null);assert.equal(run.cancellation_reason,null);assert.equal(run.task_ids.length,12);
   rows.tasks=await query("SELECT to_jsonb(t)-'snapshot_json' row FROM oid_run_task t WHERE run_id=$1");
-  for(const[key,table]of Object.entries({evaluations:'oid_run_task_evaluation',actions:'oid_run_task_action',closures:'oid_run_task_closure',bundles:'oid_run_task_observation_bundle',events:'oid_run_event',bindings:'oid_task_execution_binding',preparations:'oid_task_preparation_intent',claims:'oid_run_dispatch_claim',slots:'oid_run_execution_slot',handoffs:'oid_ranked_run_handoff',results:'oid_ranked_verified_result',versions:'oid_ranked_run_version_snapshot'}))rows[key]=await query(`SELECT to_jsonb(t) row FROM ${table} t WHERE run_id=$1`);
+  for(const[key,table]of Object.entries({evaluations:'oid_run_task_evaluation',actions:'oid_run_task_action',closures:'oid_run_task_closure',bundles:'oid_run_task_observation_bundle',events:'oid_run_event',bindings:'oid_task_execution_binding',preparations:'oid_task_preparation_intent',claims:'oid_run_dispatch_claim',slots:'oid_run_execution_slot',handoffs:'oid_ranked_run_handoff',results:'oid_ranked_verified_result',versions:'oid_ranked_run_version_snapshot',reservations:'oid_run_reservation'}))rows[key]=await query(`SELECT to_jsonb(t) row FROM ${table} t WHERE run_id=$1`);
   for(const[key,table]of Object.entries({receipts:'oid_run_task_action_receipt',outboxes:'oid_run_task_action_outbox',reconciliations:'oid_run_task_action_reconciliation'}))rows[key]=await query(`SELECT to_jsonb(t) row FROM ${table} t WHERE action_id IN(SELECT id FROM oid_run_task_action WHERE run_id=$1)`);
   rows.leases=await query('SELECT to_jsonb(t) row FROM oid_task_environment_lease t WHERE preparation_id IN(SELECT preparation_id FROM oid_task_preparation_intent WHERE run_id=$1)');
   rows.ledger=await query('SELECT to_jsonb(t) row FROM oid_ledger_entry t WHERE operation_id=$1 OR left(operation_id,length($2))=$2',['rundeb_'+target.runId.replaceAll('-',''),'runref_'+target.runId.replaceAll('-','')+'_']);
@@ -42,6 +66,7 @@ export async function runBerCompletedCallbacks(input){
  assert.equal(ownerUrl.hostname,'postgres');assert.equal(observerUrl.hostname,'postgres');
  assert.match(ownerUrl.pathname,/^\/oid_acceptance_[a-f0-9]{32}$/);assert.equal(observerUrl.pathname,ownerUrl.pathname);
  assert.equal(ownerUrl.username,'oid_owner');assert.equal(observerUrl.username,'oid_observer');
+ const {Pool}=createRequire('/workspace/packages/owner-acceptance/package.json')('pg');
  const sourceHashes=async()=>Object.fromEntries(await Promise.all(SOURCE_PATHS.map(async p=>[p,sha(await readFile(resolve(repoRoot,p)))])));
  const sourceBefore=await sourceHashes();
  const observer=new Pool({connectionString:observerDatabaseUrl,max:1});let created;
@@ -55,6 +80,7 @@ export async function runBerCompletedCallbacks(input){
   const{TaskSealedEvidenceSource}=await import('../packages/owner-identity/dist/task-sealed-evidence-source.js');
   const{completeKnownRankedRun,finalizeKnownRankedTask}=await import('../packages/owner-identity/dist/task-run-completion.js');
   const{activatePreparedRankedSuccessor}=await import('../packages/owner-identity/dist/task-successor-activation.js');
+  const{recordTaskActionReceipt}=await import('../packages/owner-identity/dist/task-action-service.js');
   created=createDatabase({databaseUrl});const taskReleaseSource=createPostgresTaskReleaseQuerySource(created.db);
   const deps={db:created.db,taskReleaseSource,evidenceSource:new TaskSealedEvidenceSource({taskReleaseSource,evidenceRoot:repoRoot})};
   const finishedAt=new Date(capture.before.rows.run[0].finished_at).toISOString();
@@ -75,6 +101,10 @@ export async function runBerCompletedCallbacks(input){
    ()=>activatePreparedRankedSuccessor({...deps,preparedTaskStart},{runId,predecessorTaskIndex}),
    (response,error)=>{assert.equal(response,undefined);assert.equal(error?.code,'SUCCESSOR_RUN_NOT_CURRENT');assert.equal(error?.status,409);});
   assert.equal(capture.preparedPortCalls,0);
+  const replay=selectCompletedReceiptReplay(capture.before.rows,target);
+  for(const ordinal of [1,2])await record('duplicate_receipt_reconciliation_'+ordinal,{runId,receipt:replay.request},
+   ()=>recordTaskActionReceipt(deps,structuredClone(replay.request)),
+   (response,error)=>verifyCompletedReceiptReplay(response,error,replay.expected));
   capture.status='verified_subset';
  }catch(error){capture.status='failed';capture.failureCode=/^[A-Z0-9_]{1,100}$/.test(error.code??'')?error.code:'COMPLETED_CALLBACK_PROBE_FAILED';}
  finally{await created?.client.end({timeout:5});await observer.end();}

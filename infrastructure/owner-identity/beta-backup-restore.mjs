@@ -3,6 +3,7 @@ import { lstat, mkdir, open, readFile, readdir, realpath, rm } from 'node:fs/pro
 import { isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { inspectBackupFile, validateBackupInventory, verifyBackupIntegrity } from './beta-backup-inventory.mjs';
 import { openSealedCheckpointPayload } from './beta-backup-sealed-bundle.mjs';
+import { assertDiagnosticAuthorityRestored,DIAGNOSTIC_HELPER_AUTHORITY_TABLES } from './beta-backup-diagnostic-authority.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -11,7 +12,7 @@ const REPORT_RETENTION_SECONDS = 2_592_000;
 const OFFICIAL_MANIFEST_PATH = 'evidence/official-evidence-manifest.json';
 const OFFICIAL_FILE_PREFIX = 'evidence/official/';
 const RESTORED_OFFICIAL_SCHEMA = 'beta-restored-official-evidence/v1';
-const MAX_OFFICIAL_FILE_COUNT = 8192;
+const MAX_OFFICIAL_FILE_COUNT = 16384;
 const MAX_OFFICIAL_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_OFFICIAL_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 const BINDING_HASHES = ['bonusGrantOperationsSha256', 'runOperationReceiptsSha256', 'runGenerationReceiptsSha256', 'reportOperationReceiptsSha256'];
@@ -521,6 +522,7 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
     const reconciliation = await readJson(resolve(unsealedRoot, 'evidence/reconciliation.json'));
     originalIds = validateOriginalIds(sourceBefore);
     validateOriginalIds(sourceAfter);
+    if(canonical(reconciliation.restoreDataPolicy??null)!==canonical(inventory.restoreDataPolicy??null))fail('diagnostic_authority_restore_policy_mismatch');
     if (sourceBefore.snapshotBoundaryId !== inventory.checkpointSource.snapshotBoundaryId ||
         sourceAfter.snapshotBoundaryId !== inventory.checkpointSource.snapshotBoundaryId ||
         sourceBefore.databaseTotalsSha256 !== inventory.databaseTotalsSha256 ||
@@ -558,7 +560,10 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
     if (!fileRestore || fileRestore.status !== 'restored' || fileRestore.fileCount !== imageRows.length) fail('private_files_restore_not_verified');
     beforeRetention = validateObserverSnapshot(await adapters.observeReadOnly({ databaseName: restoreDatabaseName,
       privateDataDir, closureStatePath }), restoreDatabaseName);
-    if (beforeRetention.databaseTotalsSha256 !== inventory.databaseTotalsSha256 ||
+    const helperAuthorityPresent=DIAGNOSTIC_HELPER_AUTHORITY_TABLES.some(name=>Object.hasOwn(sourceBefore.tableFingerprints??{},name));
+    const restorable=helperAuthorityPresent||inventory.restoreDataPolicy
+      ?assertDiagnosticAuthorityRestored(sourceBefore,beforeRetention,inventory.restoreDataPolicy):{databaseTotalsSha256:inventory.databaseTotalsSha256};
+    if (beforeRetention.databaseTotalsSha256 !== restorable.databaseTotalsSha256 ||
         canonical(beforeRetention.operationBindings) !== canonical(inventory.operationBindings) ||
         canonical(beforeRetention.imageFiles) !== canonical(imageRows)) fail('restored_database_or_images_mismatch');
 
@@ -603,6 +608,7 @@ export async function restoreCombinedCheckpoint({ source, checkpoint, restore, a
       sourceDatabase: source.databaseName, restoreDatabaseName, restoreRoot, captureIsolationRoot: restoreRoot,
       privateDataDir, closureStatePath,
       checkpoint: { inventorySha256: artifactProof.inventorySha256, databaseTotalsSha256: inventory.databaseTotalsSha256,
+        ...(inventory.restoreDataPolicy?{restoreDataPolicy:inventory.restoreDataPolicy,restorableDatabaseTotalsSha256:restorable.databaseTotalsSha256}:{}),
         sourceBuildSha256: inventory.sourceBuildSha256, capturedAt: inventory.capturedAt,
         operationBindings: inventory.operationBindings, payloadManifestSha256: payload.payloadManifestSha256,
         payloadFileCount: payload.extractedFileCount, databaseDumpSha256: dumpRow.sha256,

@@ -26,6 +26,7 @@ import {
   type EvidenceReference,
   type TaskCase,
   type TaskReleaseQuerySource,
+  type TaskReleaseManifest,
 } from './task-release.js';
 import type { TaskObservationBundleCandidate } from './task-observation-store.js';
 
@@ -135,6 +136,7 @@ type Census = {
   generation: JsonRecord; operations: JsonRecord[]; selectedExecutions: JsonRecord[];
   selectedEvents: JsonRecord[]; costs: JsonRecord[]; paymentsCount: string; deliveriesCount: string; counts: JsonRecord;
 };
+export type S4FixtureCensus = Census;
 type S4Census = Census;
 type S4Checkpoint = {
   blockNumber: string; blockHash: string; parentHash: string; balances: Array<{ account: string; assetId: string; amountUnits: string }>;
@@ -167,7 +169,7 @@ type RunTaskRow = {
 };
 type ClosureRow = { id: string; operation_id: string | null; payload_hash: string; reason: string;
   action_cutoff_sequence: string | number; owner_id: string; agent_id: string };
-type PreparationRow = {
+export type S4FixturePreparationRow = {
   preparation_id: string; claim_id: string; lease_id: string; environment_id: string; release_identity: string;
   manifest_hash: string; task_id: string; case_id: string; case_hash: string; initial_state_sha256: string;
   execution_identity_hash: string; environment_manifest_sha256: string; application_source_hash: string;
@@ -175,6 +177,7 @@ type PreparationRow = {
   participant_id: string | null; payer_address: string | null; baseline_state_sha256: string | null;
   fixture_evidence: unknown; baseline_evidence: unknown;
 };
+type PreparationRow = S4FixturePreparationRow;
 type ActionRow = {
   id: string; run_id: string; task_index: number; owner_id: string; agent_id: string; task_id: string;
   environment_id: string; action_sequence: string | number; operation_id: string; payload_hash: string;
@@ -190,10 +193,11 @@ type LoadedMutableAction = { category: 'mutable'; row: ActionRow; sequence: numb
 type LoadedReadAction = { category: 'read'; row: ActionRow; sequence: number; command: ReadCommand;
   evidence: JsonRecord; evidenceReference: EvidenceRef };
 type LoadedAction = LoadedMutableAction | LoadedReadAction;
-type FixtureProof = { operationId: string; transactionHash: string; blockNumber: bigint; blockHash: string; parentHash: string;
+export type S4PreparationFixtureProof = { operationId: string; transactionHash: string; blockNumber: bigint; blockHash: string; parentHash: string;
   amountUnits: bigint; spender: string; tokenAddress: string; idempotencyKeySha256: string; proofSha256: string; reference: EvidenceRef;
   baselineReference: EvidenceRef; baselineNumber: bigint; baselineHash: string;
   preState: { blockNumber: bigint; blockHash: string; projection: JsonRecord } };
+type FixtureProof = S4PreparationFixtureProof;
 type TransferSource = { op: JsonRecord; selected: JsonRecord; action: LoadedMutableAction | null; tx: S4Transaction;
   receipt: S4Receipt; selectedAction: JsonRecord; actionSequence: number };
 
@@ -670,10 +674,17 @@ function pgResultRows(value: unknown): QueryRows {
   throw new CollectionUnavailable('observer_census_unavailable');
 }
 async function captureCensus(port: BefS4ReadOnlyPostgresPort, envId: string, generationId: string,
-  tokenAddresses: Readonly<Record<'USDC' | 'WETH', string>>, router: string): Promise<{ session: JsonRecord; census: Census }> {
+  tokenAddresses: Readonly<Record<'USDC' | 'WETH', string>>, router: string, fixtureOperationId?:string): Promise<{ session: JsonRecord; census: Census }> {
   if (port.environmentId !== envId) throw new CollectionUnavailable('source_not_configured');
   try {
-    return await port.withRepeatableRead(async (query) => {
+    return await port.withRepeatableRead(async (sourceQuery) => {
+      // Explicit fixture-only scope. The generic collector separately retains the complete generation census.
+      if(fixtureOperationId!==undefined&&!UUID.test(fixtureOperationId))throw new CollectionUnavailable('preparation_unavailable');
+      const query:Parameters<Parameters<BefS4ReadOnlyPostgresPort['withRepeatableRead']>[0]>[0]=async(statement,parameters)=>{
+        if(!fixtureOperationId||!statement.includes('generation_id=$2::uuid')||statement.includes('FROM public.bef_generation g'))return sourceQuery(statement,parameters);
+        const scoped=statement.replace(/o\.generation_id=\$2::uuid/g,'o.generation_id=$2::uuid AND o.operation_id=$3::uuid').replace(/(?<![.a-z_])generation_id=\$2::uuid/g,'generation_id=$2::uuid AND operation_id=$3::uuid');
+        return sourceQuery(scoped,[...(parameters??[]),fixtureOperationId]);
+      };
       const sessions = pgResultRows(await query(`SELECT current_user AS current_user,session_user AS session_user,current_database() AS database_name,
           current_setting('transaction_read_only') AS transaction_read_only,current_setting('transaction_isolation') AS transaction_isolation,
           r.rolsuper AS rolsuper,r.rolbypassrls AS rolbypassrls,has_schema_privilege(current_user,'public','CREATE') AS schema_create
@@ -754,7 +765,7 @@ async function captureCensus(port: BefS4ReadOnlyPostgresPort, envId: string, gen
           selectedEvents: String(counts.selected_events), costs: String(counts.costs) },
       };
       if (hasSecret(census) || Buffer.byteLength(canonicalTaskJson(census), 'utf8') > MAX_PACKET_BYTES) throw new CollectionUnavailable('observer_census_unavailable');
-      return { session: { currentUser: 'bef_observer', sessionUser: 'bef_observer', transactionReadOnly: 'on',
+      return { session: { currentUser: 'bef_observer', sessionUser: 'bef_observer', ...(fixtureOperationId?{databaseName:String(sessions[0]!.database_name)}:{}), transactionReadOnly: 'on',
         transactionIsolation: 'repeatable read', superuser: false, bypassRls: false }, census };
     });
   } catch (error) { if (error instanceof CollectionUnavailable) throw error; throw new CollectionUnavailable('observer_census_unavailable'); }
@@ -895,8 +906,24 @@ async function loadPreparationEvidence(root: string, prep: PreparationRow, runId
   if (!fixtureRef || !baselineRef || fixtureRef.path === baselineRef.path || fixtureRef.sha256 === baselineRef.sha256) throw new CollectionUnavailable('preparation_unavailable');
   const [fixtureBytes,baselineBytes] = await Promise.all([
     readEvidence(root,fixtureRef,PREPARATION_ROOT,'preparation_unavailable'),readEvidence(root,baselineRef,PREPARATION_ROOT,'preparation_unavailable')]);
-  const fixture = readJson(fixtureBytes,'preparation_unavailable');
-  const baseline = readJson(baselineBytes,'preparation_unavailable');
+  return validateS4PreparationFixtureEvidence({fixtureBytes,baselineBytes,preparation:prep,runId,taskIndex,taskCase});
+}
+
+/** Exact public S4 allowance calldata parser, not a generic secret-scanner bypass. */
+export function parseS4PreparationEvidence(bytes:Uint8Array,kind:'fixture'|'baseline'):JsonRecord {
+  if(bytes.byteLength>MAX_PACKET_BYTES)throw new CollectionUnavailable('preparation_unavailable');
+  const doc=readJson(Buffer.from(bytes),'preparation_unavailable');
+  const inspect=(value:unknown,path:string[]):void=>{if(!value||typeof value!=='object')return;for(const [key,item] of Object.entries(value)){const next=[...path,key];if(key.toLowerCase()==='input'&&(kind!=='fixture'||next.join('.')!=='evidence.s4AllowanceFixture.transaction.input'||typeof item!=='string'||!/^0x095ea7b3[0-9a-f]{128}$/i.test(item)))throw new CollectionUnavailable('preparation_unavailable');inspect(item,next);}};inspect(doc,[]);
+  if(doc.schemaVersion!=='owner-bef-task-preparation-evidence/v1'||doc.kind!==kind)throw new CollectionUnavailable('preparation_unavailable');
+  return doc;
+}
+
+/** Replays the legacy preparation predicates over immutable bytes for family/sealed consumers. */
+export function validateS4PreparationFixtureEvidence(input:{fixtureBytes:Uint8Array;baselineBytes:Uint8Array;preparation:S4FixturePreparationRow;runId:string;taskIndex:number;taskCase:Extract<TaskCase,{taskId:'S4'}>}):S4PreparationFixtureProof {
+  const {preparation:prep,runId,taskIndex,taskCase}=input;
+  const fixtureRef=ref(prep.fixture_evidence),baselineRef=ref(prep.baseline_evidence);
+  if(!fixtureRef||!baselineRef||fixtureRef.path===baselineRef.path||fixtureRef.sha256===baselineRef.sha256||sha256(input.fixtureBytes)!==fixtureRef.sha256||sha256(input.baselineBytes)!==baselineRef.sha256)throw new CollectionUnavailable('preparation_unavailable');
+  const fixture=parseS4PreparationEvidence(input.fixtureBytes,'fixture'),baseline=parseS4PreparationEvidence(input.baselineBytes,'baseline');
   const pins = publicPins(prep,runId,taskIndex);
   for (const [doc,kind] of [[fixture,'fixture'],[baseline,'baseline']] as const) {
     if (doc.schemaVersion !== 'owner-bef-task-preparation-evidence/v1' || doc.kind !== kind || doc.preparationId !== prep.preparation_id ||
@@ -969,6 +996,71 @@ async function loadPreparationEvidence(root: string, prep: PreparationRow, runId
     idempotencyKeySha256:s4.idempotencyKeySha256.toLowerCase(),
     proofSha256:sha256CanonicalTaskJson(s4).toLowerCase(),reference:fixtureRef,baselineReference:baselineRef,baselineNumber:blockNumber,baselineHash:blockHash,
     preState:{blockNumber:preBlockNumber,blockHash:preBlockHash,projection:preProjection}};
+}
+
+
+export type S4FixtureBoundaryRpc = {
+ localChainId:string;participant:string;fixtureTransaction:JsonRecord;fixtureReceipt:JsonRecord;fixtureBlock:JsonRecord;
+ parentCheckpoint:JsonRecord;baselineCheckpoint:JsonRecord;responseHashes:Array<{method:string;paramsSha256:string;resultSha256:string}>;
+};
+export type S4FixtureBoundaryCapture = {
+ schemaVersion:'bts-s4-fixture-boundary-capture/v1';preparationId:string;environmentId:string;generationId:string;manifestHash:string;sourceHash:string;
+ fixtureEvidence:EvidenceReference;baselineEvidence:EvidenceReference;
+ fixture:Omit<S4PreparationFixtureProof,'reference'|'baselineReference'|'blockNumber'|'amountUnits'|'baselineNumber'|'preState'>&{blockNumber:string;amountUnits:string;baselineNumber:string;preState:{blockNumber:string;blockHash:string;projection:JsonRecord}};
+ bef:{session:JsonRecord;before:S4FixtureCensus;after:S4FixtureCensus};rpc:S4FixtureBoundaryRpc;
+};
+/** No fixture exclusion is valid until all original source and independent receipt predicates pass. */
+export function validateS4FixtureBoundaryObservations(input:{fixture:S4PreparationFixtureProof;preparation:Pick<S4FixturePreparationRow,'environment_id'|'generation_id'|'participant_id'|'payer_address'|'environment_manifest_sha256'|'application_source_hash'>;taskCase:Extract<TaskCase,{taskId:'S4'}>;identity:TaskReleaseManifest['executionIdentity'];before:S4FixtureCensus;after:S4FixtureCensus;rpc:S4FixtureBoundaryRpc}):void {
+ const {fixture,preparation:prep,taskCase,identity,before,after,rpc}=input;
+ const payer=normalizeAddress(prep.payer_address),usdc=normalizeAddress(identity.assets.find(a=>a.assetId==='USDC')?.address),weth=normalizeAddress(identity.assets.find(a=>a.assetId==='WETH')?.address),router=normalizeAddress(identity.contracts.find(c=>c.contractId==='swapRouter02')?.address);
+ if(!payer||!usdc||!weth||!router||!prep.generation_id||!sameCanonical(before,after)||rpc.localChainId!==String(identity.localChainId)||rpc.participant!==payer||before.operations.length!==1||before.selectedExecutions.length!==1||before.selectedEvents.length!==4||before.costs.length!==1||before.paymentsCount!=='0'||before.deliveriesCount!=='0')throw new CollectionUnavailable('preparation_unavailable');
+ const generation=before.generation;
+ if(generation.env_id!==prep.environment_id||generation.generation_id!==prep.generation_id.toLowerCase()||generation.participant_id!==prep.participant_id||generation.payer_address!==payer||generation.manifest_sha256!==prep.environment_manifest_sha256.toLowerCase()||generation.environment_manifest_sha256!==prep.environment_manifest_sha256.toLowerCase()||generation.status!=='active'||generation.chain_id!==String(identity.localChainId))throw new CollectionUnavailable('preparation_unavailable');
+ verifyFixtureOperation(before,fixture,prep,payer,{USDC:usdc,WETH:weth},router);
+ const tx=rpcTransaction(rpc.fixtureTransaction),receipt=tx?rpcReceipt(rpc.fixtureReceipt,tx):null;
+ if(!tx||!receipt||tx.hash!==fixture.transactionHash||tx.from!==payer||tx.to!==usdc||tx.chainId!==String(identity.localChainId)||tx.blockNumber!==fixture.blockNumber.toString()||tx.blockHash!==fixture.blockHash||tx.valueWei!=='0'||tx.gasLimit!=='100000'||tx.input!==expectedInput({kind:'approve',spender:router,amountUnits:fixture.amountUnits.toString()})||receipt.status!=='success')throw new CollectionUnavailable('preparation_unavailable');
+ const logs=Array.isArray(rpc.fixtureReceipt.logs)?rpc.fixtureReceipt.logs:[],approvals=logs.map(raw=>decodeApproval(raw,usdc)).filter((item):item is S4ApprovalLog=>item!==null);
+ if(logs.length!==1||approvals.length!==1||approvals[0]!.owner!==payer||approvals[0]!.spender!==router||approvals[0]!.amountUnits!==fixture.amountUnits.toString()||approvals[0]!.transactionHash!==fixture.transactionHash)throw new CollectionUnavailable('preparation_unavailable');
+ const block=blockHeader(rpc.fixtureBlock,fixture.blockNumber);
+ if(block.hash!==fixture.blockHash||block.parentHash!==fixture.parentHash||!Array.isArray(rpc.fixtureBlock.transactions)||rpc.fixtureBlock.transactions.length!==1||!sameCanonical(rpcTransaction(rpc.fixtureBlock.transactions[0]),tx))throw new CollectionUnavailable('preparation_unavailable');
+ if(!s4FixtureParentCheckpointMatches(taskCase,fixture.preState,rpc.parentCheckpoint)||rpc.baselineCheckpoint.blockNumber!==fixture.baselineNumber.toString()||rpc.baselineCheckpoint.blockHash!==fixture.baselineHash||!sameCanonical(s4CheckpointProjection(rpc.baselineCheckpoint,taskCase),caseProjection(taskCase)))throw new CollectionUnavailable('baseline_mismatch');
+ if(!s4FixtureTransitionMatches(taskCase,payer,s4CheckpointProjection(rpc.parentCheckpoint,taskCase),s4CheckpointProjection(rpc.baselineCheckpoint,taskCase),receipt.gasCostWei))throw new CollectionUnavailable('baseline_mismatch');
+ verifyS4CostRows(before,[{operationId:fixture.operationId,receipt,parentHash:fixture.parentHash}],prep.environment_id,prep.generation_id,payer,prep.environment_manifest_sha256);
+}
+
+export const S4_FIXTURE_BOUNDARY_FAILURE_CODES=['s4_fixture_source_unavailable','s4_fixture_scoped_census_unavailable','s4_fixture_rpc_receipt_unavailable','s4_fixture_rpc_checkpoint_unavailable','s4_fixture_rpc_code_unavailable','s4_fixture_consistency_unavailable'] as const;
+export type S4FixtureBoundaryFailureCode=typeof S4_FIXTURE_BOUNDARY_FAILURE_CODES[number];
+export class S4FixtureBoundaryUnavailable extends Error {constructor(readonly reasonCode:S4FixtureBoundaryFailureCode){super(reasonCode);}}
+/** Dedicated read-only setup capture; does not classify or filter participant operations. */
+export async function captureS4PreparationFixtureBoundary(input:{repositoryRoot:string;preparation:S4FixturePreparationRow;runId:string;taskIndex:number;taskCase:Extract<TaskCase,{taskId:'S4'}>;identity:TaskReleaseManifest['executionIdentity'];postgres:BefS4ReadOnlyPostgresPort;rpc:BefS4ReadOnlyRpcPort}):Promise<S4FixtureBoundaryCapture>{
+ let phase:S4FixtureBoundaryFailureCode='s4_fixture_source_unavailable';
+ try{
+ const {preparation:prep,taskCase,identity}=input,fixture=await loadPreparationEvidence(input.repositoryRoot,prep,input.runId,input.taskIndex,taskCase);
+ const payer=normalizeAddress(prep.payer_address),usdc=normalizeAddress(identity.assets.find(a=>a.assetId==='USDC')?.address),weth=normalizeAddress(identity.assets.find(a=>a.assetId==='WETH')?.address),router=normalizeAddress(identity.contracts.find(c=>c.contractId==='swapRouter02')?.address);
+ if(!payer||!usdc||!weth||!router||!prep.generation_id)throw new CollectionUnavailable('preparation_unavailable');
+ phase='s4_fixture_scoped_census_unavailable';
+ const before=await captureCensus(input.postgres,prep.environment_id,prep.generation_id,{USDC:usdc,WETH:weth},router,fixture.operationId),rpc=new RpcRecorder(input.rpc);
+ phase='s4_fixture_rpc_receipt_unavailable';
+ const chainId=hexUint(await rpc.request('eth_chainId',[]));if(chainId!==BigInt(identity.localChainId))throw new CollectionUnavailable('rpc_identity_mismatch');
+ const tx=await rpc.request('eth_getTransactionByHash',[fixture.transactionHash]),receipt=await rpc.request('eth_getTransactionReceipt',[fixture.transactionHash]),block=await rpc.request('eth_getBlockByNumber',[`0x${fixture.blockNumber.toString(16)}`,true]);
+ if(!isRecord(tx)||!isRecord(receipt)||!isRecord(block))throw new CollectionUnavailable('preparation_unavailable');
+ const pick=(value:JsonRecord,keys:string[]):JsonRecord=>Object.fromEntries(keys.filter(key=>value[key]!==undefined).map(key=>[key,value[key]]));
+ const txKeys=['hash','from','to','nonce','input','value','gas','blockNumber','blockHash','transactionIndex','chainId'];
+ const logKeys=['address','topics','data','blockNumber','blockHash','transactionHash','transactionIndex','logIndex','removed'];
+ const safeTx=pick(tx,txKeys),safeReceipt={...pick(receipt,['transactionHash','from','to','blockNumber','blockHash','transactionIndex','status','gasUsed','effectiveGasPrice']),logs:Array.isArray(receipt.logs)?receipt.logs.map(log=>isRecord(log)?pick(log,logKeys):null):null};
+ const safeBlock={...pick(block,['number','hash','parentHash']),transactions:Array.isArray(block.transactions)?block.transactions.map(item=>isRecord(item)?pick(item,txKeys):null):null};
+ phase='s4_fixture_rpc_checkpoint_unavailable';
+ const parent=await readCheckpoint(rpc,identity,taskCase,payer,fixture.preState.blockNumber),baseline=await readCheckpoint(rpc,identity,taskCase,payer,fixture.baselineNumber);
+ phase='s4_fixture_rpc_code_unavailable';
+ await verifyCode(rpc,identity,fixture.preState.blockNumber);await verifyCode(rpc,identity,fixture.baselineNumber);
+ phase='s4_fixture_scoped_census_unavailable';
+ const after=await captureCensus(input.postgres,prep.environment_id,prep.generation_id,{USDC:usdc,WETH:weth},router,fixture.operationId);
+ const observation:S4FixtureBoundaryRpc={localChainId:chainId.toString(),participant:payer,fixtureTransaction:safeTx,fixtureReceipt:safeReceipt,fixtureBlock:safeBlock,parentCheckpoint:parent,baselineCheckpoint:baseline,responseHashes:rpc.responseHashes};
+ phase='s4_fixture_consistency_unavailable';
+ validateS4FixtureBoundaryObservations({fixture,preparation:prep,taskCase,identity,before:before.census,after:after.census,rpc:observation});
+ const {reference,baselineReference,preState,...fields}=fixture;
+ return {schemaVersion:'bts-s4-fixture-boundary-capture/v1',preparationId:prep.preparation_id,environmentId:prep.environment_id,generationId:prep.generation_id,manifestHash:prep.environment_manifest_sha256.toLowerCase(),sourceHash:prep.application_source_hash.toLowerCase(),fixtureEvidence:reference,baselineEvidence:baselineReference,fixture:{...fields,blockNumber:fixture.blockNumber.toString(),amountUnits:fixture.amountUnits.toString(),baselineNumber:fixture.baselineNumber.toString(),preState:{...preState,blockNumber:`0x${preState.blockNumber.toString(16)}`}},bef:{session:before.session,before:before.census,after:after.census},rpc:observation};
+ }catch{throw new S4FixtureBoundaryUnavailable(phase);}
 }
 
 function exactActionKeys(value: JsonRecord): boolean {
@@ -1097,7 +1189,7 @@ function validateS4ReadOperations(census:Census,actions:LoadedAction[],environme
   return ids;
 }
 
-function verifyFixtureOperation(census:Census,fixture:FixtureProof,prep:PreparationRow,payer:string,
+function verifyFixtureOperation(census:Census,fixture:FixtureProof,prep:Pick<PreparationRow,'environment_id'|'generation_id'|'participant_id'>,payer:string,
   tokens:Readonly<Record<'USDC'|'WETH',string>>,router:string):{operation:JsonRecord;selected:JsonRecord;events:JsonRecord[]} {
   const operation=census.operations.find((row)=>row.operation_id===fixture.operationId);
   const selected=census.selectedExecutions.find((row)=>row.operation_id===fixture.operationId);

@@ -107,7 +107,7 @@ const safeCauseNames = new Set([
   'WaitForTransactionReceiptTimeoutError',
 ]);
 
-function safeCauseClass(error: unknown): string | null {
+export function safeFixtureCauseClass(error: unknown): string | null {
   const names: string[] = [];
   let current: unknown = error;
   for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth += 1) {
@@ -141,7 +141,7 @@ async function atFixturePhase<T>(phase: FixtureFailurePhase, work: () => Promise
     return await work();
   } catch (error) {
     const receiptObservation = error instanceof FixtureReceiptPollTimeoutError ? error.observation : null;
-    throw new GenerationFixtureFailure(phase, safeCauseClass(error), safeRpcDiagnostic(error), receiptObservation,
+    throw new GenerationFixtureFailure(phase, safeFixtureCauseClass(error), safeRpcDiagnostic(error), receiptObservation,
       error instanceof AdminRpcFailure ? error.diagnostic : null);
   }
 }

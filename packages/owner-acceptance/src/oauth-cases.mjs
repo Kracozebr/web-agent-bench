@@ -148,7 +148,7 @@ async function probeMcpAuthorizationChallenge({ serverUrl, publicOrigin, resourc
   return { resourceMetadataUrl, evidence };
 }
 
-async function startOAuthCallbackReceiver(callbackUrl = DEFAULT_CALLBACK_URL) {
+export async function startOAuthCallbackReceiver(callbackUrl = DEFAULT_CALLBACK_URL) {
   const callback = loopbackHttpUrl(callbackUrl, "OAuth callback URL");
   const queue = [];
   const waiters = [];
@@ -223,8 +223,9 @@ function makeOAuthProvider({
   const redirectUrl = loopbackHttpUrl(callbackUrl, "OAuth callback URL");
   const expectedResource = loopbackHttpUrl(resource, "OAuth resource identifier");
   const protectedResourceMetadataUrl = loopbackHttpUrl(resourceMetadataUrl, "OAuth resource metadata URL");
-  if (protectedResourceMetadataUrl.origin !== expectedResource.origin
-    || protectedResourceMetadataUrl.pathname !== "/.well-known/oauth-protected-resource/api/agent") {
+  if (!["/api/agent", "/api/agent/mcp"].includes(expectedResource.pathname)
+    || protectedResourceMetadataUrl.origin !== expectedResource.origin
+    || protectedResourceMetadataUrl.pathname !== "/.well-known/oauth-protected-resource" + expectedResource.pathname) {
     throw new Error("The OAuth resource metadata URL does not match the pinned local profile");
   }
   const state = {

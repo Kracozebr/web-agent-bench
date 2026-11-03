@@ -64,6 +64,7 @@ export function RunLaunchPanel() {
   const [catalog, setCatalog] = useState<RunCatalogResponse | null>(null);
   const [intents, setIntents] = useState<RunLaunchIntent[]>([]);
   const [runs, setRuns] = useState<OwnerRunProjection[]>([]);
+  const [feedbackRefreshRevision, setFeedbackRefreshRevision] = useState(0);
   const [intentCursor, setIntentCursor] = useState<string | null>(null);
   const [runCursor, setRunCursor] = useState<string | null>(null);
   const [agentId, setAgentId] = useState("");
@@ -82,7 +83,7 @@ export function RunLaunchPanel() {
   const pendingCancels = useRef<Record<string, PendingOperation>>({});
   const pendingRunCancels = useRef<Record<string, PendingOperation>>({});
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (refreshFeedback = false) => {
     setBusy(true);
     setError(false);
     try {
@@ -98,6 +99,7 @@ export function RunLaunchPanel() {
       setRuns(runResponse.runs);
       setIntentCursor(intentResponse.nextCursor ?? null);
       setRunCursor(runResponse.nextCursor ?? null);
+      if (refreshFeedback) setFeedbackRefreshRevision((revision) => revision + 1);
       setMessage("Loaded the latest private release, permission and intent status from the server.");
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) router.replace("/sign-in");
@@ -347,8 +349,8 @@ export function RunLaunchPanel() {
             <h2 id="run-catalog-title">Active release</h2>
             <p className="fine">Release identity and completeness come from the server catalog. A partial or missing release cannot be used to create an intent.</p>
           </div>
-          <button className="button button-small" data-testid="run-intents-refresh" type="button" onClick={() => void refresh()} disabled={busy}>
-            {busy ? "Refreshing…" : "Refresh status"}
+          <button className="button button-small" data-testid="run-intents-refresh" type="button" onClick={() => void refresh(true)} disabled={busy}>
+            {busy ? "Refreshing…" : "Refresh runs and results"}
           </button>
         </div>
         {releaseAvailable && release ? (
@@ -560,7 +562,7 @@ export function RunLaunchPanel() {
                   {run.cancellationEvidenceHash ? <><dt>Cancellation evidence</dt><dd>{run.cancellationEvidenceHash}</dd></> : null}
                 </dl>
                 </details>
-                <RunFeedbackPanel runId={run.id} mode={run.mode} status={run.status} />
+                <RunFeedbackPanel runId={run.id} mode={run.mode} status={run.status} refreshRevision={feedbackRefreshRevision} />
                 {run.queueExpiryFencePending ? <div className="notice notice-warning" data-testid={`run-queue-expiry-fence-${run.id}`}>
                   This run expired before starting. Cancellation is finishing; reserved bonus USDC will be released after cleanup is confirmed.
                 </div> : run.status === "cancellation_requested" ? <div className="notice notice-warning">The cancellation request is recorded and awaits confirmed executor fence evidence.</div> : null}

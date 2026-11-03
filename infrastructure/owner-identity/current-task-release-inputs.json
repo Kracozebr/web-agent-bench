@@ -2,19 +2,19 @@
   "schemaVersion": "bts-current-task-release-inputs/v1",
   "classification": "current_candidate_artifact_pinset_not_validation_or_activation",
   "cases": {
-    "path": "artifacts/runs/bts-difficulty-v2-case-candidates/a1133244-7da8-40e5-abbc-8f4872be0f74/candidate-cases.json",
-    "sha256": "54407e7f973629f8370f9d3f42643e6f155d5c3789efca94f2b2e6c6741714ea"
+    "path": "artifacts/runs/bts-difficulty-v2-case-candidates/943f0fbf-2356-4ebd-87b0-b11fd12b9180/candidate-cases.json",
+    "sha256": "a4de7505a54355bb024b536e22aa6c334886c76767ece13eefe2c82d7361c9b6"
   },
   "release": {
-    "path": "artifacts/runs/bts-difficulty-v2-release-candidates/1f84dfad-bdc0-443b-8321-3b7da59350a9/candidate-release.json",
-    "sha256": "df8686787b8f31ea595835ee522c08f5502bd51c73575745a81879134fd3ad27"
+    "path": "artifacts/runs/bts-difficulty-v2-release-candidates/01d083ee-4777-4e48-bc19-76b54db8f43d/candidate-release.json",
+    "sha256": "9f289785ad019be9d421033d657831dc5b25437ab07f3ca8cdf16184db7e2f7d"
   },
   "minimum": {
-    "path": "artifacts/runs/bts-v2-minimum-action-review/327fec21-fe0a-4f11-a9c3-9bdbda3ba959/review.json",
-    "sha256": "3d18fbc116fc6b55fcc3f59598091251455591073a069f7079e6cb92887c0822"
+    "path": "artifacts/runs/bts-v2-minimum-action-review/93ef6e35-780f-45d1-ac1f-578b91ac409e/review.json",
+    "sha256": "b1182b6387fcb59b3be55910953e80e5adf0216ea170a4abf3255a1993cf80af"
   },
   "references": {
-    "path": "artifacts/runs/bts-v2-reference-verification/0c1cd1a0-1779-499f-87c1-f7924f2f2fb2/verification.json",
-    "sha256": "8bd879822a1f3530717b0c0b95b32fa8749f962b40aff2345125f415f7f6a60c"
+    "path": "artifacts/runs/bts-v2-reference-verification/d16929cf-662f-4bf5-bcdb-8f959fd27d0b/verification.json",
+    "sha256": "029c75551e1273997c0035b3947b0b4979cf04280de60b0d708d8b23422ddf8b"
   }
 }

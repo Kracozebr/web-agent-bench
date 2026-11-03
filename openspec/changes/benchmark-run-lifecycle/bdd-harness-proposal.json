@@ -586,11 +586,12 @@
         "no_participant_chronological_tool_journal",
         "closed_reason_allowlist",
         "closed_exact_parameters_absent",
-        "necessary_scoped_tool_response_preserved"
+        "necessary_scoped_tool_response_preserved",
+        "ranked_terminal_unknown_preserves_known_task_grades"
       ],
       "negative_variants": [
         "ranked_early_score_request",
-        "training_feedback_before_task_terminal",
+        "training_feedback_before_task_evaluation",
         "reference_solution_field",
         "foreign_result_request",
         "request_internal_tool_trace_as_feedback",

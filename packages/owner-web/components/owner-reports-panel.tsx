@@ -2,7 +2,9 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { apiRequest, errorText, getCurrentOwner, newOperationId, type OwnerProjection } from "@/lib/api";
+import { diagnosticReportCaseId } from "@/lib/diagnostics";
 
 type ReportStatus = "new" | "in_progress" | "closed";
 interface ReportImage { id: string; sha256: string; contentType: string; bytes: number; width: number; height: number; imagePath: string; }
@@ -162,6 +164,7 @@ export function OwnerReportsPanel() {
   return <div className="stack">
     <section className="page-heading"><p className="eyebrow">Private support</p><h1>Reports</h1>
       <p className="lede">Send a private issue report to the support team. Do not include passwords, tokens, private keys, or hidden task answers. Reports and screenshots are not grading or billing evidence.</p>
+      <p><Link href="/diagnostics">View safe client diagnostics and collection coverage</Link></p>
     </section>
     {error ? <p className="status-box status-error" role="alert" data-testid="owner-report-error">{error}</p> : null}
     {message ? <p className="notice notice-success" role="status">{message}</p> : null}
@@ -185,7 +188,8 @@ export function OwnerReportsPanel() {
     <section className="card" aria-label="Your report history">
       <div className="section-heading"><div><h2>Your reports</h2><p className="fine">Only receipts and details belonging to your owner account appear here.</p></div><button className="button button-small" type="button" onClick={() => void refresh()}>Refresh</button></div>
       {reports.length === 0 ? <p className="empty-state">No reports have been submitted.</p> : <div className="report-list">{reports.map((report) => <article className="report-card" key={report.id}>
-        <div><div className="inline-controls"><strong>{report.title}</strong><span className="pill">{report.status.replace("_", " ")}</span><span className="pill">{report.source}</span></div><p className="fine">{timestamp(report.createdAt)} · {report.imageCount} screenshot{report.imageCount === 1 ? "" : "s"}</p></div>
+        <div><div className="inline-controls"><strong>{report.title}</strong><span className="pill">{report.status.replace("_", " ")}</span><span className="pill">{diagnosticReportCaseId(report.safeContext) ? "Client diagnostics" : report.source}</span></div><p className="fine">{timestamp(report.createdAt)} · {report.imageCount} screenshot{report.imageCount === 1 ? "" : "s"}</p>
+          {diagnosticReportCaseId(report.safeContext) ? <p><Link href={`/diagnostics?caseId=${diagnosticReportCaseId(report.safeContext)}`}>View current diagnostic coverage and errors</Link><br/><small>Report receipt and complete diagnostic delivery are separate.</small></p> : null}</div>
         <p className="report-body-preview">{report.body}</p>
         <div className="button-row"><button className="button button-small" type="button" onClick={() => void openReport(report.id)}>View private details</button>
           {report.source === "agent" && report.imageCount < 3 ? <label className="button button-small">Attach screenshot<input className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={(event) => { const selected = event.target.files?.[0]; event.target.value = ""; if (selected) void runAttachment({ report, file: selected, uploadOperationId: newOperationId(), attachOperationId: newOperationId() }); }} /></label> : null}</div>

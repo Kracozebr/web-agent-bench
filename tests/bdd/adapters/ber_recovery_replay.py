@@ -474,6 +474,23 @@ def _one_tuple(rows: list, name: str):
     return rows[0]
 
 
+def verify_original_receipt_replay(probe,rows,run):
+    request=probe['request'];_require(set(request)=={'runId','receipt'} and request['runId']==run['id'],'duplicate receipt request scope differs');receipt_request=request['receipt'];action=_one([a for a in rows['actions'] if a['id']==receipt_request['actionId']],'one original replay action')
+    _require(action['run_id']==run['id'] and action['owner_id']==run['owner_id'] and action['agent_id']==run['agent_id'],'foreign replay action')
+    current=_one([r for r in rows['receipts'] if r['action_id']==action['id']],'one original current receipt');history=_one([r for r in rows['reconciliations'] if r['action_id']==action['id'] and r['revision']==current['receipt_revision']],'one original latest reconciliation')
+    _require(current['receipt_status'] in ('observed','rejected_before_execution') and type(current['receipt_revision'])is int and current['receipt_revision']>0,'unknown receipt cannot establish completed replay')
+    for key in ('receipt_status','evidence_hash','evidence_path','transaction_hash','tool_response_hash','tool_response_json'):_require(current[key]==history[key],'current/latest original receipt history differs')
+    _require((current['tool_response_json'] is None)==(current['tool_response_hash'] is None),'original response presence/hash differs')
+    if current['tool_response_json'] is not None:_require(digest(current['tool_response_json'])==current['tool_response_hash'],'original replay tool response checksum differs')
+    expected={'actionId':action['id'],'status':current['receipt_status'],'evidenceHash':current['evidence_hash']}
+    for sql,wire in [('evidence_path','evidencePath'),('transaction_hash','transactionHash'),('tool_response_json','toolResponse')]:
+        if current[sql] is not None:expected[wire]=current[sql]
+    _require(receipt_request==expected,'reconciliation retry is not exact original receipt')
+    task=_one([t for t in rows['tasks'] if t['task_index']==action['task_index']],'one original replay task');_require(task['closure_status']=='closed' and int(action['action_sequence'])<=int(task['action_cutoff_sequence']),'replay outside original closed cutoff')
+    expected_response={'actionId':action['id'],'actionSequence':str(action['action_sequence']),'receiptRevision':current['receipt_revision'],'receiptStatus':current['receipt_status'],'reconciledActionSequence':str(task['reconciled_action_sequence']),'closureStatus':'closed','replayed':True}
+    _require(probe['error'] is None and probe['response']==expected_response,'reconciliation retry changed original revision/status/cutoff')
+    return action['id']
+
 def verify_completed_callbacks(reference: dict, *, repository_root: Path | None = None) -> dict:
     """Actual private callback integration, separate from read-only artifact replay."""
     root = repository_root or Path(__file__).resolve().parents[3]
@@ -506,7 +523,10 @@ def verify_completed_callbacks(reference: dict, *, repository_root: Path | None 
     _require(len(rows["ledger"]) == 1 and rows["ledger"][0]["entry_type"] == "debit" and rows["ledger"][0]["source_kind"] == "tester_bonus", "callback baseline charge/refund differs")
     expected_names = ["duplicate_completion_1","duplicate_completion_2","out_of_order_terminal_callback_10",
                       "out_of_order_terminal_callback_0","out_of_order_terminal_callback_10","late_successor_callback_10","late_successor_callback_0"]
-    _require([p["name"] for p in capture["probes"]] == expected_names, "callback variant order/inventory differs")
+    names=[p["name"] for p in capture["probes"]];receipt_names=['duplicate_receipt_reconciliation_1','duplicate_receipt_reconciliation_2']
+    _require(names in (expected_names,expected_names+receipt_names), "callback variant order/inventory differs")
+    has_receipts=names==expected_names+receipt_names
+    if has_receipts:_require('reservations' in rows and 'receipts' in rows and 'reconciliations' in rows and 'actions' in rows,'reconciliation raw inventory incomplete')
     tasks = _index(rows["tasks"],"task_index","callback task")
     for index,probe in enumerate(capture["probes"]):
         after = probe["after"]
@@ -522,11 +542,16 @@ def verify_completed_callbacks(reference: dict, *, repository_root: Path | None 
             _require(probe["error"] is None and probe["request"]["taskIndex"] == task_index
                      and response["runId"] == run["id"] and response["taskIndex"] == task_index and response["taskId"] == tasks[task_index]["task_id"]
                      and response["replayed"] is True and _epoch(response["finishedAt"]) == _epoch(tasks[task_index]["finished_at"]), "out-of-order predecessor callback changed receipt")
-        else:
+        elif index<7:
             _require(response is None and probe["error"] == {"code":"SUCCESSOR_RUN_NOT_CURRENT","status":409}
                      and probe["request"]["predecessorTaskIndex"] == [10,0][index-5], "late successor callback was not safely rejected")
+        else:
+            action_id=verify_original_receipt_replay(probe,rows,run)
+            action=_one([a for a in rows['actions'] if a['id']==action_id],'original replay action');receipt=_one([r for r in rows['receipts'] if r['action_id']==action_id],'original replay receipt')
+            doc=read_reference(root,{'path':receipt['evidence_path'],'sha256':receipt['evidence_hash']});_require(doc['actionId']==action_id and doc['runId']==run['id'] and doc['taskIndex']==action['task_index'] and doc['ownerOperationId']==action['operation_id'] and doc['commandSha256']==action['payload_hash'] and doc['status']==receipt['receipt_status'] and doc['transactionHash']==receipt['transaction_hash'],'duplicate reconciliation evidence does not bind original immutable action')
+    if has_receipts:_require(capture['probes'][7]['request']==capture['probes'][8]['request'] and capture['probes'][7]['response']==capture['probes'][8]['response'],'duplicate reconciliation changed original argument/receipt')
     _require(type(capture["preparedPortCalls"]) is int and capture["preparedPortCalls"] == 0, "late callback touched an executor preparation port")
-    return {"facts":{"duplicate_out_of_order_completion":True,"late_callback":True},"probes":7,"runId":target["runId"],
+    return {"facts":{"duplicate_out_of_order_completion":True,"late_callback":True,**({"duplicate_receipt_reconciliation":True} if has_receipts else {})},"probes":len(capture["probes"]),"runId":target["runId"],
             "scope":"private_callbacks_after_actual_full_completion_not_first_owed_commit_or_artifact_replay",
             "fullScenarioAcceptance":"blocked"}
 
@@ -857,6 +882,69 @@ def _unknown_paid_packets(pointers, root, run_id, task, initial, binding, *, kno
     return bool(matched)
 
 
+
+def dispatch_recovery_observation_packets(pointers, root, run_id, task, initial, binding, *, known=False, generic_owner=None):
+    """Exact schema dispatch. Legacy H1 checks are unchanged; generic needs original SQL context."""
+    schemas = {read_reference(root, pointer).get("schemaVersion") for pointer in pointers}
+    _require(bool(schemas), "recovery observation inventory is empty")
+    if schemas == {"bts-paid-data-run-observation-capture/v1"}:
+        return _unknown_paid_packets(pointers, root, run_id, task, initial, binding, known=known)
+    _require(schemas == {"bts-admitted-actions-observation-capture/v1"},
+             "mixed or unsupported recovery observation schemas")
+    _require(known and isinstance(generic_owner, dict),
+             "generic recovery requires original known SQL/effect context; absence is not proof")
+    from tests.bdd.adapters.ber_generic_family_replay import verify_generic_family_root
+    for pointer in pointers:
+        facts = verify_generic_family_root(pointer, generic_owner, repository_root=root)
+        packet = facts["root"]
+        _require(packet["binding"]["runId"] == run_id and
+                 packet["binding"]["taskId"] == task["task_id"] and
+                 packet["closure"]["closureId"] == task["closure_id"] and
+                 packet["execution"]["generationId"] == binding["generation_id"],
+                 "generic recovery differs from original target")
+    return True
+
+
+def verify_generic_unknown_boundary(checkpoint,root,run_id,task,initial,binding,interventions):
+    """A failed original RPC read has no complete generic packet to invent."""
+    _require(not checkpoint.get('rawObservationPackets'), 'known generic root cannot substitute for failed source observation')
+    owner=checkpoint['state']['result']['genericReplayOwner'];identity=owner['identity'];_require(identity['role']=='oid_observer' and identity['read_only']=='on' and identity['isolation']=='repeatable read' and identity['database_name']==checkpoint['state']['identity']['database_name'],'generic unknown observer identity differs')
+    run=_one(owner['run'],'generic unknown run');row=_one(owner['task'],'generic unknown task');execution=_one(owner['executionBindings'],'generic unknown execution');prep=_one(owner['preparations'],'generic unknown preparation')
+    _require(run['id']==run_id and run['owner_id']==initial['run']['owner_id'] and run['agent_id']==initial['run']['agent_id'] and row['task_index']==8 and row['task_id']=='H1' and row['closure_id']==task['closure_id'] and row['closure_status']=='closed' and int(row['action_cutoff_sequence'])==int(row['reconciled_action_sequence'])==int(task['action_cutoff_sequence']),'generic unknown original cutoff differs')
+    _require(execution['run_id']==prep['run_id']==run_id and execution['task_index']==prep['task_index']==8 and prep['environment_id']==binding['env_id'],'generic unknown preparation/execution owner scope differs')
+    _require(execution['generation_id']==binding['generation_id'] and execution['env_id']==binding['env_id'] and execution['generation_id']==prep.get('generation_id',execution['generation_id']),'generic unknown original generation differs')
+    _require(not owner['evaluation'] and not owner['bundle'] and not owner['successorPreparations'],'generic unknown fabricated evaluation/bundle/successor')
+    completion=_epoch(owner['observationCompletedAt']);_require(_epoch(checkpoint['state']['identity']['database_now'])<=completion<_epoch(task['evaluation_retry_deadline']),'generic unknown snapshot completion outside original window')
+    actions=sorted(owner['actions'],key=lambda a:int(a['action_sequence']));expected=[a for a in initial['actions'] if a['task_index']==8];_require(len(actions)==len(expected)==int(task['action_cutoff_sequence']),'generic unknown census truncated')
+    for sequence,(a,old) in enumerate(zip(actions,expected),1):
+        _require(a['id']==old['id'] and int(a['action_sequence'])==sequence and a['operation_id']==old['operation_id'] and a['payload_hash']==old['payload_hash'] and a['run_id']==run_id and a['owner_id']==run['owner_id'] and a['agent_id']==run['agent_id'] and a['environment_id']==binding['env_id'] and a['task_id']=='H1' and a['task_index']==8,'generic unknown action scope changed')
+        for suffix in ('revision','status','evidence_hash','evidence_path','transaction_hash'):_require(a['history_'+suffix]==a['receipt_'+suffix if suffix in ('revision','status') else suffix],'generic unknown receipt history differs')
+        _require(a['receipt_status']=='observed' and a['receipt_revision']==old['receipt_revision'] and a['evidence_hash']==old['evidence_hash'] and a['evidence_path']==old['evidence_path'] and a['transaction_hash']==old['transaction_hash'],'generic unknown rewrote original observed action')
+        _require(digest({'runId':run_id,'taskIndex':8,'command':a['command_json']})==a['payload_hash'],'generic unknown chosen command hash differs')
+        doc=read_reference(root,{'path':a['evidence_path'],'sha256':a['evidence_hash']});_require(doc['actionId']==a['id'] and doc['runId']==run_id and doc['taskIndex']==8 and doc['ownerOperationId']==a['operation_id'] and doc['generationId']==binding['generation_id'] and doc['environmentId']==binding['env_id'] and doc['commandSha256']==a['payload_hash'] and doc['transactionHash']==a['transaction_hash'] and doc['status']=='observed','generic unknown original evidence differs')
+    progress=[]
+    for pointer in checkpoint.get('progress',[]):
+        body=read_reference(root,pointer);_require(body==pointer['document'],'generic unknown lifecycle preimage differs')
+        if body.get('runId')==run_id and body.get('taskIndex')==8 and body.get('stage')=='observe' and body.get('status') in ('blocked','unavailable') and body.get('reasonCode')=='chain_family_rpc_mapping_incomplete':progress.append(body)
+    _require(progress and interventions and all(i['runId']==run_id and i['closureId']==task['closure_id'] for i in interventions) and any(_epoch(i['firstObservedAt'])<=completion for i in interventions),'generic unknown lacks precise source failure and actual original receipt intervention')
+    for pointer in checkpoint.get('rawObservationFamilies',[]):
+        packet=read_reference(root,pointer);_require(packet['schemaVersion'] in ('bts-paid-family-observation-capture/v1','bts-chain-family-observation-capture/v1') and packet['binding']['runId']==run_id and packet['binding']['taskId']=='H1' and packet['execution']['generationId']==binding['generation_id'] and packet['closure']['closureId']==task['closure_id'],'partial family belongs to another scope')
+        refs={};_references(packet,refs)
+        for path,sha in refs.items():read_reference(root,{'path':path,'sha256':sha},json_body=False)
+    return True
+
+
+def verify_generic_known_recovery(checkpoint,root,run_id,task,initial,binding,genuine):
+    from tests.bdd.adapters.ber_generic_recovery_replay import owner_context,verify_known_input
+    from tests.bdd.adapters.ber_matrix_derived_effects import verify_derived_chain_effects
+    from tests.bdd.adapters.ber_generic_family_replay import verify_generic_family_root
+    owner=checkpoint['state']['result']['genericReplayOwner'];stored=_one(owner['bundle'],'one recovered original bundle');bundle=stored['bundle_json'];_require(digest(bundle)==stored['bundle_hash'],'recovered generic bundle checksum differs');context=owner_context(owner,bundle)
+    pointers=checkpoint.get('rawObservationPackets',[]);_require(any(p['path']==bundle['cutoff']['evidence']['path'] and p['sha256']==bundle['cutoff']['evidence']['sha256'] for p in pointers),'recovered observation inventory omitted committed original root')
+    dispatch_recovery_observation_packets(pointers,root,run_id,task,initial,binding,known=True,generic_owner=context)
+    effects=verify_generic_family_root(bundle['cutoff']['evidence'],context,repository_root=root);_require(effects['actualPaymentCount']==3,'recovered generic family does not prove three original H1 payments');verify_derived_chain_effects(effects['children']['chain'],effects['root']['census']['entries'],effects['documents'],bundle,root);verify_known_input(owner,bundle,genuine,root)
+    return True
+
+
 def _unknown_case_context(matrix: dict) -> dict:
     cases=matrix.get("caseResults",[])
     _require(len({c["name"] for c in cases}) == len(cases) and all(c["name"] in UNKNOWN_CASES for c in cases),"unknown matrix case declarations invalid")
@@ -898,9 +986,10 @@ def _unknown_case(case: dict, database: str, root: Path, *, declared_runs: dict 
     for pointer in initial_checkpoint.get("progress",[]):
         body = read_reference(root,pointer)
         _require(body == pointer["document"] and body.get("runId") == run_id and body.get("taskIndex") == 8, "lifecycle raw binding differs")
-        if body.get("reasonCode") == "candidate_evaluation_unknown": lifecycle.append(body)
+        if body.get("reasonCode") == "candidate_evaluation_unknown" or (body.get("stage")=="observe" and body.get("status") in ("blocked","unavailable") and body.get("reasonCode")=="chain_family_rpc_mapping_incomplete"): lifecycle.append(body)
     _require(lifecycle, "no actual unknown preflight lifecycle evidence")
-    raw_reasons = any(isinstance(p.get("evaluationUnknownReasons"),list) and p["evaluationUnknownReasons"]
+    generic_unknown=any(p.get("stage")=="observe" and p.get("reasonCode")=="chain_family_rpc_mapping_incomplete" for p in lifecycle)
+    raw_reasons = generic_unknown or any(isinstance(p.get("evaluationUnknownReasons"),list) and p["evaluationUnknownReasons"]
                       and all(isinstance(x,str) and x for x in p["evaluationUnknownReasons"]) for p in lifecycle)
     confirmed = case["confirmedPayments"]
     identity = confirmed["identity"]
@@ -912,7 +1001,7 @@ def _unknown_case(case: dict, database: str, root: Path, *, declared_runs: dict 
              and all(p["receipt_status"] == "success" and int(p["amount_units"]) > 0 and p["amount_units"] == p["token_delta_units"] for p in payments)
              and {p["transaction_hash"].lower() for p in payments} == {a["transaction_hash"].lower() for a in paid_actions}, "three original paid H1 effects not proven")
     _require(binding["task_index"] == 8 and all(a["receipt_status"] == "observed" and a["outbox_status"] == "delivered" for a in initial["actions"] if a["task_index"] == 8), "original H1 action receipts not resolved")
-    unknown_packets = _unknown_paid_packets(initial_checkpoint.get("rawObservationPackets",[]),root,run_id,task,initial,binding)
+    unknown_packets = False if generic_unknown else _unknown_paid_packets(initial_checkpoint.get("rawObservationPackets",[]),root,run_id,task,initial,binding)
     fault = case["fault"]
     interventions = fault.get("interventions",[])
     _require(fault.get("schemaVersion") == "ber-observer-receipt-fault/v1" and interventions, "actual observer receipt fault missing")
@@ -944,6 +1033,7 @@ def _unknown_case(case: dict, database: str, root: Path, *, declared_runs: dict 
             _require(context[record_run]["index"] < context[run_id]["index"]
                      and _epoch(intervention["lastObservedAt"]) < _epoch(task["closed_at"]),"foreign receipt fault is not a preceding declared case")
     _require(current_interventions,"current run has no actual receipt fault")
+    if generic_unknown:unknown_packets=verify_generic_unknown_boundary(initial_checkpoint,root,run_id,task,initial,binding,current_interventions)
     state_results = {}
     for phase,checkpoint in checkpoints.items():
         state,current = _unknown_state(checkpoint["state"],database,run_id)
@@ -968,8 +1058,8 @@ def _unknown_case(case: dict, database: str, root: Path, *, declared_runs: dict 
             for pointer in checkpoint.get("progress",[]):
                 body=read_reference(root,pointer)
                 _require(body == pointer["document"] and body["runId"] == run_id and body["taskIndex"] == 8,"restarted lifecycle raw binding differs")
-                if pointer["path"] not in old_paths and body.get("reasonCode") == "candidate_evaluation_unknown": fresh.append(body)
-            _require(fresh and _unknown_paid_packets(checkpoint.get("rawObservationPackets",[]),root,run_id,task,initial,binding),"restarted worker unknown preflight not independently observed")
+                if pointer["path"] not in old_paths and (body.get("reasonCode") == "candidate_evaluation_unknown" or generic_unknown and body.get("stage")=="observe" and body.get("reasonCode")=="chain_family_rpc_mapping_incomplete"): fresh.append(body)
+            _require(fresh and (verify_generic_unknown_boundary(checkpoint,root,run_id,task,initial,binding,current_interventions) if generic_unknown else _unknown_paid_packets(checkpoint.get("rawObservationPackets",[]),root,run_id,task,initial,binding)),"restarted worker unknown preflight not independently observed")
         if phase == "exhausted":
             _require(state["run"]["status"] == "cancelled"
                      and state["run"]["cancellation_reason"] == "coordinator_evaluation_unknown"
@@ -998,7 +1088,7 @@ def _unknown_case(case: dict, database: str, root: Path, *, declared_runs: dict 
     missing = [p for p in required if p not in state_results]
     if not unknown_packets: missing.append("raw_unknown_observation_packet")
     if "recovered_known" in checkpoints:
-        if not _unknown_paid_packets(checkpoints["recovered_known"].get("rawObservationPackets",[]),root,run_id,task,initial,binding,known=True):
+        if not (verify_generic_known_recovery(checkpoints["recovered_known"],root,run_id,task,initial,binding,genuine) if generic_unknown else _unknown_paid_packets(checkpoints["recovered_known"].get("rawObservationPackets",[]),root,run_id,task,initial,binding,known=True)):
             missing.append("raw_recovered_observation_packet")
     closure_eval = True
     for phase,state in state_results.items():

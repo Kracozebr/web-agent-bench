@@ -111,8 +111,8 @@ Feature: Benchmark run lifecycle approved scenarios
   @req_brl_req_009 @scn_brl_sc_016 @gate_environment @mandatory
   Scenario: Training and ranked feedback use different release points
     Given the approved environment setup for "BRL-SC-016"
-    When an open training subset and ranked run with closed tasks complete tasks while clients request feedback before and after termination
-    Then open training SHALL expose post-task explanations while ranked scores and reasons wait until termination and closed feedback contains only score and allowed reason category without exact case parameters solution coaching or journal while normal scoped tool responses remain immediate
+    When the scoped agent reads `runs.current_task` after each selected open Training task is evaluated and reads it during and after a Ranked run, including a terminal run whose task evaluations are known
+    Then Training feedback SHALL appear after each selected open task evaluation; Ranked feedback SHALL be absent before run termination and SHALL include every stored task result after termination, preserving known task grades even when the run-level terminal status is `unknown` and marking only absent or unverifiable evaluations unknown; closed feedback SHALL contain only score and allowed reason category without exact case parameters solution coaching or journal, and ordinary scoped tool responses SHALL remain immediate
 
   @req_brl_req_009 @scn_brl_sc_017 @gate_environment @mandatory
   Scenario: Only complete verified ranked runs produce an immutable eligibility handoff

@@ -1,3 +1,10 @@
+import {parseBerSourceObservationFault} from './ber-source-observation-fault.mjs';
+import {createBerSourceObservationFaultSeam,sourceObservationApiEnvironment} from './ber-source-observation-cases.mjs';
+import {startBerSourceObservationRpcProxy} from './ber-source-observation-rpc.mjs';
+import {parseBerChainBoundaryObserver,createBerChainBoundaryObserverSeam,readBerBefGeneration} from './ber-chain-boundary-observer.mjs';
+import {parseBerS4PreparationFault,createBerS4PreparationFaultSeam} from './ber-s4-preparation-fault.mjs';
+import {parseBerMatrixFlag} from './ber-matrix-controller.mjs';
+import {parseBerGenericSealFault,resolveBerGenericSealFaultTarget,createBerGenericSealFaultSeam} from './ber-generic-seal-fault.mjs';
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { stopDetachedChild } from "./bounded-child-stop.mjs";
@@ -10,6 +17,8 @@ import { assertSecretFree, beginScenarioRun, publishScenarioIndex, sha256, write
 import { attachSafeBrowserCapture, currentOwner, waitForPath } from "./browser-support.mjs";
 import { startGoogleFixtureServer } from "./google-fixture-server.mjs";
 import { OwnerDatabaseObserver } from "./observer.mjs";
+import {selectMcdSourceInputs} from './mcp-diagnostics-source-inputs.mjs';
+import {mcdCompilerLocations} from './mcp-diagnostics-compiler-evidence.mjs';
 import { linkWalletAndReturn, runInvalidWalletCases } from "./wallet-cases.mjs";
 import { runGoogleBrowserFailures, runGoogleClaimMatrix } from "./google-browser-cases.mjs";
 import { runFreshSiweProtocol } from "./siwe-protocol-cases.mjs";
@@ -47,6 +56,13 @@ const clientSecret = randomBytes(32).toString("base64url");
 const runId = randomUUID();
 const bonusCodesOptIn = process.argv.includes("--bonus-codes-only");
 const reportsOptIn = process.argv.includes("--reports-only");
+const mcpDiagnosticsOptIn = process.argv.includes('--mcp-diagnostics-only');
+const berAdmittedS1PayOnly=process.argv.includes('--ber-admitted-s1-pay-only');
+const berGenericSealFaultVariant=parseBerGenericSealFault(process.argv.slice(2),process.env);
+const berMatrix=parseBerMatrixFlag(process.argv.slice(2));
+const berChainObserverConfig=parseBerChainBoundaryObserver(process.argv.slice(2),process.env);
+const berS4PreparationFaultVariant=parseBerS4PreparationFault(process.argv.slice(2),process.env);
+const berSourceObservationVariant=parseBerSourceObservationFault(process.argv.slice(2),process.env);
 const platformRecoveryOptIn = process.argv.includes("--platform-recovery-only");
 // AICODE-NOTE: ARC owns only disposable browser/MCP continuity captures, including a native client handoff.
 const agentRunContinuityOptIn = process.argv.includes("--agent-run-continuity-only");
@@ -72,7 +88,7 @@ if (interruptBeforeFirstRefund && !berRecoveryCoreOptIn) throw new Error("ber_fi
 // substitutes for a complete recovery/checkpoint/restore capture or a BPC gate.
 const combinedQueueOptIn = process.argv.includes("--combined-queue-only");
 const combinedRestoreOptIn = process.argv.includes("--combined-restore-only") || combinedQueueOptIn;
-const privateReportStorageOptIn = reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn;
+const privateReportStorageOptIn = mcpDiagnosticsOptIn || reportsOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn;
 const bonusFundedTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-sequence-worker-owner-run");
 const bonusFundedRankedOptIn = process.argv.includes("--genuine-bonus-funded-ranked-worker-owner-run");
 const genuineAllOpenTrainingOptIn = process.argv.includes("--genuine-bonus-funded-training-all-open-worker-owner-run");
@@ -86,11 +102,11 @@ if (retiredTrainingTaskFlag) {
   process.exit(2);
 }
 const bonusFundedOptIn = bonusFundedTrainingOptIn || bonusFundedRankedOptIn || genuineAllOpenTrainingOptIn;
-const genuineRankedOptIn = process.argv.includes("--genuine-ranked-worker-owner-run") || bonusFundedRankedOptIn;
-const genuineWorkerSequenceOptIn = process.argv.includes("--genuine-training-sequence-worker-owner-run") ||
+const genuineRankedOptIn = berMatrix?.mode==='ranked' || process.argv.includes("--genuine-ranked-worker-owner-run") || bonusFundedRankedOptIn;
+const genuineWorkerSequenceOptIn = berMatrix?.mode==='training' || process.argv.includes("--genuine-training-sequence-worker-owner-run") ||
   bonusFundedTrainingOptIn || genuineAllOpenTrainingOptIn;
 const genuineSequenceOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || process.argv.includes("--genuine-training-sequence-owner-run");
-const genuineWorkerTaskId = OPEN_TASK_IDS.find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
+const genuineWorkerTaskId = berAdmittedS1PayOnly?'S1':OPEN_TASK_IDS.find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-worker-owner-run"));
 const genuineWorkerOptIn = genuineRankedOptIn || genuineWorkerSequenceOptIn || genuineWorkerTaskId !== undefined;
 const genuineTaskId = genuineWorkerTaskId ?? ["S1"].find((id) => process.argv.includes("--genuine-" + id.toLowerCase() + "-owner-run"));
 const genuineS1OptIn = genuineTaskId !== undefined || genuineSequenceOptIn;
@@ -109,6 +125,7 @@ let observer;
 let browser;
 let phase = "startup";
 let apiChild;
+let mcdReplicaChild;
 let lastApiStopReceipt;
 let apiEnvironment;
 let databaseIsolation;
@@ -119,6 +136,7 @@ let recoveryObserverProxy;
 let receiptFaultProxy;
 let successorHealthFaultProxy;
 let genuineArtifactWritten = false;
+let berGenericSealFaultSeam,berChainObserverSeam,berS4PreparationFaultSeam,berSourceObservationSeam,berSourceRpcProxy,berSourceExpectedOwnerDatabase;
 let betaOperationsArtifactWritten = false;
 let pdcActiveProfile = 'training';
 const pdcSavedProfiles = [];
@@ -226,14 +244,19 @@ function startChild(args, env, label, executable = pnpm) {
   const child = spawn(executable, args, {
     cwd: repoRoot,
     env,
-    stdio: "ignore",
+    stdio: mcpDiagnosticsOptIn ? ["ignore","ignore","pipe"] : "ignore",
     detached: true,
     windowsHide: true,
   });
   child.label = label;
+  if(mcpDiagnosticsOptIn){child.mcdStderr=[];child.mcdStderrBytes=0;child.stderr.on('data',chunk=>{const remaining=64000-child.mcdStderrBytes;if(remaining>0){const part=chunk.subarray(0,remaining);child.mcdStderr.push(part);child.mcdStderrBytes+=part.length;}});}
   children.push(child);
   child.on("exit", (code, signal) => {
-    if (code !== null && code !== 0) console.error(JSON.stringify({ event: "oid_child_exit", label, code, signal }));
+    if (code !== null && code !== 0) {
+      const raw=mcpDiagnosticsOptIn?Buffer.concat(child.mcdStderr??[]).toString('utf8'):'';
+      const configKeys=[...new Set(raw.match(/\bOID_[A-Z0-9_]+\b/g)??[])].slice(0,20);
+      console.error(JSON.stringify({ event: "oid_child_exit", label, code, signal,...(mcpDiagnosticsOptIn?{safeDiagnostic:{...safeCommandErrorDiagnostic(label,code,signal,child.mcdStderr??[]),configKeys}}:{}) }));
+    }
   });
   return child;
 }
@@ -252,6 +275,22 @@ async function restartOwnerApi() {
   apiChild = startChild([resolve(repoRoot, "packages/owner-identity/dist/server.js")], apiEnvironment, "restarted API", process.execPath);
   await waitHttp(new URL("/healthz", apiOrigin), (response) => response.ok, "restarted owner API");
   return true;
+}
+
+async function startMcdDiagnosticReplica() {
+  if (!mcpDiagnosticsOptIn || mcdReplicaChild || !/^oid_acceptance_[a-f0-9]{32}$/.test(databaseIsolation?.databaseName ?? '')) throw new Error('mcd_replica_isolation_required');
+  const entry = resolve(repoRoot,'packages/owner-identity/dist/server.js');
+  const buildSha256 = createHash('sha256').update(await readFile(entry)).digest('hex');
+  const replicaEnvironment = {...apiEnvironment,OID_API_PORT:'8785'};
+  mcdReplicaChild = startChild([entry],replicaEnvironment,'MCD isolated replica',process.execPath);
+  const owned = mcdReplicaChild;
+  try { await waitHttp('http://127.0.0.1:8785/healthz',response=>response.ok,'MCD isolated replica'); }
+  catch(error) { await stopChild(owned);mcdReplicaChild=undefined;throw error; }
+  return {origin:'http://127.0.0.1:8785',evidence:{boundary:'actual_same_build_disposable_database_replica',databaseName:databaseIsolation.databaseName,
+    primaryPort:8784,replicaPort:8785,serverBuildSha256:buildSha256,serverBuildRef:{path:'packages/owner-identity/dist/server.js',sha256:buildSha256},ownedPid:owned.pid},async stop(){
+      if(mcdReplicaChild!==owned)throw new Error('mcd_replica_ownership_changed');await stopChild(owned);mcdReplicaChild=undefined;
+      if(createHash('sha256').update(await readFile(entry)).digest('hex')!==buildSha256)throw new Error('mcd_replica_build_changed');
+    }};
 }
 
 function safeCommandErrorDiagnostic(label, exitCode, signal, stderrBytes) {
@@ -288,7 +327,9 @@ function safeCommandErrorDiagnostic(label, exitCode, signal, stderrBytes) {
 }
 
 async function runCommand(args, env, label) {
-  const child = spawn(pnpm, args, { cwd: repoRoot, env, stdio: ["ignore", "ignore", "pipe"] });
+  const child = spawn(pnpm, args, { cwd: repoRoot, env, stdio: ["ignore", mcpDiagnosticsOptIn ? "pipe" : "ignore", "pipe"] });
+  const stdoutBytes=[];let stdoutLength=0;
+  if(mcpDiagnosticsOptIn)child.stdout.on('data',chunk=>{const remaining=65536-stdoutLength;if(remaining>0){const part=chunk.subarray(0,remaining);stdoutBytes.push(part);stdoutLength+=part.length;}});
   const stderrBytes = [];
   let stderrLength = 0;
   child.stderr.on("data", (chunk) => {
@@ -305,7 +346,7 @@ async function runCommand(args, env, label) {
   if (result.code !== 0) {
     throw Object.assign(new Error(label + " failed with exit " + String(result.code ?? result.signal)), {
       code: label === "API build" ? "API_BUILD_FAILED" : label === "database migration" ? "DATABASE_MIGRATION_FAILED" : "ACCEPTANCE_COMMAND_FAILED",
-      safeDiagnostic: safeCommandErrorDiagnostic(label, result.code, result.signal, stderrBytes),
+      safeDiagnostic: {...safeCommandErrorDiagnostic(label, result.code, result.signal, stderrBytes),...(mcpDiagnosticsOptIn?{typescriptDiagnostics:mcdCompilerLocations(Buffer.concat([...stdoutBytes,...stderrBytes]).toString('utf8'))}:{})},
     });
   }
 }
@@ -313,6 +354,7 @@ async function runCommand(args, env, label) {
 async function waitHttp(url, predicate, label) {
   const end = Date.now() + 60_000;
   while (Date.now() < end) {
+    if(mcpDiagnosticsOptIn&&label==='owner API'&&apiChild&&apiChild.exitCode!==null)throw Object.assign(new Error('MCD API child exited during startup'),{code:'MCD_API_STARTUP_FAILED',safeDiagnostic:safeCommandErrorDiagnostic('API startup',apiChild.exitCode,apiChild.signalCode,apiChild.mcdStderr??[])});
     try {
       const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(1500) });
       if (await predicate(response)) return response;
@@ -324,7 +366,14 @@ async function waitHttp(url, predicate, label) {
 
 async function startRuntime() {
   phase = "runtime_preflight";
-  const domainOptIns = [bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn, agentRunContinuityOptIn, paidDeliveryCutoffOptIn, agentFailureReportingOptIn, cabinetClientCaptureOptIn].filter(Boolean).length;
+  if(berSourceObservationVariant){
+    for(const name of ['BEF_DATABASE_HOST_PORT','BEF_LOCAL_RPC_A_HOST_PORT','BEF_LOCAL_RPC_B_HOST_PORT']){
+      if(!/^[0-9]{1,5}$/.test(process.env[name]??'')||Number(process.env[name])<1||Number(process.env[name])>65535)throw Object.assign(new Error('source fault explicit finite ports required'),{code:'BER_SOURCE_FAULT_EXPLICIT_PORTS_REQUIRED'});
+    }
+  }
+  if(mcpDiagnosticsOptIn&&(process.argv.length!==3||process.env.OID_BETA_MANIFEST_FILE))throw Object.assign(new Error('mcd_requires_disposable_diagnostic_only_fixture'),{code:'MCD_DISPOSABLE_FIXTURE_REQUIRED'});
+  if((berAdmittedS1PayOnly||berMatrix)&&(process.argv.length!==3||process.env.OID_BETA_MANIFEST_FILE))throw Object.assign(new Error('ber_s1_requires_disposable_smoke_fixture'),{code:'BER_DISPOSABLE_FIXTURE_REQUIRED'});
+  const domainOptIns = [berAdmittedS1PayOnly,berMatrix!==null,bonusCodesOptIn, reportsOptIn, platformRecoveryOptIn, combinedRestoreOptIn, agentRunContinuityOptIn, paidDeliveryCutoffOptIn, agentFailureReportingOptIn, cabinetClientCaptureOptIn].filter(Boolean).length;
   if (domainOptIns > 1 || (domainOptIns === 1 && process.argv.slice(2).filter((argument) => argument !== "--").length !== 1)) {
     throw Object.assign(new Error("beta_poc_domain_cli_shape_invalid"), { code: "BPC_CLI_SHAPE_INVALID" });
   }
@@ -363,12 +412,21 @@ async function startRuntime() {
         upstreamOrigin: `http://host.docker.internal:${process.env.BEF_LOCAL_RPC_A_HOST_PORT || "18545"}`,
       });
     }
+    if(berSourceObservationVariant&&['read_missing','block_missing'].includes(berSourceObservationVariant)){
+      const futureOwner=new URL(process.env.OID_DATABASE_URL);futureOwner.pathname='/oid_acceptance_'+runId.replaceAll('-','');
+      berSourceExpectedOwnerDatabase=futureOwner.pathname;
+      const sourceEnv=sourceObservationApiEnvironment({repoRoot,captureId:runId,variant:berSourceObservationVariant});
+      berSourceRpcProxy=await startBerSourceObservationRpcProxy({repoRoot,captureId:runId,variant:berSourceObservationVariant,controlPath:sourceEnv.OID_BER_SOURCE_OBSERVATION_CONTROL,
+        upstreamOrigin:`http://host.docker.internal:${process.env.BEF_LOCAL_RPC_A_HOST_PORT || '18545'}`,
+        ownerDatabaseUrl:futureOwner.href});
+    }
     await provisionGenuineS1CoordinatorConfig({ repositoryRoot: repoRoot,
       automaticWorkerEvaluation: genuineWorkerOptIn || combinedRestoreOptIn || platformRecoveryOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn,
       ...(platformRecoveryOptIn || combinedRestoreOptIn ? { apiBaseUrl: recoveryFaultProxy.origin,
         observerDatabase: { host: "127.0.0.1", port: recoveryObserverProxy.port } } : {}),
       ...(afrPreparationFailureOptIn ? { apiBaseUrl: successorHealthFaultProxy.origin } : {}),
-      ...(berUnknownGradingOptIn || (agentFailureReportingOptIn && !afrPreparationFailureOptIn) ? { observerRpcUrl: receiptFaultProxy.origin } : {}) });
+      ...(berUnknownGradingOptIn || (agentFailureReportingOptIn && !afrPreparationFailureOptIn) ? { observerRpcUrl: receiptFaultProxy.origin } : {}),
+      ...(berSourceRpcProxy?{observerRpcUrl:berSourceRpcProxy.origin}:{}) });
   }
   requireLoopbackOrigin(publicOrigin, "OID_PUBLIC_ORIGIN");
   requireLoopbackOrigin(apiOrigin, "OID_ACCEPTANCE_API_ORIGIN");
@@ -378,6 +436,7 @@ async function startRuntime() {
 
   phase = "isolated_acceptance_database";
   await isolateAcceptanceDatabase();
+  if(berSourceExpectedOwnerDatabase&&new URL(process.env.OID_DATABASE_URL).pathname!==berSourceExpectedOwnerDatabase)throw Object.assign(new Error('source fault isolated DB differs'),{code:'BER_SOURCE_FAULT_DISPOSABLE_MISMATCH'});
   if (privateReportStorageOptIn) reportCaptureIsolation = await prepareReportCaptureIsolation(databaseIsolation.databaseName);
   console.log(JSON.stringify({ event: "oid_acceptance_database_isolated", captureId: runId,
     databaseName: databaseIsolation.databaseName, retainedForInspection: true }));
@@ -407,9 +466,10 @@ async function startRuntime() {
     OID_LOCAL_REPORT_ACCEPTANCE_ENABLED: privateReportStorageOptIn ? "true" : "false",
     NODE_ENV: "development",
     ...(agentRunContinuityOptIn || agentFailureReportingOptIn ? { OID_MCP_TRANSPORT_PROFILE: "codex-local-manual-2025-06-18" } : {}),
-    ...(paidDeliveryCutoffOptIn ? { OID_MCP_TRANSPORT_PROFILE: 'strict-2026-07-28' } : {}),
+    ...(paidDeliveryCutoffOptIn || berAdmittedS1PayOnly || berMatrix ? { OID_MCP_TRANSPORT_PROFILE: 'strict-2026-07-28' } : {}),
     ...(agentClientConnectionOptIn ? { OID_MCP_TRANSPORT_PROFILE: 'remote-oauth-v1',
       OID_LOCAL_ACI_CAPTURE_ID: runId, OID_MCP_CLIENT_REDIRECT_URI: 'http://127.0.0.1:38765/callback' } : {}),
+    ...(mcpDiagnosticsOptIn ? {OID_MCP_TRANSPORT_PROFILE:'remote-oauth-v1',OID_MCP_CLIENT_REDIRECT_URI:'http://127.0.0.1:38765/oauth/callback'} : {}),
     ...(privateReportStorageOptIn ? {
       OID_PRIVATE_DATA_DIR: reportCaptureIsolation.privateDataDir,
       OID_BETA_REPORT_CLOSURE_STATE_FILE: reportCaptureIsolation.closureStatePath,
@@ -417,7 +477,7 @@ async function startRuntime() {
     } : {}),
   };
   let nativeInvalidationOptions;
-  if (agentClientConnectionOptIn) {
+  if (agentClientConnectionOptIn || mcpDiagnosticsOptIn) {
     const operatorRoot = resolve('/local-agent-invalidation', runId);
     await mkdir(operatorRoot, { recursive: true, mode: 0o700 });
     nativeInvalidationOptions = { journalPath: resolve(operatorRoot, 'journal.json'),
@@ -426,7 +486,7 @@ async function startRuntime() {
     apiEnv.OID_AGENT_INVALIDATION_FLOOR_FILE = nativeInvalidationOptions.floorPath;
     apiEnv.OID_AGENT_INVALIDATION_JOURNAL_ID = nativeInvalidationOptions.journalId;
   }
-  if (berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn) {
+  if (berRecoveryCoreOptIn || berUnknownGradingOptIn || berH1CutoffOptIn || berGenericSealFaultVariant!==null) {
     const faultDatabaseUrl = new URL(apiEnv.OID_DATABASE_URL);
     if (!/^oid_acceptance_[a-f0-9]{32}$/.test(databaseIsolation.databaseName) ||
         faultDatabaseUrl.pathname !== '/' + databaseIsolation.databaseName || faultDatabaseUrl.hostname !== 'postgres') {
@@ -443,6 +503,12 @@ async function startRuntime() {
   // Keep acceptance rate buckets and cookies isolated across independent runs.
   apiEnv.OID_AUTH_SECRET = randomBytes(48).toString("base64url");
   apiEnv.NODE_OPTIONS = [apiEnv.NODE_OPTIONS, "--import=" + preload].filter(Boolean).join(" ");
+
+  if(berSourceObservationVariant){
+    const faultEnv=sourceObservationApiEnvironment({repoRoot,captureId:runId,variant:berSourceObservationVariant});
+    const {preload:sourceFaultPreload,...variables}=faultEnv;Object.assign(apiEnv,variables);
+    apiEnv.NODE_OPTIONS=[apiEnv.NODE_OPTIONS,'--import='+sourceFaultPreload].filter(Boolean).join(' ');
+  }
 
   phase = "api_build";
   await runCommand(["--filter", "@web-agent-bench/owner-identity", "build"], apiEnv, "API build");
@@ -714,10 +780,119 @@ async function saveCompleteScenario(scenarioId, browserData, databaseData, prove
 }
 
 async function collectSourceHashes() {
+  const mcdToolRoots=mcpDiagnosticsOptIn?(await readdir(resolve(repoRoot,'tools')))
+    .filter(name=>/^(?:mcd-native-|mcp-diagnostics-)[a-z0-9-]+(?:\.test)?\.mjs$/.test(name))
+    .map(name=>resolve(repoRoot,'tools',name)):[];
   const roots = [
+    ...mcdToolRoots,
     resolve(repoRoot, "packages/owner-acceptance"),
     resolve(repoRoot, "packages/owner-identity"),
     resolve(repoRoot, "packages/owner-web"),
+    // AICODE-NOTE: Pin the complete finite BER replay/normative closure before and after execution.
+    resolve(repoRoot, "tools/capture_ber_replay_history.mjs"),
+    resolve(repoRoot, "tools/ber_completed_callbacks.mjs"),
+    resolve(repoRoot, "tools/ber_completed_callbacks.test.mjs"),
+    resolve(repoRoot, "tools/ber_pending_transition_interruption.mjs"),
+    resolve(repoRoot, "tools/ber_pending_transition_interruption.test.mjs"),
+    resolve(repoRoot, "tools/ber_completion_handoff_interruption.mjs"),
+    resolve(repoRoot, "tools/ber_completion_handoff_interruption.test.mjs"),
+    resolve(repoRoot, "tools/mcd-native-qualification.mjs"),
+    resolve(repoRoot, "tools/mcd-native-fault-proxy.mjs"),
+    resolve(repoRoot, "tools/mcp-diagnostics-client.mjs"),
+    resolve(repoRoot, "tools/mcp-diagnostics-oauth.mjs"),
+    resolve(repoRoot, "tools/mcp-diagnostics-launcher.mjs"),
+    resolve(repoRoot, "tools/mcp-diagnostics-io.mjs"),
+    resolve(repoRoot, "tools/mcp-diagnostics-code-registry.mjs"),
+    resolve(repoRoot, "tools/run-mcd-client-capture.mjs"),
+    resolve(repoRoot, "tools/run_aci_native.mjs"),
+    resolve(repoRoot, "infrastructure/owner-identity/run-codex-google-local.mjs"),
+
+    resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/admitted-learning-actions-observation-proposal.md"),
+    resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/bdd-design.md"),
+    resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/bdd-harness-proposal.json"),
+    resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/design.md"),
+    resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/proposal.md"),
+    resolve(repoRoot, "openspec/changes/benchmark-execution-reliability/specs/benchmark-execution-reliability/spec.md"),
+    resolve(repoRoot, "tests/bdd/adapters/__init__.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_environment_feasibility.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_execution_reliability.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_run_lifecycle.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_run_lifecycle_codex_verifier.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_run_lifecycle_verifier.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_task_suite.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_admitted_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_chain_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_full_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_generic_family_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_generic_recovery_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_goal_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_h1_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_chain_family.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_chain_projection.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_common.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_core.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_derived_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_rejection.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_s4.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_state_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_support.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_mcp_guards_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_native_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_recovery_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_s4_preparation_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_source_negative_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/beta_poc_delivery.py"),
+    resolve(repoRoot, "tests/bdd/adapters/beta_poc_recovery_verifier.py"),
+    resolve(repoRoot, "tests/bdd/adapters/registry.py"),
+    resolve(repoRoot, "tests/bdd/adapters/sc011_resource_evidence.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_admitted_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_chain_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_full_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_generic_family_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_generic_recovery_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_goal_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_matrix_derived_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_matrix_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_matrix_support.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_mcp_guards_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_native_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_s4_preparation_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_source_negative_replay.py"),
+    resolve(repoRoot, "tests/bdd/changes/benchmark-execution-reliability/admitted-learning-capture-contract.md"),
+    resolve(repoRoot, "tests/bdd/changes/benchmark-execution-reliability/harness-contracts.json"),
+    resolve(repoRoot, "tests/bdd/features/benchmark_execution_reliability.feature"),
+    resolve(repoRoot, "tests/bdd/mappers/test_benchmark_execution_reliability_bdd.py"),
+    resolve(repoRoot, "tests/integration/ber-s1-reserve-boundary.test.mjs"),
+    resolve(repoRoot, "tests/integration/task-evaluator.test.mjs"),
+    resolve(repoRoot, "tools/harness_contracts.py"),
+    resolve(repoRoot, "tools/replay_ber_recovery.py"),
+
+    resolve(repoRoot, "tests/bdd/adapters/registry.py"),
+    resolve(repoRoot, "tests/bdd/adapters/sc011_resource_evidence.py"),
+    resolve(repoRoot, "tests/bdd/adapters/__init__.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_generic_family_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_generic_recovery_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_generic_family_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_generic_recovery_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_admitted_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_recovery_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_common.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_core.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_s4.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_chain_family.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_chain_projection.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_support.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_state_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_rejection.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_matrix_derived_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_matrix_replay.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_matrix_support.py"),
+    resolve(repoRoot, "tests/bdd/adapters/test_ber_matrix_derived_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/ber_chain_effects.py"),
+    resolve(repoRoot, "tests/bdd/adapters/benchmark_environment_feasibility.py"),
+    ...(mcpDiagnosticsOptIn ? [resolve(repoRoot,'openspec/changes/mcp-call-diagnostics'),resolve(repoRoot,'tests/bdd/changes/mcp-call-diagnostics'),resolve(repoRoot,'tests/bdd/adapters/mcp_call_diagnostics.py'),resolve(repoRoot,'tests/bdd/adapters/mcd_physical_replay.py'),resolve(repoRoot,'tests/bdd/adapters/test_mcp_call_diagnostics.py'),resolve(repoRoot,'tests/bdd/adapters/ber_recovery_replay.py'),resolve(repoRoot,'tests/bdd/mappers/test_mcp_call_diagnostics_bdd.py'),resolve(repoRoot,'tests/bdd/conftest.py'),resolve(repoRoot,'tests/bdd/adapters/__init__.py'),resolve(repoRoot,'tools/generate_bdd_mirrors.py'),resolve(repoRoot,'tools/check_bdd_harness.py'),resolve(repoRoot,'tests/bdd/features/mcp_call_diagnostics.feature'),resolve(repoRoot,'tools/mcp-diagnostics-client.mjs'),resolve(repoRoot,'tools/mcp-diagnostics-oauth.mjs'),resolve(repoRoot,'tools/mcp-diagnostics-io.mjs'),resolve(repoRoot,'tools/mcp-diagnostics-launcher.mjs'),resolve(repoRoot,'tools/run-mcd-client-capture.mjs'),resolve(repoRoot,'tools/mcd-local-capacity-restore.mjs'),resolve(repoRoot,'tools/mcd-local-capacity-host.mjs'),resolve(repoRoot,'tools/mcd-local-capacity-host.test.mjs'),resolve(repoRoot,'tools/mcd-native-qualification.mjs'),resolve(repoRoot,'tools/mcd-native-qualification.test.mjs'),resolve(repoRoot,'tools/mcd-native-fault-proxy.mjs'),resolve(repoRoot,'tools/mcd-native-fault-proxy.test.mjs'),resolve(repoRoot,'tools/mcd-native-connection-probe.mjs'),resolve(repoRoot,'tools/mcd-native-connection-probe.test.mjs')] : []),
     resolve(repoRoot, "tests/bdd/adapters/owner_identity_and_pilot_admission.py"),
     resolve(repoRoot, "tests/bdd/adapters/oid_evidence_verifier.py"),
     resolve(repoRoot, "tests/bdd/mappers/test_owner_identity_and_pilot_admission_bdd.py"),
@@ -871,7 +1046,7 @@ async function collectSourceHashes() {
     const content = await readFile(path);
     inputs.push({ path: relative(repoRoot, path).split(sep).join("/"), sha256: sha256(content), bytes: content.length });
   }
-  return inputs;
+  return mcpDiagnosticsOptIn ? selectMcdSourceInputs(inputs) : inputs;
 }
 
 async function main() {
@@ -1008,6 +1183,29 @@ async function main() {
     const confirmed = await waitOwner(ownerLogin.page, "authenticated");
     if (confirmed.owner?.id !== ownerId || confirmed.owner?.admissionStatus !== "admitted") throw new Error("Activation did not confirm the same admitted owner in the real owner projection");
     const activationOperation = ownerLogin.capture.requests.filter((item) => item.path === "/api/admission/activate" && item.method === "POST").at(-1)?.operationId;
+    if(mcpDiagnosticsOptIn){
+      phase='mcp_diagnostics_actual_boundaries';
+      const {runMcdDiagnosticCases}=await import('./mcp-diagnostics-cases.mjs');
+      const result=await runMcdDiagnosticCases({captureId:runId,repoRoot,databaseIsolation,databaseUrl:process.env.OID_DATABASE_URL,
+        observerDatabaseUrl:process.env.OID_OBSERVER_DATABASE_URL,publicOrigin,apiOrigin,ownerPage:ownerLogin.page,ownerCapture:ownerLogin.captureApi,
+        ownerId,adminPage:admin.page,adminOwnerId:admin.owner.owner.id,restartApi:restartOwnerApi,startDiagnosticReplica:startMcdDiagnosticReplica,
+        stopApi:async()=>{if(mcdReplicaChild){const owned=mcdReplicaChild;await stopChild(owned);mcdReplicaChild=undefined;}await stopChild(apiChild);},
+        privateDataDir:reportCaptureIsolation.privateDataDir,closureStatePath:reportCaptureIsolation.closureStatePath,captureIsolationRoot:reportCaptureIsolation.captureIsolationRoot,
+        getRuntimeRecoverySecrets:()=>({authSecret:apiEnvironment.OID_AUTH_SECRET,bonusCodeVerifierSecret:apiEnvironment.OID_BONUS_CODE_VERIFIER_SECRET,googleClientId:apiEnvironment.OID_GOOGLE_CLIENT_ID,googleClientSecret:apiEnvironment.OID_GOOGLE_CLIENT_SECRET}),
+        connectionInvalidationPaths:{journalPath:apiEnvironment.OID_AGENT_INVALIDATION_JOURNAL_FILE,floorPath:apiEnvironment.OID_AGENT_INVALIDATION_FLOOR_FILE,journalId:apiEnvironment.OID_AGENT_INVALIDATION_JOURNAL_ID},
+        backupRoot:'/local-report-captures/beta-backups',restoreRoot:'/local-report-captures/beta-restores',hostBridgeRoot:resolve(repoRoot,'.local/mcd-backup-jobs',runId),hostOperatorRoot:resolve(repoRoot,'.local/beta-backup-operator'),
+        onProgress:event=>{assertSecretFree(event,'mcd-physical-progress');console.log(JSON.stringify({event:'mcd_physical_progress',captureId:runId,...event}));},
+        sourceInputsBefore:Object.fromEntries(sourceHashesBefore.map(row=>[row.path,row.sha256])),
+        collectSourceHashes:async()=>Object.fromEntries((await collectSourceHashes()).map(row=>[row.path,row.sha256])),
+        runAdditionalMcdCases:async input=>{
+          try{const module=await import('./mcp-diagnostics-capacity-restore.mjs');return await module.runMcdCapacityRestoreCases(input);}
+          catch(error){if(error?.code!=='ERR_MODULE_NOT_FOUND')throw error;return {blocked:{'MCD-SC-005':{reason:'physical_capacity_producer_missing'},'MCD-SC-006':{reason:'physical_restore_producer_missing'}}};}
+        },
+      });
+      console.log(JSON.stringify({schemaVersion:'mcd-boundary-summary/v1',captureId:runId,...result},null,2));
+      if(Object.keys(result.blocked).length)process.exitCode=2;
+      return;
+    }
     if (platformRecoveryOptIn || combinedRestoreOptIn || agentRunContinuityOptIn || paidDeliveryCutoffOptIn || agentFailureReportingOptIn || cabinetClientCaptureOptIn) {
       const genuineCaptureInput = {
         captureId: runId, repoRoot, databaseUrl: process.env.OID_DATABASE_URL,
@@ -1527,7 +1725,36 @@ async function main() {
       return;
     }
     if (genuineS1OptIn) {
-      phase = genuineRankedOptIn ? "genuine_ranked_worker_owner_run" : genuineSequenceOptIn ? "genuine_training_sequence_owner_run" : "genuine_s1_first_task_owner_run";
+      phase = berMatrix ? "ber_admitted_matrix_"+berMatrix.mode+"_"+berMatrix.profile.toLowerCase() : berAdmittedS1PayOnly ? "ber_admitted_controlled_s1_pay_smoke" : genuineRankedOptIn ? "genuine_ranked_worker_owner_run" : genuineSequenceOptIn ? "genuine_training_sequence_owner_run" : "genuine_s1_first_task_owner_run";
+      if(berGenericSealFaultVariant){
+        berGenericSealFaultSeam=createBerGenericSealFaultSeam({variant:berGenericSealFaultVariant,targetProfile:resolveBerGenericSealFaultTarget(process.argv.slice(2),process.env),captureId:runId,repoRoot,
+          databaseUrl:process.env.OID_DATABASE_URL,observerDatabaseUrl:process.env.OID_OBSERVER_DATABASE_URL,
+          stopApi:async()=>{const previousPid=apiChild?.pid,startedAt=new Date().toISOString();await stopChild(apiChild);
+            return{schemaVersion:'beta-local-api-stop-receipt/v1',previousPid,startedAt,finishedAt:new Date().toISOString(),exitCode:apiChild?.exitCode??null,signal:apiChild?.signalCode??null};},
+          restartApi:async()=>{const previousPid=apiChild?.pid,startedAt=new Date().toISOString();await restartOwnerApi();
+            const health=await fetch(new URL('/healthz',apiOrigin),{signal:AbortSignal.timeout(5000)});
+            return{schemaVersion:'beta-local-api-restart-receipt/v1',previousPid,currentPid:apiChild?.pid,startedAt,finishedAt:new Date().toISOString(),healthHttpStatus:health.status};},
+        });
+      }
+      if(berChainObserverConfig){
+        berChainObserverSeam=createBerChainBoundaryObserverSeam({...berChainObserverConfig,captureId:runId,repoRoot,
+          databaseUrl:process.env.OID_DATABASE_URL,observerDatabaseUrl:process.env.OID_OBSERVER_DATABASE_URL,
+          befObserverPort:Number(process.env.BEF_DATABASE_HOST_PORT),
+          rpcOrigins:{'bef-env-a':`http://host.docker.internal:${process.env.BEF_LOCAL_RPC_A_HOST_PORT}`,'bef-env-b':`http://host.docker.internal:${process.env.BEF_LOCAL_RPC_B_HOST_PORT}`},
+        });
+      }
+      if(berS4PreparationFaultVariant){
+        berS4PreparationFaultSeam=createBerS4PreparationFaultSeam({variant:berS4PreparationFaultVariant,captureId:runId,repoRoot,
+          observerDatabaseUrl:process.env.OID_OBSERVER_DATABASE_URL,
+          readBefGeneration:target=>readBerBefGeneration({repoRoot,...target,port:Number(process.env.BEF_DATABASE_HOST_PORT)}),
+        });
+      }
+      if(berSourceObservationVariant){
+        berSourceObservationSeam=createBerSourceObservationFaultSeam({variant:berSourceObservationVariant,captureId:runId,repoRoot,
+          databaseUrl:process.env.OID_DATABASE_URL,observerDatabaseUrl:process.env.OID_OBSERVER_DATABASE_URL,
+          readBefGeneration:target=>readBerBefGeneration({repoRoot,...target,port:Number(process.env.BEF_DATABASE_HOST_PORT)}),
+          rpcOrigins:{'bef-env-a':`http://host.docker.internal:${process.env.BEF_LOCAL_RPC_A_HOST_PORT}`,'bef-env-b':`http://host.docker.internal:${process.env.BEF_LOCAL_RPC_B_HOST_PORT}`}});
+      }
       const captureInput = {
         captureId: runId,
         bddProbes: process.env.OID_ACCEPTANCE_BDD_PROBES === "true",
@@ -1536,6 +1763,12 @@ async function main() {
         restartApi: restartOwnerApi,
         mode: genuineRankedOptIn ? "ranked" : "training",
         automaticWorkerEvaluation: genuineWorkerOptIn,
+        ...(berAdmittedS1PayOnly?{berAdmittedS1PayOnly:true}:{}),
+        ...(berGenericSealFaultSeam?{berGenericSealFault:berGenericSealFaultSeam}:{}),
+        ...(berChainObserverSeam?{berChainObserver:berChainObserverSeam}:{}),
+        ...(berS4PreparationFaultSeam?{berS4PreparationFault:berS4PreparationFaultSeam}:{}),
+        ...(berSourceObservationSeam?{berSourceObservationFault:berSourceObservationSeam}:{}),
+        ...(berMatrix?{berAdmittedMatrixProfile:berMatrix.profile,berAdmittedMatrixIsolated:true,berMatrixCampaignId:runId,sequenceMode:true,taskIds:berMatrix.taskIds}:{}),
         ...(genuineRankedOptIn ? { sequenceMode: true, taskIds: ["S1", "S2", "S3", "S4", "M1", "M2", "M3", "M4", "H1", "H2", "H3", "U1"] }
           : genuineAllOpenTrainingOptIn ? { sequenceMode: true, taskIds: OPEN_TASK_IDS } : {}),
         ...(genuineSequenceOptIn ? {} : { taskId: genuineTaskId }),
@@ -1560,11 +1793,35 @@ async function main() {
           ownerAdmissionStatus: confirmed.owner?.admissionStatus,
         },
       };
-      const capture = genuineRankedOptIn
+      const capture = berMatrix
+        ? await (await import('./ber-matrix-cases.mjs')).runBerMatrixOwnerCase(captureInput)
+        : berAdmittedS1PayOnly
+        ? await (await import('./ber-admitted-actions-cases.mjs')).runBerAdmittedS1PaySmoke(captureInput)
+        : genuineRankedOptIn
         ? await runGenuineRankedOwnerCase(captureInput)
         : genuineSequenceOptIn
         ? await runGenuineTrainingSequenceOwnerCase(captureInput)
         : await runGenuineS1OwnerCase(captureInput);
+      if(berGenericSealFaultSeam){
+        capture.berGenericSealFault=berGenericSealFaultSeam.snapshot();
+        if(capture.status!=='blocked'&&capture.berGenericSealFault.status!=='captured'){
+          capture.status='blocked';capture.blocker={stage:'ber_generic_seal_fault',reasonCode:'ber_generic_seal_fault_not_captured'};
+        }
+      }
+      if(berChainObserverSeam)capture.berChainObserver=berChainObserverSeam.snapshot();
+      if(berS4PreparationFaultSeam){
+        capture.berS4PreparationFault=berS4PreparationFaultSeam.snapshot();
+        if(capture.status!=='blocked'&&capture.berS4PreparationFault.status!=='captured'){
+          capture.status='blocked';capture.blocker={stage:'ber_s4_preparation_fault',reasonCode:'ber_s4_preparation_fault_not_captured'};
+        }
+      }
+      if(berSourceObservationSeam){
+        capture.berSourceObservationFault=berSourceObservationSeam.snapshot();
+        capture.berMatrixQualification.sourceNegativeControlOnly=true;capture.berMatrixQualification.positiveCoverageCredit=false;
+        if(capture.status!=='blocked'&&capture.berSourceObservationFault.status!=='captured'){
+          capture.status='blocked';capture.blocker={stage:'ber_source_observation_fault',reasonCode:'ber_source_observation_fault_not_captured'};
+        }
+      }
       if (bonusFundedTrainingOptIn) {
         phase = "bonus_only_cash_substitution_negative";
         let negativeProof;
@@ -1948,18 +2205,39 @@ async function main() {
     }, null, 2));
     if (!process.argv.includes("--smoke")) process.exitCode = 1;
   } finally {
-    await browser?.close().catch(() => undefined);
-    await observer?.close().catch(() => undefined);
-    for (const child of [...children].reverse()) await stopChild(child);
-    await fixture?.close().catch(() => undefined);
-    await recoveryFaultProxy?.close().catch(() => undefined);
-    await recoveryObserverProxy?.close().catch(() => undefined);
-    await receiptFaultProxy?.close().catch(() => undefined);
-    await successorHealthFaultProxy?.close().catch(() => undefined);
+    let faultCleanupError;
+    for(const holder of [berGenericSealFaultSeam,berChainObserverSeam,berS4PreparationFaultSeam,berSourceObservationSeam])try{await holder?.close();}catch(error){faultCleanupError??=error;}
+    try{
+      await browser?.close().catch(() => undefined);
+      await observer?.close().catch(() => undefined);
+      for (const child of [...children].reverse()) await stopChild(child);
+      await fixture?.close().catch(() => undefined);
+      await recoveryFaultProxy?.close().catch(() => undefined);
+      await recoveryObserverProxy?.close().catch(() => undefined);
+      await receiptFaultProxy?.close().catch(() => undefined);
+      await successorHealthFaultProxy?.close().catch(() => undefined);
+      await berSourceRpcProxy?.close().catch(() => undefined);
+    }finally{
+      if(faultCleanupError){
+        process.exitCode=1;
+        console.error(JSON.stringify({event:'ber_generic_seal_fault_cleanup_failed',captureId:runId,
+          code:/^[A-Z0-9_]{1,100}$/.test(faultCleanupError.code??'')?faultCleanupError.code:'BER_GENERIC_SEAL_FAULT_CLEANUP_FAILED',
+          ...(faultCleanupError.cleanupRef?{evidence:faultCleanupError.cleanupRef}:{})}));
+      }
+    }
   }
 }
 
 main().catch(async (error) => {
+  if(mcpDiagnosticsOptIn){
+    try{
+      const directory=resolve(repoRoot,'artifacts/runs/mcp-call-diagnostics',runId);await mkdir(directory,{recursive:true,mode:0o700});
+      const code=typeof error?.code==='string'&&/^[A-Z0-9_]{1,96}$/.test(error.code)?error.code:'MCD_ACTUAL_BOUNDARY_INCOMPLETE';
+      const blocked={schemaVersion:'mcd-startup-block/v1',captureId:runId,status:'blocked',phase,reasonCode:code,messageOmitted:true};assertSecretFree(blocked,'mcd-startup-block');
+      if(error?.safeDiagnostic&&typeof error.safeDiagnostic==='object'){assertSecretFree(error.safeDiagnostic,'mcd-startup-safe-diagnostic');blocked.safeDiagnostic=error.safeDiagnostic;}
+      await writeFile(resolve(directory,'startup-blocked.json'),JSON.stringify(blocked,null,2)+'\n',{flag:'wx',mode:0o600});
+    }catch{/* Existing partial artifacts and the safe failure summary remain authoritative. */}
+  }
   if (cabinetClientCaptureOptIn && !betaOperationsArtifactWritten) {
     try {
       const root = agentClientConnectionOptIn ? 'agent-client-connection' : 'participant-cabinet';

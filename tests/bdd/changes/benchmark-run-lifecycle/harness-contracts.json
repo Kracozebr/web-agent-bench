@@ -497,7 +497,7 @@
       "evidence_mode": "real scoped HTTP requests plus committed PostgreSQL state/journal; actual local Anvil where named; redacted raw artifact paths and hashes",
       "negative_variants": [
         "ranked_early_score_request",
-        "training_feedback_before_task_terminal",
+        "training_feedback_before_task_evaluation",
         "reference_solution_field",
         "foreign_result_request",
         "request_internal_tool_trace_as_feedback",
@@ -515,7 +515,8 @@
         "no_participant_chronological_tool_journal",
         "closed_reason_allowlist",
         "closed_exact_parameters_absent",
-        "necessary_scoped_tool_response_preserved"
+        "necessary_scoped_tool_response_preserved",
+        "ranked_terminal_unknown_preserves_known_task_grades"
       ]
     },
     "BRL-SC-017": {
@@ -792,7 +793,7 @@
   },
   "schema_version": 1,
   "spec_snapshot": {
-    "normative_clauses": 192,
+    "normative_clauses": 202,
     "requirement_clause_counts": {
       "BRL-REQ-001": 27,
       "BRL-REQ-002": 7,
@@ -802,7 +803,7 @@
       "BRL-REQ-006": 10,
       "BRL-REQ-007": 17,
       "BRL-REQ-008": 8,
-      "BRL-REQ-009": 11,
+      "BRL-REQ-009": 21,
       "BRL-REQ-010": 6,
       "BRL-REQ-011": 8,
       "BRL-REQ-012": 37

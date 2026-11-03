@@ -1341,10 +1341,11 @@ test('isolated PostgreSQL source reads original S1 evidence from a fenced genera
         await tx.execute(sql`CREATE TEMP TABLE oid_task_preparation_intent(
           preparation_id uuid,run_id uuid,task_index integer,lease_id uuid,environment_id text,release_identity text,manifest_hash text,
           task_id text,case_id text,case_hash text,initial_state_sha256 text,environment_manifest_sha256 text,application_source_hash text,
-          execution_identity_hash text)`);
+          execution_identity_hash text,claim_id uuid,created_at timestamptz)`);
         await tx.execute(sql`CREATE TEMP TABLE oid_task_environment_lease(preparation_id uuid,lease_id uuid,state text)`);
         await tx.execute(sql`CREATE TEMP TABLE oid_task_execution_binding(
-          run_id uuid,task_index integer,env_id text,generation_id uuid,manifest_hash text,application_source_hash text)`);
+          run_id uuid,task_index integer,env_id text,generation_id uuid,manifest_hash text,application_source_hash text,
+          participant_id text,payer_address text)`);
         await tx.execute(sql`CREATE TEMP TABLE oid_task_preparation_observation(
           preparation_id uuid,status text,generation_id uuid,baseline_state_sha256 text)`);
         const row = fixture.row;
@@ -1364,10 +1365,10 @@ test('isolated PostgreSQL source reads original S1 evidence from a fenced genera
         await tx.execute(sql`INSERT INTO oid_task_preparation_intent VALUES(
           ${row.preparation_id},${row.run_id},0,${row.lease_id},${row.prepared_environment_id},${row.prepared_release_identity},
           ${row.prepared_manifest_hash},${row.prepared_task_id},${row.prepared_case_id},${row.prepared_case_hash},${row.prepared_initial_state_sha256},
-          ${row.prepared_environment_manifest_hash},${row.prepared_application_source_hash},${row.prepared_execution_identity_hash})`);
+          ${row.prepared_environment_manifest_hash},${row.prepared_application_source_hash},${row.prepared_execution_identity_hash},NULL,NULL)`);
         await tx.execute(sql`INSERT INTO oid_task_environment_lease VALUES(${row.preparation_id},${row.lease_id},'fenced')`);
         await tx.execute(sql`INSERT INTO oid_task_execution_binding VALUES(${row.run_id},0,${row.execution_environment_id},${row.execution_generation_id},
-          ${row.execution_manifest_hash},${row.execution_application_source_hash})`);
+          ${row.execution_manifest_hash},${row.execution_application_source_hash},NULL,NULL)`);
         await tx.execute(sql`INSERT INTO oid_task_preparation_observation VALUES(${row.preparation_id},'ready',${row.generation_id},${row.initial_state_sha256})`);
         return source.load({ runId: RUN, taskIndex: 0, closureId: CLOSURE }, tx as never);
       });

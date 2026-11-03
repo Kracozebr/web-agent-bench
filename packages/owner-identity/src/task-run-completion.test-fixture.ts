@@ -23,6 +23,8 @@ function hashRunServicePayload(value: unknown): string {
 }
 
 export type FixtureOptions = {
+  /** Disposable diagnostic UI fixtures may reuse a genuinely signed-in owner/agent. */
+  existingIdentity?: {userId:string;ownerId:string;agentId:string};
   includeEvaluation?: boolean;
   known?: boolean;
   fence?: boolean;
@@ -42,7 +44,8 @@ export type FixtureOptions = {
 };
 
 export async function addFixture(client: ReturnType<typeof postgres>, options: FixtureOptions = {}) {
-  const userId = randomUUID(), ownerId = randomUUID(), agentId = randomUUID(), intentId = randomUUID();
+  const userId = options.existingIdentity?.userId ?? randomUUID(), ownerId = options.existingIdentity?.ownerId ?? randomUUID(),
+    agentId = options.existingIdentity?.agentId ?? randomUUID(), intentId = randomUUID();
   const runId = randomUUID(), claimId = randomUUID(), closureId = randomUUID(), grantId = randomUUID();
   const preparationId = randomUUID(), leaseId = randomUUID(), generationId = randomUUID();
   const releaseIdentity = `completion-${randomUUID()}`;
@@ -99,11 +102,19 @@ export async function addFixture(client: ReturnType<typeof postgres>, options: F
     ? new Date(Date.now() - 1_000).toISOString()
     : new Date(Date.now() + deadlineOffsetSeconds * 1000).toISOString();
 
+  if(options.existingIdentity){
+    const database=await client`SELECT current_database() AS name`;
+    if(!/^oid_acceptance_[a-f0-9]{32}$/.test(database[0]?.name??''))throw new Error('Synthetic existing identity requires disposable acceptance database');
+    const identity=await client`SELECT a.id FROM oid_agent a JOIN oid_owner o ON o.id=a.owner_id
+      WHERE a.id=${agentId} AND o.id=${ownerId} AND o.auth_user_id=${userId} AND o.admission_status='admitted'`;
+    if(identity.length!==1)throw new Error('Synthetic completion existing identity does not match');
+  }else{
   await client`INSERT INTO oid_auth_user(id,name,email,email_verified)
     VALUES(${userId},'Synthetic completion owner',${`${userId}@example.invalid`},true)`;
   await client`INSERT INTO oid_owner(id,auth_user_id,admission_status) VALUES(${ownerId},${userId},'admitted')`;
   await client`INSERT INTO oid_agent(id,owner_id,name) VALUES(${agentId},${ownerId},'Synthetic completion agent')`;
   await client`INSERT INTO oid_agent_policy(agent_id,training,ranked,revision) VALUES(${agentId},true,false,1)`;
+  }
   await client`INSERT INTO oid_run_launch_intent(id,owner_id,agent_id,operation_id,payload_hash,mode,task_ids,release_identity,
       benchmark_version,manifest_hash,benchmark_hash,policy_hash,quote_price_units,cash_ceiling_units,owner_policy_revision,agent_policy_revision,
       status,created_at,expires_at,accepted_at,successor_preparation_policy_version,successor_preparation_timeout_seconds)

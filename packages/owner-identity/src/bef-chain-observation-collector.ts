@@ -1,3 +1,8 @@
+import {validateAndDeriveS4ParticipantChainCensus} from './task-s4-fixture-boundary.js';
+import {rejectedSwapSource,rejectedSwapGuardMarkerMatches,rereadRejectedRecipientCode,type RejectedRecipientCode} from './task-rejected-swap-proof.js';
+import {parseS4PreparationEvidence,captureS4PreparationFixtureBoundary,type S4FixtureBoundaryCapture,type S4FixtureBoundaryFailureCode,S4FixtureBoundaryUnavailable} from './bef-s4-observation-collector.js';
+import {deriveChainFamilyScope,chainGoalRoutes,type ChainFamilyScope} from './task-chain-family-scope.js';
+import {validateAdmittedActionCensus,readAdmittedActionEvidenceFile,type AdmittedActionCensus,type AdmittedActionProof,type AdmittedActionRow} from './bef-admitted-action-census.js';
 /** Read-only M3/M4/H2 collector. It returns an unsealed candidate and never dispatches actions. */
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
@@ -16,7 +21,7 @@ import type { PersistedTaskObservations, TaskEvidenceBinding } from './task-eval
 import { canonicalTaskJson, sha256CanonicalTaskJson, type EvidenceReference, type TaskCase, type TaskReleaseQuerySource } from './task-release.js';
 import type { TaskObservationBundleCandidate } from './task-observation-store.js';
 import { m1PreparationHealthMatches, parseM1PreparationEvidence } from './bef-m1-observation-collector.js';
-import { projectTaskChainCapturePacket, type ChainCaptureExternalAction, type ChainCaptureRejectedAction, type ChainCapturePacket, type ChainJson, type ChainTaskCase } from './task-chain-capture-packet.js';
+import { projectTaskChainFamilyCapturePacket, projectTaskChainCapturePacket, type ChainCaptureExternalAction, type ChainCaptureRejectedAction, type ChainCapturePacket, type ChainJson, type ChainTaskCase } from './task-chain-capture-packet.js';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH=/^[0-9a-f]{64}$/i, TX=/^0x[0-9a-f]{64}$/i, ADDRESS=/^0x[0-9a-f]{40}$/i;
@@ -42,7 +47,7 @@ type PreparationRow={preparation_id:string;claim_id:string;lease_id:string;envir
 type ActionRow={id:string;run_id:string;task_index:number;owner_id:string;agent_id:string;task_id:string;environment_id:string;action_sequence:string|number;
  operation_id:string;payload_hash:string;action_kind:string;command_json:unknown;receipt_revision:number;receipt_status:string;evidence_hash:string|null;
  evidence_path:string|null;transaction_hash:string|null;history_revision:number|null;history_status:string|null;history_evidence_hash:string|null;
- history_evidence_path:string|null;history_transaction_hash:string|null}&RecoveredOwnerLineageRow;
+ history_evidence_path:string|null;history_transaction_hash:string|null}&RecoveredOwnerLineageRow&AdmittedActionRow;
 type Loaded={row:ActionRow;sequence:number;command:Extract<TaskActionCommand,{kind:'approve'|'transfer'|'wrap'|'unwrap'|'swap'}>;
  evidence:EvidenceReference;recoveryEvidence:RecoveryActionEvidence;befOperationId:string;transactionHash:string;outcome:'success'|'reverted';selectedAction:J;approvalSpender:string|null};
 type LoadedActions={chain:Loaded[];external:ChainCaptureExternalAction[];rejected:ChainCaptureRejectedAction[]};
@@ -63,9 +68,9 @@ export type ChainObservationBoundary={actionCutoffSequence:number;observationCut
 export type BefChainObservationUnavailableCode='invalid_target'|'unsupported_task'|'owner_cutoff_unavailable'|'owner_cutoff_mismatch'|
  'reconciliation_pending'|'action_evidence_unavailable'|'preparation_unavailable'|'release_binding_mismatch'|'source_not_configured'|
  'observer_role_invalid'|'observer_census_unavailable'|'observer_census_changed'|'rpc_identity_mismatch'|'rpc_observation_unavailable'|
- 'rpc_interval_too_large'|'rpc_mapping_incomplete'|'baseline_mismatch'|'capture_evidence_unavailable';
+ 'rpc_interval_too_large'|'rpc_mapping_incomplete'|'baseline_mismatch'|'capture_evidence_unavailable'|S4FixtureBoundaryFailureCode|'s4_fixture_partition_unavailable';
 export type BefChainObservationCollectionResult={status:'unavailable';reasonCode:BefChainObservationUnavailableCode}|{
- status:'candidate';candidate:TaskObservationBundleCandidate;evidence:EvidenceReference;classification:'run_bound_observations_candidate_not_grade';boundary:ChainObservationBoundary};
+ status:'candidate';candidate:TaskObservationBundleCandidate;evidence:EvidenceReference;classification:'run_bound_observations_candidate_not_grade';boundary:ChainObservationBoundary;packet?:ChainCapturePacket;census?:AdmittedActionCensus;familyProofs?:AdmittedActionProof[]};
 
 class Unavailable extends Error { constructor(readonly reasonCode:BefChainObservationUnavailableCode){super(reasonCode)} }
 function fail(reason:BefChainObservationUnavailableCode):never{throw new Unavailable(reason)}
@@ -131,7 +136,7 @@ async function loadPreparation(root:string,prep:PreparationRow,runId:string,inde
  const fixture=evidenceRef(prep.fixture_evidence,PREP_ROOT),baseline=evidenceRef(prep.baseline_evidence,PREP_ROOT);
  if(!fixture||!baseline||fixture.path===baseline.path||fixture.sha256===baseline.sha256)fail('preparation_unavailable');
  const [fixtureBytes,baselineBytes]=await Promise.all([readEvidence(root,fixture,PREP_ROOT,'preparation_unavailable'),readEvidence(root,baseline,PREP_ROOT,'preparation_unavailable')]);
- const f=parseM1PreparationEvidence(fixtureBytes,'fixture') as J,b=parseM1PreparationEvidence(baselineBytes,'baseline') as J,pins=publicPins(prep,runId,index);
+ const f=(taskCase.taskId==='S4'?parseS4PreparationEvidence(fixtureBytes,'fixture'):parseM1PreparationEvidence(fixtureBytes,'fixture')) as J,b=(taskCase.taskId==='S4'?parseS4PreparationEvidence(baselineBytes,'baseline'):parseM1PreparationEvidence(baselineBytes,'baseline')) as J,pins=publicPins(prep,runId,index);
  for(const [doc,kind] of [[f,'fixture'],[b,'baseline']] as const)if(doc.schemaVersion!=='owner-bef-task-preparation-evidence/v1'||doc.kind!==kind||
   doc.preparationId!==prep.preparation_id||doc.environmentId!==prep.environment_id||doc.publicPinsSha256!==pins||!isRecord(doc.evidence))fail('preparation_unavailable');
  const fEvidence=f.evidence as J,bEvidence=b.evidence as J;
@@ -198,7 +203,7 @@ function eventPayload(row:J,execution:J,operation:J):J|null{
  }
  return null;
 }
-export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,envId:string,generationId:string,strictInspections=false):Promise<{session:J;census:Census}>{
+export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,envId:string,generationId:string,strictInspections=false,includeRejected=false):Promise<{session:J;census:Census}>{
  if(port.environmentId!==envId)fail('source_not_configured');
  try{return await port.withRepeatableRead(async(query)=>{
   const session=await validateObserverSession(query);
@@ -207,12 +212,15 @@ export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,en
     WHERE g.env_id=$1 AND g.generation_id=$2::uuid`,[envId,generationId]));
   const rawOps=dbRows<J>(await query(`SELECT operation_id::text,env_id,generation_id::text,participant_id,trim(idempotency_key_sha256) AS idempotency_key_sha256,
     trim(request_sha256) AS request_sha256,operation_kind,status,receipt_status,transaction_hash,trim(response_sha256) AS response_sha256,started_at::text,completed_at::text
+    ${includeRejected?`,(SELECT count(*)::text FROM public.bef_payment p WHERE p.operation_id=bef_operation.operation_id) AS rejected_payments_count,
+      (SELECT count(*)::text FROM public.bef_delivery d WHERE d.operation_id=bef_operation.operation_id) AS rejected_deliveries_count`:''}
     FROM public.bef_operation WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY started_at,operation_id LIMIT ${MAX_ROWS+1}`,[envId,generationId]));
   const rawSelected=dbRows<J>(await query(`SELECT operation_id::text,env_id,generation_id::text,action_kind,selected_action_json,prestate_json,
     transaction_intent_json,measurement_json,transaction_hash,outcome,reason_code,completed_at::text FROM public.bef_selected_execution
     WHERE env_id=$1 AND generation_id=$2::uuid ORDER BY created_at,operation_id LIMIT ${MAX_ROWS+1}`,[envId,generationId]));
   const rawEvents=dbRows<J>(await query(`SELECT event_sequence::text,event_id::text,operation_id::text,env_id,generation_id::text,event_kind,
     transaction_hash,event_json,created_at::text FROM public.bef_selected_execution_event WHERE env_id=$1 AND generation_id=$2::uuid
+    AND (SELECT coalesce(sum(octet_length(event_json::text)),0) FROM public.bef_selected_execution_event WHERE env_id=$1 AND generation_id=$2::uuid)<=${MAX_PACKET_BYTES}
     ORDER BY event_sequence LIMIT ${MAX_ROWS+1}`,[envId,generationId]));
   const rawCosts=dbRows<J>(await query(`SELECT operation_id::text,env_id,generation_id::text,transaction_hash,payer_address,payer_role,receipt_status,
     transaction_from,receipt_from,receipt_block_number::text,receipt_block_hash,receipt_block_parent_hash,gas_used::text,effective_gas_price_wei::text,
@@ -228,7 +236,7 @@ export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,en
   const count=counts[0]!;if(String(count.operations)!==String(rawOps.length)||String(count.selected_executions)!==String(rawSelected.length)||
    String(count.selected_events)!==String(rawEvents.length)||String(count.costs)!==String(rawCosts.length))fail('observer_census_unavailable');
   const allChainRows=rawOps.filter((row)=>CHAIN_KINDS.has(String(row.operation_kind)));
-  const rejectedRows=strictInspections?allChainRows.filter((row)=>row.operation_kind==='transfer'&&row.status==='rejected'&&
+  const rejectedRows=(strictInspections||includeRejected)?allChainRows.filter((row)=>(row.operation_kind==='transfer'||includeRejected&&row.operation_kind==='swap')&&row.status==='rejected'&&
    row.receipt_status==='not_submitted'&&row.transaction_hash===null&&row.response_sha256===null):[];
   const rejectedIds=new Set(rejectedRows.map((row)=>String(row.operation_id).toLowerCase()));
   const chainRows=allChainRows.filter((row)=>!rejectedIds.has(String(row.operation_id).toLowerCase()));
@@ -244,13 +252,16 @@ export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,en
   const costRows=rawCosts.filter((row)=>chainIds.has(String(row.operation_id).toLowerCase()));
   if(strictInspections&&(selectedRows.length+rawSelected.filter((r)=>rejectedIds.has(String(r.operation_id).toLowerCase())).length!==rawSelected.length||
    eventRows.length+rawEvents.filter((r)=>rejectedIds.has(String(r.operation_id).toLowerCase())).length!==rawEvents.length||costRows.length!==rawCosts.length))fail('observer_census_unavailable');
+  if(includeRejected){const paidIds=new Set(paymentOperations.map(operation=>operation.operationId));for(const rows of [rawSelected,rawEvents,rawCosts])if(rows.some(row=>!chainIds.has(String(row.operation_id).toLowerCase())&&!rejectedIds.has(String(row.operation_id).toLowerCase())&&!paidIds.has(String(row.operation_id).toLowerCase())))fail('observer_census_unavailable');}
+
   const rejectedChainOperations=rejectedRows.map((r)=>{
    const opId=String(r.operation_id).toLowerCase(),selected=rawSelected.filter((row)=>String(row.operation_id).toLowerCase()===opId);
    const events=rawEvents.filter((row)=>String(row.operation_id).toLowerCase()===opId);
-   if(selected.length!==1||events.length!==2)fail('observer_census_unavailable');
+   if(selected.length!==1||events.length!==2||rawCosts.some(row=>String(row.operation_id).toLowerCase()===opId))fail('observer_census_unavailable');
    const s=selected[0]!,normalized=normalizeAction(s.selected_action_json,String(s.action_kind));
-   if(!normalized||s.env_id!==envId||String(s.generation_id).toLowerCase()!==generationId.toLowerCase()||s.action_kind!=='transfer'||
-    s.outcome!=='rejected'||s.reason_code!=='execution_observation_unknown'||s.transaction_hash!==null||s.prestate_json!==null||
+   if(!normalized||s.env_id!==envId||String(s.generation_id).toLowerCase()!==generationId.toLowerCase()||
+    !(s.action_kind==='transfer'&&s.reason_code==='execution_observation_unknown'||includeRejected&&s.action_kind==='swap'&&s.reason_code==='selected_recipient_must_be_eoa')||
+    s.outcome!=='rejected'||s.transaction_hash!==null||s.prestate_json!==null||
     s.transaction_intent_json!==null||s.measurement_json!==null)fail('observer_census_unavailable');
    return {operation:{operationId:opId,environmentId:r.env_id,generationId:String(r.generation_id).toLowerCase(),participantId:r.participant_id,
     idempotencyKeySha256:r.idempotency_key_sha256,requestSha256:r.request_sha256,actionKind:r.operation_kind,status:r.status,receiptStatus:r.receipt_status,
@@ -258,11 +269,11 @@ export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,en
     selectedExecution:{operationId:opId,environmentId:s.env_id,generationId:String(s.generation_id).toLowerCase(),actionKind:s.action_kind,
      selectedAction:normalized,prestate:null,transactionIntent:null,measurement:null,transactionHash:null,outcome:s.outcome,reasonCode:s.reason_code,completedAt:s.completed_at},
     selectedEvents:events.map((event)=>{
-     const payload=parseJson(event.event_json);if(!isRecord(payload)||hasSecret(payload)||event.env_id!==envId||
+     const payload=parseJson(event.event_json);if(!isRecord(payload)||Buffer.byteLength(canonicalTaskJson(payload))>MAX_RPC_BYTES||hasSecret(payload)||event.env_id!==envId||
       String(event.generation_id).toLowerCase()!==generationId.toLowerCase())fail('observer_census_unavailable');
      return {eventId:String(event.event_id).toLowerCase(),eventSequence:String(event.event_sequence),operationId:opId,eventKind:event.event_kind,
       eventJsonSha256:sha256CanonicalTaskJson(payload).toLowerCase(),transactionHash:event.transaction_hash,eventPayload:payload};
-    }),costsCount:0};
+    }),costsCount:0,...(s.action_kind==='swap'?{paymentsCount:r.rejected_payments_count,deliveriesCount:r.rejected_deliveries_count}:{})};
   });
   const operations=chainRows.map((r)=>({operationId:String(r.operation_id).toLowerCase(),environmentId:r.env_id,generationId:String(r.generation_id).toLowerCase(),
    participantId:r.participant_id,idempotencyKeySha256:r.idempotency_key_sha256===null?null:String(r.idempotency_key_sha256).toLowerCase(),
@@ -302,7 +313,7 @@ export async function captureBefChainCensus(port:BefChainReadOnlyPostgresPort,en
    transactionHash:txHash(r.transaction_hash),payerAddress:addr(r.payer_address),payerRole:r.payer_role,receiptStatus:r.receipt_status,
    transactionFrom:addr(r.transaction_from),receiptFrom:addr(r.receipt_from),receiptBlockNumber:String(r.receipt_block_number),receiptBlockHash:txHash(r.receipt_block_hash),
    receiptBlockParentHash:txHash(r.receipt_block_parent_hash),gasUsed:String(r.gas_used),effectiveGasPriceWei:String(r.effective_gas_price_wei),gasCostWei:String(r.gas_cost_wei),
-   modeledGasFeeUsdcUnits:String(r.modeled_gas_fee_usdc_units),manifestSha256:String(r.manifest_sha256).toLowerCase(),selectedPrincipalAsset:r.selected_principal_asset,
+   modeledGasFeeUsdcUnits:r.modeled_gas_fee_usdc_units===null?null:String(r.modeled_gas_fee_usdc_units),manifestSha256:String(r.manifest_sha256).toLowerCase(),selectedPrincipalAsset:r.selected_principal_asset,
    selectedPrincipalUnits:r.selected_principal_units===null?null:String(r.selected_principal_units),observedPrincipalUnits:r.observed_principal_units===null?null:String(r.observed_principal_units)}));
   const census:Census={generation:{generation_id:String(g[0]!.generation_id).toLowerCase(),env_id:g[0]!.env_id,participant_id:g[0]!.participant_id,
    payer_address:addr(g[0]!.payer_address),manifest_sha256:String(g[0]!.manifest_sha256).toLowerCase(),status:g[0]!.status,chain_id:String(g[0]!.chain_id),
@@ -333,7 +344,7 @@ function selectedMatchesCommand(selected:J,command:TaskActionCommand):boolean{
   selected.amountOutMinimumUnits===command.amountOutMinimumUnits&&String(selected.recipient).toLowerCase()===command.recipient.toLowerCase()&&selected.gasLimit===command.gasLimit;
  return false;
 }
-function permittedRoutesFor(taskCase:ChainTaskCase){return taskCase.taskId==='H2'?taskCase.objective.permittedConversions:taskCase.objective.permittedRoutes;}
+function permittedRoutesFor(taskCase:ChainTaskCase){return chainGoalRoutes(taskCase);}
 function selectionFromCommand(command:TaskActionCommand):J{
  if(command.kind==='approve')return {kind:command.kind,tokenAssetId:command.tokenAssetId??'WETH',amountUnits:command.amountUnits,gasLimit:command.gasLimit};
  if(command.kind==='transfer')return {kind:command.kind,amountUnits:command.amountUnits,recipient:command.recipient.toLowerCase(),gasLimit:command.gasLimit};
@@ -342,7 +353,7 @@ function selectionFromCommand(command:TaskActionCommand):J{
   amountInUnits:command.amountInUnits,amountOutMinimumUnits:command.amountOutMinimumUnits,recipient:command.recipient.toLowerCase(),gasLimit:command.gasLimit};
  return {};
 }
-export function sameActionEnvelope(raw:J,selected:J,command:TaskActionCommand,taskCase:ChainTaskCase,assets:Array<{assetId:string;address:string|null}>,contracts:Array<{contractId:string;address:string;codeHash:string}>):boolean{
+export function sameActionEnvelope(raw:J,selected:J,command:TaskActionCommand,taskCase:ChainTaskCase,assets:Array<{assetId:string;address:string|null}>,contracts:Array<{contractId:string;address:string;codeHash:string}>,familyScope?:ChainFamilyScope):boolean{
  if(!selectedMatchesCommand(selected,command)||raw.kind!==command.kind)return false;
  if(command.kind==='approve'){
   const token=assets.find((a)=>a.assetId===(command.tokenAssetId??'WETH'))?.address;
@@ -350,7 +361,7 @@ export function sameActionEnvelope(raw:J,selected:J,command:TaskActionCommand,ta
    if(taskCase.taskId==='U1')allowed.push(...taskCase.objective.temporarySpenderScope.filter((scope)=>scope.owner==='participant'&&
     scope.tokenAssetId===(command.tokenAssetId??'WETH')).map((scope)=>scope.spender));
   return exactKeys(raw,['kind','tokenAssetId','token','spender','amountUnits','gasLimit'])&&raw.tokenAssetId===(command.tokenAssetId??'WETH')&&
-   addr(raw.token)===token?.toLowerCase()&&allowed.some((value)=>addr(value)===addr(raw.spender))&&raw.amountUnits===command.amountUnits&&raw.gasLimit===command.gasLimit;
+   addr(raw.token)===token?.toLowerCase()&&(familyScope?addr(raw.spender)!==null:allowed.some((value)=>addr(value)===addr(raw.spender)))&&raw.amountUnits===command.amountUnits&&raw.gasLimit===command.gasLimit;
  }
  if(command.kind==='transfer'){
   return exactKeys(raw,['kind','token','amountUnits','recipient','gasLimit'])&&addr(raw.token)===assets.find((a)=>a.assetId==='USDC')?.address?.toLowerCase()&&
@@ -358,20 +369,21 @@ export function sameActionEnvelope(raw:J,selected:J,command:TaskActionCommand,ta
  }
  if(command.kind==='wrap'||command.kind==='unwrap')return exactKeys(raw,['kind','amountWei','gasLimit'])&&raw.amountWei===command.amountWei&&raw.gasLimit===command.gasLimit;
  if(command.kind!=='swap')return false;
-  const route=permittedRoutesFor(taskCase).find((r)=>r.tokenInAssetId===command.inputAssetId&&
+  const route=(familyScope?.routes??permittedRoutesFor(taskCase)).find((r)=>r.tokenInAssetId===command.inputAssetId&&
    r.tokenOutAssetId===command.outputAssetId&&r.feeTier===(command.feeTier??500));
  if(!route)return false;
- const router=contracts.find((c)=>c.contractId===route.routerContractId)?.address,pool=contracts.find((c)=>c.contractId===route.poolContractId)?.address;
+ const router='router' in route?route.router:contracts.find((c)=>c.contractId===route.routerContractId)?.address,pool='pool' in route?route.pool:contracts.find((c)=>c.contractId===route.poolContractId)?.address;
  const tokenIn=assets.find((a)=>a.assetId===route.tokenInAssetId)?.address,tokenOut=assets.find((a)=>a.assetId===route.tokenOutAssetId)?.address;
- const legacy=route.feeTier===500&&command.inputAssetId==='WETH'&&command.outputAssetId==='USDC';
- const keys=legacy?['kind','route','router','tokenIn','tokenOut','fee','amountInWei','amountOutMinimumUsdcUnits','recipient','gasLimit']:
-  route.feeTier===3000?['kind','route','router','inputAssetId','outputAssetId','tokenIn','tokenOut','fee','poolAddress','poolCodeHash','amountInUnits','amountOutMinimumUnits','recipient','gasLimit']:
+ const legacyKeys=['kind','route','router','tokenIn','tokenOut','fee','amountInWei','amountOutMinimumUsdcUnits','recipient','gasLimit'];
+ const genericKeys=route.feeTier===3000?['kind','route','router','inputAssetId','outputAssetId','tokenIn','tokenOut','fee','poolAddress','poolCodeHash','amountInUnits','amountOutMinimumUnits','recipient','gasLimit']:
    ['kind','route','router','inputAssetId','outputAssetId','tokenIn','tokenOut','fee','amountInUnits','amountOutMinimumUnits','recipient','gasLimit'];
+ const legacy=route.feeTier===500&&command.inputAssetId==='WETH'&&command.outputAssetId==='USDC'&&exactKeys(raw,legacyKeys);
+ if(!legacy&&!exactKeys(raw,genericKeys))return false;
  const rawAmount=legacy?raw.amountInWei:raw.amountInUnits,rawMinimum=legacy?raw.amountOutMinimumUsdcUnits:raw.amountOutMinimumUnits;
  return raw.route==='uniswap-v3-exactInputSingle'&&addr(raw.router)===router?.toLowerCase()&&
-  exactKeys(raw,keys)&&(!legacy?(raw.inputAssetId===command.inputAssetId&&raw.outputAssetId===command.outputAssetId):true)&&
+  (!legacy?(raw.inputAssetId===command.inputAssetId&&raw.outputAssetId===command.outputAssetId):true)&&
   addr(raw.tokenIn)===tokenIn?.toLowerCase()&&addr(raw.tokenOut)===tokenOut?.toLowerCase()&&Number(raw.fee)===route.feeTier&&
-  (route.feeTier!==3000||(addr(raw.poolAddress)===pool?.toLowerCase()&&matchesReleaseCodeHash(raw.poolCodeHash,contracts.find((c)=>c.contractId===route.poolContractId)?.codeHash)))&&
+  (route.feeTier!==3000||(addr(raw.poolAddress)===pool?.toLowerCase()&&matchesReleaseCodeHash(raw.poolCodeHash,contracts.find((c)=>'pool' in route?c.address.toLowerCase()===route.pool.toLowerCase():c.contractId===route.poolContractId)?.codeHash)))&&
   rawAmount===command.amountInUnits&&rawMinimum===command.amountOutMinimumUnits&&addr(raw.recipient)===command.recipient.toLowerCase()&&raw.gasLimit===command.gasLimit;
 }
 export function neutralChainInspectionEvidenceMatches(command:Extract<TaskActionCommand,{kind:'inspect_catalog'|'inspect_offer'}>,
@@ -400,12 +412,22 @@ export function rejectedChainActionEvidenceMatches(doc:J):boolean{
   Object.keys(doc).every((key)=>['schema','actionId','runId','taskIndex','actionSequence','ownerOperationId','actionKind','commandSha256',
    'environmentId','generationId','manifestSha256','applicationSourceSha256','idempotencyKey','status','reasonCode','befOperationId'].includes(key));
 }
+export function rejectedSwapActionEvidenceMatches(doc:J):boolean{
+ const base=['schema','actionId','runId','taskIndex','actionSequence','ownerOperationId','actionKind','commandSha256','environmentId','generationId','manifestSha256','applicationSourceSha256','idempotencyKey','status','reasonCode','befOperationId'];
+ if(doc.status!=='rejected_before_execution'||doc.actionKind!=='swap'||!UUID.test(String(doc.befOperationId)))return false;
+ if(!rejectedSwapGuardMarkerMatches(doc.rejectionProof,doc.befOperationId))return false;
+ if(doc.reasonCode==='platform_recovery_original_operation_terminal')return exactKeys(doc,[...base,'rejectionProof']);
+ return doc.reasonCode==='selected_recipient_must_be_eoa'&&doc.httpStatus===400&&HASH.test(String(doc.rawResponseSha256))&&
+  exactKeys(doc,[...base,'httpStatus','rawResponseSha256','requestStartedAt','requestFinishedAt','environmentHealth','rejectionProof'])&&
+  observationHealthMatches(doc.environmentHealth,{environmentId:doc.environmentId,manifestSha256:doc.manifestSha256,applicationSourceSha256:doc.applicationSourceSha256})&&
+  typeof doc.requestStartedAt==='string'&&typeof doc.requestFinishedAt==='string'&&Number.isFinite(Date.parse(doc.requestStartedAt))&&Number.isFinite(Date.parse(doc.requestFinishedAt))&&Date.parse(doc.requestFinishedAt)>=Date.parse(doc.requestStartedAt);
+}
 async function loadActions(root:string,runId:string,index:number,run:J,prep:PreparationRow,cutoff:number,rowsIn:ActionRow[],taskCase:ChainTaskCase,
- assets:Array<{assetId:string;address:string|null}>,contracts:Array<{contractId:string;address:string;codeHash:string}>):Promise<LoadedActions>{
+ assets:Array<{assetId:string;address:string|null}>,contracts:Array<{contractId:string;address:string;codeHash:string}>,familyScope?:ChainFamilyScope):Promise<LoadedActions>{
  if(cutoff>MAX_ACTIONS||rowsIn.length!==cutoff)fail('owner_cutoff_mismatch');const chain:Loaded[]=[],external:ChainCaptureExternalAction[]=[],rejected:ChainCaptureRejectedAction[]=[],ownerOps=new Set<string>();
  const allowed=['schema','actionId','runId','taskIndex','actionSequence','ownerOperationId','actionKind','commandSha256','environmentId','generationId','manifestSha256',
   'applicationSourceSha256','idempotencyKey','status','reasonCode','requestStartedAt','requestFinishedAt','httpStatus','recoverySource','befOperationId','transactionHash','outcome',
-  'receiptStatus','rawResponseSha256','participantToolResponse','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','environmentHealth'];
+  'receiptStatus','rawResponseSha256','participantToolResponse','receiptGasUsed','receiptEffectiveGasPriceWei','paymentProtocol','environmentHealth','rejectionProof'];
  for(let i=0;i<rowsIn.length;i++){
   const row=rowsIn[i]!,actionSequence=seq(row.action_sequence),ref=row.evidence_path&&row.evidence_hash?evidenceRef({path:row.evidence_path,sha256:row.evidence_hash,boundary:BOUNDARY},ACTION_ROOT):null;
   if(actionSequence!==i+1||!UUID.test(row.id)||row.id!==row.id.toLowerCase()||row.run_id!==runId||row.task_index!==index||row.owner_id!==run.owner_id||
@@ -419,8 +441,9 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
   const chainAction=CHAIN_KINDS.has(parsed.data.kind);
   const externalAction=['inspect_catalog','inspect_offer','purchase','pay','retrieve'].includes(parsed.data.kind);
   const neutralInspection=parsed.data.kind==='inspect_catalog'||parsed.data.kind==='inspect_offer';
-  const rejectedTransfer=parsed.data.kind==='transfer'&&row.receipt_status==='rejected_before_execution'&&!['H3','U1'].includes(taskCase.taskId);
-  if((chainAction&&row.receipt_status!=='observed'&&!rejectedTransfer)||(!chainAction&&(!externalAction||(!neutralInspection&&!['H3','U1'].includes(taskCase.taskId)))))fail('action_evidence_unavailable');
+  const rejectedTransfer=parsed.data.kind==='transfer'&&row.receipt_status==='rejected_before_execution'&&(familyScope||!['H3','U1'].includes(taskCase.taskId));
+  const rejectedSwap=!!familyScope&&parsed.data.kind==='swap'&&row.receipt_status==='rejected_before_execution';
+  if((chainAction&&row.receipt_status!=='observed'&&!rejectedTransfer&&!rejectedSwap)||(!chainAction&&(!externalAction||(!neutralInspection&&!(familyScope||['H3','U1'].includes(taskCase.taskId))))))fail('action_evidence_unavailable');
   const bytes=await readEvidence(root,ref,ACTION_ROOT,'action_evidence_unavailable');let doc:unknown;
   try{doc=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown}catch{fail('action_evidence_unavailable')}
   const evidence=isRecord(doc)?doc:null,recoverySourceBacked=evidence?.recoverySource!==undefined;
@@ -439,16 +462,16 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
    fail('action_evidence_unavailable');
   const scrub=structuredClone(doc);if(isRecord(scrub.participantToolResponse)){delete scrub.participantToolResponse.content;delete scrub.participantToolResponse.contentBytes;}
   if(hasSecret(scrub))fail('action_evidence_unavailable');
-  if(rejectedTransfer){
-   if(!rejectedChainActionEvidenceMatches(doc))fail('action_evidence_unavailable');
-   rejected.push({actionId:row.id,actionSequence,ownerOperationId:String(row.operation_id),actionKind:'transfer',commandSha256:row.payload_hash.toLowerCase(),
-    command:parsed.data,receiptStatus:'rejected_before_execution',reasonCode:'platform_recovery_original_operation_terminal',actionEvidence:ref,
-    befOperationId:String(doc.befOperationId).toLowerCase(),transactionHash:null});
+  if(rejectedTransfer||rejectedSwap){
+   if(!(rejectedTransfer?rejectedChainActionEvidenceMatches(doc):rejectedSwapActionEvidenceMatches(doc)))fail('action_evidence_unavailable');
+   rejected.push({actionId:row.id,actionSequence,ownerOperationId:String(row.operation_id),actionKind:rejectedSwap?'swap':'transfer',commandSha256:row.payload_hash.toLowerCase(),
+    command:parsed.data,receiptStatus:'rejected_before_execution',reasonCode:doc.reasonCode as ChainCaptureRejectedAction['reasonCode'],actionEvidence:ref,
+    befOperationId:String(doc.befOperationId).toLowerCase(),transactionHash:null,...(rejectedSwap?{rejectionProof:doc.rejectionProof as import('./task-rejected-swap-proof.js').RejectedSwapGuardMarker}:{})});
    continue;
   }
   if(externalAction){
    const command=parsed.data;
-   if(!['H3','U1'].includes(taskCase.taskId)&&
+   if(!(familyScope||['H3','U1'].includes(taskCase.taskId))&&
     ((command.kind!=='inspect_catalog'&&command.kind!=='inspect_offer')||!neutralChainInspectionEvidenceMatches(command,row,doc)))fail('action_evidence_unavailable');
    const response=isRecord(doc.participantToolResponse)?doc.participantToolResponse:null;
    const protocol=isRecord(doc.paymentProtocol)?doc.paymentProtocol:null;
@@ -466,7 +489,7 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
    if(row.receipt_status==='observed'&&(['inspect_catalog','inspect_offer'].includes(command.kind)&&(!response||protocol!==null)))fail('action_evidence_unavailable');
    external.push({actionId:row.id,actionSequence,ownerOperationId:String(row.operation_id),actionKind:command.kind as ChainCaptureExternalAction['actionKind'],
     commandSha256:row.payload_hash.toLowerCase(),receiptStatus:row.receipt_status as ChainCaptureExternalAction['receiptStatus'],actionEvidence:ref,
-    befOperationId:befId,transactionHash:ownerHash,...(!['H3','U1'].includes(taskCase.taskId)?{
+    befOperationId:befId,transactionHash:ownerHash,...(!(familyScope||['H3','U1'].includes(taskCase.taskId))?{
      inspection:{command:parsed.data,rawResponseSha256:String(doc.rawResponseSha256).toLowerCase()}}:{})});
    continue;
   }
@@ -474,7 +497,7 @@ async function loadActions(root:string,runId:string,index:number,run:J,prep:Prep
    !isRecord(doc.participantToolResponse.receipt)||!UUID.test(String(doc.befOperationId))||!TX.test(String(doc.transactionHash))||
    (doc.outcome!=='success'&&doc.outcome!=='reverted')||doc.receiptStatus!==doc.outcome||(!recoverySourceBacked&&doc.httpStatus!==200))fail('action_evidence_unavailable');
   const command=parsed.data as Loaded['command'],selected=selectionFromCommand(command);
-  if(!sameActionEnvelope(doc.participantToolResponse.selectedAction as J,selected,command,taskCase,assets,contracts))fail('action_evidence_unavailable');
+  if(!sameActionEnvelope(doc.participantToolResponse.selectedAction as J,selected,command,taskCase,assets,contracts,familyScope))fail('action_evidence_unavailable');
   const response=doc.participantToolResponse as J,transaction=response.transaction as J,receipt=response.receipt as J;
   if(response.operationId!==doc.befOperationId||response.outcome!==doc.outcome||txHash(transaction.hash)!==txHash(doc.transactionHash)||
    txHash(receipt.transactionHash)!==txHash(doc.transactionHash)||receipt.status!==doc.receiptStatus||String(receipt.gasUsed)!==String(doc.receiptGasUsed)||
@@ -557,11 +580,12 @@ async function verifyCode(rpc:RpcRecorder,identity:{assets:Array<{kind:string;ad
  return hashes;
 }
 async function readCheckpoint(rpc:RpcRecorder,block:bigint,identity:{assets:Array<{assetId:string;kind:string;address:string|null}>;contracts:Array<{contractId:string;address:string}>},
- participant:string,taskCase:ChainTaskCase):Promise<Checkpoint>{
+ participant:string,taskCase:ChainTaskCase,familyScope?:ChainFamilyScope,actions:Loaded[]=[]):Promise<Checkpoint>{
  const headerValue=header(await rpc.request('eth_getBlockByNumber',[`0x${block.toString(16)}`,false]),block);
  const balances=new Map<string,{account:string;assetId:string;amountUnits:string}>();
  const assets=new Map(identity.assets.map((asset)=>[asset.assetId,asset]));
  const balanceSeeds=[...taskCase.initialState.balances];
+ if(familyScope){for(const asset of identity.assets)if(!balanceSeeds.some(row=>row.account==='participant'&&row.assetId===asset.assetId))balanceSeeds.push({account:'participant',assetId:asset.assetId,amountUnits:'0'});for(const action of actions){if(action.command.kind!=='transfer'&&action.command.kind!=='swap')continue;const recipient=action.command.recipient.toLowerCase(),account=recipient===participant?'participant':recipient;for(const asset of identity.assets)if(!balanceSeeds.some(row=>row.account.toLowerCase()===account&&row.assetId===asset.assetId))balanceSeeds.push({account,assetId:asset.assetId,amountUnits:'0'});}}
  for(const asset of identity.assets)if(asset.kind==='native'&&!balanceSeeds.some((row)=>row.account==='participant'&&row.assetId===asset.assetId))balanceSeeds.push({account:'participant',assetId:asset.assetId,amountUnits:'0'} as typeof balanceSeeds[number]);
  for(const seed of balanceSeeds){const asset=assets.get(seed.assetId);if(!asset)fail('release_binding_mismatch');const who=account(seed.account,participant);
   let amount:bigint|null;if(asset.kind==='native')amount=quantity(await rpc.request('eth_getBalance',[who.address,`0x${block.toString(16)}`]));
@@ -574,8 +598,9 @@ async function readCheckpoint(rpc:RpcRecorder,block:bigint,identity:{assets:Arra
    if(scope.owner==='participant'&&!allowanceSeeds.some((a)=>a.owner===scope.owner&&a.tokenAssetId===scope.tokenAssetId&&a.spender.toLowerCase()===scope.spender.toLowerCase()))
     allowanceSeeds.push({owner:scope.owner,tokenAssetId:scope.tokenAssetId,spender:scope.spender,amountUnits:'0'} as typeof allowanceSeeds[number]);
   }
-  const routes=permittedRoutesFor(taskCase);
- for(const route of routes){const spender=identity.contracts.find((x)=>x.contractId===route.routerContractId)?.address;
+  const routes=familyScope?.routes??permittedRoutesFor(taskCase);
+ if(familyScope)for(const action of actions){const command=action.command;if(command.kind==='approve'&&action.approvalSpender&&!allowanceSeeds.some(a=>a.owner==='participant'&&a.tokenAssetId===command.tokenAssetId&&a.spender.toLowerCase()===action.approvalSpender))allowanceSeeds.push({owner:'participant',tokenAssetId:command.tokenAssetId,spender:action.approvalSpender,amountUnits:'0'});}
+ for(const route of routes){const spender='router' in route?route.router:identity.contracts.find((x)=>x.contractId===route.routerContractId)?.address;
   if(!spender)fail('release_binding_mismatch');if(!allowanceSeeds.some((a)=>a.owner==='participant'&&a.tokenAssetId===route.tokenInAssetId&&a.spender.toLowerCase()===spender.toLowerCase()))
    allowanceSeeds.push({owner:'participant',tokenAssetId:route.tokenInAssetId,spender,amountUnits:'0'} as typeof allowanceSeeds[number]);}
  const allowances=new Map<string,{owner:string;tokenAssetId:string;spender:string;amountUnits:string}>();
@@ -589,7 +614,8 @@ async function readCheckpoint(rpc:RpcRecorder,block:bigint,identity:{assets:Arra
 }
 
 function routeIdentities(taskCase:ChainTaskCase,assets:Array<{assetId:string;kind:'native'|'erc20';address:string|null;codeHash:string|null}>,
- contracts:Array<{contractId:string;address:string;codeHash:string}>):ChainCapturePacket['rpc']['routes']{
+ contracts:Array<{contractId:string;address:string;codeHash:string}>,familyScope?:ChainFamilyScope):ChainCapturePacket['rpc']['routes']{
+ if(familyScope)return familyScope.routes;
   const permitted=permittedRoutesFor(taskCase);
  return permitted.map((route)=>{
   const router=contracts.find((x)=>x.contractId===route.routerContractId),pool=contracts.find((x)=>x.contractId===route.poolContractId);
@@ -605,13 +631,13 @@ function actionRoute(taskCase:ChainTaskCase,command:Extract<TaskActionCommand,{k
  return routes.find((route)=>route.tokenInAssetId===command.inputAssetId&&route.tokenOutAssetId===command.outputAssetId&&route.feeTier===(command.feeTier??500));
 }
 function transactionMatchesCommand(tx:CapturedTx,command:Loaded['command'],taskCase:ChainTaskCase,routes:ChainCapturePacket['rpc']['routes'],
- assets:ChainCapturePacket['rpc']['assets'],approvalSpender:string|null):boolean{
+ assets:ChainCapturePacket['rpc']['assets'],approvalSpender:string|null,familyScope?:ChainFamilyScope):boolean{
  if(tx.from!==tx.from.toLowerCase()||tx.gasLimit!==command.gasLimit)return false;
  if(command.kind==='approve'){
   const assetId=command.tokenAssetId??'WETH',asset=assets.find((a)=>a.assetId===assetId);const route=routes.find((r)=>r.tokenInAssetId===assetId);
    const spender=addr(approvalSpender)??route?.router,amount=dec(command.amountUnits);if(!asset?.address||!spender||amount===null)return false;
    const routeAllowed=routes.some((candidate)=>candidate.tokenInAssetId===assetId&&candidate.router.toLowerCase()===spender.toLowerCase());
-   const scopeAllowed=taskCase.taskId==='U1'&&taskCase.objective.temporarySpenderScope.some((scope)=>scope.owner==='participant'&&
+   const scopeAllowed=!!familyScope||taskCase.taskId==='U1'&&taskCase.objective.temporarySpenderScope.some((scope)=>scope.owner==='participant'&&
     scope.tokenAssetId===assetId&&scope.spender.toLowerCase()===spender.toLowerCase());
    return (routeAllowed||scopeAllowed)&&tx.to===asset.address.toLowerCase()&&tx.valueWei==='0'&&
     tx.input===`0x095ea7b3${encodeAddress(spender)}${encodeWord(amount)}`;
@@ -661,7 +687,7 @@ function relevantLogs(transactions:CapturedTx[],assets:ChainCapturePacket['rpc']
  return {transferLogs:transferLogs.sort(order),approvalLogs:approvalLogs.sort(order),swapLogs:swapLogs.sort(order),wethLogs:wethLogs.sort(order)};
 }
 
-async function collectLocked(deps:BefChainObservationCollectorDependencies,target:{runId:string;taskIndex:number},tx:OwnerTx):Promise<BefChainObservationCollectionResult>{
+async function collectLocked(deps:BefChainObservationCollectorDependencies,target:{runId:string;taskIndex:number},tx:OwnerTx,family=false):Promise<BefChainObservationCollectionResult>{
  const owners=await ownerRows<J>(tx,sql`SELECT owner_id::text,agent_id::text FROM oid_benchmark_run WHERE id=${target.runId}`),owner=owners[0];
  if(!owner)return unavailable('owner_cutoff_unavailable');
  await tx.execute(sql`SELECT id FROM oid_owner WHERE id=${owner.owner_id} FOR NO KEY UPDATE`);
@@ -670,7 +696,7 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
    t.closure_id::text,t.closure_operation_id::text,t.closure_payload_hash,t.closure_reason,t.action_cutoff_sequence::text AS action_cutoff_sequence,
    t.reconciled_action_sequence::text AS reconciled_action_sequence FROM oid_benchmark_run r JOIN oid_run_task t ON t.run_id=r.id
    WHERE r.id=${target.runId} AND r.owner_id=${owner.owner_id} AND r.agent_id=${owner.agent_id} AND t.task_index=${target.taskIndex} FOR UPDATE OF r,t`);
- const run=runRows[0];if(!run||!['M3','M4','H2','H3','U1'].includes(String(run.task_id))||!Array.isArray(run.task_ids)||run.task_ids[target.taskIndex]!==run.task_id)
+ const run=runRows[0];if(!run||!(family?['S1','S2','S3','S4','M1','M2','M3','M4','H1','H2','H3','U1']:['M3','M4','H2','H3','U1']).includes(String(run.task_id))||!Array.isArray(run.task_ids)||run.task_ids[target.taskIndex]!==run.task_id)
   return unavailable(run?'unsupported_task':'owner_cutoff_unavailable');
  if(run.closure_status!=='closed'||!run.closure_id||run.action_cutoff_sequence===null)return unavailable('owner_cutoff_unavailable');
  const cutoff=seq(run.action_cutoff_sequence as string|number),reconciled=seq(run.reconciled_action_sequence as string|number);
@@ -708,30 +734,39 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
  if(identity.localChainId<1||identity.environmentManifestSha256.toLowerCase()!==prep.environment_manifest_sha256.toLowerCase())return unavailable('release_binding_mismatch');
  const assets=identity.assets.map((asset)=>({assetId:asset.assetId,kind:asset.kind,address:asset.address?.toLowerCase()??null,codeHash:asset.codeHash?.toLowerCase()??null}));
  const contracts=identity.contracts.map((contract)=>({contractId:contract.contractId,address:contract.address.toLowerCase(),codeHash:contract.codeHash.toLowerCase()}));
- const routes=routeIdentities(taskCase,assets,contracts),participant=addr(prep.payer_address)!;
+ let familyManifest:Buffer|undefined,familyScope:ChainFamilyScope|undefined;if(family){try{familyManifest=await readEvidence(deps.repositoryRoot,{path:'infrastructure/benchmark-environment/manifest.json',sha256:identity.environmentManifestSha256.toLowerCase(),boundary:BOUNDARY},'infrastructure/benchmark-environment/','release_binding_mismatch');familyScope=deriveChainFamilyScope(familyManifest,identity,taskCase);}catch{return unavailable('release_binding_mismatch');}}
+ const routes=routeIdentities(taskCase,assets,contracts,familyScope),participant=addr(prep.payer_address)!;
  let prepProof:PrepProof;try{prepProof=await loadPreparation(deps.repositoryRoot,prep,target.runId,target.taskIndex,taskCase)}catch(error){if(error instanceof Unavailable)return unavailable(error.reasonCode);return unavailable('preparation_unavailable')}
  const actionRows=await ownerRows<ActionRow>(tx,sql`SELECT a.id::text,a.run_id::text,a.task_index,a.owner_id::text,a.agent_id::text,a.task_id,a.environment_id,a.action_sequence::text,
   a.operation_id,a.payload_hash,a.action_kind,a.command_json,r.receipt_revision,r.receipt_status,r.evidence_hash,r.evidence_path,r.transaction_hash,
   h.revision AS history_revision,h.receipt_status AS history_status,h.evidence_hash AS history_evidence_hash,h.evidence_path AS history_evidence_path,
-  h.transaction_hash AS history_transaction_hash ${recoveredOwnerLineageSelectSql} FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+  h.transaction_hash AS history_transaction_hash,r.tool_response_json,r.tool_response_hash,h.tool_response_json AS history_tool_response_json,h.tool_response_hash AS history_tool_response_hash ${recoveredOwnerLineageSelectSql} FROM oid_run_task_action a ${family?sql`LEFT JOIN oid_run_task_action_receipt r ON r.action_id=a.id`:sql`JOIN oid_run_task_action_receipt r ON r.action_id=a.id`}
   ${recoveredOwnerLineageJoinSql}
-  LEFT JOIN LATERAL(SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
-  WHERE a.run_id=${target.runId} AND a.task_index=${target.taskIndex} ORDER BY a.action_sequence FOR UPDATE OF a,r`);
- let loaded:LoadedActions;try{loaded=await loadActions(deps.repositoryRoot,target.runId,target.taskIndex,run,prep,cutoff,actionRows,taskCase,assets,contracts)}
+  LEFT JOIN LATERAL(SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash,tool_response_json,tool_response_hash FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
+  WHERE a.run_id=${target.runId} AND a.task_index=${target.taskIndex} ORDER BY a.action_sequence LIMIT ${MAX_ACTIONS+1} ${family?sql`FOR UPDATE OF a`:sql`FOR UPDATE OF a,r`}`);
+ let loaded:LoadedActions;try{loaded=await loadActions(deps.repositoryRoot,target.runId,target.taskIndex,run,prep,cutoff,actionRows,taskCase,assets,contracts,familyScope)}
  catch(error){if(error instanceof Unavailable)return unavailable(error.reasonCode);return unavailable('action_evidence_unavailable')}
+ let admittedCensus:AdmittedActionCensus|undefined;
+ if(family){try{admittedCensus=await validateAdmittedActionCensus({binding:evidenceBinding,taskIndex:target.taskIndex,execution:{preparationId:prep.preparation_id,leaseId:prep.lease_id,generationId:prep.generation_id,environmentId:prep.environment_id,environmentManifestHash:prep.environment_manifest_sha256.toLowerCase(),applicationSourceHash:prep.application_source_hash.toLowerCase(),executionIdentityHash:prep.execution_identity_hash.toLowerCase(),initialStateSha256:prep.initial_state_sha256.toLowerCase()},closure:{closureId:String(closure.id),operationId:typeof closure.operation_id==='string'?closure.operation_id:null,payloadHash:String(closure.payload_hash),reason:closure.reason as 'agent_finish'|'task_deadline'|'run_deadline',actionCutoffSequence:cutoff,reconciledActionSequence:reconciled},rows:actionRows,readActionEvidence:ref=>readAdmittedActionEvidenceFile(deps.repositoryRoot,ref)});}catch{return unavailable('action_evidence_unavailable');}}
  const actions=loaded.chain,externalActions=loaded.external;
  const pg=deps.postgresByEnvironment[prep.environment_id],rpcPort=deps.rpcByEnvironment[prep.environment_id];
  if(!pg||!rpcPort||rpcPort.environmentId!==prep.environment_id)return unavailable('source_not_configured');
- const before=await captureBefChainCensus(pg,prep.environment_id,prep.generation_id,!['H3','U1'].includes(taskId));const generation=before.census.generation;
+ let preparationFixture:S4FixtureBoundaryCapture|undefined;
+ if(family&&taskCase.taskId==='S4'){try{preparationFixture=await captureS4PreparationFixtureBoundary({repositoryRoot:deps.repositoryRoot,preparation:prep,runId:target.runId,taskIndex:target.taskIndex,taskCase,identity,postgres:pg,rpc:rpcPort});}catch(error){return unavailable(error instanceof S4FixtureBoundaryUnavailable?error.reasonCode:'s4_fixture_source_unavailable');}}
+ const before=await captureBefChainCensus(pg,prep.environment_id,prep.generation_id,!(family||['H3','U1'].includes(taskId)),family);const generation=before.census.generation;
+ let participantBefore=before.census;
+ if(preparationFixture){try{const view=validateAndDeriveS4ParticipantChainCensus({taskId,binding:evidenceBinding,execution:{preparationId:prep.preparation_id,leaseId:prep.lease_id,generationId:prep.generation_id,environmentId:prep.environment_id,environmentManifestHash:prep.environment_manifest_sha256.toLowerCase(),applicationSourceHash:prep.application_source_hash.toLowerCase(),executionIdentityHash:prep.execution_identity_hash.toLowerCase(),initialStateSha256:prep.initial_state_sha256.toLowerCase()},ownerActions:actions.map(action=>({befOperationId:action.befOperationId,transactionHash:action.transactionHash,actionId:action.row.id})),externalActions,rejectedChainActions:loaded.rejected,preparationFixture,bef:{before:before.census,after:before.census}},taskCase,identity).before;
+  if(!isRecord(view.counts))return unavailable('preparation_unavailable');participantBefore={...before.census,operations:rows(view.operations),selectedExecutions:rows(view.selectedExecutions),selectedEvents:rows(view.selectedEvents),costs:rows(view.costs),counts:view.counts};}catch{return unavailable('s4_fixture_partition_unavailable');}}
+
  if(generation.env_id!==prep.environment_id||generation.generation_id!==prep.generation_id.toLowerCase()||generation.participant_id!==prep.participant_id||
   generation.payer_address!==participant||generation.chain_id!==String(identity.localChainId)||generation.status!=='active'||
   generation.manifest_sha256!==prep.environment_manifest_sha256.toLowerCase()||generation.environment_manifest_sha256!==prep.environment_manifest_sha256.toLowerCase()||
-  (!['H3','U1'].includes(taskId)&&(before.census.paymentsCount!=='0'||before.census.deliveriesCount!=='0')))
+  (!(family||['H3','U1'].includes(taskId))&&(before.census.paymentsCount!=='0'||before.census.deliveriesCount!=='0')))
   return unavailable('rpc_mapping_incomplete');
- if(before.census.operations.length!==actions.length||before.census.selectedExecutions.length!==actions.length||before.census.costs.length!==actions.length)
+ if(participantBefore.operations.length!==actions.length||participantBefore.selectedExecutions.length!==actions.length||participantBefore.costs.length!==actions.length)
   return unavailable('rpc_mapping_incomplete');
  const actionByOp=new Map(actions.map((action)=>[action.befOperationId,action]));
- for(const operation of before.census.operations){const opId=String(operation.operationId),action=actionByOp.get(opId);
+ for(const operation of participantBefore.operations){const opId=String(operation.operationId),action=actionByOp.get(opId);
   if(!action||operation.environmentId!==prep.environment_id||operation.generationId!==prep.generation_id.toLowerCase()||operation.participantId!==prep.participant_id||
    operation.actionKind!==action.command.kind||operation.transactionHash!==action.transactionHash||operation.receiptStatus!==action.outcome||
    operation.status!==(action.outcome==='success'?'settled':'reverted')||operation.idempotencyKeySha256!==sha(`task-action-${action.row.id}`))return unavailable('rpc_mapping_incomplete');
@@ -741,8 +776,16 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
  const baselineHeader=header(await rpc.request('eth_getBlockByNumber',[`0x${prepProof.blockNumber.toString(16)}`,false]),prepProof.blockNumber);
  if(baselineHeader.hash!==prepProof.blockHash)return unavailable('baseline_mismatch');
  const head=quantity(await rpc.request('eth_blockNumber',[]));if(head===null||head<prepProof.blockNumber)return unavailable('rpc_observation_unavailable');
+ const rejectedRecipientCodes:RejectedRecipientCode[]=[];
+ for(const action of loaded.rejected.filter(a=>a.actionKind==='swap')){
+  const sources=(before.census.rejectedChainOperations??[]).filter(source=>isRecord(source.operation)&&source.operation.operationId===action.befOperationId);
+  if(!familyScope||sources.length!==1)return unavailable('rpc_mapping_incomplete');
+  let guard:RejectedRecipientCode;try{guard=rejectedSwapSource({action:action as unknown as J,source:sources[0],environmentId:prep.environment_id,generationId:prep.generation_id,participantId:generation.participant_id,environmentManifest:familyManifest!,environmentManifestSha256:prep.environment_manifest_sha256.toLowerCase(),assets,contracts,routes:familyScope.routes});}catch{return unavailable('rpc_mapping_incomplete');}
+  const number=BigInt(guard.blockNumber);if(number<prepProof.blockNumber||number>head)return unavailable('rpc_mapping_incomplete');
+  try{rejectedRecipientCodes.push(await rereadRejectedRecipientCode(guard,(method,params)=>rpc.request(method,params)));}catch{return unavailable('rpc_mapping_incomplete');}
+ }
  const count=head-prepProof.blockNumber;if(count>BigInt(MAX_BLOCKS))return unavailable('rpc_interval_too_large');
- const baseline=await readCheckpoint(rpc,prepProof.blockNumber,identity,participant,taskCase),final=await readCheckpoint(rpc,head,identity,participant,taskCase);
+ const baseline=await readCheckpoint(rpc,prepProof.blockNumber,identity,participant,taskCase,familyScope,actions),final=await readCheckpoint(rpc,head,identity,participant,taskCase,familyScope,actions);
  if(baseline.blockHash!==prepProof.blockHash||!normalizeCheckpointState(baseline,taskCase.initialState,participant))return unavailable('baseline_mismatch');
  const identityCodeHashes=await verifyCode(rpc,identity,prepProof.blockNumber,head);
   const externalTransactionHashes=new Set(externalActions.filter((action)=>['pay','purchase'].includes(action.actionKind)&&action.transactionHash!==null)
@@ -774,9 +817,9 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
    externalTransactionHashes.size!==externalActions.filter((action)=>['pay','purchase'].includes(action.actionKind)&&action.transactionHash!==null).length||
    [...externalTransactionHashes].some((hash)=>!intervalAllTxByHash.has(hash)))return unavailable('rpc_mapping_incomplete');
  const txByHash=new Map<string,CapturedTx>(),transactions:CapturedTx[]=[];
- const operationsById=new Map(before.census.operations.map((op)=>[String(op.operationId),op]));
- const selectedById=new Map(before.census.selectedExecutions.map((row)=>[String(row.operationId),row]));
- const costsById=new Map(before.census.costs.map((row)=>[String(row.operationId),row]));
+ const operationsById=new Map(participantBefore.operations.map((op)=>[String(op.operationId),op]));
+ const selectedById=new Map(participantBefore.selectedExecutions.map((row)=>[String(row.operationId),row]));
+ const costsById=new Map(participantBefore.costs.map((row)=>[String(row.operationId),row]));
  for(const action of actions){
   const op=operationsById.get(action.befOperationId),selected=selectedById.get(action.befOperationId),cost=costsById.get(action.befOperationId);
   if(!op||!selected||!cost||selected.actionKind!==action.command.kind||!same(selected.selectedAction,action.selectedAction)||
@@ -784,7 +827,7 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
   if(action.recoveryEvidence.recoverySource){
    const generation=before.census.generation,measurement=isRecord(selected.measurement)?selected.measurement:null;
    const measuredReceipt=measurement&&isRecord(measurement.receipt)?measurement.receipt:null;
-   const selectedEvents=before.census.selectedEvents.filter((event)=>String(event.operationId)===action.befOperationId&&event.eventKind==='selected_action_bound');
+   const selectedEvents=participantBefore.selectedEvents.filter((event)=>String(event.operationId)===action.befOperationId&&event.eventKind==='selected_action_bound');
    const boundEvents=selectedEvents.flatMap((event)=>{
     const payload=isRecord(event.eventPayload)?event.eventPayload:null;
     if(!payload||typeof payload.actionKind!=='string'||typeof payload.requestSha256!=='string'||typeof event.eventJsonSha256!=='string')return [];
@@ -805,7 +848,7 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
    const response=action.recoveryEvidence.participantToolResponse;
    if(!facts||!measuredReceipt||!recoverySourceEvidenceMatchesFacts(action.recoveryEvidence.recoverySource,facts)||!isRecord(response)||
       response.operationId!==action.befOperationId||response.outcome!==action.outcome||!isRecord(response.selectedAction)||
-      !sameActionEnvelope(response.selectedAction as J,action.selectedAction,action.command,taskCase,assets,contracts)||
+      !sameActionEnvelope(response.selectedAction as J,action.selectedAction,action.command,taskCase,assets,contracts,familyScope)||
       !isRecord(response.transaction)||txHash(response.transaction.hash)!==action.transactionHash||!isRecord(response.receipt)||
       txHash(response.receipt.transactionHash)!==action.transactionHash||response.receipt.status!==action.outcome||
       txHash(measuredReceipt.transactionHash)!==action.transactionHash||measuredReceipt.status!==action.outcome||
@@ -833,7 +876,7 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
    (intent.blockHash!==null&&txHash(intent.blockHash)!==blockTx.blockHash)||(intent.blockNumber!==null&&String(intent.blockNumber)!==blockTx.blockNumber)||
    (intent.transactionIndex!==null&&String(intent.transactionIndex)!==blockTx.transactionIndex))return unavailable('rpc_mapping_incomplete');
    const block=blockMap.find((b)=>b.number===blockTx.blockNumber);if(!block||!transactionMatchesCommand(blockTx as unknown as CapturedTx,action.command,taskCase,
-    routes,assets,action.approvalSpender))return unavailable('rpc_mapping_incomplete');
+    routes,assets,action.approvalSpender,familyScope))return unavailable('rpc_mapping_incomplete');
   const receiptRaw=await rpc.request('eth_getTransactionReceipt',[action.transactionHash]);
   const receipt=normalizeReceipt(receiptRaw as J,blockTx);if(!receipt||receipt.status!==action.outcome||receipt.status!==op.receiptStatus||selected.outcome!==receipt.status||
    cost.transactionHash!==action.transactionHash||cost.receiptStatus!==receipt.status||cost.payerRole!=='participant'||cost.payerAddress!==participant||
@@ -877,9 +920,23 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
   const intervalBlocks=blockMap.map(({number,hash,parentHash,transactionCount,participantTransactions,externalTransactions})=>
    ({number,hash,parentHash,transactionCount,participantTransactions,externalTransactions}));
  const categorized=relevantLogs(transactions,assets);
- const after=await captureBefChainCensus(pg,prep.environment_id,prep.generation_id,!['H3','U1'].includes(taskId));
+ const after=await captureBefChainCensus(pg,prep.environment_id,prep.generation_id,!(family||['H3','U1'].includes(taskId)),family);
  if(!same(before.census,after.census)||after.census.generation.status!=='active')return unavailable('observer_census_changed');
- const packet:ChainCapturePacket={schemaVersion:'bts-chain-task-observation-capture/v1',classification:'run_bound_observations_candidate_not_grade',taskId,
+ const balanceHistory:NonNullable<ChainCapturePacket['rpc']['balanceHistory']>=[];
+ if(family){
+  const economic=[...actions.map(action=>({family:'chain' as const,actionId:action.row.id,actionSequence:action.sequence,transactionHash:action.transactionHash,recipient:null as string|null})),...externalActions.filter(action=>['pay','purchase'].includes(action.actionKind)&&action.receiptStatus==='observed'&&action.transactionHash).map(action=>{
+    const document=admittedCensus?.entries.find(entry=>entry.actionId===action.actionId)?.document,protocol=document&&isRecord(document.paymentProtocol)?document.paymentProtocol:null,terms=protocol&&isRecord(protocol.acceptedTerms)?protocol.acceptedTerms:null;
+    const recipient=terms?addr(terms.payTo):null;if(!recipient)fail('rpc_mapping_incomplete');return {family:'payment' as const,actionId:action.actionId,actionSequence:action.actionSequence,transactionHash:action.transactionHash!,recipient};
+  })];
+  for(const action of economic){
+   const transaction=transactions.find(t=>t.hash===action.transactionHash),block=transaction&&blockMap.find(b=>b.number===transaction.blockNumber);if(!transaction||!block||block.transactionCount!==1)return unavailable('rpc_mapping_incomplete');
+   const parentNumber=BigInt(block.number)-1n,balances:typeof balanceHistory[number]['balances']=[];
+   const seeds=[...identity.assets.map(asset=>({account:'participant',address:participant,asset})),...(action.recipient?[{account:action.recipient,address:action.recipient,asset:identity.assets.find(asset=>asset.assetId==='USDC')!}]:[])];
+   for(const seed of seeds){const {asset}=seed;if(!asset)return unavailable('release_binding_mismatch');const values:string[]=[];for(const number of [parentNumber,BigInt(block.number)]){const tag=`0x${number.toString(16)}`;const value=asset.kind==='native'?quantity(await rpc.request('eth_getBalance',[seed.address,tag])):asset.address?parseWord(await rpc.request('eth_call',[{to:asset.address,data:callData('0x70a08231',seed.address)},tag])):null;if(value===null)return unavailable('rpc_observation_unavailable');values.push(value.toString());}balances.push({account:seed.account,assetId:asset.assetId,beforeValue:values[0]!,afterValue:values[1]!});}
+   balanceHistory.push({family:action.family,actionId:action.actionId,actionSequence:action.actionSequence,transactionHash:action.transactionHash,blockNumber:block.number,blockHash:block.hash,parentBlockNumber:parentNumber.toString(),parentBlockHash:block.parentHash,balances});
+  }
+ }
+ const packet:ChainCapturePacket={schemaVersion:family?'bts-chain-family-observation-capture/v1':'bts-chain-task-observation-capture/v1',...(familyScope?{technicalScope:familyScope}:{}),...(preparationFixture?{preparationFixture}:{}),classification:'run_bound_observations_candidate_not_grade',taskId,
   binding:evidenceBinding,closure:{closureId:String(closure.id),actionCutoffSequence:cutoff,reconciledActionSequence:reconciled},
   execution:{preparationId:prep.preparation_id,leaseId:prep.lease_id,generationId:prep.generation_id,environmentId:prep.environment_id,
    environmentManifestHash:prep.environment_manifest_sha256.toLowerCase(),applicationSourceHash:prep.application_source_hash.toLowerCase(),
@@ -890,24 +947,25 @@ async function collectLocked(deps:BefChainObservationCollectorDependencies,targe
     actionEvidence:action.evidence,befOperationId:action.befOperationId,transactionHash:action.transactionHash})),
    externalActions,...(loaded.rejected.length?{rejectedChainActions:loaded.rejected}:{}),
   bef:{session:before.session,before:before.census,after:after.census,censusSha256:sha256CanonicalTaskJson(before.census).toLowerCase()},
-  rpc:{localChainId:String(identity.localChainId),participant,assets,contracts,routes,identityCodeHashes,baseline,final,intervalBlocks,transactions,
+  rpc:{localChainId:String(identity.localChainId),participant,assets,contracts,routes,identityCodeHashes,baseline,final,intervalBlocks,transactions,...(family?{balanceHistory}:{}),
    transferLogs:categorized.transferLogs,approvalLogs:categorized.approvalLogs,swapLogs:categorized.swapLogs,wethLogs:categorized.wethLogs,
-   responseHashes:rpc.responseHashes}};
+   responseHashes:rpc.responseHashes,...(rejectedRecipientCodes.length?{rejectedRecipientCodes}:{})}};
  if(hasSecret(packet)||Buffer.byteLength(canonicalTaskJson(packet),'utf8')>MAX_PACKET_BYTES)return unavailable('capture_evidence_unavailable');
  let evidence:EvidenceReference;
  try{evidence=await deps.evidenceSink.write(packet)}catch{return unavailable('capture_evidence_unavailable')}
  if(!evidenceRef(evidence,OBS_ROOT))return unavailable('capture_evidence_unavailable');
  const ethValuation=release.manifest.costPolicy.ethValuation;
- const projected=projectTaskChainCapturePacket(packet,{binding:evidenceBinding,taskCase,evidence,ethValuation});
+ const familyProjected=family&&familyManifest?projectTaskChainFamilyCapturePacket(packet,{binding:evidenceBinding,taskCase,evidence,ethValuation,executionIdentity:identity,environmentManifest:familyManifest}):null;
+ const projected=familyProjected??projectTaskChainCapturePacket(packet,{binding:evidenceBinding,taskCase,evidence,ethValuation});
  const observationCutoffSequence=Math.max(0,...Object.values(projected).flatMap((list)=>Array.isArray(list)?list.map((item)=>
   isRecord(item)&&typeof item.sequence==='number'?item.sequence:0):[]));
  const observations:PersistedTaskObservations={schemaVersion:'bts-task-observations/v1',binding:evidenceBinding,coveredThroughSequence:observationCutoffSequence,
-  captureEvidence:evidence,coverage:projected.coverage,transfers:projected.transfers,payments:[],stateMutations:[],finalStates:projected.finalStates,
+  captureEvidence:evidence,coverage:projected.coverage,transfers:projected.transfers,payments:[],stateMutations:familyProjected?.stateMutations??[],finalStates:projected.finalStates,
   allowanceChanges:projected.allowanceChanges,allowanceUses:projected.allowanceUses,answers:[],selections:[],deliveries:[],trades:projected.trades,
   conversions:projected.conversions,expenses:projected.expenses};
  const candidate:TaskObservationBundleCandidate={schemaVersion:'bts-task-observation-bundle-candidate/v1',observationCutoffSequence,
   cutoffStatus:'authoritative',cutoffEvidence:evidence,observations};
- return {status:'candidate',candidate,evidence,classification:'run_bound_observations_candidate_not_grade',boundary:{actionCutoffSequence:cutoff,
+ return {status:'candidate',candidate,evidence,classification:'run_bound_observations_candidate_not_grade',...(family&&admittedCensus?{packet,census:admittedCensus,familyProofs:admittedCensus.entries.filter(entry=>entry.family==='chain').map(({document,command,receiptRevision,family,...proof})=>proof)}:{}),boundary:{actionCutoffSequence:cutoff,
   observationCutoffSequence,baselineBlockNumber:baseline.blockNumber,baselineBlockHash:baseline.blockHash,finalBlockNumber:final.blockNumber,finalBlockHash:final.blockHash}};
 }
 
@@ -917,4 +975,11 @@ export async function collectBefChainTaskObservationCandidate(deps:BefChainObser
  if(!UUID.test(target.runId)||!Number.isSafeInteger(target.taskIndex)||target.taskIndex<0||target.taskIndex>11)return unavailable('invalid_target');
  try{return await deps.db.transaction((tx)=>collectLocked(deps,target,tx));}
  catch(error){if(error instanceof Unavailable)return unavailable(error.reasonCode);return unavailable('rpc_observation_unavailable')}
+}
+
+/** Task-neutral chain proof; task goals are interpreted only by the unchanged evaluator. */
+export type BefChainFamilyObservationCollectionResult=Extract<BefChainObservationCollectionResult,{status:'unavailable'}>|(Extract<BefChainObservationCollectionResult,{status:'candidate'}>&{packet:ChainCapturePacket;census:AdmittedActionCensus;familyProofs:AdmittedActionProof[]});
+export async function collectBefChainFamilyObservationCandidate(deps:BefChainObservationCollectorDependencies,target:{runId:string;taskIndex:number}):Promise<BefChainFamilyObservationCollectionResult>{
+ if(!UUID.test(target.runId)||!Number.isSafeInteger(target.taskIndex)||target.taskIndex<0||target.taskIndex>11)return {status:'unavailable',reasonCode:'invalid_target'};
+ try{const result=await deps.db.transaction(tx=>collectLocked(deps,target,tx,true));if(result.status==='unavailable')return result;if(!result.packet||!result.census||!result.familyProofs)return {status:'unavailable',reasonCode:'observer_census_unavailable'};return {...result,packet:result.packet,census:result.census,familyProofs:result.familyProofs};}catch(error){if(error instanceof Unavailable)return {status:'unavailable',reasonCode:error.reasonCode};return {status:'unavailable',reasonCode:'rpc_observation_unavailable'};}
 }

@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
+import {fileURLToPath} from 'node:url';
+import {rejectedSwapGuardMarkerMatches,type RejectedSwapGuardMarker} from './task-rejected-swap-proof.js';
+import type {EvidenceReference} from './task-release.js';
+import { observeDiagnosticBoundary, observeDiagnosticAction } from './mcp-diagnostics-boundary.js';
+import { DIAGNOSTIC_ERROR_CODES, type DiagnosticEnvelope } from './mcp-diagnostics-contract.js';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { AgentPrincipal } from './agents.js';
@@ -53,7 +58,16 @@ export type TaskActionCommand = z.infer<typeof TaskActionCommandSchema>;
 type Transaction = Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
 type SqlResult<T> = T[];
 
-export interface TaskActionDependencies { db: OwnerDatabase }
+export interface TaskActionDependencies { db: OwnerDatabase; readActionEvidence?:(ref:EvidenceReference)=>Promise<Uint8Array> }
+
+/** AICODE-NOTE: This optional receipt marker describes a durable guard denial, never a grade. No marker is manufactured from HTTP status, generic recovery reason, or a receipt with any original transaction hash. */
+export function projectRejectedSwapReceiptProof(document:unknown,row:{id:string;runId:string;taskIndex:number;operationId:string;payloadHash:string;environmentId:string;status:string;transactionHash:string|null;toolResponse:unknown}):RejectedSwapGuardMarker|undefined{
+ if(row.status!=='rejected_before_execution'||row.transactionHash!==null||row.toolResponse!==null||!document||typeof document!=='object'||Array.isArray(document))return undefined;
+ const doc=document as Record<string,unknown>;
+ if(doc.schema!=='bef-task-action-observation-v1'||doc.actionId!==row.id||doc.runId!==row.runId||doc.taskIndex!==row.taskIndex||doc.ownerOperationId!==row.operationId||doc.commandSha256!==row.payloadHash||doc.environmentId!==row.environmentId||doc.actionKind!=='swap'||doc.status!=='rejected_before_execution'||doc.idempotencyKey!==`task-action-${row.id}`||
+  !['selected_recipient_must_be_eoa','platform_recovery_original_operation_terminal'].includes(String(doc.reasonCode))||doc.transactionHash!==undefined&&doc.transactionHash!==null||doc.participantToolResponse!==undefined&&doc.participantToolResponse!==null||!rejectedSwapGuardMarkerMatches(doc.rejectionProof,doc.befOperationId))return undefined;
+ return structuredClone(doc.rejectionProof) as RejectedSwapGuardMarker;
+}
 
 /** Scoped command status is an observation projection, never a caller-supplied grade. */
 export async function getTaskActionState(
@@ -69,18 +83,31 @@ export async function getTaskActionState(
       id: string; task_index: number; task_id: string; action_sequence: string; receipt_status: string;
       receipt_revision: number; evidence_hash: string | null; transaction_hash: string | null;
       evidence_path: string | null; tool_response_json: unknown; tool_response_hash: string | null;
+      operation_id:string;payload_hash:string;environment_id:string;action_kind:string;
+      history_revision:number|null;history_status:string|null;history_evidence_hash:string|null;history_evidence_path:string|null;history_transaction_hash:string|null;
     }>(tx, sql`SELECT a.id,a.task_index,a.task_id,a.action_sequence::text,r.receipt_status,r.receipt_revision,r.evidence_hash,
-        r.evidence_path,r.transaction_hash,r.tool_response_json,r.tool_response_hash
+        r.evidence_path,r.transaction_hash,r.tool_response_json,r.tool_response_hash,a.operation_id,a.payload_hash,a.environment_id,a.action_kind,
+        h.revision AS history_revision,h.receipt_status AS history_status,h.evidence_hash AS history_evidence_hash,h.evidence_path AS history_evidence_path,h.transaction_hash AS history_transaction_hash
       FROM oid_run_task_action a JOIN oid_run_task_action_receipt r ON r.action_id=a.id
+      LEFT JOIN LATERAL(SELECT revision,receipt_status,evidence_hash,evidence_path,transaction_hash FROM oid_run_task_action_reconciliation WHERE action_id=a.id ORDER BY revision DESC LIMIT 1) h ON true
       WHERE a.id=${target.actionId} AND a.run_id=${target.runId} AND a.owner_id=${principal.ownerId} AND a.agent_id=${principal.agentId}`);
     const action = found[0];
     if (!action) throw new HttpError(404, 'TASK_ACTION_NOT_FOUND', 'The action does not exist for this run');
     const toolResponse = typeof action.tool_response_json === 'string' ? JSON.parse(action.tool_response_json) : action.tool_response_json;
     if (toolResponse !== null && toolResponse !== undefined && hash(toolResponse) !== action.tool_response_hash) throw new Error('Task tool response hash mismatch');
+    let rejectionProof:RejectedSwapGuardMarker|undefined;
+    if(action.action_kind==='swap'&&action.receipt_status==='rejected_before_execution'&&action.transaction_hash===null&&(toolResponse??null)===null&&action.evidence_path&&action.evidence_hash&&
+      action.history_revision===action.receipt_revision&&action.history_status===action.receipt_status&&action.history_evidence_hash===action.evidence_hash&&action.history_evidence_path===action.evidence_path&&action.history_transaction_hash===null){
+      try{
+        const ref:EvidenceReference={path:action.evidence_path,sha256:action.evidence_hash,boundary:'actual_tool_http_x402_local_evm_application_store'};
+        const bytes=deps.readActionEvidence?await deps.readActionEvidence(ref):await(await import('./bef-admitted-action-census.js')).readAdmittedActionEvidenceFile(fileURLToPath(new URL('../../../',import.meta.url)),ref,256*1024);
+        if(createHash('sha256').update(bytes).digest('hex')===action.evidence_hash){rejectionProof=projectRejectedSwapReceiptProof(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),{id:action.id,runId:target.runId,taskIndex:action.task_index,operationId:action.operation_id,payloadHash:action.payload_hash,environmentId:action.environment_id,status:action.receipt_status,transactionHash:action.transaction_hash,toolResponse:toolResponse??null});}
+      }catch{/* Missing or contradictory evidence omits this provisional capability; no synthetic no-execution claim. */}
+    }
     return { actionId: action.id, runId: target.runId, taskIndex: action.task_index, taskId: action.task_id,
       actionSequence: action.action_sequence, status: action.receipt_status, receiptRevision: action.receipt_revision,
       evidenceHash: action.evidence_hash, evidencePath: action.evidence_path,
-      transactionHash: action.transaction_hash, toolResponse: toolResponse ?? null };
+      transactionHash: action.transaction_hash, toolResponse: toolResponse ?? null,...(rejectionProof?{rejectionProof}:{}) };
   });
 }
 
@@ -490,8 +517,15 @@ export async function admitTaskAction(
       action_sequence: next[0].action_sequence, operation_id: input.operationId, payload_hash: payloadHash, accepted_at: acceptedAt,
     };
     return { kind: 'admitted' as const, row, replayed: false };
+  }).catch(async error=>{
+    const errorCode:DiagnosticEnvelope['errorCode']=error instanceof HttpError&&(DIAGNOSTIC_ERROR_CODES as readonly string[]).includes(error.code)
+      ? error.code as DiagnosticEnvelope['errorCode']:'INTERNAL_ERROR';
+    await observeDiagnosticBoundary({stage:'admission',taskIndex:input.taskIndex,outcome:'error',errorCode});
+    throw error;
   });
 
+  await observeDiagnosticBoundary({stage:'admission',taskIndex:input.taskIndex,
+    ...(result.kind==='deadline'?{outcome:'error',errorCode:'TASK_DEADLINE'}:{outcome:'success',actionId:result.row.id})});
   if (result.kind === 'deadline') return {
     admitted: false, reason: result.reason, closureId: result.task.closure_id!,
     actionCutoffSequence: String(result.task.action_cutoff_sequence), closureStatus: result.task.closure_status as TaskActionCutoffResult['closureStatus'],
@@ -708,6 +742,11 @@ export async function recordTaskActionReceipt(
     });
     const updatedTask = await persistCutoffProgress(tx, task, now);
     return receiptView(action, revision, input.status, updatedTask, false);
+  }).then(async result=>{
+    await observeDiagnosticAction(deps.db,{stage:'receipt',actionId:input.actionId,receiptRevision:result.receiptRevision,
+      outcome:input.status==='observed'?'success':input.status==='unknown'?'unknown':'error',
+      ...(input.status==='rejected_before_execution'?{errorCode:'UNKNOWN_ERROR' as const}:{})});
+    return result;
   });
 }
 

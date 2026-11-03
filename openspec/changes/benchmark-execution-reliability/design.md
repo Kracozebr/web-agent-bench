@@ -58,3 +58,14 @@ Replays are read-only and never repeat economic commands. A missing external cli
 
 No unresolved product choice is inferred. Agreed decisions are recorded in approval.md. Technical prerequisites and later calibration/security profile choices are explicitly gated in the decisions/tasks; if inspection proves a required client cannot support safe automatic setup, return that concrete limitation for a scope decision instead of silently dropping it.
 
+
+
+## Approved all-fifteen admitted learning-action observation repair (2026-11-02)
+
+The owner approved the exact [all-fifteen repair packet](admitted-learning-actions-observation-proposal.md) and BER-SC-009–012. Preserve BTS learning-effect and task-rubric authority. This repairs observation coverage, not strategy admission, goals, rubrics, prices or deadlines. Preserve historical failed run 9192245e-76b5-49aa-9986-2fac63e6df81 and absent evaluations.
+
+The fifteen paths are Training S1/M1/H1 plus Ranked S1/S2/S3/S4/M1/M2/M3/M4/H1/H2/H3/U1. Each must cover the nine current scope-valid kinds: inspect_catalog, inspect_offer, pay, retrieve, approve, transfer, wrap, unwrap, swap. Current split-payment purchase remains a protocol-denial control. Objective membership must not become an admission or observation-validity shortcut. A fixture may choose a wrong but scoped action; it cannot preseed authoritative receipts, effects or scores.
+
+A strict shared census binds the full original owner snapshot, action sequences through cutoff, command hashes, receipt revisions/history, evidence bytes, preparation/generation/release and closure. Its type is identity_and_evidence_census_not_effect_proof: neither row counts nor accepting an action kind proves actual chain/payment effects. Independent read-only BEF PostgreSQL/RPC proofs must account for both paid and chain families before task-specific projection claims completeness. Composite reuse requires exact binding/common cutoff and deduplication; noncomposite paid tasks cannot silently omit chain rows.
+
+Real qualification must retain a complete fifteen-by-nine kind matrix, the four approved negative matrices and source-bound actual boundary evidence. Known effects pass to unchanged rubric predicates; tampered/missing/contradictory evidence stays unknown, never invented zero. All four new environment gates stay not_run/blocked until independent replay. Happy-path local checks, reference adapters and report delivery are separate measurements and cannot replace fresh actual Codex Training/Ranked with browser/UI/PostgreSQL verification.

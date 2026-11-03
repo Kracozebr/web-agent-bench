@@ -8,6 +8,7 @@ import {assertSecretFree} from './evidence.mjs';
 import {runBerCompletedCallbacks} from '../../../tools/ber_completed_callbacks.mjs';
 import {runBerPendingTransitionInterruption} from '../../../tools/ber_pending_transition_interruption.mjs';
 import {armBerCompletionHandoffInterruption} from '../../../tools/ber_completion_handoff_interruption.mjs';
+import {S4_PREPARATION_FAULT_SQL} from './ber-s4-preparation-fault.mjs';
 
 const CASES=['missing_recover','conflicting_recover','missing_exhaust_restart','cancel_before_recover','recover_before_cancel'];
 const sha=value=>createHash('sha256').update(typeof value==='string'||Buffer.isBuffer(value)?value:JSON.stringify(value)).digest('hex');
@@ -24,6 +25,23 @@ async function readonly(pool,callback,expectedDatabase,expectedRole='oid_observe
     const result=await callback(client);await client.query('COMMIT');
     return {identity:{...identity,database_now:new Date(identity.database_now).toISOString()},result};
   }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
+}
+
+// AICODE-NOTE: The shared SQL map is task-index parameterized; no S4 goal predicate is used here.
+// This is the original H1 observation source inside the caller's existing read-only snapshot.
+export async function readBerUnknownGenericReplayOwner(client,database,runId){
+ check(/^oid_acceptance_[a-f0-9]{32}$/.test(database)&&/^[a-f0-9-]{36}$/i.test(runId),'ber_unknown_generic_snapshot_scope');
+ const identity=(await client.query("SELECT current_user AS role,current_database() AS database_name,current_setting('transaction_read_only') AS read_only,current_setting('transaction_isolation') AS isolation")).rows[0];
+ check(identity?.role==='oid_observer'&&identity.database_name===database&&identity.read_only==='on'&&identity.isolation==='repeatable read','ber_unknown_generic_snapshot_identity');
+ const result={identity};
+ for(const[name,statement]of Object.entries(S4_PREPARATION_FAULT_SQL)){
+  const rows=(await client.query(statement,[runId,8])).rows;
+  check(Array.isArray(rows)&&rows.length<=1024,'ber_unknown_generic_snapshot_bound');result[name]=rows;
+ }
+ check(result.run.length===1&&result.run[0].id===runId&&result.task.length===1&&result.task[0].run_id===runId&&result.task[0].task_index===8&&result.task[0].task_id==='H1','ber_unknown_generic_snapshot_binding');
+ const completed=(await client.query('SELECT clock_timestamp() AS observation_completed_at')).rows[0]?.observation_completed_at;
+ check(completed!==null&&completed!==undefined&&Number.isFinite(new Date(completed).getTime()),'ber_unknown_generic_snapshot_clock');
+ result.observationCompletedAt=new Date(completed).toISOString();return result;
 }
 
 async function snapshot(pool,database,runId){return readonly(pool,async client=>{
@@ -56,19 +74,16 @@ async function snapshot(pool,database,runId){return readonly(pool,async client=>
   const publications=(await client.query(`SELECT (SELECT count(*)::int FROM oid_ranked_run_handoff WHERE run_id=$1) handoffs,
     (SELECT count(*)::int FROM oid_ranked_verified_result WHERE run_id=$1) results`,[runId])).rows[0];
   const reports=(await client.query('SELECT id::text,run_id::text,operation_id,payload_hash FROM oid_support_report WHERE run_id=$1 ORDER BY id',[runId])).rows;
-  return{run,tasks,actions,evaluations,events,execution,preparations,money,claims,slots,recoveries,publications,reports};
+  const genericReplayOwner=await readBerUnknownGenericReplayOwner(client,database,runId);
+  return{run,tasks,actions,evaluations,events,execution,preparations,money,claims,slots,recoveries,publications,reports,genericReplayOwner};
 },database);}
 
-async function rawObservationPackets(repoRoot,runId){
-  const folder=resolve(repoRoot,'artifacts/runs/owner-identity-bef-task-coordinator/observation',runId,'H1');let names=[];
-  try{names=await readdir(folder);}catch{return[];}
-  const references=[];
-  for(const name of names.filter(name=>/^[0-9a-f]{64}\.json$/.test(name))){
-    const path=resolve(folder,name),bytes=await readFile(path),document=JSON.parse(bytes);
-    if(document.binding?.runId===runId&&document.binding?.taskId==='H1')references.push({path:relative(repoRoot,path).split('\\').join('/'),sha256:sha(bytes)});
-  }
-  return references;
-}
+export function selectBerUnknownObservationReferences(documents){const roots=[],families=[],legacy=[];for(const item of documents){const schema=item.document?.schemaVersion,ref={path:item.path,sha256:item.sha256};if(schema==='bts-admitted-actions-observation-capture/v1')roots.push(ref);else if(['bts-paid-family-observation-capture/v1','bts-chain-family-observation-capture/v1'].includes(schema))families.push(ref);else if(schema==='bts-paid-data-run-observation-capture/v1')legacy.push(ref);else check(false,'ber_unknown_observation_schema_unsupported');}check(!(roots.length&&legacy.length),'ber_unknown_mixed_legacy_generic_roots');return{roots:roots.length?roots:legacy,families};}
+async function rawObservationInventory(repoRoot,runId){const folder=resolve(repoRoot,'artifacts/runs/owner-identity-bef-task-coordinator/observation',runId,'H1');let names=[];try{names=await readdir(folder);}catch{return{roots:[],families:[]};}const documents=[];for(const name of names.filter(name=>/^[0-9a-f]{64}\.json$/.test(name))){const path=resolve(folder,name),bytes=await readFile(path),document=JSON.parse(bytes);if(document.binding?.runId===runId&&document.binding?.taskId==='H1')documents.push({path:relative(repoRoot,path).split('\\').join('/'),sha256:sha(bytes),document});}return selectBerUnknownObservationReferences(documents);}
+async function rawObservationPackets(repoRoot,runId){return(await rawObservationInventory(repoRoot,runId)).roots;}
+async function rawObservationFamilies(repoRoot,runId){return(await rawObservationInventory(repoRoot,runId)).families;}
+/** Source-proven RPC receipt loss/conflict now stops the shared chain family before a generic root exists. Never synthesize a legacy partial packet. */
+export function isBerUnknownObservationProgress(value,runId){return value?.schemaVersion==='local-bef-task-observation-progress/v1'&&value.runId===runId&&value.taskIndex===8&&['blocked','unavailable'].includes(value.status)&&((value.stage==='preflight'&&value.reasonCode==='candidate_evaluation_unknown')||(value.stage==='observe'&&value.reasonCode==='chain_family_rpc_mapping_incomplete'));}
 
 async function lifecycle(repoRoot,runId){
   const folder=resolve(repoRoot,'artifacts/runs/owner-identity-bef-task-coordinator/lifecycle');let names=[];
@@ -160,8 +175,8 @@ export async function runBerUnknownGradingCases({commonCapture,receiptFaultProxy
           }
           if(context.taskId!=='H1')return;
           const initial=await until(async()=>({state:await snap(),progress:await lifecycle(commonCapture.repoRoot,activeRun)}),
-            value=>value.progress.some(item=>item.document.reasonCode==='candidate_evaluation_unknown'),30000,'ber_unknown_preflight_not_observed');
-          entry.checkpoints.push({phase:'candidate_unknown',...initial,rawObservationPackets:await rawObservationPackets(commonCapture.repoRoot,activeRun)});
+            value=>value.progress.some(item=>isBerUnknownObservationProgress(item.document,activeRun)),30000,'ber_unknown_preflight_not_observed');
+          entry.checkpoints.push({phase:'candidate_unknown',...initial,rawObservationPackets:await rawObservationPackets(commonCapture.repoRoot,activeRun),rawObservationFamilies:await rawObservationFamilies(commonCapture.repoRoot,activeRun)});
           await progress?.({component:'ber_unknown_grading',phase:'h1_candidate_unknown',case:name,runId:activeRun,closureId:context.closureId});
           const baseline=initial.state,task=h1(baseline);
           check(task.closure_id===context.closureId&&task.accepted_action_sequence===task.action_cutoff_sequence&&task.reconciled_action_sequence===task.action_cutoff_sequence,'ber_unknown_cutoff_not_resolved');
@@ -201,7 +216,7 @@ export async function runBerUnknownGradingCases({commonCapture,receiptFaultProxy
               const grace=await until(async()=>({state:await snap(),progress:await lifecycle(commonCapture.repoRoot,activeRun)}),
                 value=>Date.parse(value.state.identity.database_now)>=Date.parse(entry.restart.finishedAt)+2000&&
                   value.progress.length>initial.progress.length,15000,'ber_unknown_restart_grace_not_observed');
-              entry.checkpoints.push({phase:'restart_grace_unknown',...grace,rawObservationPackets:await rawObservationPackets(commonCapture.repoRoot,activeRun)});
+              entry.checkpoints.push({phase:'restart_grace_unknown',...grace,rawObservationPackets:await rawObservationPackets(commonCapture.repoRoot,activeRun),rawObservationFamilies:await rawObservationFamilies(commonCapture.repoRoot,activeRun)});
               check(grace.state.result.run.status==='running'&&!grace.state.result.evaluations.some(e=>e.task_index===8)&&
                 JSON.stringify(closedStable(h1(grace.state)))===JSON.stringify(closedStable(task)),
               'ber_unknown_restart_failed_to_preserve_unknown_window');
@@ -213,7 +228,7 @@ export async function runBerUnknownGradingCases({commonCapture,receiptFaultProxy
               check(entry.pendingTransition.status==='verified_subset','ber_unknown_pending_transition_failed');
             }else receiptFaultProxy.setMode('pass');
             const recovered=await until(snap,state=>state.result.evaluations.some(e=>e.task_index===8&&object(e.result_json)?.status==='known'),45000,'ber_unknown_recovery_not_known');
-            moneyUnchanged(baseline,recovered);entry.checkpoints.push({phase:'recovered_known',state:recovered,rawObservationPackets:await rawObservationPackets(commonCapture.repoRoot,activeRun)});
+            moneyUnchanged(baseline,recovered);entry.checkpoints.push({phase:'recovered_known',state:recovered,rawObservationPackets:await rawObservationPackets(commonCapture.repoRoot,activeRun),rawObservationFamilies:await rawObservationFamilies(commonCapture.repoRoot,activeRun)});
             check(JSON.stringify(closedStable(h1(recovered)))===JSON.stringify(closedStable(task)),'ber_unknown_recovery_changed_cutoff');
             if(name==='conflicting_recover'){
               try{completionGate=await armBerCompletionHandoffInterruption({commonCapture,runId:activeRun});}

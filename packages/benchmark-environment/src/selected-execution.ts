@@ -28,6 +28,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { RuntimeManifest } from './manifest.js';
 import type { RuntimeEnvironment } from './runtime.js';
 import { EphemeralSignerStore } from './ephemeral-signer-store.js';
+import { inPostminePhase, observeOriginalHashWithinBudget, postmineFailureCode } from './selected-observation-retry.js';
 
 const MAX_UINT256 = (1n << 256n) - 1n;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
@@ -186,13 +187,41 @@ export type ExecutionMeasurement = {
 /** The adapter binds the original hash before RPC and stores only the selected
  * action, prestate, unsigned transaction intent, and measured receipt. It never
  * persists keys or signed transaction bytes. */
+// AICODE-NOTE: Same canonical RPC value bound as the existing chain observation port; never a new task rule.
+export const RECIPIENT_CODE_OBSERVATION_MAX_BYTES = 4 * 1024 * 1024;
+export type RecipientCodeObservation = {
+  schemaVersion:'bef-selected-recipient-code-observation/v1';
+  environmentId:string; generationId:string; operationId:string; requestSha256:string;
+  recipient:Address; blockNumber:string; blockHash:Hex; code:Hex; codeKeccak256:Hex;
+};
+export function parseRecipientCodeObservation(value:unknown):RecipientCodeObservation {
+  const fail=()=>{throw new Error('execution_persistence_recipient_guard_invalid');};
+  if(!value||typeof value!=='object'||Array.isArray(value))return fail();const v=value as Record<string,unknown>;
+  const keys=['schemaVersion','environmentId','generationId','operationId','requestSha256','recipient','blockNumber','blockHash','code','codeKeccak256'];
+  if(Object.keys(v).sort().join(',')!==keys.sort().join(',')||v.schemaVersion!=='bef-selected-recipient-code-observation/v1'||
+    typeof v.environmentId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v.environmentId)||
+    typeof v.generationId!=='string'||!UUID.test(v.generationId)||typeof v.operationId!=='string'||!UUID.test(v.operationId)||
+    typeof v.requestSha256!=='string'||!/^[0-9a-f]{64}$/.test(v.requestSha256)||typeof v.recipient!=='string'||!ADDRESS.test(v.recipient)||
+    typeof v.blockNumber!=='string'||!UINT_DECIMAL.test(v.blockNumber)||BigInt(v.blockNumber)>MAX_UINT256||
+    typeof v.blockHash!=='string'||!/^0x[0-9a-f]{64}$/.test(v.blockHash)||
+    typeof v.code!=='string'||!/^0x(?:[0-9a-f]{2})+$/.test(v.code)||
+    typeof v.codeKeccak256!=='string'||!/^0x[0-9a-f]{64}$/.test(v.codeKeccak256)||
+    Buffer.byteLength(JSON.stringify(v.code),'utf8')>RECIPIENT_CODE_OBSERVATION_MAX_BYTES||
+    Buffer.byteLength(canonicalJson(v),'utf8')>RECIPIENT_CODE_OBSERVATION_MAX_BYTES||
+    keccak256(v.code as Hex)!==v.codeKeccak256)return fail();
+  return {schemaVersion:'bef-selected-recipient-code-observation/v1',environmentId:v.environmentId,
+    generationId:v.generationId.toLowerCase(),operationId:v.operationId.toLowerCase(),requestSha256:v.requestSha256,
+    recipient:v.recipient.toLowerCase() as Address,blockNumber:v.blockNumber,blockHash:v.blockHash as Hex,
+    code:v.code as Hex,codeKeccak256:v.codeKeccak256 as Hex};
+}
+
 export interface ExecutionPersistence {
   createOrGet(client: PoolClient, auth: ParticipantAuth, kind: SelectedAction['kind'], requestHash: string, action: SelectedAction): Promise<OperationRecord>;
   saveSelectedInputAndPrestate(client: PoolClient, operationId: string, action: SelectedAction, before: ExecutionSnapshot): Promise<void>;
   bindHashBeforeBroadcast(client: PoolClient, operationId: string, transactionHash: Hex, requestHash: string, intent: ExecutionTransactionObservation): Promise<void>;
   readPending(client: PoolClient, operationId: string): Promise<{ action: SelectedAction; before: ExecutionSnapshot; intent: ExecutionTransactionObservation | null } | null>;
   readCompleted(client: PoolClient, operationId: string): Promise<{ outcome: 'success' | 'reverted'; transactionHash: Hex; measurement: ExecutionMeasurement } | null>;
-  rejectBeforeBroadcast(client: PoolClient, operationId: string, reasonCode: string): Promise<void>;
+  rejectBeforeBroadcast(client: PoolClient, operationId: string, reasonCode: string, recipientCodeObservation?:RecipientCodeObservation): Promise<void>;
   markUnknown(client: PoolClient, operationId: string, transactionHash: Hex, measurement?: ExecutionMeasurement | null): Promise<void>;
   finish(client: PoolClient, operationId: string, transactionHash: Hex, outcome: 'success' | 'reverted', measurement: ExecutionMeasurement | null): Promise<void>;
 }
@@ -407,15 +436,17 @@ async function waitForOriginalReceipt(client: LocalObserverClient, hash: Hex, ti
       // AICODE-NOTE: Only retry the same persisted hash after the two receipt
       // visibility failures observed on the private Anvil fork. No replacement
       // transaction or new nonce is created here.
-      if (!(error instanceof TransactionReceiptNotFoundError) && !rpcErrorUnavailable(error)) throw new Error('original_receipt_lookup_failed');
+      if (!(error instanceof TransactionReceiptNotFoundError) && !rpcErrorUnavailable(error)) throw new Error('original_receipt_lookup_failed', { cause: error });
       const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new Error('original_receipt_unavailable');
+      if (remaining <= 0) throw new Error('original_receipt_unavailable', { cause: error });
       await new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, remaining)));
     }
   }
 }
 
 function safeMessageCode(error: unknown): string {
+  const postmineCode = postmineFailureCode(error);
+  if (postmineCode) return postmineCode;
   if (error instanceof Error && error.message === 'original_receipt_unavailable') return 'original_receipt_unavailable';
   if (error instanceof Error && error.message === 'original_receipt_lookup_failed') return 'original_receipt_lookup_failed';
   return 'execution_observation_unknown';
@@ -473,6 +504,15 @@ function safeAction(action: SelectedAction, manifest: RuntimeManifest): Record<s
       };
     }
   }
+}
+
+/** AICODE-NOTE: Measurement uses the strict typed action contract; request hashing retains its immutable historical spelling. */
+export function selectedActionForMeasurement(action: SelectedAction, manifest: RuntimeManifest): Record<string, unknown> {
+  const selected = safeAction(action, manifest);
+  if (action.kind !== 'swap' || !Object.hasOwn(selected, 'amountInWei')) return selected;
+  const { amountInWei, amountOutMinimumUsdcUnits, ...identity } = selected;
+  return { ...identity, inputAssetId: action.inputAssetId, outputAssetId: action.outputAssetId,
+    amountInUnits: amountInWei, amountOutMinimumUnits: amountOutMinimumUsdcUnits };
 }
 
 async function authorizeParticipant(
@@ -562,14 +602,16 @@ async function sendOnlyLocalTransaction(writeRpcUrl: string, serializedTransacti
   }
 }
 
-function localObserver(auth: ParticipantAuth) {
+function localObserver(auth: ParticipantAuth, signal?: AbortSignal) {
   const observerUrl = auth.env.observerRpcUrl;
   if (!observerUrl) throw new Error('local_readonly_observer_unavailable');
   const parsed = new URL(observerUrl);
   if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error('local_readonly_observer_unavailable');
   }
-  return createPublicClient({ chain: base, transport: http(observerUrl, { timeout: 15_000, retryCount: 0 }) });
+  return createPublicClient({ chain: base, transport: http(observerUrl, { timeout: 15_000, retryCount: 0,
+    ...(signal ? { fetchOptions: { signal } } : {}),
+  }) });
 }
 
 type LocalObserverClient = ReturnType<typeof localObserver>;
@@ -870,7 +912,9 @@ export function validateActionEffects(
   if (receipt.from.toLowerCase() !== payer.toLowerCase()) return false;
   if (receipt.status === 'reverted') {
     return BigInt(effect.payerNativeWei) === -gasCost &&
-      Object.entries(before).every(([key, value]) => key === 'payerNativeWei' || after[key as keyof ExecutionSnapshot] === value);
+      // AICODE-NOTE: Block height is observation metadata, not a reverted state effect.
+      // The caller separately proves the exact n→n+1 receipt/hash/parent binding.
+      Object.entries(before).every(([key, value]) => key === 'payerNativeWei' || key === 'blockNumber' || after[key as keyof ExecutionSnapshot] === value);
   }
   if (receipt.status !== 'success') return false;
   if (action.kind === 'approve') {
@@ -1006,7 +1050,7 @@ function measurementFor(
     },
     transaction,
     payerBlock,
-    selectedAction: safeAction(action, manifest),
+    selectedAction: selectedActionForMeasurement(action, manifest),
     before,
     after,
     effects: deltas(before, after),
@@ -1044,6 +1088,20 @@ async function withTransaction<T>(client: PoolClient, work: () => Promise<T>): P
     await client.query('ROLLBACK').catch(() => undefined);
     throw error;
   }
+}
+
+/** AICODE-NOTE: Both successful and reverted receipts require the independently verified state/gas effects before terminal persistence. */
+export async function persistSelectedObservation(
+  client: PoolClient, persistence: ExecutionPersistence, operationId: string, hash: Hex,
+  observed: { effectsValid: boolean; measurement: ExecutionMeasurement },
+): Promise<'success' | 'reverted' | 'unknown'> {
+  if (!observed.effectsValid) {
+    await withTransaction(client, () => persistence.markUnknown(client, operationId, hash, observed.measurement));
+    return 'unknown';
+  }
+  const outcome = observed.measurement.receipt.status;
+  await withTransaction(client, () => persistence.finish(client, operationId, hash, outcome, observed.measurement));
+  return outcome;
 }
 
 async function requireActiveGeneration(client: PoolClient, auth: ParticipantAuth): Promise<void> {
@@ -1092,6 +1150,29 @@ export async function recipientKindAtBlock(
   } catch {
     return 'unknown';
   }
+}
+
+/** The EOA path preserves its one historical code read. Only a rejected contract gets the extra proof reads. */
+export async function observeRecipientCodeGuard(
+  client:LocalObserverClient,recipient:Address,blockNumber:bigint,
+  binding:{environmentId:string;generationId:string;operationId:string;requestSha256:string},
+):Promise<{kind:'eoa'|'unknown'}|{kind:'contract';observation:RecipientCodeObservation}>{
+  const tag=`0x${blockNumber.toString(16)}` as Hex;
+  try{
+    const initial=await client.request({method:'eth_getCode',params:[recipient,tag]}) as unknown;
+    const kind=checkRecipientKind(initial);if(kind!=='contract')return{kind};
+    if(Buffer.byteLength(JSON.stringify(initial),'utf8')>RECIPIENT_CODE_OBSERVATION_MAX_BYTES)return{kind:'unknown'};
+    const before=await client.getBlock({blockNumber,includeTransactions:false});
+    const retained=await client.request({method:'eth_getCode',params:[recipient,tag]}) as unknown;
+    const after=await client.getBlock({blockNumber,includeTransactions:false});
+    if(typeof initial!=='string'||typeof retained!=='string'||checkRecipientKind(retained)!=='contract'||
+      initial.toLowerCase()!==retained.toLowerCase()||before.number!==blockNumber||after.number!==blockNumber||
+      typeof before.hash!=='string'||!/^0x[0-9a-f]{64}$/i.test(before.hash)||after.hash?.toLowerCase()!==before.hash.toLowerCase())return{kind:'unknown'};
+    const code=retained.toLowerCase() as Hex;
+    const observation=parseRecipientCodeObservation({schemaVersion:'bef-selected-recipient-code-observation/v1',...binding,
+      recipient:recipient.toLowerCase(),blockNumber:blockNumber.toString(),blockHash:before.hash.toLowerCase(),code,codeKeccak256:keccak256(code)});
+    return{kind:'contract',observation};
+  }catch{return{kind:'unknown'};}
 }
 
 type ObservedTransaction = {
@@ -1153,9 +1234,9 @@ async function exactReceiptAndMeasurement(
   remainingTrialMs = runtime.manifest.guardrails.maxTrialSeconds * 1000,
 ): Promise<{ receipt: TransactionReceipt; after: ExecutionSnapshot; measurement: ExecutionMeasurement; effectsValid: boolean }> {
   const receiptTimeoutMs = Math.max(0, Math.min(runtime.manifest.x402.confirmationTimeoutMs, remainingTrialMs));
-  const receipt = await waitForOriginalReceipt(client, hash, receiptTimeoutMs);
+  const receipt = await inPostminePhase('receipt', () => waitForOriginalReceipt(client, hash, receiptTimeoutMs));
   if (receipt.transactionHash.toLowerCase() !== hash.toLowerCase()) throw new Error('receipt_hash_mismatch');
-  const observedTransaction = transactionObservation(await client.getTransaction({ hash }));
+  const observedTransaction = await inPostminePhase('transaction', async () => transactionObservation(await client.getTransaction({ hash })));
   if (!transactionMatchesIntent(observedTransaction, intent) || observedTransaction.hash.toLowerCase() !== hash.toLowerCase()) {
     throw new Error('original_transaction_binding_mismatch');
   }
@@ -1168,10 +1249,10 @@ async function exactReceiptAndMeasurement(
   }
   const receiptBlock = receipt.blockNumber;
   if (receiptBlock < 1n) throw new Error('receipt_block_invalid');
-  const [prestateBlock, minedBlock] = await Promise.all([
+  const [prestateBlock, minedBlock] = await inPostminePhase('blocks', () => Promise.all([
     client.getBlock({ blockNumber: BigInt(before.blockNumber) }),
     client.getBlock({ blockNumber: receiptBlock, includeTransactions: true }),
-  ]);
+  ]));
   if (!prestateBlock.hash || !minedBlock.hash || !minedBlock.parentHash || minedBlock.baseFeePerGas === null ||
       minedBlock.number !== receiptBlock || receiptBlock !== BigInt(before.blockNumber) + 1n ||
       minedBlock.parentHash.toLowerCase() !== prestateBlock.hash.toLowerCase() ||
@@ -1199,9 +1280,10 @@ async function exactReceiptAndMeasurement(
   const selectedPool = action.kind === 'swap'
     ? swapRouteAddresses(runtime.manifest, action.inputAssetId, action.outputAssetId, action.feeTier ?? 500).poolAddress
     : runtime.manifest.contracts.pool.address as Address;
-  const after = await readSnapshot(client, runtime.manifest, auth.payer, actionRecipient(action, auth.payer), receiptBlock, selectedPool);
-  const measurement = measurementFor(action, runtime.manifest, observedTransaction, receipt, before, after, quote, actionRecipient(action, auth.payer), payerBlock);
-  return { receipt, after, measurement, effectsValid: validateActionEffects(action, receipt, before, after, auth.payer, runtime.manifest) };
+  const after = await inPostminePhase('poststate', () => readSnapshot(client, runtime.manifest, auth.payer, actionRecipient(action, auth.payer), receiptBlock, selectedPool));
+  const measurement = await inPostminePhase('measurement', () => measurementFor(action, runtime.manifest, observedTransaction, receipt, before, after, quote, actionRecipient(action, auth.payer), payerBlock));
+  const effectsValid = await inPostminePhase('effects', () => validateActionEffects(action, receipt, before, after, auth.payer, runtime.manifest));
+  return { receipt, after, measurement, effectsValid };
 }
 
 /** Read-only reconciliation helper for a persisted, already-broadcast action.
@@ -1365,16 +1447,16 @@ async function executeNewAction(
     if (Date.now() >= deadline) throw new Error('trial_deadline_reached');
     const beforeBlock = await observer.getBlockNumber();
     if (action.kind === 'swap') {
-      const recipientKind = await recipientKindAtBlock(observer, action.recipient, beforeBlock);
-      if (recipientKind === 'unknown') {
+      const recipientGuard = await observeRecipientCodeGuard(observer, action.recipient, beforeBlock,{environmentId:auth.envId,generationId:auth.generationId,operationId:operation.operationId,requestSha256:operation.requestHash});
+      if (recipientGuard.kind === 'unknown') {
         await withTransaction(client, () => dependencies.persistence.rejectBeforeBroadcast(
           client, operation.operationId, 'recipient_code_observation_unavailable',
         ));
         return reply.code(503).send({ error: 'recipient_code_observation_unavailable', operationId: operation.operationId });
       }
-      if (recipientKind === 'contract') {
-        await withTransaction(client, () => dependencies.persistence.rejectBeforeBroadcast(client, operation.operationId, 'selected_recipient_must_be_eoa'));
-        return reply.code(400).send({ error: 'selected_recipient_must_be_eoa', operationId: operation.operationId });
+      if (recipientGuard.kind === 'contract') {
+        await withTransaction(client, () => dependencies.persistence.rejectBeforeBroadcast(client, operation.operationId, 'selected_recipient_must_be_eoa',recipientGuard.observation));
+        return reply.code(400).send({ error: 'selected_recipient_must_be_eoa', operationId: operation.operationId,rejectionProof:{schemaVersion:'bef-selected-recipient-code-guard/v1',reasonCode:'selected_recipient_must_be_eoa',operationId:operation.operationId,requestSha256:operation.requestHash} });
       }
     }
     const selectedPool = action.kind === 'swap'
@@ -1459,17 +1541,14 @@ async function executeNewAction(
           return reply.code(502).send({ error: 'transaction_submission_outcome_unknown', operationId: operation.operationId, transactionHash: hash });
         }
         try {
-          const measured = await exactReceiptAndMeasurement(observer, runtime, auth, action, hash, intent, before, quote, deadline - Date.now());
-          if (measured.receipt.status === 'reverted') {
-            await withTransaction(client, () => dependencies.persistence.finish(client, operation.operationId, hash, 'reverted', measured.measurement));
-            return reply.send({ outcome: 'reverted', operationId: operation.operationId, ...measured.measurement });
-          }
-          if (!measured.effectsValid) {
-            await withTransaction(client, () => dependencies.persistence.markUnknown(client, operation.operationId, hash, measured.measurement));
+          const measured = await observeOriginalHashWithinBudget({ deadline,
+            read: (remaining, signal) => exactReceiptAndMeasurement(localObserver(auth, signal), runtime, auth, action, hash, intent, before, quote, remaining),
+          });
+          const outcome = await persistSelectedObservation(client, dependencies.persistence, operation.operationId, hash, measured);
+          if (outcome === 'unknown') {
             return reply.code(502).send({ error: 'execution_effects_unverified', operationId: operation.operationId, transactionHash: hash });
           }
-          await withTransaction(client, () => dependencies.persistence.finish(client, operation.operationId, hash, 'success', measured.measurement));
-          return reply.send({ outcome: 'success', operationId: operation.operationId, ...measured.measurement });
+          return reply.send({ outcome, operationId: operation.operationId, ...measured.measurement });
         } catch (error) {
           await withTransaction(client, () => dependencies.persistence.markUnknown(client, operation.operationId, hash)).catch(() => undefined);
           return reply.code(502).send({ error: safeMessageCode(error), operationId: operation.operationId, transactionHash: hash });

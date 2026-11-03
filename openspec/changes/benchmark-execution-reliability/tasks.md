@@ -27,3 +27,21 @@ Implementation approved on 2026-10-31; uncompleted tasks remain unchecked. [Appr
 - [ ] 3.3 Exercise interruption/rollback and existing unified backup/restore for any new durable records or private files, preserving auth revocation, original identities and once-only business effects; gate: restore/restart integration evidence.
 - [ ] 3.4 Review all mandatory results and unresolved external prerequisites, approve activation deliberately, then sync/archive only after all required gates pass; gate: strict validation, semantic audit, runtime closeout. No sync/archive in planning.
 
+
+
+## 4. Approved all-fifteen admitted learning-action observation repair
+
+- [ ] 4.1 Reconcile approved BER-REQ/SC-009–012, meaningful fifteen-by-nine kind/negative matrices, Gherkin/mappers and semantic replay contract; preserve old acceptance artifacts and leave new physical gates not_run.
+- [ ] 4.2 Implement strict shared immutable census and independent paid/chain family observation for all fifteen paths, preserving existing rubric and admission fences; gate BER-SC-009.
+- [ ] 4.3 Exercise known mandatory violations and missing/tampered/contradictory proof without fabricated zero/success; gate BER-SC-010.
+- [ ] 4.4 Verify payment without delivery, same-operation response-loss recovery and single-count mixed chain/payment costs; gate BER-SC-011.
+- [ ] 4.5 Verify restart/deadline/seal/evaluation/composite replay, once-only settlement and next-task/terminal handoff; gate BER-SC-012.
+- [ ] 4.6 Run fresh fifteen-case physical qualification plus controlled off-goal and missing-proof campaigns; independently replay immutable raw source/evidence.
+- [ ] 4.7 Run fresh actual Codex Training and all twelve Ranked tasks from browser-created intents through current native OAuth; verify each UI/PostgreSQL grade, terminal state, charge and diagnostic receipt, then review release activation. Historical failed run remains unchanged.
+
+
+Qualification progress (2026-11-03): fresh fifteen-reference BEF candidate e9249fc9
+and independent raw/semantic/final validation completed; see implementation-progress.
+This does not check off 4.6/4.7 or mark BER-SC-009–012 passed. The controlled
+owner/MCP learning-mistake smoke and complete 135-cell/negative/native campaigns
+remain separate pending proof.

@@ -441,10 +441,16 @@ No public test bypass, trusted client assertion or in-memory billing substitute
 can satisfy this coordinator gate.
 
 The evaluator supplies versioned per-task credit/violations and observed evidence;
-the coordinator does not implement the twelve task-specific rubrics. Training
-releases detailed feedback after each task. Ranked feedback exposes normal tool
-responses immediately, then per-task/final scoring after run termination without
-coaching or reference solutions. Sensitive fixtures are not returned as feedback.
+the coordinator does not implement the twelve task-specific rubrics. The scoped
+agent's existing `runs.current_task` response carries stored feedback at the
+mode-specific release point: after each selected open Training task evaluation,
+and only after the entire Ranked run is terminal. Terminal Ranked feedback reads
+every task evaluation already stored, so known task grades remain visible even
+when run-level termination is unknown; missing or unverifiable task results stay
+explicitly unknown. These reads never invoke the evaluator. Ranked feedback has
+compact scores and allowed reason categories without coaching, case parameters,
+reference solutions or a participant tool-call journal. Training feedback keeps
+its post-task explanation timing. Sensitive fixtures are never returned.
 
 The user chose scores and error reasons for the MVP result view rather than a
 private chronological tool-call journal. Keep the ranked result projection compact

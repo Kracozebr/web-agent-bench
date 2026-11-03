@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { diagnosticAuthorityRestoreProof } from './beta-backup-diagnostic-authority.mjs';
 import { createRequire } from 'node:module';
 import { createReadStream } from 'node:fs';
 import { lstat, mkdir, open, readFile, readdir, realpath, rm } from 'node:fs/promises';
@@ -110,6 +111,19 @@ async function databaseSnapshot({ Pool, databaseUrl, databaseName, sourceBuildSh
       'oid_task_preparation_generation', 'oid_support_report', 'oid_support_report_audit', 'oid_support_image_upload',
       'oid_support_report_deletion_receipt', 'oid_support_upload_gc_receipt', 'oid_support_report_rate'];
     if (requiredTables.some((name) => !Object.hasOwn(tableFingerprints, name))) fail('required_domain_table_missing');
+    // AICODE-NOTE: Full source fingerprints include all tables; diagnostic
+    // evidence is dumped, while the fixed helper-authority policy excludes only
+    // ephemeral OAuth data and retains its schema plus immutable source hashes.
+    // A partially migrated diagnostic deployment is never a complete checkpoint.
+    // Offline native-client spools and OS credentials are outside this inventory.
+    for (const domain of [
+      ['oid_mcp_diagnostic_case','oid_mcp_diagnostic_segment','oid_mcp_diagnostic_batch','oid_mcp_diagnostic_event',
+        'oid_mcp_diagnostic_quota','oid_mcp_diagnostic_aggregate','oid_mcp_diagnostic_retention_receipt'],
+      ['oid_diagnostic_oauth_request','oid_diagnostic_oauth_grant','oid_diagnostic_oauth_token']
+    ]) {
+      if (domain.some(name => Object.hasOwn(tableFingerprints,name)) && domain.some(name => !Object.hasOwn(tableFingerprints,name)))
+        fail('diagnostic_domain_table_missing');
+    }
     const query = async (sqlText) => (await client.query(sqlText)).rows;
     const completedRunIds = (await query(`SELECT id::text FROM oid_benchmark_run WHERE status='completed' ORDER BY id`)).map((row) => row.id);
     const queuedInterruptedUnknownRunIds = (await query(`SELECT id::text FROM oid_benchmark_run
@@ -574,6 +588,9 @@ async function verifyLocalCheckpointOfficialSource({ providerOptions, checkpoint
     const official = officialFile.value;
     const closure = closureFile.value;
     const source = inventory.checkpointSource;
+    const restoreProof=diagnosticAuthorityRestoreProof(before);
+    if(canonical(restoreProof.policy??null)!==canonical(inventory.restoreDataPolicy??null)||
+      canonical(reconciliation.restoreDataPolicy??null)!==canonical(inventory.restoreDataPolicy??null))fail('scheduler_diagnostic_authority_policy_invalid');
     const officialSha256 = sha256(officialFile.bytes);
     const closureSourceHashes = new Set([
       sha256(Buffer.from(`${JSON.stringify(closure)}\n`)),

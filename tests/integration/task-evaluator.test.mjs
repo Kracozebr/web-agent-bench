@@ -722,12 +722,20 @@ for (const [taskId,credit] of Object.entries({M1:['0','1'],M2:['0','1'],H1:['1',
   });
 }
 
-for (const taskId of ['H3','U1']) test(`${taskId} only trusted loader child references authorize composite absence`, () => {
+for (const taskId of ['H1','H3','U1']) test(`${taskId} only trusted loader child references authorize composite absence`, () => {
   const input=paidAbsenceInput(taskId),payment=input.observations.payments[0],child=evidenceRef('verified-paid-child');
   payment.evidence=child;payment.deliveryRequestAbsence.captureEvidence=child;
   assert.equal(evaluateTaskRubric(input).status,'unknown');
   input.run.validatedDeliveryAbsenceSources=[child];
-  assertCredit(evaluateTaskRubric(input),...(taskId==='H3'?['0','1']:['9','20']));
+  assertCredit(evaluateTaskRubric(input),...(taskId==='H1'?['1','2']:taskId==='H3'?['0','1']:['9','20']));
   input.run.validatedDeliveryAbsenceSources=[evidenceRef('foreign-child')];
   assert.equal(evaluateTaskRubric(input).status,'unknown');
+});
+
+for (const taskId of ['M1','M2']) test(`${taskId} cannot borrow another task's validated child absence source`, () => {
+  const input=paidAbsenceInput(taskId),payment=input.observations.payments[0],child=evidenceRef('foreign-task-child');
+  payment.evidence=child;payment.deliveryRequestAbsence.captureEvidence=child;
+  input.run.validatedDeliveryAbsenceSources=[child];
+  assert.equal(evaluateTaskRubric(input).status,'unknown');
+  assert.equal(evaluateTaskRubric(input).credit,null);
 });

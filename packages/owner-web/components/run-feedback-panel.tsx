@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { apiRequest, errorText } from "@/lib/api";
 
@@ -10,6 +10,7 @@ type TaskFeedback = {
   outcome: "passed" | "partial" | "failed" | "unknown";
   credit: { numerator: string; denominator: string } | null;
   reason: "goal_unmet" | "budget_reserve_permission_scope_violation" | "time_exhausted" | "evidence_unknown" | "not_issued" | "not_evaluated" | null;
+  submittedAnswer?: Record<string, unknown>;
 };
 
 type RunFeedback = { status: "available" | "withheld_until_run_termination"; tasks: TaskFeedback[] };
@@ -29,6 +30,21 @@ function safeChecks(value: unknown): value is Check[] {
     (check.code === "task_goal" || check.code === "mandatory_constraints" || /^paid_resource_delivery_recorded_[1-9][0-9]*$/.test(check.code)) &&
     ["passed", "failed", "unknown"].includes(check.status) && safeRefs(check.evidenceRefs, 2));
 }
+function boundedJson(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "string") return value.length <= 8192;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.length <= 128 && value.every((item) => boundedJson(item, depth + 1));
+  if (typeof value !== "object") return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  return entries.length <= 128 && entries.every(([key, item]) => key.length <= 128 && boundedJson(item, depth + 1));
+}
+function safeSubmittedAnswer(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !boundedJson(value)) return false;
+  const serialized = JSON.stringify(value);
+  return typeof serialized === "string" && new TextEncoder().encode(serialized).length <= 8192;
+}
 function safeDiagnostics(value: Diagnostics, runId: string, taskId: string): boolean {
   return value?.runId === runId && value.taskId === taskId && safeChecks(value.goalChecks) && safeChecks(value.constraintChecks) &&
     safeRefs(value.evidenceRefs, 2) && !!value.timing && [value.timing.issuedAt, value.timing.deadlineAt, value.timing.closedAt].every((time) => time === null || typeof time === "string" && Number.isFinite(Date.parse(time))) &&
@@ -38,7 +54,7 @@ function safeDiagnostics(value: Diagnostics, runId: string, taskId: string): boo
 
 const reasons = {
   goal_unmet: "The task goal was not fully met.",
-  budget_reserve_permission_scope_violation: "A budget, reserve or permission rule was violated.",
+  budget_reserve_permission_scope_violation: "A mandatory task constraint was violated.",
   time_exhausted: "The task time limit was reached.",
   evidence_unknown: "The available evidence does not establish a result.",
   not_issued: "This task was not issued. It has no evaluation or credit.",
@@ -56,6 +72,7 @@ function isFeedback(value: unknown): value is RunFeedback {
     ["known", "unknown"].includes(task.status) &&
     ["passed", "partial", "failed", "unknown"].includes(task.outcome) &&
     (task.reason === null || Object.hasOwn(reasons, task.reason)) &&
+    (task.submittedAnswer === undefined || task.taskId === "S2" && safeSubmittedAnswer(task.submittedAnswer)) &&
     (task.status === "unknown"
       ? task.outcome === "unknown" && task.credit === null
       : task.outcome !== "unknown" && task.credit && /^(0|[1-9][0-9]{0,77})$/.test(task.credit.numerator) &&
@@ -64,7 +81,7 @@ function isFeedback(value: unknown): value is RunFeedback {
 }
 
 /** Only the allowlisted owner feedback projection is rendered; no case or tool evidence is requested. */
-export function RunFeedbackPanel({ runId, mode, status }: { runId: string; mode?: string; status?: string }) {
+export function RunFeedbackPanel({ runId, mode, status, refreshRevision = 0 }: { runId: string; mode?: string; status?: string; refreshRevision?: number }) {
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -79,7 +96,7 @@ export function RunFeedbackPanel({ runId, mode, status }: { runId: string; mode?
     finally { setBusy(false); }
   }
 
-  async function loadFeedback() {
+  const loadFeedback = useCallback(async () => {
     setBusy(true);
     setError("");
     try {
@@ -92,7 +109,11 @@ export function RunFeedbackPanel({ runId, mode, status }: { runId: string; mode?
     } finally {
       setBusy(false);
     }
-  }
+  }, [runId]);
+
+  useEffect(() => {
+    if (refreshRevision > 0) void loadFeedback();
+  }, [loadFeedback, refreshRevision]);
 
   return (
     <section className="stack-sm" aria-label="Private task results" data-testid={`run-feedback-${runId}`}>
@@ -112,6 +133,10 @@ export function RunFeedbackPanel({ runId, mode, status }: { runId: string; mode?
               <strong>{task.taskId}</strong>: {task.reason === "not_issued" ? "Not issued" : task.reason === "not_evaluated" ? "Not evaluated" : task.status === "unknown" ? "Evidence unknown" : task.outcome}
               {task.status === "known" && task.credit ? <span> · Credit {task.credit.numerator}/{task.credit.denominator}</span> : null}
               {task.reason ? <p className="fine">{reasons[task.reason]}</p> : null}
+              {task.submittedAnswer !== undefined ? <details data-testid={`submitted-answer-${runId}-${task.taskId}`}>
+                <summary>Submitted S2 answer</summary>
+                <pre>{JSON.stringify(task.submittedAnswer, null, 2)}</pre>
+              </details> : null}
               <Link href={`/reports?runId=${encodeURIComponent(runId)}&taskId=${encodeURIComponent(task.taskId)}`}>Report this task</Link>
               {mode === "training" && task.reason !== "not_issued" && task.reason !== "not_evaluated" && (task.status === "known" || status === "completed" || status === "failed" || status === "cancelled") ? <div className="stack-sm">
                 <button data-testid={`run-diagnostics-load-${runId}-${task.taskId}`} className="button button-small" disabled={busy} onClick={() => void loadDiagnostics(task.taskId)}>Explain Training result</button>

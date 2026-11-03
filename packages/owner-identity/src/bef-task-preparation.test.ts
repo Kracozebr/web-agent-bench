@@ -726,6 +726,32 @@ test('preparation PUT HTTP503 preserves only the fixed producer fixture phase/cl
  }
 });
 
+test('preparation setup phase diagnostics retain actual ordered confirmations and finite dependency facts while503 stays unknown',async()=>{
+ const phases=['reserve_preparation','reset_identity_before','reset_rpc','reset_identity_after','recover_facilitator','persist_reset_proof'];
+ for(const [index,phase] of phases.entries()){
+  const {intent,release}=makeRelease(),diagnostics:BefPreparationDiagnostic[]=[],evidence:SafeTaskPreparationEvidence[]=[];
+  const progress={attemptedPhase:phase,confirmedPhases:phases.slice(0,index)},mock=makeFetch(intent,{putFailure:{status:503,body:{error:'preparation_failed',fixtureState:'unknown',fixturePhase:phase,fixtureCauseClass:'OtherError',preparationProgress:progress,preparationSqlState:'57014',preparationHttpStatus:503,message:'RAW_SECRET_SENTINEL',providerUrl:'RAW_SECRET_SENTINEL',token:'RAW_SECRET_SENTINEL'}}});
+  const deps=testDependencies(release,mock.fetch,evidence);deps.preparationDiagnostic=value=>{diagnostics.push(value);};
+  const adapter=new BefTaskPreparationAdapter(deps);assert.deepEqual(await adapter.prepare({intent,dispatchId:'phase-diagnostic-'+index}),{status:'unknown',reasonCode:'adapter_outcome_unknown'});
+  assert.equal(mock.putCount,1);assert.equal(mock.reconcilePostCount,0);assert.equal(evidence.length,0);
+  assert.deepEqual(diagnostics[0]?.preparationProgress,progress);assert.equal(diagnostics[0]?.fixturePhase,phase);assert.equal(diagnostics[0]?.preparationSqlState,'57014');assert.equal(diagnostics[0]?.preparationHttpStatus,503);
+  assert.equal(diagnostics[0]?.preparationProgress?.confirmedPhases.includes(phase as never),false,'a failed reset acknowledgement cannot become a confirmed phase');
+  assert(!JSON.stringify(diagnostics).includes('RAW_SECRET_SENTINEL'));await adapter.prepare({intent,dispatchId:'phase-diagnostic-retry-'+index});assert.equal(mock.putCount,1);
+ }
+});
+test('outer preparation_unavailable needs strict unknown outcome and producer progress; legacy malformed replies stay rejected',()=>{
+ const valid={error:'preparation_unavailable',outcome:'unknown',fixturePhase:'reserve_preparation',fixtureCauseClass:'OtherError',preparationProgress:{attemptedPhase:'reserve_preparation',confirmedPhases:[]}};
+ assert.deepEqual(preparationPutFailureDetails(valid),{fixturePhase:valid.fixturePhase,fixtureCauseClass:valid.fixtureCauseClass,preparationProgress:valid.preparationProgress});
+ for(const change of [{outcome:'ready'},{preparationProgress:undefined},{fixtureCauseClass:'DatabaseError:RAW_SECRET_SENTINEL'},{preparationProgress:{attemptedPhase:null,confirmedPhases:['reserve_preparation']}},{preparationProgress:{attemptedPhase:'reset_rpc',confirmedPhases:['reset_rpc']}},{preparationProgress:{attemptedPhase:'reserve_preparation',confirmedPhases:[],message:'RAW_SECRET_SENTINEL'}},{preparationProgress:{attemptedPhase:'reserve_preparation',confirmedPhases:['RAW_SECRET_SENTINEL']}},{preparationProgress:{attemptedPhase:'reserve_preparation',confirmedPhases:['reserve_preparation','reserve_preparation']}}])assert.deepEqual(preparationPutFailureDetails({...valid,...change}),{});
+ const failed={...valid,error:'preparation_failed',fixtureState:'unknown'};delete (failed as {outcome?:string}).outcome;assert.deepEqual(preparationPutFailureDetails({...failed,preparationProgress:undefined}),{});
+ assert.deepEqual(preparationPutFailureDetails({...valid,fixturePhase:'reset_rpc',preparationProgress:{attemptedPhase:'reset_rpc',confirmedPhases:['reserve_preparation','reset_identity_before','reset_rpc']}}),{},'an ambiguous failed reset acknowledgement is never a confirmed reset');
+ const complete={error:'preparation_failed',fixtureState:'unknown',fixturePhase:'read_token_before',fixtureCauseClass:'UnknownRpcError',preparationProgress:{attemptedPhase:'persist_reset_proof',confirmedPhases:['reserve_preparation','reset_identity_before','reset_rpc','reset_identity_after','recover_facilitator','persist_reset_proof']}};
+ assert.deepEqual(preparationPutFailureDetails(complete).preparationProgress,complete.preparationProgress);
+ for(const confirmedPhases of [['reset_identity_after','reset_rpc'],['persist_reset_proof','persist_reset_proof'],['recover_facilitator']])assert.deepEqual(preparationPutFailureDetails({...valid,fixturePhase:'reset_rpc',preparationProgress:{attemptedPhase:'reset_rpc',confirmedPhases}}),{});
+ for(const preparationSqlState of ['57014 RAW_SECRET_SENTINEL','abcde','123456',42])assert.equal(preparationPutFailureDetails({...valid,preparationSqlState}).preparationSqlState,undefined);
+ for(const preparationHttpStatus of ['503',99,600,503.5,NaN])assert.equal(preparationPutFailureDetails({...valid,preparationHttpStatus}).preparationHttpStatus,undefined);
+});
+
 test('preparation PUT diagnostics reject malformed, unknown and secret-bearing fixture tags', async () => {
  const valid = { error: 'preparation_failed', fixtureState: 'unknown', fixturePhase: 'read_token_before', fixtureCauseClass: 'UnknownRpcError' };
  const bodies: unknown[] = [null, [], 'RAW_SECRET_SENTINEL', {}, { ...valid, fixturePhase: 'RAW_SECRET_SENTINEL' },

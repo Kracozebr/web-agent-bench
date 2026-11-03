@@ -215,6 +215,7 @@ async function loadReport(executor: ReportExecutor, reportId: string): Promise<R
     FROM oid_support_report WHERE id=${reportId}::uuid
   `));
   if (!row) return undefined;
+  const diagnostic = await diagnosticReportProjection(executor, row);
   const images = reportRows<StoredImageRow>(await executor.execute(sql`
     SELECT id,output_sha256,output_mime,output_bytes,width,height,created_at
     FROM oid_support_image_upload WHERE report_id=${reportId}::uuid AND status='attached'
@@ -227,9 +228,9 @@ async function loadReport(executor: ReportExecutor, reportId: string): Promise<R
     source: row.source,
     title: row.title,
     body: row.body,
-    safeContext: row.safe_context,
+    safeContext: diagnostic?.safeContext ?? row.safe_context,
     clientVersion: row.client_version,
-    links: { runId: row.run_id, taskId: row.task_id, actionId: row.action_id },
+    links: { runId: diagnostic?.runId ?? row.run_id, taskId: row.task_id, actionId: row.action_id },
     status: row.status,
     revision: row.revision,
     createdAt: asIso(row.created_at),
@@ -245,6 +246,19 @@ async function loadReport(executor: ReportExecutor, reportId: string): Promise<R
       imagePath: `/api/owner/reports/${encodeURIComponent(row.id)}/images/${encodeURIComponent(image.id)}`
     }))
   };
+}
+
+// AICODE-NOTE: A diagnostic report's immutable submission is case-based. Late
+// run bindings and counts are read from the canonical case, never rewritten.
+async function diagnosticReportProjection(executor: ReportExecutor, row: StoredReportRow) {
+  if (row.safe_context.kind !== 'client_diagnostics') return undefined;
+  const c = reportFirst<{id:string;run_id:string|null;capture_state:string;event_count:number;error_count:number}>(await executor.execute(sql`
+    SELECT c.id,r.id AS run_id,c.capture_state,c.event_count,c.error_count
+    FROM oid_mcp_diagnostic_case c LEFT JOIN oid_benchmark_run r ON r.intent_id=c.intent_id
+    WHERE c.report_id=${row.id}::uuid AND c.owner_id=${row.owner_id}::uuid`));
+  if (!c) return undefined;
+  return {runId:c.run_id,safeContext:{...row.safe_context,diagnosticCaseId:c.id,
+    captureState:c.capture_state,eventCount:c.event_count,errorCount:c.error_count}};
 }
 
 async function validateReportLinks(
@@ -327,6 +341,14 @@ async function consumeCreateRates(tx: ReportTransaction, actor: ReportActor): Pr
     if ((countRow?.request_count ?? 0) > bucket.limit) throw reportError(429, bucket.code, "Report creation rate limit reached; retry later");
   }
   await tx.execute(sql`DELETE FROM oid_support_report_rate WHERE updated_at < clock_timestamp() - interval '2 days'`);
+}
+
+/** Share the existing report limits with canonical diagnostic auto-reports. */
+export async function consumeDiagnosticReportCreationRate(tx: ReportTransaction, actor: ReportActor): Promise<void> {
+  ensureActor(actor);
+  // Diagnostic callers hold the canonical-case/global lock; rate UPSERTs lock
+  // the shared buckets. Taking a principal lock here would invert lock order.
+  await consumeCreateRates(tx, actor);
 }
 
 function createPayloadHash(input: ReportSubmission, title: string, body: string): string {
@@ -482,7 +504,12 @@ async function listReports(deps: ReportServiceDependencies, options: ReportListO
   if (options.source) filters.push(sql`r.source=${options.source}`);
   if (options.status) filters.push(sql`r.status=${options.status}`);
   if (options.agentId) filters.push(sql`r.agent_id=${options.agentId}::uuid`);
-  if (options.runId) filters.push(sql`r.run_id=${options.runId}::uuid`);
+  if (options.runId) {
+    const installed = reportFirst<{installed:boolean}>(await deps.db.execute(sql`SELECT to_regclass('public.oid_mcp_diagnostic_case') IS NOT NULL AS installed`));
+    filters.push(installed?.installed ? sql`(r.run_id=${options.runId}::uuid OR EXISTS (
+      SELECT 1 FROM oid_mcp_diagnostic_case c JOIN oid_benchmark_run b ON b.intent_id=c.intent_id
+      WHERE c.report_id=r.id AND c.owner_id=r.owner_id AND b.id=${options.runId}::uuid))` : sql`r.run_id=${options.runId}::uuid`);
+  }
   const cursor = decodeReportCursor(options.cursor);
   if (cursor) filters.push(sql`(r.created_at < ${cursor.createdAt}::timestamptz OR (r.created_at=${cursor.createdAt}::timestamptz AND r.id < ${cursor.id}::uuid))`);
   const rows = await deps.db.transaction(async (tx) => {
@@ -501,13 +528,15 @@ async function listReports(deps: ReportServiceDependencies, options: ReportListO
   });
   const hasMore = rows.length > options.limit;
   const selected = rows.slice(0, options.limit);
-  const reports = selected.map((row) => ({
+  const reports = await Promise.all(selected.map(async (row) => {
+    const diagnostic = await diagnosticReportProjection(deps.db, row);
+    return ({
     id: row.id, ownerId: row.owner_id, agentId: row.agent_id, source: row.source,
-    title: row.title, body: row.body, safeContext: row.safe_context, clientVersion: row.client_version,
-    links: { runId: row.run_id, taskId: row.task_id, actionId: row.action_id },
+    title: row.title, body: row.body, safeContext: diagnostic?.safeContext ?? row.safe_context, clientVersion: row.client_version,
+    links: { runId: diagnostic?.runId ?? row.run_id, taskId: row.task_id, actionId: row.action_id },
     status: row.status, revision: row.revision, imageCount: row.image_count,
     createdAt: asIso(row.created_at), updatedAt: asIso(row.updated_at)
-  }));
+  }); }));
   const last = selected.at(-1);
   return { reports, nextCursor: hasMore && last ? encodeReportCursor(last.created_at, last.id) : null };
 }

@@ -14,7 +14,7 @@ from tests.bdd.adapters.registry import ScenarioContext, ScenarioRegistry, build
 ROOT = Path(__file__).resolve().parents[3]
 CHANGE = "benchmark-execution-reliability"
 ADAPTER_PROFILES = {"benchmark_execution_reliability"}
-SCENARIO_IDS = tuple(f"BER-SC-{n:03d}" for n in range(1,9))
+SCENARIO_IDS = tuple(f"BER-SC-{n:03d}" for n in range(1,13))
 
 class BenchmarkExecutionReliabilityCase:
     def __init__(self, scenario_id):
@@ -237,6 +237,87 @@ class BenchmarkExecutionReliabilityCase:
         context.check("stale_prior_source_capture", facts.get("stale_prior_source_capture") is True)
         context.check("read_only_historical_feedback", facts.get("read_only_historical_feedback") is True)
         context.check("no_regrading_or_refund_from_display", facts.get("no_regrading_or_refund_from_display") is True)
+
+    def _execute_admitted_learning(self, context, scenario_id):
+        from tests.bdd.adapters.ber_admitted_replay import verify_admitted_learning_capture
+        inputs = self._runtime_inputs()
+        if "admittedLearningActions" not in inputs:
+            self._blocked(scenario_id)
+        report = verify_admitted_learning_capture(inputs["admittedLearningActions"], scenario_id, repository_root=ROOT)
+        context.state["ber_independent_replay"] = report
+        context.state["ber_facts"] = report["facts"]
+        if report.get("missingBoundaries"):
+            pytest.skip("BLOCKED: " + scenario_id + " independent proof is incomplete; missing " + ", ".join(report["missingBoundaries"]))
+
+    def _execute_BER_SC_009(self, context):
+        self._execute_admitted_learning(context, "BER-SC-009")
+
+    def _verify_BER_SC_009(self, context):
+        facts = context.state.get("ber_facts", {})
+        context.check("all_admitted_sequences_accounted", facts.get("all_admitted_sequences_accounted") is True)
+        context.check("scope_denials_unchanged", facts.get("scope_denials_unchanged") is True)
+        context.check("no_automatic_repair", facts.get("no_automatic_repair") is True)
+        context.check("all_fifteen_paths_all_nine_kinds", facts.get("all_fifteen_paths_all_nine_kinds") is True)
+        context.check("objective_and_off_goal_scoped_reads", facts.get("objective_and_off_goal_scoped_reads") is True)
+        context.check("wrong_recipient_amount_route_allowance", facts.get("wrong_recipient_amount_route_allowance") is True)
+        context.check("noop_and_reverted_actions", facts.get("noop_and_reverted_actions") is True)
+        context.check("protocol_disabled_purchase", facts.get("protocol_disabled_purchase") is True)
+        context.check("foreign_or_invalid_reference", facts.get("foreign_or_invalid_reference") is True)
+        context.check("late_action_rejected", facts.get("late_action_rejected") is True)
+        context.check("immutable_chosen_command_and_effect_history", facts.get("immutable_chosen_command_and_effect_history") is True)
+        context.check("complete_independent_family_census", facts.get("complete_independent_family_census") is True)
+
+    def _execute_BER_SC_010(self, context):
+        self._execute_admitted_learning(context, "BER-SC-010")
+
+    def _verify_BER_SC_010(self, context):
+        facts = context.state.get("ber_facts", {})
+        context.check("known_effects_reach_existing_rubric", facts.get("known_effects_reach_existing_rubric") is True)
+        context.check("missing_or_contradictory_stays_unknown", facts.get("missing_or_contradictory_stays_unknown") is True)
+        context.check("s1_exact_wrong_extra_and_reserve", facts.get("s1_exact_wrong_extra_and_reserve") is True)
+        context.check("s2_s3_paid_delivery_mutation", facts.get("s2_s3_paid_delivery_mutation") is True)
+        context.check("s4_mutate_then_restore", facts.get("s4_mutate_then_restore") is True)
+        context.check("paid_only_unrelated_chain_action", facts.get("paid_only_unrelated_chain_action") is True)
+        context.check("missing_or_changed_receipt_row_hash_generation", facts.get("missing_or_changed_receipt_row_hash_generation") is True)
+        context.check("missing_read_or_block_observation", facts.get("missing_read_or_block_observation") is True)
+        context.check("contradictory_or_truncated_census", facts.get("contradictory_or_truncated_census") is True)
+        context.check("no_fabricated_zero_or_success", facts.get("no_fabricated_zero_or_success") is True)
+        context.check("unchanged_task_rubric", facts.get("unchanged_task_rubric") is True)
+
+    def _execute_BER_SC_011(self, context):
+        self._execute_admitted_learning(context, "BER-SC-011")
+
+    def _verify_BER_SC_011(self, context):
+        facts = context.state.get("ber_facts", {})
+        context.check("payment_not_delivery", facts.get("payment_not_delivery") is True)
+        context.check("immutable_action_status_evidence", facts.get("immutable_action_status_evidence") is True)
+        context.check("separate_principal_gas_service_cost", facts.get("separate_principal_gas_service_cost") is True)
+        context.check("confirmed_pay_without_retrieve", facts.get("confirmed_pay_without_retrieve") is True)
+        context.check("rejected_or_late_retrieve", facts.get("rejected_or_late_retrieve") is True)
+        context.check("wrong_scoped_resource_read", facts.get("wrong_scoped_resource_read") is True)
+        context.check("lost_action_response", facts.get("lost_action_response") is True)
+        context.check("repeated_status_and_finish", facts.get("repeated_status_and_finish") is True)
+        context.check("chain_gas_with_payment", facts.get("chain_gas_with_payment") is True)
+        context.check("one_economic_effect_per_operation", facts.get("one_economic_effect_per_operation") is True)
+        context.check("no_double_count_or_ambiguous_payment_replacement", facts.get("no_double_count_or_ambiguous_payment_replacement") is True)
+
+    def _execute_BER_SC_012(self, context):
+        self._execute_admitted_learning(context, "BER-SC-012")
+
+    def _verify_BER_SC_012(self, context):
+        facts = context.state.get("ber_facts", {})
+        context.check("stable_closure_and_cutoff", facts.get("stable_closure_and_cutoff") is True)
+        context.check("append_only_evidence", facts.get("append_only_evidence") is True)
+        context.check("next_task_and_explicit_terminal", facts.get("next_task_and_explicit_terminal") is True)
+        context.check("deadline_at_dispatch_and_receipt", facts.get("deadline_at_dispatch_and_receipt") is True)
+        context.check("restart_after_confirmation_before_observe_seal_evaluate", facts.get("restart_after_confirmation_before_observe_seal_evaluate") is True)
+        context.check("duplicate_reconcile_finalize", facts.get("duplicate_reconcile_finalize") is True)
+        context.check("composite_child_replay", facts.get("composite_child_replay") is True)
+        context.check("unreconciled_action_at_cutoff", facts.get("unreconciled_action_at_cutoff") is True)
+        context.check("known_handoff_next_task_and_explicit_terminal", facts.get("known_handoff_next_task_and_explicit_terminal") is True)
+        context.check("one_evaluation_and_settlement", facts.get("one_evaluation_and_settlement") is True)
+        context.check("no_admission_debit_aggregate_report_duplication", facts.get("no_admission_debit_aggregate_report_duplication") is True)
+
 
 def register(registry):
     for sid in SCENARIO_IDS:

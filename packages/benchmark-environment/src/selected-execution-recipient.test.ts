@@ -12,6 +12,9 @@ import {
   checkRecipientKind,
   parseSelectedAction,
   recipientKindAtBlock,
+  observeRecipientCodeGuard,
+  parseRecipientCodeObservation,
+  RECIPIENT_CODE_OBSERVATION_MAX_BYTES,
   registerSelectedExecutionRoutes,
   swapRouteAddresses,
   validateActionEffects,
@@ -162,6 +165,18 @@ test('swap fee selection defaults legacy actions to fee 500 and resolves only pi
   assert.throws(() => swapRouteAddresses(manifest, 'WETH', 'USDC', 10000 as unknown as 500));
 });
 
+test('clean reverted effects tolerate only next-block metadata and exact gas; token, allowance, pool and receipt contradictions stay invalid', () => {
+  const f = swapEffectFixture('WETH', true), receipt = { ...f.receipt, status: 'reverted' as const, logs: [] };
+  const after = { ...f.before, blockNumber: String(BigInt(f.before.blockNumber) + 1n), payerNativeWei: String(BigInt(f.before.payerNativeWei) - receipt.gasUsed * receipt.effectiveGasPrice) };
+  assert.equal(validateActionEffects(f.action, receipt, f.before, after, PAYER, f.manifest), true);
+  for (const key of ['payerWethUnits','payerUsdcUnits','recipientWethUnits','recipientUsdcUnits','wethRouterAllowance','usdcRouterAllowance','poolWethUnits','poolUsdcUnits','poolLiquidity','poolSqrtPriceX96','payerNativeWei'] as const) {
+    const dirty = { ...after, [key]: String(BigInt(after[key]) + 1n) };
+    assert.equal(validateActionEffects(f.action, receipt, f.before, dirty, PAYER, f.manifest), false, key);
+  }
+  assert.equal(validateActionEffects(f.action, { ...receipt, gasUsed: receipt.gasUsed + 1n }, f.before, after, PAYER, f.manifest), false);
+  assert.equal(validateActionEffects(f.action, { ...receipt, from: RECIPIENT_EOA }, f.before, after, PAYER, f.manifest), false);
+});
+
 test('swap effect verification counts both token deltas when the recipient is the payer', () => {
   for (const inputAssetId of ['USDC', 'WETH'] as const) {
     const samePayer = swapEffectFixture(inputAssetId, true);
@@ -194,7 +209,8 @@ async function startRpcServer(initialCodes: Map<string, RpcCode> = new Map()) {
         const configured = codes.get(recipient);
         if (configured === NO_RESULT) omitResult = true;
         else result = configured;
-      } else if (method === 'eth_chainId') result = '0x2105';
+      } else if (method === 'eth_getBlockByNumber') result = {number:`0x${BLOCK_NUMBER.toString(16)}`,hash:`0x${'ab'.repeat(32)}`,parentHash:`0x${'cd'.repeat(32)}`,timestamp:'0x1',gasLimit:'0x100000',gasUsed:'0x0',difficulty:'0x0',extraData:'0x',miner:'0x'+'0'.repeat(40),transactions:[],uncles:[],baseFeePerGas:'0x1'};
+      else if (method === 'eth_chainId') result = '0x2105';
       else if (method === 'eth_sendRawTransaction') result = `0x${'a'.repeat(64)}`;
       else result = null;
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -537,4 +553,99 @@ test('unknown recipient-code observation returns operation id and durably reject
   });
   assert.deepEqual(rejections, [{ operationId: OPERATION_ID, reason: 'recipient_code_observation_unavailable' }]);
   assert.equal(rpc.methods.includes('eth_sendRawTransaction'), false);
+});
+
+
+test('contract recipient guard retains the exact historical raw code/block/op/request; EOA still needs one read',async context=>{
+ const rpc=await startRpcServer(new Map([[RECIPIENT_CONTRACT.toLowerCase(),'0x60006000'],[RECIPIENT_EOA.toLowerCase(),'0x']]));context.after(()=>rpc.close());
+ const client=createPublicClient({chain:base,transport:http(rpc.url,{retryCount:0})}),binding={environmentId:'bef-a',generationId:GENERATION_ID,operationId:OPERATION_ID,requestSha256:'a'.repeat(64)};
+ const proof=await observeRecipientCodeGuard(client,RECIPIENT_CONTRACT,BLOCK_NUMBER,binding);assert.equal(proof.kind,'contract');if(proof.kind!=='contract')assert.fail('typed guard missing');
+ assert.equal(proof.observation.blockNumber,BLOCK_NUMBER.toString());assert.equal(proof.observation.blockHash,`0x${'ab'.repeat(32)}`);assert.equal(proof.observation.code,'0x60006000');assert.equal(proof.observation.recipient,RECIPIENT_CONTRACT.toLowerCase());assert.equal(proof.observation.operationId,OPERATION_ID);assert.deepEqual(parseRecipientCodeObservation(proof.observation),proof.observation);
+ assert.deepEqual(rpc.methods,['eth_getCode','eth_getBlockByNumber','eth_getCode','eth_getBlockByNumber']);const before=rpc.methods.length;assert.deepEqual(await observeRecipientCodeGuard(client,RECIPIENT_EOA,BLOCK_NUMBER,binding),{kind:'eoa'});assert.deepEqual(rpc.methods.slice(before),['eth_getCode']);
+});
+
+test('recipient guard proof parser rejects fabricated hash/scope/code and the existing canonical RPC bound, without changing EOA classification',async context=>{
+ const rpc=await startRpcServer(new Map([[RECIPIENT_CONTRACT.toLowerCase(),'0x6000']]));context.after(()=>rpc.close());const client=createPublicClient({chain:base,transport:http(rpc.url,{retryCount:0})}),r=await observeRecipientCodeGuard(client,RECIPIENT_CONTRACT,BLOCK_NUMBER,{environmentId:'bef-a',generationId:GENERATION_ID,operationId:OPERATION_ID,requestSha256:'a'.repeat(64)});assert.equal(r.kind,'contract');if(r.kind!=='contract')assert.fail('proof');
+ for(const patch of [{code:'0x'},{code:'0x0'},{codeKeccak256:`0x${'00'.repeat(32)}`},{blockHash:'bad'},{blockNumber:'-1'},{operationId:'bad'},{unexpected:'private'},{code:'0x'+'60'.repeat(RECIPIENT_CODE_OBSERVATION_MAX_BYTES)}])assert.throws(()=>parseRecipientCodeObservation({...r.observation,...patch}));
+ assert.equal(RECIPIENT_CODE_OBSERVATION_MAX_BYTES,4*1024*1024);assert.equal(checkRecipientKind('0x'),'eoa');
+});
+
+test('unstable or missing historical contract observation stays unknown before any execution authority',async()=>{
+ const good={number:BLOCK_NUMBER,hash:`0x${'ab'.repeat(32)}`},binding={environmentId:'bef-a',generationId:GENERATION_ID,operationId:OPERATION_ID,requestSha256:'a'.repeat(64)};
+ for(const variant of ['code_changed','block_changed','wrong_block','missing_header','missing_code']){let codeReads=0,blockReads=0;const methods:string[]=[];
+  const client={async request({method}:{method:string}){methods.push(method);codeReads++;if(variant==='missing_code')throw Error('provider-secret-not-retained');return variant==='code_changed'&&codeReads===2?'0x':'0x6000';},async getBlock(){blockReads++;if(variant==='missing_header')throw Error('provider-secret-not-retained');return {...good,...(variant==='wrong_block'?{number:BLOCK_NUMBER+1n}:{}),...(variant==='block_changed'&&blockReads===2?{hash:`0x${'cd'.repeat(32)}`}:{})};}} as unknown as Parameters<typeof observeRecipientCodeGuard>[0];
+  const outcome=await observeRecipientCodeGuard(client,RECIPIENT_CONTRACT,BLOCK_NUMBER,binding);assert.deepEqual(outcome,{kind:'unknown'});assert(methods.every(m=>m==='eth_getCode'));assert(!JSON.stringify(outcome).includes('provider-secret'));
+ }
+});
+
+test('contract recipient response carries only a finite marker after durable proof retention, never prestate/sign/send', async (context) => {
+  const rpc = await startRpcServer(new Map<string, RpcCode>([[RECIPIENT_CONTRACT.toLowerCase(), '0x6000']]));
+  context.after(() => rpc.close());
+  const token = randomBytes(32).toString('base64url');
+  const tokenSha256 = createHash('sha256').update(token).digest('hex');
+  const poolClient = new TestPoolClient();
+  const rejections: Array<{ operationId: string; reason: string; observation:unknown }> = [];let retained=false;
+  const pool = {
+    async connect() { return poolClient; },
+    async query(text: string) {
+      if (text.includes('SELECT participant_id,payer_address,run_token_sha256')) {
+        return { rows: [{ participant_id: PARTICIPANT_ID, payer_address: PAYER, run_token_sha256: tokenSha256 }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  } as unknown as Pool;
+  const persistence = {
+    async createOrGet(_client: unknown, _auth: unknown, _kind: unknown, requestHash: string) {
+      return { operationId: OPERATION_ID, requestHash, status: 'accepted', transactionHash: null, isNew: true };
+    },
+    async rejectBeforeBroadcast(_client: unknown, operationId: string, reason: string,observation:unknown) {
+      assert.equal(retained,false);rejections.push({ operationId, reason,observation });retained=true;
+    },
+  };
+  const runtime = {
+    manifest: {
+      guardrails: { maxTrialSeconds: 60, maxHttpRequestBytes: 4096 },
+      feePolicy: {
+        baseFeeWei: '1', priorityFeeWei: '1', ethUsdcRateNumerator: '1', ethUsdcRateDenominator: '1',
+      },
+      swap: {
+        route: 'uniswap-v3-exactInputSingle', tokenIn: WETH, tokenOut: USDC, fee: 500,
+        maxAmountIn: '1000000000000000000', maxTransactionGas: '1200000',
+      },
+      contracts: {
+        weth: { address: WETH }, usdc: { address: USDC }, swapRouter02: { address: ROUTER },
+        quoterV2: { address: QUOTER }, pool: { address: POOL, token0: WETH, token1: USDC, fee: 500 },
+      },
+    },
+    pool,
+    envs: new Map([['bef-a', {
+      id: 'bef-a', adminRpcUrl: rpc.url, observerRpcUrl: rpc.url,
+      facilitatorUrl: rpc.url, facilitatorAddress: PAYER,
+      anvilIdentity: {}, facilitatorIdentity: {},
+    } as RuntimeEnvironment]]),
+  } as unknown as SelectedExecutionRuntime;
+  const dependencies = {
+    signerStore: { has: () => true },
+    persistence,
+    transactionRpcUrls: new Map([['bef-a', rpc.url]]),
+  } as unknown as SelectedExecutionDependencies;
+  const app = Fastify();
+  context.after(() => app.close());
+  await registerSelectedExecutionRoutes(app, runtime, dependencies);
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/tools/bef-a/swap',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'x-bef-generation': GENERATION_ID,
+      'idempotency-key': randomBytes(16).toString('hex'),
+    },
+    payload: {
+      amountInWei: '1', amountOutMinimumUsdcUnits: '0', recipient: RECIPIENT_CONTRACT,
+      gasLimit: '300000',
+    },
+  });
+
+  assert.equal(response.statusCode,400);assert.equal(retained,true);const body=response.json();assert.equal(body.error,'selected_recipient_must_be_eoa');assert.equal(body.operationId,OPERATION_ID);assert.deepEqual(Object.keys(body.rejectionProof).sort(),['schemaVersion','reasonCode','operationId','requestSha256'].sort());assert.equal(body.rejectionProof.schemaVersion,'bef-selected-recipient-code-guard/v1');assert.equal(body.rejectionProof.operationId,OPERATION_ID);assert.match(body.rejectionProof.requestSha256,/^[a-f0-9]{64}$/);assert.equal(rejections.length,1);const observation=parseRecipientCodeObservation(rejections[0]!.observation);assert.equal(observation.requestSha256,body.rejectionProof.requestSha256);assert.equal(observation.recipient,RECIPIENT_CONTRACT.toLowerCase());assert.equal(observation.blockNumber,BLOCK_NUMBER.toString());assert.equal(body.code,undefined);assert.equal(body.recipientCodeObservation,undefined);assert(!JSON.stringify(body).includes('0x6000'));assert.equal(rpc.methods.includes('eth_sendRawTransaction'),false);assert.equal(rpc.methods.includes('eth_call'),false);
 });

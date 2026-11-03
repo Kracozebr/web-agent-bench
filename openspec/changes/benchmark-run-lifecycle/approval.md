@@ -78,3 +78,18 @@ acceptance remain to be performed. No additional real-user fees, grants, model
 runs or credential operations are authorized beyond the explicit budget.
 Approval passes no gate: prior status stays recorded, amendment variants are
 not_run until independently exercised, and no sync/archive occurs here.
+
+## Scoped amendment: agent-visible mode-specific feedback
+
+Date: 2026-11-03 (Europe/Moscow).
+
+The owner directed that Training feedback remain available after each selected
+open task evaluation, while Ranked task scores remain withheld until the entire
+run is terminal. The existing scoped `runs.current_task` read shall return the
+released persisted task results at those points. A terminal Ranked response must
+preserve known per-task grades even if the run-level terminal status is unknown;
+only absent or unverifiable task evaluations remain unknown. Feedback reads do
+not invoke grading, reveal case parameters/reference solutions, or expose a
+participant tool-call journal. This addendum approves the BRL-SC-016 clarification
+and its bounded implementation; it does not pass the environment gate or authorize
+unrelated scenarios, tests, external writes, fees or credentials.

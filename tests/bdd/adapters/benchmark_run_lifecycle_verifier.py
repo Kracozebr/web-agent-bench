@@ -446,6 +446,168 @@ def _derive_024(capture: dict[str, Any]) -> dict[str, bool]:
     return {**observations, **negatives}
 
 
+def _derive_016(capture: dict[str, Any]) -> dict[str, bool]:
+    cases = capture.get("cases") if isinstance(capture.get("cases"), dict) else {}
+    training_early = cases.get("trainingBeforeEvaluation") if isinstance(cases.get("trainingBeforeEvaluation"), dict) else {}
+    training_after = cases.get("trainingAfterEvaluation") if isinstance(cases.get("trainingAfterEvaluation"), dict) else {}
+    ranked_early = cases.get("rankedBeforeTermination") if isinstance(cases.get("rankedBeforeTermination"), dict) else {}
+    ranked_final = cases.get("rankedUnknownTerminal") if isinstance(cases.get("rankedUnknownTerminal"), dict) else {}
+    early_score_request = cases.get("rankedEarlyScoreRequest") if isinstance(cases.get("rankedEarlyScoreRequest"), dict) else {}
+    foreign = cases.get("foreignRunRequest") if isinstance(cases.get("foreignRunRequest"), dict) else {}
+    trace_request = cases.get("internalTraceRequest") if isinstance(cases.get("internalTraceRequest"), dict) else {}
+    early_body = _body(training_early.get("response"))
+    training_body = _body(training_after.get("response"))
+    ranked_early_body = _body(ranked_early.get("response"))
+    ranked_final_body = _body(ranked_final.get("response"))
+    training_before_db = training_early.get("databaseBefore")
+    training_after_db = training_after.get("databaseAfter")
+    ranked_early_db = ranked_early.get("databaseBefore")
+    ranked_final_db = ranked_final.get("databaseAfter")
+    training_run_id = training_body.get("run", {}).get("runId") if isinstance(training_body.get("run"), dict) else None
+    ranked_open_run_id = ranked_early_body.get("run", {}).get("runId") if isinstance(ranked_early_body.get("run"), dict) else None
+    ranked_final_run_id = ranked_final_body.get("run", {}).get("runId") if isinstance(ranked_final_body.get("run"), dict) else None
+    training_result = next((row for row in _rows(training_after_db, "evaluations")
+        if row.get("run_id") == training_run_id and row.get("task_id") == "S1"), {})
+    closed_training_result = next((row for row in _rows(training_after_db, "evaluations")
+        if row.get("run_id") == training_run_id and row.get("task_id") == "S3"), {})
+    ranked_open_result = next((row for row in _rows(ranked_early_db, "evaluations")
+        if row.get("run_id") == ranked_open_run_id), {})
+    ranked_unknown_run = next((row for row in _rows(ranked_final_db, "runs")
+        if row.get("id") == ranked_final_run_id), {})
+    ranked_known_result = next((row for row in _rows(ranked_final_db, "evaluations")
+        if row.get("run_id") == ranked_final_run_id and row.get("task_id") == "S3"), {})
+    ranked_tasks = ranked_final_body.get("feedback") if isinstance(ranked_final_body.get("feedback"), list) else []
+    ranked_s3 = next((row for row in ranked_tasks if isinstance(row, dict) and row.get("taskId") == "S3"), {})
+    ranked_m2 = next((row for row in ranked_tasks if isinstance(row, dict) and row.get("taskId") == "M2"), {})
+    training_tasks = training_body.get("feedback") if isinstance(training_body.get("feedback"), list) else []
+    training_s1 = next((row for row in training_tasks if isinstance(row, dict) and row.get("taskId") == "S1"), {})
+    response_keys = {"taskId", "status", "outcome", "credit", "reason"}
+    allowed_reasons = {None, "goal_unmet", "budget_reserve_permission_scope_violation", "time_exhausted", "evidence_unknown"}
+
+    def no_private_journal(value: Any) -> bool:
+        if isinstance(value, list):
+            return all(no_private_journal(item) for item in value)
+        if not isinstance(value, dict):
+            return True
+        forbidden = {"journal", "actions", "toolcalls", "transcript", "chronologicaltoolcalls", "participantjournal"}
+        return all(str(key).lower() not in forbidden and no_private_journal(child) for key, child in value.items())
+
+    def no_reference_fields(value: Any) -> bool:
+        if isinstance(value, list):
+            return all(no_reference_fields(item) for item in value)
+        if not isinstance(value, dict):
+            return True
+        forbidden = {"referencepath", "referencesolution", "expectedanswer", "solution", "taskcase", "observations"}
+        return all(str(key).lower() not in forbidden and no_reference_fields(child) for key, child in value.items())
+
+    training_feedback_after_task = bool(
+        _status(training_early.get("response")) == 200
+        and _status(training_after.get("response")) == 200
+        and not _rows(training_before_db, "evaluations")
+        and "feedback" not in early_body
+        and early_body.get("task", {}).get("taskId") == "S1"
+        and isinstance(training_result.get("result_json"), dict)
+        and training_s1.get("taskId") == "S1"
+        and training_s1.get("status") == training_result["result_json"].get("status")
+        and training_s1.get("outcome") == training_result["result_json"].get("outcome")
+        and training_s1.get("credit") == training_result["result_json"].get("credit")
+        and _no_delta(training_after.get("databaseBefore"), training_after_db, "evaluations")
+        and _no_delta(training_after.get("databaseBefore"), training_after_db, "events")
+    )
+    ranked_withheld = bool(
+        _status(ranked_early.get("response")) == 200
+        and ranked_early_body.get("run", {}).get("status") == "running"
+        and ranked_early_body.get("run", {}).get("terminal") is False
+        and "feedback" not in ranked_early_body
+        and ranked_open_result
+        and _no_delta(ranked_early.get("databaseBefore"), ranked_early.get("databaseAfter"), "evaluations")
+    )
+    ranked_final_only = bool(
+        _status(ranked_final.get("response")) == 200
+        and ranked_final_body.get("run", {}).get("terminal") is True
+        and ranked_final_body.get("task") is None
+        and len(ranked_tasks) == 2
+        and all(set(row) == response_keys for row in ranked_tasks if isinstance(row, dict))
+    )
+    tool_response_immediate = bool(
+        _status(training_early.get("response")) == 200
+        and isinstance(training_early.get("response", {}).get("elapsedMs"), int)
+        and training_early["response"]["elapsedMs"] <= 10000
+        and early_body.get("task", {}).get("taskId") == "S1"
+    )
+    foreign_rejected = bool(
+        _status(foreign) == 200
+        and foreign.get("isError") is True
+        and _body(foreign).get("error", {}).get("code") == "RUN_NOT_FOUND"
+        and "feedback" not in _body(foreign)
+    )
+    ranked_result_and_reason = bool(
+        isinstance(ranked_known_result.get("result_json"), dict)
+        and ranked_s3.get("status") == ranked_known_result["result_json"].get("status") == "known"
+        and ranked_s3.get("outcome") == ranked_known_result["result_json"].get("outcome") == "failed"
+        and ranked_s3.get("credit") == ranked_known_result["result_json"].get("credit") == {"numerator": "0", "denominator": "1"}
+        and ranked_s3.get("reason") == "goal_unmet"
+    )
+    ranked_unknown_preserves_grades = bool(
+        ranked_unknown_run.get("status") == "unknown"
+        and ranked_final_body.get("run", {}).get("status") == "unknown"
+        and ranked_s3.get("status") == "known"
+        and ranked_s3.get("credit") == {"numerator": "0", "denominator": "1"}
+        and ranked_m2.get("status") == "unknown"
+        and ranked_m2.get("outcome") == "unknown"
+        and ranked_m2.get("credit") is None
+    )
+    no_journal = no_private_journal(ranked_final_body) and all(no_private_journal(row) for row in ranked_tasks)
+    closed_reason_allowlist = ranked_s3.get("reason") in allowed_reasons
+    closed_parameters_absent = no_reference_fields(ranked_final_body) and all(no_reference_fields(row) for row in ranked_tasks)
+    necessary_task_preserved = bool(
+        _status(training_early.get("response")) == 200
+        and early_body.get("task", {}).get("taskId") == "S1"
+        and early_body.get("task", {}).get("runId") == early_body.get("run", {}).get("runId")
+    )
+    early_score_body = _body(early_score_request)
+    trace_body = _body(trace_request)
+    ranked_early_score_request = bool(
+        (early_score_request.get("isError") is True or early_score_request.get("protocolError"))
+        and "feedback" not in early_score_body
+    )
+    training_before_evaluation = bool("feedback" not in early_body and not _rows(training_before_db, "evaluations"))
+    reference_solution_field = no_reference_fields(ranked_final_body) and no_reference_fields(training_body.get("feedback", []))
+    foreign_result_request = foreign_rejected
+    request_internal_trace = bool(
+        (trace_request.get("isError") is True or trace_request.get("protocolError"))
+        and "feedback" not in trace_body
+    )
+    closed_parameter_in_reason = bool(
+        ranked_s3.get("reason") in allowed_reasons
+        and isinstance(ranked_s3.get("reason"), (str, type(None)))
+    )
+    ranked_feedback_before_terminal = "feedback" not in ranked_early_body
+    closed_training_projection = bool(closed_training_result and all(row.get("taskId") != "S3" for row in training_tasks))
+
+    return {
+        "training_feedback_after_task": training_feedback_after_task,
+        "ranked_scores_withheld_until_finish": ranked_withheld,
+        "ranked_final_scores_only": ranked_final_only,
+        "tool_response_immediate": tool_response_immediate,
+        "foreign_feedback_rejected": foreign_rejected,
+        "ranked_result_scores_and_error_reasons": ranked_result_and_reason,
+        "no_participant_chronological_tool_journal": no_journal,
+        "closed_reason_allowlist": closed_reason_allowlist,
+        "closed_exact_parameters_absent": closed_parameters_absent,
+        "necessary_scoped_tool_response_preserved": necessary_task_preserved,
+        "ranked_terminal_unknown_preserves_known_task_grades": ranked_unknown_preserves_grades,
+        "ranked_early_score_request": ranked_early_score_request,
+        "training_feedback_before_task_evaluation": training_before_evaluation,
+        "reference_solution_field": reference_solution_field,
+        "foreign_result_request": foreign_result_request,
+        "request_internal_tool_trace_as_feedback": request_internal_trace,
+        "closed_parameter_in_reason": closed_parameter_in_reason,
+        "ranked_feedback_before_terminal": ranked_feedback_before_terminal,
+        "closed_training_projection": closed_training_projection,
+    }
+
+
 def derive_observations(scenario_id: str, evidence: Any) -> dict[str, bool] | None:
     """Recompute supported BRL facts from the producer's raw evidence object."""
 
@@ -459,4 +621,6 @@ def derive_observations(scenario_id: str, evidence: Any) -> dict[str, bool] | No
         return _derive_023(evidence)
     if scenario_id == "BRL-SC-024":
         return _derive_024(evidence)
+    if scenario_id == "BRL-SC-016":
+        return _derive_016(evidence)
     return None

@@ -190,6 +190,7 @@ export function AdminPanel() {
         <p className="lede">Manage owner admission and issue immutable tester bonus grants. The API verifies administrator authority for every action.</p>
         <p className="fine"><Link href="/admin/bonus-codes" data-testid="admin-bonus-codes-link">Manage redeemable bonus codes</Link></p>
         <p className="fine"><Link href="/admin/reports" data-testid="admin-reports-link">Review private support reports</Link></p>
+        <p className="fine"><Link href="/admin/diagnostics" data-testid="admin-diagnostics-link">Review client diagnostics and delivery coverage</Link></p>
       </div>
       <BonusGrantPanel />
       <div className="content-grid">

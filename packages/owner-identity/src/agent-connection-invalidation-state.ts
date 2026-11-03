@@ -4,7 +4,7 @@ import { dirname, isAbsolute, parse, resolve, sep } from 'node:path';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
 
-type Kind = 'connection_revoke' | 'agent_revoke' | 'refresh_consume';
+type Kind = 'connection_revoke' | 'agent_revoke' | 'refresh_consume' | 'diagnostic_refresh_consume' | 'diagnostic_code_consume';
 export interface ConnectionInvalidationIntent {
   kind: Kind; operationId: string; ownerId: string; agentId: string;
   connectionId?: string; generationFloor?: number; consumedRefreshHash?: string;
@@ -35,9 +35,9 @@ function validateScope(value: Omit<ConnectionInvalidationIntent, 'operationId'>)
   if (!UUID.test(value.ownerId) || !UUID.test(value.agentId)) fail();
   if (value.kind === 'agent_revoke') {
     if (!Number.isSafeInteger(value.generationFloor) || value.generationFloor! < 1 || value.connectionId || value.consumedRefreshHash) fail();
-  } else if (value.kind === 'connection_revoke' || value.kind === 'refresh_consume') {
+  } else if (value.kind === 'connection_revoke' || value.kind === 'refresh_consume' || value.kind === 'diagnostic_refresh_consume' || value.kind === 'diagnostic_code_consume') {
     if (!value.connectionId || !UUID.test(value.connectionId) || value.generationFloor !== undefined ||
-        (value.kind === 'refresh_consume' ? !/^[A-Za-z0-9_-]{43}$/.test(value.consumedRefreshHash ?? '') : value.consumedRefreshHash !== undefined)) fail();
+        (value.kind !== 'connection_revoke' ? !/^[A-Za-z0-9_-]{43}$/.test(value.consumedRefreshHash ?? '') : value.consumedRefreshHash !== undefined)) fail();
   } else fail();
 }
 async function safePath(path: string, missingFinal = false) {
@@ -187,6 +187,9 @@ export async function reconcileAgentConnectionInvalidation(db: OwnerDatabase, st
     if (prior[0] && (prior[0].metadata.journalId !== snapshot.journalId || (prior[0].metadata.sequence ?? -1) > snapshot.sequence)) fail();
     let fencedConnections = 0;
     for (const event of snapshot.events) {
+      // AICODE-NOTE: Helper consumptions belong to their own OAuth tables. Never
+      // reconcile them as native refresh failures or revoke a solver connection.
+      if (event.kind === 'diagnostic_refresh_consume' || event.kind === 'diagnostic_code_consume') continue;
       const agents = await tx.execute(sql`SELECT id,access_generation FROM oid_agent WHERE id=${event.agentId} AND owner_id=${event.ownerId} FOR NO KEY UPDATE`) as unknown as Array<{id:string; access_generation:number}>;
       if (!agents.length) continue;
       if (event.kind === 'agent_revoke') {

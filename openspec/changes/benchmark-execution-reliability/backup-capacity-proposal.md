@@ -1,4 +1,51 @@
-# Approved bounded backup capacity amendment
+# Approved bounded backup capacity amendments
+
+## Current approved count: 16,384 (2026-11-03)
+
+The owner approved increasing only the official source-file cap to 16,384 and
+checking 16,384 accepted / 16,385 rejected, followed by a fresh complete cold
+restore without enabling writes. Full read-only discovery of the original DB
+found 9,616 required source files (9,612 hash-verified official/provenance files
+plus four required metadata files), exceeding the former 8,192 cap. This is a
+complete selected inventory for 18 runs, including the later native run, rather
+than a count of global disposable artifacts.
+
+Proof: `.local/mcd-current-original-discovery-a9c93309-4d5a-4ec6-a731-8b226581b157/inventory.json`,
+SHA-256 `56289540464c66ed927419e5900913ee6f0e95dbf849cb312dbf9a20decd1e92`.
+Selected hash-verified bytes are 50,160,947; largest file 721,702 bytes. Actual
+fresh freeze metadata and generated manifest size still require measurement.
+
+Only the count changes. The 64 MiB per-file, 2 GiB total and 16 MiB manifest caps,
+exact file-set/hash/path/symlink protections, encryption, source quiescence,
+write-disabled clone, diagnostic helper-authority policy and external native
+revocation journal are preserved. The six scoped implementation/test/verifier
+files now use the approved count. Canonical Linux tests passed 16/16, including
+actual materialization and byte verification of 16,384 files and rejection of
+16,385 before materialization. Windows passed the count boundary but could not
+create symlinks in three other test fixtures (EPERM); those failures were not
+suppressed, and the same symlink cases passed in Linux. Operator summary:
+`.local/ber-backup-16384-boundary-summary-20261103.json`, SHA-256
+`0729b62ccbf9a986801562f40b32676ca2d5bb2f9d3f7fe75d8ad01cbd5f3ef5`.
+The fresh complete original-DB checkpoint and cold restore now passed independent
+byte-preservation verification: capture `c5e4ad00-5182-40c4-82d7-bbc5935c56f4`
+preserved 18 runs, 45 ledger entries, seven reports, one 33,102-byte screenshot
+and 9,617 official payload files including the generated manifest (55,052,641
+bytes). The 98-table source fingerprints remained unchanged; the clone matched
+the exact approved helper-authority exclusion policy, preserving all other
+business/native/diagnostic state. The external native revocation journal matched
+before/after and at independent verification. Fresh clone connections received
+SQLSTATE `25006`; no app or worker was served, no BEF call or original DB write
+was performed. Restore elapsed 134,775 ms is a local observation, not target RTO.
+
+Proof: `.local/aci-pre-migration-c5e4ad00-5182-40c4-82d7-bbc5935c56f4/proof.json`,
+SHA-256 `d2833ee2b199b3d43e11ecdd5b4b9fad25e334bfa25f907797933cdc96d8276f`.
+[Independent verification](../../../artifacts/runs/aci-pre-migration-preservation/c5e4ad00-5182-40c4-82d7-bbc5935c56f4/independent-verification.json),
+SHA-256 `5df99bf93d472d822bbd9f11e7fd1f191881340402e0347d1ade9de7f2d87d43`.
+Scope remains complete stopped-source byte preservation; original runtime
+activation, native client E2E and broader benchmark gates remain separate.
+Historical 8,192-limit proofs below remain historical and are not relabelled.
+
+## Historical approved count: 8,192 (2026-10-31)
 
 Status: approved by the owner in this chat on 2026-10-31. The exact 8,192-file count amendment, retained byte limits, boundary assertions and fresh write-disabled full cold restore are authorized. Implemented after H1 qualification was committed as `2566b7d`. Nineteen focused tests and fresh complete local cold restore passed; target and restored-runtime activation remain unapproved.
 

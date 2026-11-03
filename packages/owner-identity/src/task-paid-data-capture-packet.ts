@@ -34,9 +34,9 @@ export type PaidDataAction = {
   retrievedContent: { payloadSchemaVersion: string; resourceSchema: string; resourceId: string; contentType: string; contentSha256: string; byteCount: number; validJson: boolean } | null;
 };
 export type PaidDataCapturePacket = {
-  schemaVersion: 'bts-paid-data-run-observation-capture/v1';
+  schemaVersion: 'bts-paid-data-run-observation-capture/v1' | 'bts-paid-family-observation-capture/v1';
   classification: 'run_bound_observations_candidate_not_grade';
-  binding: Record<string, unknown> & { taskId: PaidDataTaskId };
+  binding: Record<string, unknown> & { taskId: TaskCase['taskId'] };
   closure: { closureId: string; actionCutoffSequence: number; reconciledActionSequence: number; reason: string; operationId: string | null; payloadHash: string };
   execution: { preparationId: string; leaseId: string; generationId: string; environmentId: string; environmentManifestHash: string;
     applicationSourceHash: string; executionIdentityHash: string; initialStateSha256: string };
@@ -106,14 +106,14 @@ function validatePaidAction(value: unknown): value is PaidDataAction {
   }
   return true;
 }
-export function validatePaidDataCapturePacket(value: unknown): PaidDataCapturePacket {
+function validatePaidCapturePacket(value: unknown, family: boolean): PaidDataCapturePacket {
   if (!isRecord(value) || !exactKeys(value, ['schemaVersion','classification','binding','closure','execution','preparation','manifest','ownerActions','bef','rpc','coverage']))
     fail('PAID_DATA_PACKET_INVALID');
-  if (value.schemaVersion !== 'bts-paid-data-run-observation-capture/v1' || value.classification !== 'run_bound_observations_candidate_not_grade')
+  if (value.schemaVersion !== (family ? 'bts-paid-family-observation-capture/v1' : 'bts-paid-data-run-observation-capture/v1') || value.classification !== 'run_bound_observations_candidate_not_grade')
     fail('PAID_DATA_PACKET_INVALID');
   const binding = value.binding, closure = value.closure, execution = value.execution, preparation = value.preparation;
   const manifest = value.manifest, bef = value.bef, rpc = value.rpc, coverage = value.coverage;
-  if (!isRecord(binding) || !['M1','M2','H1','H3','U1'].includes(String(binding.taskId)) ||
+  if (!isRecord(binding) || !(family ? ['S1','S2','S3','S4','M1','M2','M3','M4','H1','H2','H3','U1'] : ['M1','M2','H1','H3','U1']).includes(String(binding.taskId)) ||
       !isRecord(closure) || !safeInteger(closure.actionCutoffSequence) || !safeInteger(closure.reconciledActionSequence) ||
       closure.reconciledActionSequence < closure.actionCutoffSequence || typeof closure.closureId !== 'string' ||
       typeof closure.reason !== 'string' || typeof closure.payloadHash !== 'string' || !checkHash(closure.payloadHash) ||
@@ -172,6 +172,18 @@ export function validatePaidDataCapturePacket(value: unknown): PaidDataCapturePa
   if (Buffer.byteLength(canonicalTaskJson(value), 'utf8') > MAX_PACKET_BYTES) fail('PAID_DATA_PACKET_LIMIT_EXCEEDED');
   return value as unknown as PaidDataCapturePacket;
 }
+/** Legacy packet parser retains its original five-task surface. */
+export function validatePaidDataCapturePacket(value: unknown): PaidDataCapturePacket {
+  return validatePaidCapturePacket(value, false);
+}
+/** A paid-family packet proves paid facts only; it cannot assert whole-task effect completeness. */
+export function validatePaidFamilyCapturePacket(value: unknown): PaidDataCapturePacket {
+  return validatePaidCapturePacket(value, true);
+}
+function paidPacketForProjection(value: unknown): PaidDataCapturePacket {
+  return isRecord(value) && value.schemaVersion === 'bts-paid-family-observation-capture/v1'
+    ? validatePaidFamilyCapturePacket(value) : validatePaidDataCapturePacket(value);
+}
 export function parsePaidDataCapturePacket(bytes: Uint8Array): PaidDataCapturePacket {
   if (bytes.byteLength > MAX_PACKET_BYTES) fail('PAID_DATA_PACKET_LIMIT_EXCEEDED');
   let parsed: unknown;
@@ -179,15 +191,28 @@ export function parsePaidDataCapturePacket(bytes: Uint8Array): PaidDataCapturePa
   catch { fail('PAID_DATA_PACKET_INVALID'); }
   return validatePaidDataCapturePacket(parsed);
 }
+export function parsePaidFamilyCapturePacket(bytes: Uint8Array): PaidDataCapturePacket {
+  if (bytes.byteLength > MAX_PACKET_BYTES) fail('PAID_DATA_PACKET_LIMIT_EXCEEDED');
+  let parsed: unknown;
+  try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown; }
+  catch { fail('PAID_DATA_PACKET_INVALID'); }
+  return validatePaidFamilyCapturePacket(parsed);
+}
 /** Rebinds the packet's chain and preparation baseline to the validated release and RPC interval. */
-export function validatePaidDataCapturePacketPins(value: unknown, expectedLocalChainId: number): PaidDataCapturePacket {
-  const packet = validatePaidDataCapturePacket(value);
+function validatePaidCapturePacketPins(value: unknown, expectedLocalChainId: number, family: boolean): PaidDataCapturePacket {
+  const packet = family ? validatePaidFamilyCapturePacket(value) : validatePaidDataCapturePacket(value);
   if (!Number.isSafeInteger(expectedLocalChainId) || expectedLocalChainId < 1 ||
       packet.rpc.localChainId !== String(expectedLocalChainId) ||
       packet.preparation.baselineBlockNumber !== packet.rpc.baselineBlock.number ||
       packet.preparation.baselineBlockHash.toLowerCase() !== packet.rpc.baselineBlock.hash.toLowerCase())
     fail('PAID_DATA_PACKET_INVALID');
   return packet;
+}
+export function validatePaidDataCapturePacketPins(value: unknown, expectedLocalChainId: number): PaidDataCapturePacket {
+  return validatePaidCapturePacketPins(value, expectedLocalChainId, false);
+}
+export function validatePaidFamilyCapturePacketPins(value: unknown, expectedLocalChainId: number): PaidDataCapturePacket {
+  return validatePaidCapturePacketPins(value, expectedLocalChainId, true);
 }
 export type PaidDataObservationCandidate = {
   schemaVersion: 'bts-paid-data-observation-candidate/v1';
@@ -205,7 +230,7 @@ export type PaidDataObservationCandidate = {
 };
 /** Maps only paid-data facts and case component identifiers; validity and chain-task outcome remain evaluator inputs. */
 export function projectPaidDataCaptureCandidate(packetValue: unknown, taskCase: TaskCase): PaidDataObservationCandidate {
-  const packet = validatePaidDataCapturePacket(packetValue);
+  const packet = paidPacketForProjection(packetValue);
   if (taskCase.taskId !== packet.binding.taskId || taskCase.caseId !== packet.binding.caseId ||
       taskCase.caseHash !== packet.binding.caseHash) throw new PaidDataCapturePacketError('PAID_DATA_PACKET_INVALID');
   const expectedComponents = taskCase.taskId === 'M1' ? [taskCase.objective.component] :
@@ -275,7 +300,7 @@ function retrievalMayTargetPayment(action: PaidDataAction, operationId: string):
 
 /** Projects only typed evaluator facts that are joined to a real owner action and retained source evidence. */
 export function projectPaidDataObservationBundle(packetValue: unknown, context: PaidDataObservationProjectionContext): TaskObservationBundleCandidate {
-  const packet = validatePaidDataCapturePacket(packetValue);
+  const packet = paidPacketForProjection(packetValue);
   const paidCandidate = projectPaidDataCaptureCandidate(packet, context.taskCase);
   if (canonicalTaskJson(packet.binding) !== canonicalTaskJson(context.binding) ||
       context.captureEvidence.boundary !== 'actual_tool_http_x402_local_evm_application_store')
@@ -384,7 +409,9 @@ export function projectPaidDataObservationBundle(packetValue: unknown, context: 
   for (const action of packet.ownerActions.filter((item) => item.actionKind === 'retrieve' && item.receiptStatus === 'observed')) {
     const operationId = String(action.befOperationId ?? '').toLowerCase(),delivery = deliveryByOperation.get(operationId),content = action.retrievedContent;
     if (!delivery || !content) { observations.coverage.deliveries = 'incomplete'; continue; }
-    const componentId = componentByResource.get(content.resourceId),payment = paymentAttemptByOperation.get(operationId),response = context.actionResponses.get(action.actionId);
+    const componentId = componentByResource.get(content.resourceId) ??
+      (packet.schemaVersion === 'bts-paid-family-observation-capture/v1' ? `observed-resource:${content.resourceId}` : undefined),
+      payment = paymentAttemptByOperation.get(operationId),response = context.actionResponses.get(action.actionId);
     if (!componentId || emittedDeliveries.has(String(delivery.delivery_id))) continue;
     if (!payment || typeof payment.transaction_hash !== 'string' || !response || typeof response.contentBytes !== 'string' ||
         !isRecord(response.content) || response.resourceId !== content.resourceId || response.contentType !== content.contentType ||
@@ -404,7 +431,8 @@ export function projectPaidDataObservationBundle(packetValue: unknown, context: 
     let payloadSchemaVersion = content.payloadSchemaVersion;
     let payload: Record<string, unknown> = { resourceId: content.resourceId, contentType: content.contentType,
       contentHash: content.contentSha256, contentBytes: response.contentBytes };
-    if (context.taskCase.taskId === 'H3') {
+    if (context.taskCase.taskId === 'H3' && (packet.schemaVersion !== 'bts-paid-family-observation-capture/v1' ||
+        content.resourceId === context.taskCase.objective.referenceComponent.resourceId)) {
       const component = context.taskCase.objective.referenceComponent;
       const referenceField = context.taskCase.objective.routeObjective.referenceField;
       const resource = packet.manifest.catalog.find((item) => item.resourceId === content.resourceId);
@@ -480,6 +508,12 @@ export function projectPaidDataObservationBundle(packetValue: unknown, context: 
   }
   if (packet.binding.taskId === 'H3' || packet.binding.taskId === 'U1') {
     observations.coverage.trades = 'incomplete'; observations.coverage.conversions = 'incomplete';
+  }
+  // AICODE-NOTE: Only the independently joined paid+chain root can close these domains.
+  // A paid-family census must never make skipped chain actions disappear behind "complete".
+  if (packet.schemaVersion === 'bts-paid-family-observation-capture/v1') {
+    for (const domain of ['transfers','stateMutations','expenses','balances','allowances','trades','conversions'] as const)
+      observations.coverage[domain] = 'incomplete';
   }
   const candidate: TaskObservationBundleCandidate = { schemaVersion: 'bts-task-observation-bundle-candidate/v1',
     observationCutoffSequence: observations.coveredThroughSequence, cutoffStatus: 'authoritative', cutoffEvidence: context.captureEvidence, observations };

@@ -5,6 +5,7 @@ import { isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { inspectBackupFile, validateBackupInventory, verifyBackupFiles } from './beta-backup-inventory.mjs';
 import { sealCheckpointPayload } from './beta-backup-sealed-bundle.mjs';
+import { diagnosticAuthorityRestoreProof } from './beta-backup-diagnostic-authority.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -13,7 +14,7 @@ const ENCRYPTED_DUMP_HEADER = Buffer.from('BPC-SC022-DBENC-V1\n', 'ascii');
 const DAY_SECONDS = 30 * 24 * 60 * 60;
 const CHECKPOINT_SCHEMA_V2 = 'beta-backup-inventory/v2';
 // AICODE-NOTE: Keep these limits aligned with beta-backup-restore.mjs and combined restore verifiers so a verified checkpoint is reopenable.
-const MAX_OFFICIAL_FILE_COUNT = 8192;
+const MAX_OFFICIAL_FILE_COUNT = 16384;
 const MAX_OFFICIAL_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_OFFICIAL_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_OFFICIAL_MANIFEST_BYTES = 16 * 1024 * 1024;
@@ -175,7 +176,8 @@ function assertStableSnapshots(before, after, input) {
   if (!Array.isArray(before.reportDeletionReceipts) || canonical(before.reportDeletionReceipts) !== canonical(after.reportDeletionReceipts)) {
     fail('source_report_receipts_changed');
   }
-  return { sourceBuildSha256: sourceBuild, databaseTotalsSha256: totals,
+  const restoreProof=diagnosticAuthorityRestoreProof(before);
+  return { sourceBuildSha256: sourceBuild, databaseTotalsSha256: totals,...(restoreProof.policy?{restoreDataPolicy:restoreProof.policy}:{}),
     operationBindings: beforeBindings, imageFiles: before.imageFiles, reportDeletionReceipts: before.reportDeletionReceipts };
 }
 
@@ -235,6 +237,7 @@ export async function finalizeBackupCheckpoint(input) {
       reconciliation.sourceStable !== true || reconciliation.snapshotBoundaryId !== sourceBefore.snapshotBoundaryId ||
       reconciliation.databaseTotalsSha256 !== stable.databaseTotalsSha256 ||
       reconciliation.sourceBuildSha256 !== stable.sourceBuildSha256 ||
+      canonical(reconciliation.restoreDataPolicy??null)!==canonical(stable.restoreDataPolicy??null) ||
       canonical(reconciliation.operationBindings) !== canonical(stable.operationBindings)) fail('reconciliation_evidence_mismatch');
   if (!officialManifest || officialManifest.schemaVersion !== 'beta-official-evidence-source/v1' ||
       typeof officialManifest.sourceProfile !== 'string' || !officialManifest.sourceProfile ||
@@ -290,7 +293,7 @@ export async function finalizeBackupCheckpoint(input) {
     schemaVersion: 'beta-backup-inventory/v1', checkpointId: input.checkpointId, kind: input.kind,
     failureDomain: 'same_host', sourceBuildSha256: stable.sourceBuildSha256, capturedAt: input.capturedAt,
     betaEndedAt: closure.betaEndedAt, reconciliationEvidenceSha256: reconciliationEntry.sha256,
-    databaseTotalsSha256: stable.databaseTotalsSha256, reportDeletionReceipts: stable.reportDeletionReceipts,
+    databaseTotalsSha256: stable.databaseTotalsSha256,...(stable.restoreDataPolicy?{restoreDataPolicy:stable.restoreDataPolicy}:{}), reportDeletionReceipts: stable.reportDeletionReceipts,
     files: [databaseFile, sourceBeforeEntry, sourceAfterEntry, reconciliationEntry, officialManifestEntry,
       ...evidenceEntries, ...screenshots],
     checkpointSource: {
@@ -514,6 +517,7 @@ export async function createCombinedCheckpoint({ source, checkpoint, adapters, k
     const reconciliation = {
       schemaVersion: 'beta-combined-checkpoint-reconciliation/v1', sourceStable: true,
       snapshotBoundaryId: lease.boundaryId, databaseTotalsSha256: stable.databaseTotalsSha256,
+      ...(stable.restoreDataPolicy?{restoreDataPolicy:stable.restoreDataPolicy}:{}),
       sourceBuildSha256: stable.sourceBuildSha256, operationBindings: stable.operationBindings,
       databaseDumpSha256: databaseDump.sha256, imageFilePaths: privateImagePaths,
       officialEvidenceManifestSha256: officialRoot.manifestDigest.sha256,
@@ -546,6 +550,7 @@ export async function createCombinedCheckpoint({ source, checkpoint, adapters, k
       schemaVersion: CHECKPOINT_SCHEMA_V2, checkpointId, kind: checkpoint.kind, failureDomain: 'same_host',
       sourceBuildSha256: stable.sourceBuildSha256, capturedAt: before.snapshotAt, betaEndedAt: closureTime,
       reconciliationEvidenceSha256: evidenceRow.sha256, databaseTotalsSha256: stable.databaseTotalsSha256,
+      ...(stable.restoreDataPolicy?{restoreDataPolicy:stable.restoreDataPolicy}:{}),
       reportDeletionReceipts: stable.reportDeletionReceipts,
       payloadManifestSha256: sealedResult.payloadManifest.payloadManifestSha256,
       recoveryEnvelopeSha256: sealedResult.keyRecovery.envelopeSha256,

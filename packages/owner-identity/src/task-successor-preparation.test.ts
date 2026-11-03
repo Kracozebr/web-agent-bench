@@ -178,6 +178,26 @@ test('successor preparation is ordered, replay-bound, deadline-bounded, and does
     const failedSuccessor = await beginSuccessorTaskPreparation(failedDeps, failedTarget);
     assert.equal(failedSuccessor.preparation.intent.taskIndex, 1, 'a known ordinary failure may advance');
 
+    // Canonical known results still require exact independent raw-evidence replay on every handoff.
+    for (const unavailable of ['missing', 'changed'] as const) {
+      const fixture = await configuredFixture();
+      await finalizePredecessor(fixture);
+      const replayDeps = dependenciesFor(fixture.environmentId);
+      replayDeps.predecessorEvidenceSource = { async load() {
+        if (unavailable === 'missing') return null;
+        assert.ok(fixture.evaluationInput);
+        const changed = structuredClone(fixture.evaluationInput) as EvaluateTaskInput;
+        changed.observations.captureEvidence.sha256 = 'f'.repeat(64);
+        return changed;
+      } };
+      await assert.rejects(beginSuccessorTaskPreparation(replayDeps, {
+        runId: fixture.runId, taskIndex: 1,
+        claimId: (await client`SELECT claim_id FROM oid_run_dispatch_claim WHERE run_id=${fixture.runId}`)[0]!.claim_id,
+      }), (error: { code?: string }) => error.code === 'TASK_EVALUATION_EVIDENCE_MISMATCH');
+      assert.equal(await hasSuccessorPreparation(fixture.runId), false,
+        `${unavailable} independent evidence cannot create a successor despite the retained known result`);
+    }
+
     const malformedViolation = await configuredFixture({ verifiedNativeReserveViolation: true,
       contradictoryMandatoryViolationResult: 'partial' });
     await finalizePredecessor(malformedViolation);

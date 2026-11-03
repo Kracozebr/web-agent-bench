@@ -17,16 +17,26 @@ import { M1CapturePacketError, parseM1CapturePacket, projectM1PacketObservations
 import { parsePaidDataCapturePacket, projectPaidDataObservationBundle, validatePaidDataCapturePacketPins, type PaidDataAction, type PaidDataCapturePacket } from './task-paid-data-capture-packet.js';
 import { parseTaskChainCapturePacket, projectTaskChainCapturePacket, verifyTaskChainCapturePacketChildren } from './task-chain-capture-packet.js';
 import type { ChainTaskCase } from './task-chain-capture-packet.js';
-import { sameActionEnvelope } from './bef-chain-observation-collector.js';
+import { sameActionEnvelope,rejectedSwapActionEvidenceMatches } from './bef-chain-observation-collector.js';
+import {rejectedSwapSource} from './task-rejected-swap-proof.js';
 import { parseS3CapturePacket, projectS3PacketObservations, type S3CaptureAction, type S3CapturePacket } from './task-s3-capture-packet.js';
 import { composeTaskObservationCandidates, parseCompositeCapturePacket, verifyCompositeCaptureChildren } from './task-composite-capture-packet.js';
 import type { TaskObservationBundleCandidate } from './task-observation-store.js';
+import { loadAdmittedActionRows, validateAdmittedActionCensus } from './bef-admitted-action-census.js';
+import { parseAdmittedActionsCapturePacket, composeAdmittedActionObservationCandidates,
+  projectAdmittedActionFamilyCandidates, admittedDeliveryAbsenceSources } from './task-admitted-actions-capture-packet.js';
+import { parsePaidFamilyCapturePacket } from './task-paid-data-capture-packet.js';
+import { validateTaskChainFamilyCapturePacket } from './task-chain-capture-packet.js';
+import { parseM1PreparationEvidence, m1PreparationHealthMatches } from './bef-m1-observation-collector.js';
+import { parseS4PreparationEvidence, validateS4PreparationFixtureEvidence } from './bef-s4-observation-collector.js';
+import { validateS4FixtureBoundaryCapture } from './task-s4-fixture-boundary.js';
 import {
   canonicalTaskJson,
   sha256CanonicalTaskJson,
   type EvidenceReference,
   type TaskCase,
   type TaskReleaseQuerySource,
+  type TaskReleaseManifest,
 } from './task-release.js';
 
 type Transaction = Parameters<Parameters<OwnerDatabase['transaction']>[0]>[0];
@@ -121,11 +131,15 @@ type EvidenceRow = {
   prepared_environment_manifest_hash: string;
   prepared_application_source_hash: string;
   prepared_execution_identity_hash: string;
+  prepared_claim_id?: string;
+  prepared_created_at?: Date | string;
   lease_state: 'leased' | 'fenced';
   execution_environment_id: string;
   execution_generation_id: string;
   execution_manifest_hash: string;
   execution_application_source_hash: string;
+  execution_participant_id?: string;
+  execution_payer_address?: string;
   has_ready_generation: boolean;
 };
 
@@ -222,9 +236,11 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
         i.release_identity AS prepared_release_identity,i.manifest_hash AS prepared_manifest_hash,i.task_id AS prepared_task_id,
         i.case_id AS prepared_case_id,i.case_hash AS prepared_case_hash,i.initial_state_sha256 AS prepared_initial_state_sha256,
         i.environment_manifest_sha256 AS prepared_environment_manifest_hash,i.application_source_hash AS prepared_application_source_hash,
-        i.execution_identity_hash AS prepared_execution_identity_hash,l.state AS lease_state,
+        i.execution_identity_hash AS prepared_execution_identity_hash,i.claim_id AS prepared_claim_id,
+        i.created_at AS prepared_created_at,l.state AS lease_state,
         eb.env_id AS execution_environment_id,eb.generation_id AS execution_generation_id,eb.manifest_hash AS execution_manifest_hash,
-        eb.application_source_hash AS execution_application_source_hash,
+        eb.application_source_hash AS execution_application_source_hash,eb.participant_id AS execution_participant_id,
+        eb.payer_address AS execution_payer_address,
         EXISTS(SELECT 1 FROM oid_task_preparation_observation po
           WHERE po.preparation_id=i.preparation_id AND po.status='ready' AND po.generation_id=b.generation_id
             AND po.baseline_state_sha256=b.initial_state_sha256) AS has_ready_generation
@@ -257,7 +273,8 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       fail(409, 'TASK_EVIDENCE_BUNDLE_HASH_MISMATCH', 'The immutable sealed task evidence hash does not match its retained bundle');
     }
     const validatedDeliveryAbsenceSources = await this.verifyEvidenceFiles(bundle, taskCase, row, tx, release.manifest.executionIdentity.localChainId,
-      release.manifest.executionIdentity.assets, release.manifest.executionIdentity.contracts, release.manifest.costPolicy.ethValuation);
+      release.manifest.executionIdentity.assets, release.manifest.executionIdentity.contracts, release.manifest.costPolicy.ethValuation,
+      release.manifest.executionIdentity);
 
     const actionCutoff = safeSequence(row.action_cutoff_sequence);
     const reconciled = safeSequence(row.reconciled_action_sequence);
@@ -370,6 +387,192 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     }
   }
 
+  /** New family-root replay is separate: historical task-specific readers remain unchanged. */
+  private async verifyAdmittedActionsEvidence(bundle: {
+    binding: Record<string, unknown>; closure: Record<string, unknown>; execution: Record<string, unknown>;
+    cutoff: Record<string, unknown>; observations: Record<string, unknown>;
+  }, taskCase: TaskCase, row: EvidenceRow, tx: Transaction,
+  executionIdentity: TaskReleaseManifest['executionIdentity'],
+  ethValuation: { numerator: string; denominator: string }): Promise<EvidenceReference[] | null> {
+    const capture = bundle.observations.captureEvidence;
+    if (!validEvidence(capture) || !capture.path.startsWith(CAPTURE_EVIDENCE_PREFIX) ||
+      canonicalTaskJson(capture) !== canonicalTaskJson(bundle.cutoff.evidence))
+      fail(409, 'TASK_EVIDENCE_REFERENCE_CONFLICT', 'Capture and cutoff must share one retained root');
+    const root = await realpath(this.deps.evidenceRoot).catch(() =>
+      fail(503, 'TASK_EVIDENCE_ROOT_UNAVAILABLE', 'The private evidence root is unavailable'));
+    const retained = new Map<string, { sha256: string; bytes: Buffer }>();
+    let total = 0;
+    const read = async (ref: EvidenceReference): Promise<Buffer> => {
+      if (!validEvidence(ref) || ref.path.includes('\\') || ref.path.split('/').some(p => !p || p === '.' || p === '..'))
+        fail(503, 'TASK_EVIDENCE_PATH_INVALID', 'A retained family evidence path is invalid');
+      const cached = retained.get(ref.path);
+      if (cached) {
+        if (cached.sha256 !== ref.sha256.toLowerCase()) fail(409, 'TASK_EVIDENCE_REFERENCE_CONFLICT', 'Retained hashes conflict');
+        return cached.bytes;
+      }
+      if (retained.size >= MAX_EVIDENCE_FILES) fail(503, 'TASK_EVIDENCE_REFERENCE_COUNT_INVALID', 'Too many retained evidence files');
+      const candidate = resolve(root, ...ref.path.split('/'));
+      const actual = await realpath(candidate).catch(() => fail(503, 'TASK_EVIDENCE_FILE_UNAVAILABLE', 'Retained family evidence is unavailable'));
+      const rel = relative(root, actual);
+      if (!rel || rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel))
+        fail(503, 'TASK_EVIDENCE_PATH_ESCAPE', 'Retained family evidence escaped its root');
+      const handle = await open(actual, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)).catch(() =>
+        fail(503, 'TASK_EVIDENCE_FILE_UNAVAILABLE', 'Retained family evidence cannot be opened'));
+      try {
+        const before = await handle.stat();
+        if (!before.isFile() || before.size < 1 || before.size > this.maxFileBytes)
+          fail(503, 'TASK_EVIDENCE_FILE_SIZE_INVALID', 'Retained family evidence exceeds its bounds');
+        if (total + before.size > this.maxTotalBytes)
+          fail(503, 'TASK_EVIDENCE_TOTAL_SIZE_INVALID', 'Retained family evidence exceeds its total bound');
+        const bytes = Buffer.alloc(before.size + 1);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+          if (!result.bytesRead) break;
+          offset += result.bytesRead;
+        }
+        const after = await handle.stat();
+        if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
+          before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || offset !== before.size ||
+          await realpath(candidate).catch(() => '') !== actual)
+          fail(503, 'TASK_EVIDENCE_FILE_CHANGED', 'Retained family evidence changed during reading');
+        const content = bytes.subarray(0, offset);
+        if (createHash('sha256').update(content).digest('hex') !== ref.sha256.toLowerCase())
+          fail(409, 'TASK_EVIDENCE_FILE_HASH_MISMATCH', 'Retained family evidence does not match its hash');
+        total += offset; retained.set(ref.path, { sha256: ref.sha256.toLowerCase(), bytes: content });
+        return content;
+      } finally { await handle.close(); }
+    };
+    const bytes = await read(capture);
+    let header: unknown;
+    try { header = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { return null; } // The historical reader owns historical malformed-format diagnostics.
+    if (!plainObject(header) || header.schemaVersion !== 'bts-admitted-actions-observation-capture/v1') return null;
+    let packet: ReturnType<typeof parseAdmittedActionsCapturePacket>;
+    try { packet = parseAdmittedActionsCapturePacket(bytes); }
+    catch { return fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The admitted-action root packet is malformed'); }
+    const expectedExecution = { ...bundle.execution, environmentId: row.environment_id };
+    if (canonicalTaskJson(packet.binding) !== canonicalTaskJson(bundle.binding) ||
+      canonicalTaskJson(packet.execution) !== canonicalTaskJson(expectedExecution) || packet.taskIndex !== row.task_index ||
+      canonicalTaskJson(packet.closure) !== canonicalTaskJson(bundle.closure) ||
+      canonicalTaskJson(packet.closureAnswer) !== canonicalTaskJson(jsonValue(row.closure_answer_json)))
+      fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The admitted-action root differs from the retained owner closure');
+    const paid = parsePaidFamilyCapturePacket(await read(packet.children.paid.evidence));
+    let chainValue: unknown;
+    try { chainValue = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await read(packet.children.chain.evidence))); }
+    catch { return fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The chain-family packet is malformed'); }
+    // The manifest location is fixed, never a path chosen by the participant or a packet caller.
+    const environmentManifest = await read({ path: 'infrastructure/benchmark-environment/manifest.json',
+      sha256: executionIdentity.environmentManifestSha256, boundary: EVIDENCE_BOUNDARY });
+    const chain = validateTaskChainFamilyCapturePacket(chainValue, taskCase, { executionIdentity, environmentManifest });
+    if (typeof row.execution_payer_address !== 'string' ||
+      chain.rpc.participant !== row.execution_payer_address.toLowerCase() || typeof row.execution_participant_id !== 'string' ||
+      !plainObject(chain.bef.before.generation) || chain.bef.before.generation.participant_id !== row.execution_participant_id)
+      fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The family participant differs from its durable execution binding');
+    const rows = await loadAdmittedActionRows(tx, { runId: row.run_id, taskIndex: row.task_index });
+    const census = await validateAdmittedActionCensus({ binding: packet.binding, taskIndex: packet.taskIndex,
+      execution: packet.execution, closure: packet.closure, rows, readActionEvidence: read });
+    const actionDocuments = new Map(census.entries.map(entry => [entry.actionEvidence.path, entry.document]));
+    for (const entry of census.entries) {
+      const scrubbed = structuredClone(entry.document);
+      const response = plainObject(scrubbed.participantToolResponse) ? scrubbed.participantToolResponse : null;
+      const selected = response && plainObject(response.selectedAction) ? response.selectedAction : null;
+      if (selected && Object.hasOwn(selected, 'token')) {
+        const assetId = entry.command.kind === 'approve' ? entry.command.tokenAssetId :
+          entry.command.kind === 'transfer' ? 'USDC' : null;
+        const token = assetId ? executionIdentity.assets.find(a => a.assetId === assetId)?.address : null;
+        if (!token || typeof selected.token !== 'string' || selected.token.toLowerCase() !== token.toLowerCase())
+          fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A public action token differs from the pinned asset');
+        delete selected.token;
+      }
+      if (containsSecretKey(scrubbed)) fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A retained action has disallowed private fields');
+    }
+    for (const source of [paid, chain]) {
+      const fixture = source.preparation.fixtureEvidence, baseline = source.preparation.baselineEvidence;
+      if (!validEvidence(fixture) || !validEvidence(baseline) || !fixture.path.startsWith(PREPARATION_EVIDENCE_PREFIX) ||
+        !baseline.path.startsWith(PREPARATION_EVIDENCE_PREFIX) || fixture.path === baseline.path)
+        fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The family preparation references are invalid');
+      const fixtureBytes = await read(fixture), baselineBytes = await read(baseline);
+      const f = taskCase.taskId === 'S4' ? parseS4PreparationEvidence(fixtureBytes, 'fixture') : parseM1PreparationEvidence(fixtureBytes, 'fixture');
+      const b = taskCase.taskId === 'S4' ? parseS4PreparationEvidence(baselineBytes, 'baseline') : parseM1PreparationEvidence(baselineBytes, 'baseline');
+      // AICODE-NOTE: postgres-js raw timestamptz may be SQL text, not an ISO Date. Match
+      // the preparation producer/paid collector's canonical instant before hashing public pins.
+      const created = row.prepared_created_at instanceof Date ? row.prepared_created_at :
+        typeof row.prepared_created_at === 'string' ? new Date(row.prepared_created_at) : null;
+      const createdAt = created && Number.isFinite(created.getTime()) ? created.toISOString() : null;
+      if (typeof row.prepared_claim_id !== 'string' || createdAt === null)
+        fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The durable preparation pins are unavailable');
+      if (taskCase.taskId === 'S4') {
+        const fixtureProof = validateS4PreparationFixtureEvidence({ fixtureBytes, baselineBytes, runId: row.run_id,
+        taskIndex: row.task_index, taskCase, preparation: { preparation_id: row.preparation_id,
+          claim_id: row.prepared_claim_id, lease_id: row.lease_id, environment_id: row.environment_id,
+          release_identity: row.release_identity, manifest_hash: row.manifest_hash, task_id: row.task_id,
+          case_id: row.bundle_case_id, case_hash: row.bundle_case_hash, initial_state_sha256: row.initial_state_sha256,
+          execution_identity_hash: row.execution_identity_hash, environment_manifest_sha256: row.environment_manifest_hash,
+          application_source_hash: row.application_source_hash, created_at: createdAt, lease_state: row.lease_state,
+          observation_status: 'ready', generation_id: row.generation_id, participant_id: row.execution_participant_id!,
+          payer_address: row.execution_payer_address!, baseline_state_sha256: row.initial_state_sha256,
+          fixture_evidence: fixture, baseline_evidence: baseline } });
+        const captured = validateS4FixtureBoundaryCapture(chain.preparationFixture, chain, taskCase, executionIdentity).capture;
+        const { reference, baselineReference, preState, ...fields } = fixtureProof;
+        const normalized = { ...fields, blockNumber: fixtureProof.blockNumber.toString(), amountUnits: fixtureProof.amountUnits.toString(),
+          baselineNumber: fixtureProof.baselineNumber.toString(), preState: { ...preState, blockNumber: '0x' + preState.blockNumber.toString(16) } };
+        if (canonicalTaskJson(captured.fixture) !== canonicalTaskJson(normalized) ||
+          canonicalTaskJson(captured.fixtureEvidence) !== canonicalTaskJson(reference) ||
+          canonicalTaskJson(captured.baselineEvidence) !== canonicalTaskJson(baselineReference))
+          fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'The excluded setup operation differs from retained preparation source bytes');
+      }
+      const pins = sha256CanonicalTaskJson({ preparationId: row.preparation_id, runId: row.run_id, taskIndex: row.task_index,
+        claimId: row.prepared_claim_id, leaseId: row.lease_id, environmentId: row.environment_id, releaseIdentity: row.release_identity,
+        manifestHash: row.manifest_hash, taskId: row.task_id, caseId: row.bundle_case_id, caseHash: row.bundle_case_hash,
+        initialStateSha256: row.initial_state_sha256, executionIdentityHash: row.execution_identity_hash,
+        environmentManifestSha256: row.environment_manifest_hash, applicationSourceHash: row.application_source_hash, createdAt });
+      for (const [doc, kind] of [[f, 'fixture'], [b, 'baseline']] as const) {
+        if (doc.schemaVersion !== 'owner-bef-task-preparation-evidence/v1' || doc.kind !== kind ||
+          doc.preparationId !== row.preparation_id || doc.environmentId !== row.environment_id || doc.publicPinsSha256 !== pins || !plainObject(doc.evidence))
+          fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'Retained preparation bytes do not match their durable pins');
+      }
+      const fixtureBody = f.evidence as Record<string, unknown>, baselineBody = b.evidence as Record<string, unknown>;
+      const state = baselineBody.state;
+      const projection = { balances: taskCase.initialState.balances, allowances: taskCase.initialState.allowances,
+        deliveredComponentIds: taskCase.initialState.deliveredComponentIds, fulfilledObligationIds: taskCase.initialState.fulfilledObligationIds };
+      if (!m1PreparationHealthMatches(fixtureBody.environmentHealth, fixtureBody.publicStatus, {
+        environmentId: row.environment_id, preparationId: row.preparation_id, generationId: row.generation_id,
+        environmentManifestHash: row.environment_manifest_hash, applicationSourceHash: row.application_source_hash }) ||
+        !plainObject(state) || state.sameBlock !== true || !Array.isArray(state.reads) ||
+        baselineBody.stateSha256 !== taskCase.initialState.stateSha256 || baselineBody.expectedStateSha256 !== taskCase.initialState.stateSha256 ||
+        canonicalTaskJson(state.projection) !== canonicalTaskJson(projection) || sha256CanonicalTaskJson(state.projection) !== taskCase.initialState.stateSha256 ||
+        typeof state.blockNumber !== 'string' || !/^0x[0-9a-f]+$/i.test(state.blockNumber) ||
+        BigInt(state.blockNumber).toString() !== packet.children.chain.boundary.baselineBlockNumber ||
+        String(state.blockHash).toLowerCase() !== packet.children.chain.boundary.baselineBlockHash)
+        fail(409, 'TASK_EVIDENCE_CAPTURE_BINDING_MISMATCH', 'Retained preparation baseline differs from the family chain proof');
+    }
+    for (const action of chain.ownerActions) {
+      const entry = census.entries.find(a => a.actionId === action.actionId);
+      const doc = entry?.document, response = doc?.participantToolResponse;
+      const selected = plainObject(response) ? response.selectedAction : null;
+      if (!entry || canonicalTaskJson(entry.command) !== canonicalTaskJson(action.command) || !plainObject(doc) ||
+        !plainObject(response) || !plainObject(selected) || !sameActionEnvelope(selected, action.selectedAction,
+          entry.command, taskCase, executionIdentity.assets, executionIdentity.contracts, chain.technicalScope) ||
+        (action.actionKind === 'approve' && String(selected.spender).toLowerCase() !== action.approvalSpender?.toLowerCase()) ||
+        !plainObject(response.transaction) || !plainObject(response.receipt) || response.operationId !== action.befOperationId ||
+        response.transaction.hash !== action.transactionHash || response.receipt.transactionHash !== action.transactionHash ||
+        !['success', 'reverted'].includes(String(response.outcome)) || response.receipt.status !== response.outcome ||
+        doc.receiptStatus !== response.outcome)
+        fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action differs from its exact retained command and response');
+    }
+    await this.verifyPaidOwnerActions(tx, row, paid, actionDocuments, true);
+    await this.verifyChainOwnerActions(tx, row, chain, actionDocuments, actionDocuments,environmentManifest);
+    const options = { taskCase, paidPacket: paid, chainPacket: chain, census, localChainId: executionIdentity.localChainId,
+      executionIdentity, environmentManifest, ethValuation };
+    const projected = projectAdmittedActionFamilyCandidates(packet, options);
+    const composed = composeAdmittedActionObservationCandidates(packet, projected.paid, projected.chain, capture, options);
+    if (canonicalTaskJson(composed.observations) !== canonicalTaskJson(bundle.observations) ||
+      composed.observationCutoffSequence !== safeSequence(row.observation_cutoff_sequence))
+      fail(409, 'TASK_EVIDENCE_CAPTURE_OBSERVATION_MISMATCH', 'Sealed observations differ from independent family replay');
+    return admittedDeliveryAbsenceSources(packet, composed, capture);
+  }
+
   private async verifyEvidenceFiles(
     bundle: {
     binding: Record<string, unknown>;
@@ -385,7 +588,10 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     assets: Array<{ assetId: string; address: string | null; kind: 'native' | 'erc20'; chainId: number }>,
     contracts: Array<{ contractId: string; address: string; codeHash: string }>,
     ethValuation: { numerator: string; denominator: string },
+    executionIdentity: TaskReleaseManifest['executionIdentity'],
   ): Promise<EvidenceReference[]> {
+    const admitted = await this.verifyAdmittedActionsEvidence(bundle, taskCase, row, tx, executionIdentity, ethValuation);
+    if (admitted !== null) return admitted;
     const references = new Map<string, EvidenceReference>();
     const addReference = (value: unknown): EvidenceReference => {
       if (!validEvidence(value)) fail(503, 'TASK_EVIDENCE_REFERENCE_INVALID', 'A sealed raw evidence reference is malformed');
@@ -957,6 +1163,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     packet: ReturnType<typeof parseTaskChainCapturePacket>,
     chainEvidenceByPath: ReadonlyMap<string, Record<string, unknown>>,
     paidEvidenceByPath: ReadonlyMap<string, Record<string, unknown>>,
+    environmentManifest?:Uint8Array,
   ): Promise<void> {
     const actionRows = await tx.execute(sql`SELECT a.id::text AS id,a.run_id::text AS run_id,a.task_index,a.owner_id::text AS owner_id,
         a.agent_id::text AS agent_id,a.task_id,a.environment_id,a.action_sequence::text AS action_sequence,a.operation_id,a.payload_hash,
@@ -988,7 +1195,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
     }
     const failAction: () => never = () => fail(409, 'TASK_EVIDENCE_CAPTURE_ACTION_MISMATCH', 'A chain action differs from its durable owner receipt or retained evidence');
     if (rejectedChainActions.length > 0) {
-      if (!['M3', 'M4', 'H2'].includes(packet.taskId)) failAction();
+      if (packet.schemaVersion !== 'bts-chain-family-observation-capture/v1' && !['M3', 'M4', 'H2'].includes(packet.taskId)) failAction();
       const session = packet.bef.session;
       if (!plainObject(session) || !exactKeys(session, ['currentUser', 'sessionUser', 'databaseName', 'transactionReadOnly',
           'transactionIsolation', 'superuser', 'bypassRls']) || session.currentUser !== 'bef_observer' ||
@@ -1064,6 +1271,21 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
       if (rejectedChainActionIds.has(String(expected.actionId))) {
         const rejected = expected;
         const rejectedCommand = TaskActionCommandSchema.safeParse(rejected.command);
+        if(command.kind==='swap'){
+          if(packet.schemaVersion!=='bts-chain-family-observation-capture/v1'||!rejectedCommand.success||rejectedCommand.data.kind!=='swap'||
+            canonicalTaskJson(rejectedCommand.data)!==canonicalTaskJson(command)||rejected.actionKind!=='swap'||
+            rejected.reasonCode!==evidence.reasonCode||canonicalTaskJson(rejected.rejectionProof)!==canonicalTaskJson(evidence.rejectionProof)||!rejectedSwapActionEvidenceMatches(evidence))failAction();
+          const before=packet.bef.before,after=packet.bef.after;
+          if(!plainObject(before)||!plainObject(after)||!Array.isArray(before.rejectedChainOperations)||!Array.isArray(after.rejectedChainOperations)||
+            canonicalTaskJson(before.rejectedChainOperations)!==canonicalTaskJson(after.rejectedChainOperations)||!plainObject(before.generation))failAction();
+          const sources=before.rejectedChainOperations.filter(candidate=>plainObject(candidate)&&plainObject(candidate.operation)&&candidate.operation.operationId===rejected.befOperationId);
+          if(sources.length!==1)failAction();
+          if(!environmentManifest)failAction();
+          try{rejectedSwapSource({action:rejected,source:sources[0],environmentId:row.environment_id,generationId:String(row.generation_id),participantId:before.generation.participant_id,environmentManifest,environmentManifestSha256:packet.execution.environmentManifestHash,assets:packet.rpc.assets,contracts:packet.rpc.contracts,routes:packet.rpc.routes});}catch{failAction();}
+          const source=sources[0];if(!plainObject(source)||!Array.isArray(source.selectedEvents))failAction();
+          for(const event of source.selectedEvents){if(!plainObject(event)||rejectedProofEventIds.has(String(event.eventId))||rejectedProofEventSequences.has(String(event.eventSequence)))failAction();rejectedProofEventIds.add(String(event.eventId));rejectedProofEventSequences.add(String(event.eventSequence));}
+          continue;
+        }
         const childKeys = ['schema', 'actionId', 'runId', 'taskIndex', 'actionSequence', 'ownerOperationId', 'actionKind', 'commandSha256',
           'environmentId', 'generationId', 'manifestSha256', 'applicationSourceSha256', 'idempotencyKey', 'status', 'reasonCode', 'befOperationId'];
         if (!rejectedCommand.success || rejectedCommand.data.kind !== 'transfer' || command.kind !== 'transfer' ||
@@ -1149,7 +1371,7 @@ export class TaskSealedEvidenceSource implements TaskEvaluationEvidenceSource {
         if (BigInt(String(sourceEvents[1]!.eventSequence)) <= BigInt(String(sourceEvents[0]!.eventSequence))) failAction();
       }
       // AICODE-NOTE: H3/U1 inspections use the paid child schema and its independent source verifier below.
-      if (['M3', 'M4', 'H2'].includes(packet.taskId) &&
+      if (packet.schemaVersion !== 'bts-chain-family-observation-capture/v1' && ['M3', 'M4', 'H2'].includes(packet.taskId) &&
           (expected.actionKind === 'inspect_catalog' || expected.actionKind === 'inspect_offer')) {
         const parsedInspection = TaskActionCommandSchema.safeParse(expected.command);
         const inspection = expected.rawResponseSha256;

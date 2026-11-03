@@ -44,3 +44,17 @@ The owner approved all five reviewed packets, listed scenarios/assertions and im
 
 **Decision:** approved on 2026-10-31. **Decision reference:** explicit owner approval of all five packets and request to implement reliability first.
 
+
+
+## Approved extension: all-fifteen admitted learning effects
+
+Owner approval: 2026-11-02; see [repair packet](admitted-learning-actions-observation-proposal.md) and [approval](approval.md). BER-SC-009–012 are mandatory environment boundaries; actual native/browser qualification remains additional, not replaced by structural or local checks.
+
+| Requirement/scenario | Boundary | Named observations | Negative matrix |
+| --- | --- | --- | --- |
+| BER-REQ-009 / BER-SC-009 Observe every admitted learning action across all fifteen variants | actual_participant_mcp_bef_owner_postgres_rpc_census | all_admitted_sequences_accounted; scope_denials_unchanged; no_automatic_repair; immutable_chosen_command_and_effect_history; complete_independent_family_census | all_fifteen_paths_all_nine_kinds; objective_and_off_goal_scoped_reads; wrong_recipient_amount_route_allowance; noop_and_reverted_actions; protocol_disabled_purchase; foreign_or_invalid_reference; late_action_rejected |
+| BER-REQ-010 / BER-SC-010 Grade known effects and preserve unknown observations | actual_independent_observer_unchanged_evaluator_postgres | known_effects_reach_existing_rubric; missing_or_contradictory_stays_unknown; no_fabricated_zero_or_success; unchanged_task_rubric | s1_exact_wrong_extra_and_reserve; s2_s3_paid_delivery_mutation; s4_mutate_then_restore; paid_only_unrelated_chain_action; missing_or_changed_receipt_row_hash_generation; missing_read_or_block_observation; contradictory_or_truncated_census |
+| BER-REQ-011 / BER-SC-011 Preserve separate payment delivery and single-count costs | actual_split_payment_delivery_rpc_owner_status | payment_not_delivery; immutable_action_status_evidence; separate_principal_gas_service_cost; one_economic_effect_per_operation; no_double_count_or_ambiguous_payment_replacement | confirmed_pay_without_retrieve; rejected_or_late_retrieve; wrong_scoped_resource_read; lost_action_response; repeated_status_and_finish; chain_gas_with_payment |
+| BER-REQ-012 / BER-SC-012 Recover admitted-action observation closure and handoff | actual_worker_coordinator_restart_bef_postgres_sealed_evidence | stable_closure_and_cutoff; append_only_evidence; next_task_and_explicit_terminal; one_evaluation_and_settlement; no_admission_debit_aggregate_report_duplication | deadline_at_dispatch_and_receipt; restart_after_confirmation_before_observe_seal_evaluate; duplicate_reconcile_finalize; composite_child_replay; unreconciled_action_at_cutoff; known_handoff_next_task_and_explicit_terminal |
+
+Exact semantic entries live in harness-contracts.json and the approved proposal mirror. The fifteen-by-nine expansion is finite: each current scope-valid kind must retain original owner/receipt/effect/evaluation proof. Missing cells, unsupported source bindings, synthetic effect flags and incomplete negative matrices block the gate. No run/economic mutation is performed by independent replay.

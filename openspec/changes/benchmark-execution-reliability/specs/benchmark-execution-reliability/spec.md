@@ -76,3 +76,40 @@ Scenario setup: Original Training 1faa495d and Ranked 6adddaa9 evidence plus a r
 - **WHEN** an owner opens results and compares native tool failures with persisted admissions, receipts and evaluations
 - **THEN** the projection SHALL show eight evaluated Ranked tasks as their original records, mark four other tasks unevaluated, identify the MCP contract defect separately, and avoid attributing unissued or platform-unknown tasks to agent failure
 
+
+
+### Requirement: BER-REQ-009 Observe every admitted learning action across all fifteen variants
+The observer SHALL reconcile every admitted sequence through the authoritative cutoff on Training S1/M1/H1 and all twelve Ranked tasks, for every technically valid scoped current command kind. It SHALL independently bind original chosen parameters, owner/agent/run/task/environment/generation, command and evidence hashes, receipt revisions/history and actual effects. Objective membership SHALL NOT substitute for observation validity; valid nonobjective reads and learning mistakes SHALL remain observable without automatic correction. Protocol-disabled purchase, invalid or foreign references, authorization, scope, resource and deadline fences SHALL remain unchanged. Counts, skipped rows or a broadened kind validator alone SHALL NOT prove complete effects.
+
+Scenario setup: Actual participant MCP admission and BEF execution with independent owner/BEF PostgreSQL and RPC observers on fifteen immutable task variants
+
+#### Scenario: BER-SC-009 Observe every admitted learning action across all fifteen variants
+- **WHEN** all fifteen paths exercise every scope-valid current kind, objective and nonobjective reads, wrong recipient amount route or allowance, no-op or reverted actions and unchanged protocol reference or deadline denials
+- **THEN** every admitted sequence SHALL have its original independently verified effect or explicit unknown, scoped denials SHALL retain no execution effect, and no goal-based rejection automatic repair or skipped-kind completeness SHALL occur
+
+### Requirement: BER-REQ-010 Grade known effects and preserve unknown observations
+Complete independently observed effects SHALL reach the existing immutable task rubric without changing goals, weights, prices, limits or mandatory violations. S1 wrong or extra principal/reserve violations, S2/S3 actual payment delivery or mutation, S4 unrelated mutation even restored and paid-only unrelated chain actions SHALL retain their existing task-specific interpretation. Missing altered contradictory or truncated receipt, row, hash, generation, read or block evidence SHALL remain unknown and SHALL NOT create a fabricated zero or success evaluation.
+
+Scenario setup: Source-bound complete and deliberately incomplete observation campaigns through actual unchanged evaluator and durable task result
+
+#### Scenario: BER-SC-010 Grade known effects and preserve unknown observations
+- **WHEN** exact and wrong-effect task controls reach grading and receipt row hash generation read block or census evidence is removed altered contradictory or truncated
+- **THEN** complete facts SHALL produce only the existing task-specific known grade while incomplete or contradictory facts SHALL retain unknown without a fabricated evaluation or silent repair
+
+### Requirement: BER-REQ-011 Preserve separate payment delivery and single-count costs
+Confirmed payment SHALL remain independently observed when retrieval is absent rejected late or unknown, without claiming delivery from payment or resource selection. Same-operation action status and finish retries SHALL preserve original economic identity after response loss. Participant chain gas, facilitator gas, service charges and principal SHALL be independently reconciled and counted once under existing cost rules; ambiguous payment SHALL NOT be replaced by a new operation.
+
+Scenario setup: Real split-payment and retrieval actions with independent receipts content evidence chain gas and persisted owner status
+
+#### Scenario: BER-SC-011 Preserve separate payment delivery and single-count costs
+- **WHEN** confirmed payment has no retrieval or rejected late retrieval, wrong scoped reads, lost action response, repeated status or finish and mixed chain gas with paid actions
+- **THEN** payment SHALL not imply delivery, original action and receipt identities SHALL remain immutable, and actual principal gas and service charges SHALL stay separate without duplicate economic effect or cost
+
+### Requirement: BER-REQ-012 Recover admitted-action observation closure and handoff
+Deadline and restart recovery SHALL retain original admitted action cutoff, immutable evidence, source-linked financial identity and once-only evaluation or settlement. Recovery after confirmation before observation sealing or evaluation SHALL observe original effects without new economic dispatch. Duplicate reconciliation finalization or composite child replay SHALL NOT duplicate admission debit evaluation aggregate report or resource release. Known finalization SHALL issue the next task and explicit terminal state; unreconciled or unverifiable effects SHALL remain unknown under existing recovery authority.
+
+Scenario setup: Actual worker coordinator restart and independent durable state replay across dispatch receipt observation sealing evaluation and next-task handoff
+
+#### Scenario: BER-SC-012 Recover admitted-action observation closure and handoff
+- **WHEN** deadline crosses dispatch or receipt, restart interrupts confirmed effects before observation seal or evaluation, and duplicate reconciliation finalization composite replay or unresolved-cutoff controls execute
+- **THEN** closure and source identities SHALL remain stable with one evaluation or settlement, known results SHALL hand off to the next task and explicit terminal state, and missing reconstruction proof SHALL remain unknown without new effects or duplicate writes

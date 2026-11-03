@@ -23,7 +23,7 @@ from tests.bdd.adapters.benchmark_run_lifecycle_verifier import derive_observati
 CHANGE_NAME = "benchmark-run-lifecycle"
 SCENARIO_IDS = tuple(f"BRL-SC-{number:03d}" for number in range(1, 26))
 ADAPTER_PROFILES = frozenset({"benchmark_run_lifecycle_http_adapter", "benchmark_launch_browser_client_adapter"})
-PASSABLE_SCENARIOS: frozenset[str] = frozenset({"BRL-SC-023", "BRL-SC-024", "BRL-SC-025"})
+PASSABLE_SCENARIOS: frozenset[str] = frozenset({"BRL-SC-016", "BRL-SC-023", "BRL-SC-024", "BRL-SC-025"})
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 EVIDENCE_ROOT = REPOSITORY_ROOT / "artifacts" / "runs" / "acceptance"
 CHANGE_ROOT = REPOSITORY_ROOT / "openspec" / "changes" / CHANGE_NAME
@@ -757,8 +757,9 @@ class ExplicitBenchmarkRunLifecycleEvidenceCase(BenchmarkRunLifecycleEvidenceCas
         context.check("closed_reason_allowlist", facts.get("closed_reason_allowlist") is True)
         context.check("closed_exact_parameters_absent", facts.get("closed_exact_parameters_absent") is True)
         context.check("necessary_scoped_tool_response_preserved", facts.get("necessary_scoped_tool_response_preserved") is True)
+        context.check("ranked_terminal_unknown_preserves_known_task_grades", facts.get("ranked_terminal_unknown_preserves_known_task_grades") is True)
         context.check("ranked_early_score_request", facts.get("ranked_early_score_request") is True)
-        context.check("training_feedback_before_task_terminal", facts.get("training_feedback_before_task_terminal") is True)
+        context.check("training_feedback_before_task_evaluation", facts.get("training_feedback_before_task_evaluation") is True)
         context.check("reference_solution_field", facts.get("reference_solution_field") is True)
         context.check("foreign_result_request", facts.get("foreign_result_request") is True)
         context.check("request_internal_tool_trace_as_feedback", facts.get("request_internal_tool_trace_as_feedback") is True)

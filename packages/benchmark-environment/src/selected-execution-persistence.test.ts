@@ -1,10 +1,13 @@
+import {keccak256} from 'viem';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
 import type { PoolClient } from 'pg';
-import type { ExecutionMeasurement, ExecutionTransactionObservation, SelectedAction } from './selected-execution.js';
-import { PostgresExecutionPersistence } from './selected-execution-persistence.js';
+import type { ExecutionMeasurement, ExecutionTransactionObservation, SelectedAction, ExecutionPersistence } from './selected-execution.js';
+import { PostgresExecutionPersistence,validateRecipientGuardOperationBinding } from './selected-execution-persistence.js';
 import { parsePersistedAction } from './selected-execution-persistence.js';
-import { parseSelectedAction, principalAccountingForMeasurement } from './selected-execution.js';
+import { parseSelectedAction, parseRecipientCodeObservation,RECIPIENT_CODE_OBSERVATION_MAX_BYTES, principalAccountingForMeasurement, selectedActionForMeasurement, persistSelectedObservation } from './selected-execution.js';
+import { RuntimeManifestSchema } from './manifest.js';
 
 const OPERATION_ID = '31b0b927-79f7-4e07-87e3-f5ed2f9c97e6';
 const TRANSACTION_HASH = `0x${'ab'.repeat(32)}` as `0x${string}`;
@@ -212,6 +215,67 @@ class MemoryExecutionClient {
 
 function asPoolClient(client: MemoryExecutionClient): PoolClient { return client as unknown as PoolClient; }
 
+async function publicManifestFixture() {
+  return RuntimeManifestSchema.parse(JSON.parse(await readFile(new URL('../../../infrastructure/benchmark-environment/manifest.json', import.meta.url), 'utf8')));
+}
+
+test('real measurement producer round-trips all four typed swap routes through the unchanged strict persistence parser', async () => {
+  const manifest = await publicManifestFixture();
+  for (const direction of ['weth-usdc', 'usdc-weth'] as const) for (const fee of [500, 3000] as const) {
+    const fixture = measurementFixture('swap', direction);
+    assert.equal(fixture.action.kind, 'swap'); if (fixture.action.kind !== 'swap') throw Error('fixture_kind');
+    fixture.action.feeTier = fee;
+    fixture.intent.input = `${fixture.intent.input.slice(0, 138)}${uintWord(BigInt(fee))}${fixture.intent.input.slice(202)}` as `0x${string}`;
+    fixture.measurement.transaction.input = fixture.intent.input;
+    const originalAction = structuredClone(fixture.action), originalIntent = structuredClone(fixture.intent);
+    fixture.measurement.selectedAction = selectedActionForMeasurement(fixture.action, manifest);
+    const selected = fixture.measurement.selectedAction as Record<string, unknown>;
+    assert.equal(selected.inputAssetId, fixture.action.inputAssetId); assert.equal(selected.outputAssetId, fixture.action.outputAssetId);
+    assert.equal(selected.amountInUnits, fixture.action.amountInUnits); assert.equal(selected.amountOutMinimumUnits, fixture.action.amountOutMinimumUnits);
+    assert.equal(Object.hasOwn(selected, 'amountInWei'), false); assert.equal(Object.hasOwn(selected, 'amountOutMinimumUsdcUnits'), false);
+    if (fee === 3000) { assert.equal(selected.poolAddress, manifest.contracts.pool3000!.address); assert.equal(selected.poolCodeHash, manifest.contracts.pool3000!.codeHash); }
+    const client = new MemoryExecutionClient(fixture.action, fixture.intent), persistence = new PostgresExecutionPersistence();
+    await persistence.finish(asPoolClient(client), OPERATION_ID, TRANSACTION_HASH, 'success', fixture.measurement);
+    assert.deepEqual((await persistence.readCompleted(asPoolClient(client), OPERATION_ID))?.measurement.selectedAction, selected);
+    assert.deepEqual(fixture.action, originalAction); assert.deepEqual(fixture.intent, originalIntent);
+  }
+});
+
+test('canonical producer cannot hide changed asset, amount, minimum, recipient, router or fee from the strict receipt/calldata binding', async () => {
+  const manifest = await publicManifestFixture();
+  for (const [key,value] of [['inputAssetId','USDC'],['outputAssetId','WETH'],['tokenIn',USDC],['router',WETH],['fee',3000],['amountInUnits','501'],['amountOutMinimumUnits','235'],['recipient',PAYER]]) {
+    const fixture = measurementFixture('swap'); fixture.measurement.selectedAction = selectedActionForMeasurement(fixture.action, manifest);
+    (fixture.measurement.selectedAction as Record<string, unknown>)[String(key)] = value;
+    const client = new MemoryExecutionClient(fixture.action, fixture.intent);
+    await assert.rejects(new PostgresExecutionPersistence().finish(asPoolClient(client), OPERATION_ID, TRANSACTION_HASH, 'success', fixture.measurement), /execution_persistence_measurement/);
+    assert.equal(client.terminalWrites, 0);
+  }
+});
+
+test('non-swap measurement projection retains its original exact public representation', async () => {
+  const manifest = await publicManifestFixture();
+  assert.deepEqual(selectedActionForMeasurement({kind:'wrap',amountWei:'1',gasLimit:'100000'},manifest),{kind:'wrap',amountWei:'1',gasLimit:'100000'});
+  assert.deepEqual(selectedActionForMeasurement({kind:'unwrap',amountWei:'1',gasLimit:'100000'},manifest),{kind:'unwrap',amountWei:'1',gasLimit:'100000'});
+  assert.deepEqual(selectedActionForMeasurement({kind:'approve',tokenAssetId:'WETH',amountUnits:'1',gasLimit:'100000'},manifest),{kind:'approve',tokenAssetId:'WETH',token:manifest.contracts.weth.address,spender:manifest.contracts.swapRouter02.address,amountUnits:'1',gasLimit:'100000'});
+  assert.deepEqual(selectedActionForMeasurement({kind:'transfer',recipient:SWAP_RECIPIENT,amountUnits:'1',gasLimit:'100000'},manifest),{kind:'transfer',token:manifest.contracts.usdc.address,recipient:SWAP_RECIPIENT,amountUnits:'1',gasLimit:'100000'});
+});
+
+test('the actual postmine finalization boundary never finishes invalid reverted effects and retains original facts/hash exactly', async () => {
+  for (const [effectsValid,status] of [[false,'reverted'],[true,'reverted'],[true,'success']] as const) {
+    const fixture = measurementFixture('swap'); fixture.measurement.receipt.status = status;
+    const original = structuredClone(fixture.measurement), calls: Array<{kind:string;operationId:string;hash:string;measurement:ExecutionMeasurement;status?:string}> = [];
+    const client = { async query(sql: string) { assert(['BEGIN','COMMIT','ROLLBACK'].includes(sql)); return {rows:[],rowCount:0}; } } as unknown as PoolClient;
+    const persistence = {
+      async markUnknown(_client: PoolClient, operationId: string, hash: string, measurement: ExecutionMeasurement) { calls.push({kind:'unknown',operationId,hash,measurement}); },
+      async finish(_client: PoolClient, operationId: string, hash: string, outcome: string, measurement: ExecutionMeasurement) { calls.push({kind:'finish',operationId,hash,measurement,status:outcome}); },
+    } as unknown as ExecutionPersistence;
+    assert.equal(await persistSelectedObservation(client,persistence,OPERATION_ID,TRANSACTION_HASH,{effectsValid,measurement:fixture.measurement}), effectsValid?status:'unknown');
+    assert.equal(calls.length,1); assert.equal(calls[0]!.kind,effectsValid?'finish':'unknown'); assert.equal(calls[0]!.operationId,OPERATION_ID); assert.equal(calls[0]!.hash,TRANSACTION_HASH);
+    assert.equal(calls[0]!.measurement,fixture.measurement); assert.deepEqual(fixture.measurement,original);
+    if (effectsValid) assert.equal(calls[0]!.status,status);
+  }
+});
+
 test('stored selected actions round-trip through the strict participant schemas', () => {
   const cases = [
     {
@@ -397,4 +461,15 @@ test('transfer persistence rejects mismatched calldata, principal asset, and mis
     );
     assert.equal(client.terminalWrites, 0);
   }
+});
+
+function guardFixture(){const code='0x6000' as const,proof={schemaVersion:'bef-selected-recipient-code-observation/v1' as const,environmentId:'bef-a',generationId:'11111111-1111-4111-8111-111111111111',operationId:OPERATION_ID,requestSha256:'a'.repeat(64),recipient:SWAP_RECIPIENT.toLowerCase() as `0x${string}`,blockNumber:'52982199',blockHash:BLOCK_HASH,code,codeKeccak256:keccak256(code)},action=measurementFixture('swap').action,binding={operationId:OPERATION_ID,environmentId:'bef-a',generationId:proof.generationId,requestSha256:proof.requestSha256,operationKind:'swap',actionKind:'swap',selectedAction:action,operationTransactionHash:null,selectedTransactionHash:null,prestate:null,intent:null,measurement:null};return{proof,action,binding};}
+test('recipient guard binds only the original unbroadcast swap operation/request/recipient, never a transfer or known transaction',()=>{
+ const f=guardFixture();assert.deepEqual(validateRecipientGuardOperationBinding(f.proof,f.binding),f.proof);
+ for(const patch of [{operationId:'33333333-3333-4333-8333-333333333333'},{environmentId:'foreign'},{generationId:'33333333-3333-4333-8333-333333333333'},{requestSha256:'b'.repeat(64)},{recipient:PAYER.toLowerCase()}])assert.throws(()=>validateRecipientGuardOperationBinding({...f.proof,...patch},f.binding));
+ for(const patch of [{operationKind:'transfer'},{actionKind:'transfer'},{operationTransactionHash:TRANSACTION_HASH},{selectedTransactionHash:TRANSACTION_HASH},{prestate:{}},{intent:{}},{measurement:{}}])assert.throws(()=>validateRecipientGuardOperationBinding(f.proof,{...f.binding,...patch}));
+});
+
+test('guard raw observation honors the existing four-MiB canonical boundary without truncating code',()=>{
+ const f=guardFixture(),overhead=Buffer.byteLength(JSON.stringify({...f.proof,code:'0x'}),'utf8'),bytes=Math.floor((RECIPIENT_CODE_OBSERVATION_MAX_BYTES-overhead)/2),code=('0x'+'60'.repeat(bytes)) as `0x${string}`,value={...f.proof,code,codeKeccak256:keccak256(code)},size=Buffer.byteLength(JSON.stringify(value),'utf8');assert(size<=RECIPIENT_CODE_OBSERVATION_MAX_BYTES&&RECIPIENT_CODE_OBSERVATION_MAX_BYTES-size<2);assert.equal(parseRecipientCodeObservation(value).code.length,code.length);assert.throws(()=>parseRecipientCodeObservation({...value,code:code+'60'}));
 });

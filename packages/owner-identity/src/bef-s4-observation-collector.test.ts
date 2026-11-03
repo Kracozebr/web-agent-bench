@@ -1,13 +1,20 @@
+import {captureBefChainCensus} from './bef-chain-observation-collector.js';
+import {validateAndDeriveS4ParticipantChainCensus} from './task-s4-fixture-boundary.js';
+import {createObservationEvidenceSink} from './bef-observation-ports.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { keccak256 } from 'viem';
+import { keccak256,getAddress } from 'viem';
 import type { OwnerDatabase } from './db.js';
 import {
   collectBefS4TaskObservationCandidate,
+  parseS4PreparationEvidence,
+  captureS4PreparationFixtureBoundary,
+  validateS4PreparationFixtureEvidence,
+  validateS4FixtureBoundaryObservations,
   deriveS4AllowanceHistory,
   projectS4SelectedExecutionRows,
   s4FixtureParentCheckpointMatches,
@@ -266,7 +273,7 @@ test('S4 transaction intents accept producer decimal block fields and reject hex
   assert.throws(()=>projectProducerAction(compact,full,'approve',USDC,{}, {transactionIndex:'0x0'}));
 });
 
-async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=false, recoveredAction=false, withInspectionPrefix=false) {
+async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=false, recoveredAction=false, withInspectionPrefix=false, checksumFixtureIntent=false) {
   if (recoveredAction && !withAction) throw new Error('recovered action fixture requires an owner action');
   const ownerId='30000000-0000-4000-8000-000000000001';
   const agentId='30000000-0000-4000-8000-000000000002';
@@ -339,7 +346,7 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
     blockHash:HASH_B,blockNumber:'0x11',transactionIndex:'0x0',logIndex:'0x0',removed:false,
   };
   const pendingIntent={hash:transactionHash,type:'eip1559',chainId:31337,blockHash:null,blockNumber:null,transactionIndex:null,
-    from:PARTICIPANT,to:USDC,nonce:'0',input:approveInput,valueWei:'0',gasLimit:'100000',maxFeePerGasWei:'10',maxPriorityFeePerGasWei:'1'};
+    from:checksumFixtureIntent?getAddress(PARTICIPANT):PARTICIPANT,to:checksumFixtureIntent?getAddress(USDC):USDC,nonce:'0',input:approveInput,valueWei:'0',gasLimit:'100000',maxFeePerGasWei:'10',maxPriorityFeePerGasWei:'1'};
   const minedTransaction={...pendingIntent,blockHash:HASH_B,blockNumber:'17',transactionIndex:'0'};
   const measurement={
     receipt:{transactionHash,from:PARTICIPANT,to:USDC,status:'success',blockHash:HASH_B,blockNumber:'17',gasUsed:'10',
@@ -573,9 +580,9 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
     if(method==='eth_getCode')return routerCode;
     if(method==='eth_call'){
       const call=params[0] as {to:string;data:string};
-      if(call.data.startsWith('0x70a08231'))return `0x${BigInt(call.to===USDC?'1000':'500').toString(16).padStart(64,'0')}`;
+      if(call.data.startsWith('0x70a08231'))return `0x${BigInt(call.to.toLowerCase()===USDC?'1000':'500').toString(16).padStart(64,'0')}`;
       if(call.data.startsWith('0xdd62ed3e')){
-        const value=call.to===USDC?(params[1]==='0x10'||withAction&&params[1]==='0x12'?'0':'50'):'25';
+        const value=call.to.toLowerCase()===USDC?(params[1]==='0x10'||withAction&&params[1]==='0x12'?'0':'50'):'25';
         return `0x${BigInt(value).toString(16).padStart(64,'0')}`;
       }
     }
@@ -585,10 +592,20 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
     }
     throw new Error(`unexpected synthetic S4 RPC ${method} ${JSON.stringify(params)}`);
   }};
-  const postgres={environmentId,withRepeatableRead:async<T>(callback:(query:(statement:string,parameters?:readonly unknown[])=>Promise<unknown>)=>Promise<T>)=>callback(async(statement)=>{
+  const postgres={environmentId,withRepeatableRead:async<T>(callback:(query:(statement:string,parameters?:readonly unknown[])=>Promise<unknown>)=>Promise<T>)=>callback(async(statement,parameters)=>{
+    if(parameters?.length===3){
+      assert.equal(parameters[2],fixtureOperationId);assert.match(statement,/operation_id=\$3::uuid/);
+      if(statement.includes('SELECT count(*)::text FROM public.bef_operation'))return [{operations:'1',selected_executions:'1',selected_events:'4',costs:'1'}];
+      if(statement.includes('FROM public.bef_operation')&&statement.includes('ORDER BY started_at'))return [fixtureOperation];
+      if(statement.includes('FROM public.bef_selected_execution_event'))return fixtureEventRows;
+      if(statement.includes('FROM public.bef_selected_execution')&&statement.includes('ORDER BY created_at'))return [selectedExecution];
+      if(statement.includes('FROM public.bef_transaction_cost'))return [costRow];
+      if(statement.includes('FROM public.bef_delivery d JOIN'))return [{payments:'0',deliveries:'0'}];
+      throw new Error('unexpected scoped fixture query');
+    }
     if(statement.includes('current_user AS current_user'))return [{current_user:'bef_observer',session_user:'bef_observer',database_name:'bef_s4_synthetic',
       transaction_read_only:'on',transaction_isolation:'repeatable read',rolsuper:false,rolbypassrls:false,schema_create:false}];
-    if(statement.includes('has_table_privilege'))return ['bef_generation','bef_operation','bef_selected_execution','bef_selected_execution_event','bef_payment','bef_delivery','bef_transaction_cost']
+    if(statement.includes('has_table_privilege'))return (statement.includes("'bef_environment'")?['bef_environment','bef_generation','bef_operation','bef_selected_execution','bef_selected_execution_event','bef_transaction_cost']:['bef_generation','bef_operation','bef_selected_execution','bef_selected_execution_event','bef_payment','bef_delivery','bef_transaction_cost'])
       .map((table_name)=>({table_name,can_select:true,can_insert:false,can_update:false,can_delete:false,can_truncate:false}));
     if(statement.includes('FROM public.bef_generation g'))return [generationRow];
     if(statement.includes('FROM public.bef_operation')&&statement.includes('ORDER BY started_at'))return [fixtureOperation,...readOperationRows,...(withAction?[actionOperation]:[])];
@@ -616,6 +633,44 @@ async function exerciseFullS4Collector(withAction: boolean, contradictoryNonce=f
   const dependencies={db,taskReleaseSource:{getValidatedReleaseRecord:async()=>release},repositoryRoot,postgresByEnvironment:{[environmentId]:postgres},
     rpcByEnvironment:{[environmentId]:rpc},evidenceSink} as never;
   try{
+    if(!contradictoryNonce){
+      const boundary=await captureS4PreparationFixtureBoundary({repositoryRoot,preparation:prep,runId,taskIndex:0,taskCase,identity:executionIdentity as never,postgres,rpc});
+      assert.equal(boundary.fixture.operationId,fixtureOperationId);assert.equal(boundary.fixture.transactionHash,transactionHash);assert.equal(boundary.bef.before.operations.length,1);
+      // Storage/privacy boundary only: family structural and semantic validation remains the collector's responsibility.
+      const sink=await createObservationEvidenceSink(repositoryRoot),stored=await sink.write({schemaVersion:'bts-chain-family-observation-capture/v1',classification:'run_bound_observations_candidate_not_grade',taskId:'S4',binding:{ownerId,agentId,runId,environmentId,caseId:taskCase.caseId,manifestHash,caseHash:taskCase.caseHash,rubricHash:taskCase.rubricHash,taskId:'S4'},execution:{environmentId,preparationId,leaseId,generationId},preparationFixture:boundary});assert.match(stored.sha256,/^[0-9a-f]{64}$/);
+      const fixture=validateS4PreparationFixtureEvidence({fixtureBytes,baselineBytes,preparation:prep,runId,taskIndex:0,taskCase});
+      if(!withAction){
+        const checksumIdentity={...executionIdentity,assets:executionIdentity.assets.map(asset=>({...asset,address:asset.address?getAddress(asset.address):null})),contracts:executionIdentity.contracts.map(contract=>({...contract,address:getAddress(contract.address)}))};
+        assert(checksumIdentity.assets.some(asset=>asset.address&&asset.address!==asset.address.toLowerCase())||checksumIdentity.contracts.some(contract=>contract.address!==contract.address.toLowerCase()));
+        const checksum=await captureS4PreparationFixtureBoundary({repositoryRoot,preparation:prep,runId,taskIndex:0,taskCase,identity:checksumIdentity as never,postgres,rpc});assert.deepEqual(checksum.fixture,boundary.fixture);
+        assert.doesNotThrow(()=>validateS4FixtureBoundaryObservations({fixture,preparation:prep,taskCase,identity:checksumIdentity as never,before:boundary.bef.before,after:boundary.bef.after,rpc:boundary.rpc}));
+        const foreign=structuredClone(checksumIdentity);foreign.assets.find(asset=>asset.assetId==='USDC')!.address='0x0000000000000000000000000000000000000099';
+        assert.throws(()=>validateS4FixtureBoundaryObservations({fixture,preparation:prep,taskCase,identity:foreign as never,before:boundary.bef.before,after:boundary.bef.after,rpc:boundary.rpc}));
+        await assert.rejects(captureS4PreparationFixtureBoundary({repositoryRoot,preparation:prep,runId,taskIndex:0,taskCase,identity:foreign as never,postgres,rpc}),error=>(error as {reasonCode?:string}).reasonCode==='s4_fixture_scoped_census_unavailable');
+        await assert.rejects(captureS4PreparationFixtureBoundary({repositoryRoot,preparation:prep,runId,taskIndex:0,taskCase,identity:executionIdentity as never,postgres,rpc:{environmentId,request:async()=>{throw new Error('RPC_SECRET_CANARY');}}}),error=>(error as {reasonCode?:string}).reasonCode==='s4_fixture_rpc_receipt_unavailable'&&!String(error).includes('RPC_SECRET_CANARY'));
+        await assert.rejects(captureS4PreparationFixtureBoundary({repositoryRoot,preparation:prep,runId,taskIndex:0,taskCase,identity:executionIdentity as never,postgres:{environmentId,withRepeatableRead:async()=>{throw new Error('SQL_SECRET_CANARY');}},rpc}),error=>(error as {reasonCode?:string}).reasonCode==='s4_fixture_scoped_census_unavailable'&&!String(error).includes('SQL_SECRET_CANARY'));
+      }
+
+      if(!withAction){
+        const raw=await captureBefChainCensus(postgres,environmentId,generationId,false,true);
+        const input={taskId:'S4' as const,binding:{ownerId,agentId,runId,environmentId,releaseIdentity,manifestHash,caseId:taskCase.caseId,caseHash:taskCase.caseHash,rubricHash:taskCase.rubricHash,taskId:'S4' as const},execution:{preparationId,leaseId,generationId,environmentId,environmentManifestHash,applicationSourceHash,executionIdentityHash,initialStateSha256},ownerActions:[] as Array<{befOperationId:string;transactionHash:string}>,externalActions:[],preparationFixture:boundary,bef:{before:raw.census,after:raw.census}};
+        const originalRawHash=sha256CanonicalTaskJson(input.bef.before);const derived=validateAndDeriveS4ParticipantChainCensus(input,taskCase,executionIdentity as never);assert.equal(sha256CanonicalTaskJson(input.bef.before),originalRawHash);assert.equal(raw.census.operations.length,1);assert.equal(raw.census.selectedEvents.length,4);assert.equal(raw.census.costs.length,1);assert.equal(derived.before.operations.length,0);assert.equal(derived.before.selectedEvents.length,0);assert.equal(derived.before.costs.length,0);
+        for(const mutate of [(i:typeof input)=>{i.ownerActions=[{befOperationId:fixtureOperationId,transactionHash}];},(i:typeof input)=>{i.bef.before.costs[0]!.gasCostWei='999';i.bef.after=structuredClone(i.bef.before);},(i:typeof input)=>{i.bef.before.selectedExecutions[0]!.measurement={};i.bef.after=structuredClone(i.bef.before);},(i:typeof input)=>{i.preparationFixture.bef.before.counts.operations='2';i.preparationFixture.bef.after=structuredClone(i.preparationFixture.bef.before);},(i:typeof input)=>{i.preparationFixture.rpc.fixtureTransaction.r='0x01';},(i:typeof input)=>{i.preparationFixture.bef.session.transactionReadOnly='off';}]){const bad=structuredClone(input);mutate(bad);assert.throws(()=>validateAndDeriveS4ParticipantChainCensus(bad,taskCase,executionIdentity as never));}
+        for(const mutate of [
+          (i:typeof input)=>{(i.bef.before.selectedExecutions[0]!.transactionIntent as Record<string,unknown>).from='0x0000000000000000000000000000000000000098';},
+          (i:typeof input)=>{(i.bef.before.selectedExecutions[0]!.transactionIntent as Record<string,unknown>).to='0x0000000000000000000000000000000000000099';},
+          (i:typeof input)=>{(i.bef.before.selectedExecutions[0]!.transactionIntent as Record<string,unknown>).nonce='999';},
+          (i:typeof input)=>{(i.bef.before.selectedExecutions[0]!.transactionIntent as Record<string,unknown>).input=approveInput+'00';},
+          (i:typeof input)=>{(i.bef.before.selectedExecutions[0]!.transactionIntent as Record<string,unknown>).r='0x01';},
+          (i:typeof input)=>{i.bef.before.selectedEvents[2]!.eventJsonSha256='f'.repeat(64);},
+          (i:typeof input)=>{((i.bef.before.selectedEvents[2]!.eventPayload as Record<string,unknown>).transactionIntent as Record<string,unknown>).from='0x0000000000000000000000000000000000000098';},
+          (i:typeof input)=>{((i.bef.before.selectedEvents[2]!.eventPayload as Record<string,unknown>).transactionIntent as Record<string,unknown>).to='0x0000000000000000000000000000000000000099';}
+        ]){const bad=structuredClone(input);mutate(bad);bad.bef.after=structuredClone(bad.bef.before);assert.throws(()=>validateAndDeriveS4ParticipantChainCensus(bad,taskCase,executionIdentity as never));}
+        const extra=structuredClone(input);extra.bef.before.operations.push({...extra.bef.before.operations[0]!,operationId:'30000000-0000-4000-8000-000000000099',transactionHash:HASH_C,startedAt:'2026-10-27T00:00:00Z'});extra.bef.before.counts.operations='2';extra.bef.after=structuredClone(extra.bef.before);const extraView=validateAndDeriveS4ParticipantChainCensus(extra,taskCase,executionIdentity as never);assert.equal(extraView.before.operations.length,1);assert.equal(extraView.before.operations[0]!.operationId,'30000000-0000-4000-8000-000000000099');
+      }
+
+      for(const mutate of [(b:typeof boundary)=>{b.rpc.fixtureReceipt.logs=[];},(b:typeof boundary)=>{b.bef.after.operations[0]!.operation_id='30000000-0000-4000-8000-000000000099';},(b:typeof boundary)=>{b.rpc.parentCheckpoint.blockHash=HASH_C;},(b:typeof boundary)=>{b.rpc.fixtureBlock.transactions=[];}]){const bad=structuredClone(boundary);mutate(bad);assert.throws(()=>validateS4FixtureBoundaryObservations({fixture,preparation:prep,taskCase,identity:executionIdentity as never,before:bad.bef.before,after:bad.bef.after,rpc:bad.rpc}));}
+    }
     const first=await collectBefS4TaskObservationCandidate(dependencies,{runId,taskIndex:0});
     if(contradictoryNonce){
       assert.deepEqual(first,{status:'unavailable',reasonCode:'rpc_mapping_incomplete'});
@@ -670,3 +725,12 @@ test('full synthetic S4 collector verifies a recovered action from the immutable
   exerciseFullS4Collector(true,false,true));
 test('full synthetic S4 collector retains both neutral inspections before its mutable action',()=>
   exerciseFullS4Collector(true,false,false,true));
+
+test('S4 preparation parser permits only the exact public allowance calldata path and preserves secret rejection',()=>{
+ const doc={schemaVersion:'owner-bef-task-preparation-evidence/v1',kind:'fixture',evidence:{s4AllowanceFixture:{transaction:{input:'0x095ea7b3'+'0'.repeat(128)}}}};
+ const bytes=(value:unknown)=>Buffer.from(JSON.stringify(value));assert.deepEqual(parseS4PreparationEvidence(bytes(doc),'fixture'),doc);
+ for(const change of [(d:Record<string,unknown>)=>{d.input='0x095ea7b3'+'0'.repeat(128);},(d:Record<string,unknown>)=>{d.privateKey='canary-private-material';},(d:Record<string,unknown>)=>{(d.evidence as Record<string,unknown>).token='canary-token';},(d:Record<string,unknown>)=>{(((d.evidence as Record<string,unknown>).s4AllowanceFixture as Record<string,unknown>).transaction as Record<string,unknown>).input='0xa9059cbb'+'0'.repeat(128);}]){const altered=structuredClone(doc);change(altered);assert.throws(()=>parseS4PreparationEvidence(bytes(altered),'fixture'));}
+ assert.throws(()=>parseS4PreparationEvidence(bytes({...doc,kind:'baseline'}),'baseline'));assert.throws(()=>parseS4PreparationEvidence(bytes(doc),'baseline'));
+});
+
+test('S4 fixture partition compares checksum-cased producer intent addresses without changing raw source or waiving foreign/hash/calldata/nonce/signature checks',()=>exerciseFullS4Collector(false,false,false,false,true));

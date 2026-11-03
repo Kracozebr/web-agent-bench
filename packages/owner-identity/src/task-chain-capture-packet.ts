@@ -1,3 +1,8 @@
+import {validateAndDeriveS4ParticipantChainCensus} from './task-s4-fixture-boundary.js';
+import {rejectedSwapSource,validateRejectedRecipientCode} from './task-rejected-swap-proof.js';
+import type {S4FixtureBoundaryCapture} from './bef-s4-observation-collector.js';
+import {deriveChainFamilyScope,type ChainFamilyScope} from './task-chain-family-scope.js';
+import type {TaskReleaseManifest} from './task-release.js';
 import { createHash } from 'node:crypto';
 import { getAddress } from 'viem';
 import { TaskActionCommandSchema } from './task-action-service.js';
@@ -11,13 +16,14 @@ import type {
   AllowanceUseObservation,
   ConversionObservation,
   ExpenseObservation,
+  StateMutationObservation,
   PersistedTaskObservations,
   TaskEvidenceBinding,
   TradeObservation,
   TransferObservation,
 } from './task-evaluator.js';
 
-export type ChainTaskId = 'M3' | 'M4' | 'H2' | 'H3' | 'U1';
+export type ChainTaskId = TaskCase['taskId'];
 export type ChainTaskCase = Extract<TaskCase, { taskId: ChainTaskId }>;
 export type ChainJson = Record<string, unknown>;
 export type ChainEvidenceRef = EvidenceReference;
@@ -78,8 +84,9 @@ export type ChainCaptureExternalAction = {
 
 /** This narrow branch retains source-proven rejection before any intent or broadcast. */
 export type ChainCaptureRejectedAction = {
-  actionId:string;actionSequence:number;ownerOperationId:string;actionKind:'transfer';commandSha256:string;
-  command:ChainJson;receiptStatus:'rejected_before_execution';reasonCode:'platform_recovery_original_operation_terminal';
+  rejectionProof?:import('./task-rejected-swap-proof.js').RejectedSwapGuardMarker;
+  actionId:string;actionSequence:number;ownerOperationId:string;actionKind:'transfer'|'swap';commandSha256:string;
+  command:ChainJson;receiptStatus:'rejected_before_execution';reasonCode:'platform_recovery_original_operation_terminal'|'selected_recipient_must_be_eoa';
   actionEvidence:EvidenceReference;befOperationId:string;transactionHash:null;
 };
 
@@ -123,7 +130,9 @@ export type ChainCheckpoint = {
 };
 
 export type ChainCapturePacket = {
-  schemaVersion: 'bts-chain-task-observation-capture/v1';
+  schemaVersion: 'bts-chain-task-observation-capture/v1' | 'bts-chain-family-observation-capture/v1';
+  technicalScope?: ChainFamilyScope;
+  preparationFixture?:S4FixtureBoundaryCapture;
   classification: 'run_bound_observations_candidate_not_grade';
   taskId: ChainTaskId;
   binding: TaskEvidenceBinding;
@@ -146,6 +155,8 @@ export type ChainCapturePacket = {
     censusSha256: string;
   };
   rpc: {
+    rejectedRecipientCodes?: import('./task-rejected-swap-proof.js').RejectedRecipientCode[];
+    balanceHistory?: Array<{family:'chain'|'payment';actionId:string;actionSequence:number;transactionHash:string;blockNumber:string;blockHash:string;parentBlockNumber:string;parentBlockHash:string;balances:Array<{account:string;assetId:string;beforeValue:string;afterValue:string}>}>;
     localChainId: string;
     participant: string;
     assets: Array<{ assetId: string; kind: 'native' | 'erc20'; address: string | null; codeHash: string | null }>;
@@ -279,8 +290,8 @@ function commandTransactionMatches(packet: ChainCapturePacket, action: ChainCapt
     const token = packet.rpc.assets.find((asset) => asset.assetId === tokenAssetId);
     const amount = uint(command.amountUnits) ? BigInt(command.amountUnits) : null;
     const spender = tx.input.startsWith('0x095ea7b3') && tx.input.length === 138 ? '0x' + tx.input.slice(34, 74).toLowerCase() : null;
-    const scoped = Boolean(spender && taskCase?.taskId === 'U1' && taskCase.objective.temporarySpenderScope.some((item) => item.owner === 'participant' &&
-      item.tokenAssetId === tokenAssetId && item.spender.toLowerCase() === spender));
+    const scoped = Boolean(spender && (packet.schemaVersion==='bts-chain-family-observation-capture/v1'||taskCase?.taskId === 'U1' && taskCase.objective.temporarySpenderScope.some((item) => item.owner === 'participant' &&
+      item.tokenAssetId === tokenAssetId && item.spender.toLowerCase() === spender)));
     return Boolean(token?.address && amount !== null && tx.to === token.address.toLowerCase() && tx.valueWei === '0' && spender &&
       (packet.rpc.routes.some((route) => route.tokenInAssetId === tokenAssetId && route.router === spender) || scoped) &&
       action.approvalSpender === spender &&
@@ -336,10 +347,10 @@ function validateCheckpoint(value: unknown): ChainCheckpoint {
   });
   return { ...checkpoint, blockHash: normTx(checkpoint.blockHash)!, parentHash: normTx(checkpoint.parentHash)!, balances, allowances } as ChainCheckpoint;
 }
-function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
+function validateCensus(value: unknown, taskId: ChainTaskId, family=false): ChainJson {
   const census = requireRecord(value, ['generation', 'operations', 'externalPaymentOperations', 'selectedExecutions', 'selectedEvents', 'costs',
-    'paymentsCount', 'deliveriesCount', 'counts', ...(!['H3','U1'].includes(taskId)?['inspectionOperations']:[]),
-    ...(!['H3','U1'].includes(taskId)&&isRecord(value)&&Object.hasOwn(value,'rejectedChainOperations')?['rejectedChainOperations']:[])]);
+    'paymentsCount', 'deliveriesCount', 'counts', ...(!(family||['H3','U1'].includes(taskId))?['inspectionOperations']:[]),
+    ...((family||!['H3','U1'].includes(taskId))&&isRecord(value)&&Object.hasOwn(value,'rejectedChainOperations')?['rejectedChainOperations']:[])]);
   const generation = requireRecord(census.generation, ['generation_id', 'env_id', 'participant_id', 'payer_address', 'manifest_sha256',
     'status', 'chain_id', 'environment_manifest_sha256']);
   if (typeof generation.generation_id !== 'string' || typeof generation.env_id !== 'string' || typeof generation.participant_id !== 'string' ||
@@ -349,9 +360,9 @@ function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
       !Array.isArray(census.selectedEvents) || !Array.isArray(census.costs) ||
       [census.operations, census.externalPaymentOperations, census.selectedExecutions, census.selectedEvents, census.costs].some((rows) => rows.length > MAX_ROWS) ||
       !dec(census.paymentsCount) || !dec(census.deliveriesCount) ||
-      (!['H3', 'U1'].includes(taskId) && (census.paymentsCount !== '0' || census.deliveriesCount !== '0'))) fail('packet_invalid');
+      (!(family||['H3','U1'].includes(taskId)) && (census.paymentsCount !== '0' || census.deliveriesCount !== '0'))) fail('packet_invalid');
   const counts = requireRecord(census.counts, ['operations', 'externalPaymentOperations', 'selectedExecutions', 'selectedEvents', 'costs']);
-  if (!['H3','U1'].includes(taskId) && (!Array.isArray(census.inspectionOperations) || census.inspectionOperations.length > MAX_ACTIONS)) fail('packet_invalid');
+  if (!(family||['H3','U1'].includes(taskId)) && (!Array.isArray(census.inspectionOperations) || census.inspectionOperations.length > MAX_ACTIONS)) fail('packet_invalid');
   if (Object.hasOwn(census,'rejectedChainOperations') && (!Array.isArray(census.rejectedChainOperations)||census.rejectedChainOperations.length>MAX_ACTIONS)) fail('packet_invalid');
   if (counts.operations !== String(census.operations.length) || counts.selectedExecutions !== String(census.selectedExecutions.length) ||
       counts.externalPaymentOperations !== String(census.externalPaymentOperations.length) ||
@@ -374,7 +385,7 @@ function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
   for (const item of census.externalPaymentOperations) {
     const op = requireRecord(item, ['operationId', 'status', 'receiptStatus', 'transactionHash']);
     const id = String(op.operationId);
-    if (!['H3', 'U1'].includes(taskId) || !/^[0-9a-f-]{36}$/i.test(id) || paymentOperationIds.has(id) || operations.has(id) ||
+    if (!(family||['H3','U1'].includes(taskId)) || !/^[0-9a-f-]{36}$/i.test(id) || paymentOperationIds.has(id) || operations.has(id) ||
         !['settled', 'delivered', 'reverted'].includes(String(op.status)) || !['success', 'reverted'].includes(String(op.receiptStatus)) ||
         !normTx(op.transactionHash)) fail('packet_invalid');
     paymentOperationIds.add(id);
@@ -465,15 +476,18 @@ function validateCensus(value: unknown, taskId: ChainTaskId): ChainJson {
   return census;
 }
 
-function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCapturePacket {
+export type ChainFamilyValidationContext={executionIdentity:TaskReleaseManifest['executionIdentity'];environmentManifest:Uint8Array};
+function validatePacket(value: unknown, taskCase?: ChainTaskCase, familyContext?:ChainFamilyValidationContext): ChainCapturePacket {
+  const family=familyContext!==undefined;
   const packet = requireRecord(value, ['schemaVersion', 'classification', 'taskId', 'binding', 'closure', 'execution', 'preparation',
-    'ownerActions', 'externalActions', 'bef', 'rpc',...(isRecord(value)&&Object.hasOwn(value,'rejectedChainActions')?['rejectedChainActions']:[])]);
-  if (packet.schemaVersion !== 'bts-chain-task-observation-capture/v1' ||
+    'ownerActions', 'externalActions', 'bef', 'rpc',...(family?['technicalScope',...(isRecord(value)&&Object.hasOwn(value,'preparationFixture')?['preparationFixture']:[])]:[]),...(isRecord(value)&&Object.hasOwn(value,'rejectedChainActions')?['rejectedChainActions']:[])]);
+  if (packet.schemaVersion !== (family?'bts-chain-family-observation-capture/v1':'bts-chain-task-observation-capture/v1') ||
       packet.classification !== 'run_bound_observations_candidate_not_grade' ||
-      !['M3', 'M4', 'H2', 'H3', 'U1'].includes(String(packet.taskId)) || scanSecrets(packet)) fail('packet_invalid');
+      !(family?['S1','S2','S3','S4','M1','M2','M3','M4','H1','H2','H3','U1']:['M3','M4','H2','H3','U1']).includes(String(packet.taskId)) || scanSecrets(packet)) fail('packet_invalid');
   const taskId = packet.taskId as ChainTaskId;
+  if(family){if(!taskCase||!familyContext)fail('binding_mismatch');let scope:ChainFamilyScope;try{scope=deriveChainFamilyScope(familyContext.environmentManifest,familyContext.executionIdentity,taskCase);}catch{fail('binding_mismatch');}if(!same(packet.technicalScope,scope)||!isRecord(packet.rpc)||!same(packet.rpc.routes,scope.routes))fail('binding_mismatch');}
   const rejectedActions=packet.rejectedChainActions===undefined?[]:packet.rejectedChainActions;
-  if(!Array.isArray(rejectedActions)||rejectedActions.length>MAX_ACTIONS||(['H3','U1'].includes(taskId)&&Object.hasOwn(packet,'rejectedChainActions')))fail('packet_invalid');
+  if(!Array.isArray(rejectedActions)||rejectedActions.length>MAX_ACTIONS||(!family&&['H3','U1'].includes(taskId)&&Object.hasOwn(packet,'rejectedChainActions')))fail('packet_invalid');
   const binding = requireRecord(packet.binding, ['ownerId', 'agentId', 'runId', 'environmentId', 'releaseIdentity', 'manifestHash',
     'caseId', 'caseHash', 'rubricHash', 'taskId']);
   if (!/^[0-9a-f-]{36}$/i.test(String(binding.ownerId)) || !/^[0-9a-f-]{36}$/i.test(String(binding.agentId)) ||
@@ -521,13 +535,13 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
     sequences.add(action.actionSequence as number);
   }
   for(const item of rejectedActions){
-    const action=requireRecord(item,['actionId','actionSequence','ownerOperationId','actionKind','commandSha256','command','receiptStatus','reasonCode','actionEvidence','befOperationId','transactionHash']);
+    const action=requireRecord(item,['actionId','actionSequence','ownerOperationId','actionKind','commandSha256','command','receiptStatus','reasonCode','actionEvidence','befOperationId','transactionHash',...(family&&isRecord(item)&&item.actionKind==='swap'?['rejectionProof']:[])]);
     const command=TaskActionCommandSchema.safeParse(action.command);
     if(!/^[0-9a-f-]{36}$/i.test(String(action.actionId))||!Number.isSafeInteger(action.actionSequence)||
       (action.actionSequence as number)<1||(action.actionSequence as number)>closure.actionCutoffSequence||
-      !/^[A-Za-z0-9_-]{12,128}$/.test(String(action.ownerOperationId))||action.actionKind!=='transfer'||
-      !command.success||command.data.kind!=='transfer'||!HASH.test(String(action.commandSha256))||
-      action.receiptStatus!=='rejected_before_execution'||action.reasonCode!=='platform_recovery_original_operation_terminal'||
+      !/^[A-Za-z0-9_-]{12,128}$/.test(String(action.ownerOperationId))||!['transfer',...(family?['swap']:[])].includes(String(action.actionKind))||
+      !command.success||command.data.kind!==action.actionKind||!HASH.test(String(action.commandSha256))||
+      action.receiptStatus!=='rejected_before_execution'||!(action.actionKind==='swap'?['platform_recovery_original_operation_terminal','selected_recipient_must_be_eoa']:['platform_recovery_original_operation_terminal']).includes(String(action.reasonCode))||
       !validRef(action.actionEvidence,ACTION_PREFIX)||!/^[0-9a-f-]{36}$/i.test(String(action.befOperationId))||action.transactionHash!==null||
       actionIds.has(String(action.actionId))||ownerOps.has(String(action.ownerOperationId))||befOps.has(String(action.befOperationId))||
       sequences.has(action.actionSequence as number))fail('packet_invalid');
@@ -535,7 +549,7 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
   }
   for (const item of packet.externalActions) {
     const action = requireRecord(item, ['actionId', 'actionSequence', 'ownerOperationId', 'actionKind', 'commandSha256', 'receiptStatus',
-      'actionEvidence', 'befOperationId', 'transactionHash', ...(!['H3','U1'].includes(taskId)?['inspection']:[])]);
+      'actionEvidence', 'befOperationId', 'transactionHash', ...(!(family||['H3','U1'].includes(taskId))?['inspection']:[])]);
     const kind = String(action.actionKind);
     const tx = action.transactionHash === null ? null : normTx(action.transactionHash);
     const befId = action.befOperationId === null ? null : String(action.befOperationId);
@@ -543,7 +557,7 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
         (action.actionSequence as number) < 1 || (action.actionSequence as number) > closure.actionCutoffSequence ||
         !/^[A-Za-z0-9_-]{12,128}$/.test(String(action.ownerOperationId)) ||
         !['inspect_catalog', 'inspect_offer', 'purchase', 'pay', 'retrieve'].includes(kind) ||
-        (!['H3', 'U1'].includes(taskId) && (!['inspect_catalog', 'inspect_offer'].includes(kind) || action.receiptStatus !== 'observed')) ||
+        (!(family||['H3','U1'].includes(taskId)) && (!['inspect_catalog', 'inspect_offer'].includes(kind) || action.receiptStatus !== 'observed')) ||
         !HASH.test(String(action.commandSha256)) || !validRef(action.actionEvidence, ACTION_PREFIX) ||
         !['observed', 'rejected_before_execution'].includes(String(action.receiptStatus)) ||
         (befId !== null && !/^[0-9a-f-]{36}$/i.test(befId)) ||
@@ -559,16 +573,21 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
   for (let sequence = 1; sequence <= closure.actionCutoffSequence; sequence += 1) if (!sequences.has(sequence)) fail('packet_invalid');
   const bef = requireRecord(packet.bef, ['session', 'before', 'after', 'censusSha256']);
   if (!isRecord(bef.session) || !HASH.test(String(bef.censusSha256))) fail('packet_invalid');
-  if(rejectedActions.length){
+  if(rejectedActions.length||family){
     const session=requireRecord(bef.session,['currentUser','sessionUser','databaseName','transactionReadOnly','transactionIsolation','superuser','bypassRls']);
     if(session.currentUser!=='bef_observer'||session.sessionUser!=='bef_observer'||session.transactionReadOnly!=='on'||
       session.transactionIsolation!=='repeatable read'||session.superuser!==false||session.bypassRls!==false||
       typeof session.databaseName!=='string'||session.databaseName.length<1)fail('packet_invalid');
   }
-  const before = validateCensus(bef.before, taskId);
-  const after = validateCensus(bef.after, taskId);
-  if (!same(before, after) || String(bef.censusSha256).toLowerCase() !== createHash('sha256').update(canonicalTaskJson(before)).digest('hex')) fail('packet_invalid');
-  if (!['H3','U1'].includes(taskId)) {
+  if(!isRecord(bef.before)||!isRecord(bef.after)||!same(bef.before,bef.after)||String(bef.censusSha256).toLowerCase()!==createHash('sha256').update(canonicalTaskJson(bef.before)).digest('hex'))fail('packet_invalid');
+  const retainedBefore=bef.before,retainedAfter=bef.after;
+  let participantBefore=retainedBefore,participantAfter=retainedAfter;
+  // Only an independently proven setup row has fixture cost semantics (including SQL NULL).
+  // Derive its exact exclusion before applying unchanged actor uint/effect requirements.
+  if(family){if(!taskCase||!familyContext)fail('binding_mismatch');try{const view=validateAndDeriveS4ParticipantChainCensus(packet as unknown as ChainCapturePacket,taskCase,familyContext.executionIdentity);participantBefore=view.before;participantAfter=view.after;}catch{fail('packet_invalid');}}
+  const before=validateCensus(participantBefore,taskId,family),after=validateCensus(participantAfter,taskId,family);
+  if(!same(before,after))fail('packet_invalid');
+  if (!(family||['H3','U1'].includes(taskId))) {
     const sourceOperations = before.inspectionOperations as unknown[];
     const reads = packet.externalActions as ChainCaptureExternalAction[];
     if (sourceOperations.length !== reads.length) fail('packet_invalid');
@@ -597,7 +616,7 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
     }
   }
   const rpc = requireRecord(packet.rpc, ['localChainId', 'participant', 'assets', 'contracts', 'routes', 'identityCodeHashes', 'baseline',
-    'final', 'intervalBlocks', 'transactions', 'transferLogs', 'approvalLogs', 'swapLogs', 'wethLogs', 'responseHashes']);
+    'final', 'intervalBlocks', 'transactions', 'transferLogs', 'approvalLogs', 'swapLogs', 'wethLogs', 'responseHashes',...(family?['balanceHistory',...(isRecord(packet.rpc)&&Object.hasOwn(packet.rpc,'rejectedRecipientCodes')?['rejectedRecipientCodes']:[])]:[])]);
   if (!dec(rpc.localChainId) || !normAddress(rpc.participant) || !Array.isArray(rpc.assets) || !Array.isArray(rpc.contracts) ||
       !Array.isArray(rpc.routes) || !Array.isArray(rpc.identityCodeHashes) || !Array.isArray(rpc.intervalBlocks) ||
       !Array.isArray(rpc.transactions) || !Array.isArray(rpc.transferLogs) || !Array.isArray(rpc.approvalLogs) ||
@@ -705,8 +724,11 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
   const rejectedSourceIds=new Set<string>();
   const rejectedEventIds=new Set((before.selectedEvents as ChainJson[]).map((event)=>String(event.eventId)));
   const rejectedEventSequences=new Set((before.selectedEvents as ChainJson[]).map((event)=>String(event.eventSequence)));
+  const codeReads=rpc.rejectedRecipientCodes??[];
+  if(!Array.isArray(codeReads)||codeReads.length!==rejectedActions.filter(a=>a.actionKind==='swap').length)fail('packet_invalid');
+  const usedCodeReads=new Set<string>();
   for(const item of rejectedSources){
-    const proof=requireRecord(item,['operation','selectedExecution','selectedEvents','costsCount']);
+    const proof=requireRecord(item,['operation','selectedExecution','selectedEvents','costsCount',...(family&&isRecord(item)&&isRecord(item.operation)&&item.operation.actionKind==='swap'?['paymentsCount','deliveriesCount']:[])]);
     const operation=requireRecord(proof.operation,['operationId','environmentId','generationId','participantId','idempotencyKeySha256','requestSha256',
       'actionKind','status','receiptStatus','transactionHash','responseSha256','startedAt','completedAt']);
     const selected=requireRecord(proof.selectedExecution,['operationId','environmentId','generationId','actionKind','selectedAction','prestate',
@@ -714,7 +736,22 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
     const action=(rejectedActions as ChainCaptureRejectedAction[]).find((row)=>row.befOperationId===operation.operationId);
     const generation=before.generation as ChainJson;
     const command=action&&TaskActionCommandSchema.safeParse(action.command);
-    if(!action||!command||!command.success||command.data.kind!=='transfer'||rejectedSourceIds.has(action.befOperationId))fail('packet_invalid');
+    if(!action||!command||!command.success||rejectedSourceIds.has(action.befOperationId))fail('packet_invalid');
+    if(command.data.kind==='swap'){
+      if(!family)fail('packet_invalid');
+      try{
+        const guard=rejectedSwapSource({action:action as unknown as ChainJson,source:proof,environmentId:String(binding.environmentId),generationId:String(execution.generationId),participantId:generation.participant_id,environmentManifest:familyContext!.environmentManifest,environmentManifestSha256:String(execution.environmentManifestHash),assets:rpc.assets as ChainCapturePacket['rpc']['assets'],contracts:rpc.contracts as ChainCapturePacket['rpc']['contracts'],routes:rpc.routes as ChainCapturePacket['rpc']['routes']});
+        const reads=codeReads.filter(r=>isRecord(r)&&r.operationId===action.befOperationId);if(reads.length!==1||usedCodeReads.has(action.befOperationId))fail('packet_invalid');
+        const read=validateRejectedRecipientCode(reads[0]);if(!same(guard,read)||BigInt(read.blockNumber)<BigInt(baseline.blockNumber)||BigInt(read.blockNumber)>BigInt(final.blockNumber))fail('packet_invalid');
+        const codeParams=[read.recipient,`0x${BigInt(read.blockNumber).toString(16)}`];
+        if(!(rpc.responseHashes as ChainJson[]).some(r=>r.method==='eth_getCode'&&r.paramsSha256===createHash('sha256').update(canonicalTaskJson(codeParams)).digest('hex')&&r.resultSha256===createHash('sha256').update(canonicalTaskJson(read.code)).digest('hex')))fail('packet_invalid');
+        const blockHash=read.blockNumber===baseline.blockNumber?baseline.blockHash:(rpc.intervalBlocks as ChainJson[]).find(b=>b.number===read.blockNumber)?.hash;
+        if(read.blockHash!==blockHash)fail('packet_invalid');
+        for(const event of proof.selectedEvents as ChainJson[]){if(rejectedEventIds.has(String(event.eventId))||rejectedEventSequences.has(String(event.eventSequence)))fail('packet_invalid');rejectedEventIds.add(String(event.eventId));rejectedEventSequences.add(String(event.eventSequence));}
+        usedCodeReads.add(action.befOperationId);rejectedSourceIds.add(action.befOperationId);continue;
+      }catch{fail('packet_invalid');}
+    }
+    if(command.data.kind!=='transfer')fail('packet_invalid');
     const expectedSelected={kind:'transfer',amountUnits:command.data.amountUnits,recipient:command.data.recipient.toLowerCase(),gasLimit:command.data.gasLimit};
     const usdc=assets.find((asset)=>asset.assetId==='USDC')?.address;
     if(typeof usdc!=='string'||!normAddress(usdc))fail('packet_invalid');
@@ -827,7 +864,7 @@ function validatePacket(value: unknown, taskCase?: ChainTaskCase): ChainCaptureP
     return row;
   });
   if (transactions.length !== packet.ownerActions.length + externalPaymentActions.length) fail('packet_invalid');
-  return { ...packet, binding, closure, execution, preparation, bef: { ...bef, before, after },
+  return { ...packet, binding, closure, execution, preparation, bef: { ...bef, before:retainedBefore, after:retainedAfter },
     rpc: { ...rpc, assets, contracts, routes, identityCodeHashes, baseline, final, intervalBlocks: blocks,
       transactions, transferLogs: (rpc.transferLogs as unknown[]).map(validateLog),
       approvalLogs: (rpc.approvalLogs as unknown[]).map(validateLog), swapLogs: (rpc.swapLogs as unknown[]).map(validateLog),
@@ -846,7 +883,7 @@ export function validateTaskChainCapturePacket(value: unknown, taskCase?: ChainT
         taskCase.rubricHash !== packet.binding.rubricHash || taskCase.executionIdentityHash !== packet.execution.executionIdentityHash ||
         taskCase.initialState.stateSha256 !== packet.execution.initialStateSha256) fail('binding_mismatch');
     const permitted = taskCase.taskId === 'H2' ? taskCase.objective.permittedConversions :
-      taskCase.objective.permittedRoutes;
+      ['M3','M4','H3','U1'].includes(taskCase.taskId)?(taskCase as Extract<TaskCase,{taskId:'M3'|'M4'|'H3'|'U1'}>).objective.permittedRoutes:[];
     if (permitted.length !== packet.rpc.routes.length) fail('binding_mismatch');
     for (const expected of permitted) {
       const route = packet.rpc.routes.find((candidate) => candidate.routeId === expected.routeId);
@@ -872,6 +909,40 @@ export function validateTaskChainCapturePacket(value: unknown, taskCase?: ChainT
     }
   }
   return packet;
+}
+
+export function validateTaskChainFamilyCapturePacket(value:unknown,taskCase:TaskCase,family:ChainFamilyValidationContext):ChainCapturePacket {
+  const packet=validatePacket(value,taskCase,family);
+  if(taskCase.taskId!==packet.taskId||taskCase.caseId!==packet.binding.caseId||taskCase.caseHash!==packet.binding.caseHash||
+    taskCase.rubricHash!==packet.binding.rubricHash||taskCase.executionIdentityHash!==packet.execution.executionIdentityHash||
+    taskCase.initialState.stateSha256!==packet.execution.initialStateSha256||packet.execution.environmentManifestHash!==family.executionIdentity.environmentManifestSha256.toLowerCase())fail('binding_mismatch');
+  const assets=family.executionIdentity.assets.map(a=>({assetId:a.assetId,kind:a.kind,address:a.address?.toLowerCase()??null,codeHash:a.codeHash?.toLowerCase()??null}));
+  const contracts=family.executionIdentity.contracts.map(c=>({contractId:c.contractId,address:c.address.toLowerCase(),codeHash:c.codeHash.toLowerCase()}));
+  if(!same(packet.rpc.assets,assets)||!same(packet.rpc.contracts,contracts)||packet.rpc.localChainId!==String(family.executionIdentity.localChainId))fail('binding_mismatch');
+  for(const expected of taskCase.initialState.balances){const account=expected.account==='participant'?'participant':expected.account.toLowerCase();if(!packet.rpc.baseline.balances.some(a=>a.account.toLowerCase()===account&&a.assetId===expected.assetId&&a.amountUnits===expected.amountUnits))fail('binding_mismatch');}
+  for(const expected of taskCase.initialState.allowances){const owner=expected.owner==='participant'?'participant':expected.owner.toLowerCase();if(!packet.rpc.baseline.allowances.some(a=>a.owner.toLowerCase()===owner&&a.tokenAssetId===expected.tokenAssetId&&a.spender.toLowerCase()===expected.spender.toLowerCase()&&a.amountUnits===expected.amountUnits))fail('binding_mismatch');}
+  validateChainFamilyBalanceHistory(packet);
+  return packet;
+}
+
+function validateChainFamilyBalanceHistory(packet:ChainCapturePacket):void{
+  const payments=packet.externalActions.filter(a=>['pay','purchase'].includes(a.actionKind)&&a.receiptStatus==='observed'&&a.transactionHash);
+  const history=packet.rpc.balanceHistory;if(!Array.isArray(history)||history.length!==packet.ownerActions.length+payments.length)fail('packet_invalid');const seen=new Set<string>();
+  for(const value of history){const row=requireRecord(value,['family','actionId','actionSequence','transactionHash','blockNumber','blockHash','parentBlockNumber','parentBlockHash','balances']),chain=packet.ownerActions.find(a=>a.actionId===row.actionId),payment=payments.find(a=>a.actionId===row.actionId),action=chain??payment,tx=packet.rpc.transactions.find(t=>t.hash===row.transactionHash),block=packet.rpc.intervalBlocks.find(b=>b.number===row.blockNumber);
+    if(!action||seen.has(action.actionId)||row.family!==(chain?'chain':'payment')||row.actionSequence!==action.actionSequence||row.transactionHash!==action.transactionHash||!tx||!block||block.transactionCount!==1||tx.blockNumber!==row.blockNumber||tx.blockHash!==row.blockHash||block.hash!==row.blockHash||block.parentHash!==row.parentBlockHash||!dec(row.parentBlockNumber)||BigInt(String(row.parentBlockNumber))+1n!==BigInt(tx.blockNumber)||!Array.isArray(row.balances))fail('packet_invalid');
+    const parent=String(row.parentBlockNumber)===packet.rpc.baseline.blockNumber?packet.rpc.baseline:packet.rpc.intervalBlocks.find(b=>b.number===row.parentBlockNumber);if(!parent||('blockHash' in parent?parent.blockHash:parent.hash)!==row.parentBlockHash)fail('packet_invalid');
+    seen.add(action.actionId);const cells=new Set<string>();let participantCells=0,payRecipientCells=0;
+    for(const value of row.balances){const balance=requireRecord(value,['account','assetId','beforeValue','afterValue']),asset=packet.rpc.assets.find(a=>a.assetId===balance.assetId),who=balance.account==='participant'?packet.rpc.participant:normAddress(balance.account),key=String(balance.account)+'|'+String(balance.assetId);if(!asset||!who||cells.has(key)||!uint(balance.beforeValue)||!uint(balance.afterValue))fail('packet_invalid');cells.add(key);
+      if(balance.account==='participant')participantCells++;else if(!payment||asset.assetId!=='USDC')fail('packet_invalid');else payRecipientCells++;
+      let expected=0n;const command=chain?.command,success=tx.status==='success';
+      if(asset.kind==='native'){expected=tx.from===who?-BigInt(tx.gasCostWei)-(success?BigInt(tx.valueWei):0n):0n;if(success&&chain?.actionKind==='unwrap'&&balance.account==='participant')expected+=BigInt(String(command!.amountWei));}
+      else if(success&&chain&&(chain.actionKind==='wrap'||chain.actionKind==='unwrap')&&asset.assetId==='WETH'&&balance.account==='participant')expected=(chain.actionKind==='wrap'?1n:-1n)*BigInt(String(command!.amountWei));
+      else if(success){for(const log of tx.logs){const topics=logTopics(log);if(topics[0]!==TRANSFER_TOPIC||String(log.address).toLowerCase()!==asset.address?.toLowerCase())continue;const units=eventWord(log.data),from=eventAddress(topics[1]),to=eventAddress(topics[2]);if(units===null||!from||!to)fail('packet_invalid');if(from===who)expected-=units;if(to===who)expected+=units;}}
+      if(BigInt(String(balance.afterValue))-BigInt(String(balance.beforeValue))!==expected)fail('packet_invalid');
+      if(payment&&balance.account!=='participant'){const usdc=packet.rpc.assets.find(a=>a.assetId==='USDC');if(!usdc?.address||!tx.logs.some(log=>String(log.address).toLowerCase()===usdc.address!.toLowerCase()&&logTopics(log)[0]===TRANSFER_TOPIC&&eventAddress(logTopics(log)[1])===packet.rpc.participant&&eventAddress(logTopics(log)[2])===who))fail('packet_invalid');}
+    }
+    if(participantCells!==packet.rpc.assets.length||payRecipientCells!==(payment?1:0))fail('packet_invalid');
+  }
 }
 
 export function parseTaskChainCapturePacket(bytes: Uint8Array, taskCase?: ChainTaskCase): ChainCapturePacket {
@@ -1075,7 +1146,7 @@ function buildProjection(packet: ChainCapturePacket, context: ProjectionContext)
       left.logIndex < right.logIndex ? -1 : left.logIndex > right.logIndex ? 1 :
         left.actionSequence - right.actionSequence || left.index - right.index);
   void decimalCompare;
-  let sequence = packet.taskId === 'H3' || packet.taskId === 'U1' ? packet.closure.actionCutoffSequence + 1 : 1;
+  let sequence = packet.schemaVersion==='bts-chain-family-observation-capture/v1'||packet.taskId === 'H3' || packet.taskId === 'U1' ? packet.closure.actionCutoffSequence + 1 : 1;
   for (const event of events) {
     const txHash = event.tx.hash.toLowerCase();
     const id = event.type + '-' + txHash.slice(2) + '-' + sequence;
@@ -1152,7 +1223,7 @@ function buildProjection(packet: ChainCapturePacket, context: ProjectionContext)
   };
   const coverage: PersistedTaskObservations['coverage'] = {
     transfers: 'complete', trades: 'complete', conversions: 'complete', balances: 'complete', expenses: 'complete',
-    ...(packet.taskId === 'M4' || packet.taskId === 'U1' ? { allowances: 'complete' as const } : {}),
+    ...(packet.schemaVersion==='bts-chain-family-observation-capture/v1'||packet.taskId === 'M4' || packet.taskId === 'U1' ? { allowances: 'complete' as const } : {}),
   };
   void usedSwapTxs;
   return { transfers: transferObs, finalStates: [finalState], allowanceChanges, allowanceUses, trades, conversions, expenses, coverage };
@@ -1180,4 +1251,17 @@ export function validateTaskChainCapturePacketContext(packetValue: unknown, cont
 
 export function chainCapturePacketSha256(value: unknown): string {
   return createHash('sha256').update(canonicalTaskJson(value)).digest('hex');
+}
+
+export function projectTaskChainFamilyCapturePacket(value:unknown,context:ProjectionContext&ChainFamilyValidationContext){
+  const packet=validateTaskChainFamilyCapturePacket(value,context.taskCase,context);if(!same(packet.binding,context.binding))fail('binding_mismatch');
+  const projection=buildProjection(packet,context),mutations:StateMutationObservation[]=[],nativeTransfers:TransferObservation[]=[];
+  let sequence=Math.max(packet.closure.actionCutoffSequence,...[projection.transfers,projection.allowanceChanges,projection.allowanceUses,projection.trades,projection.conversions,projection.expenses].flatMap(rows=>rows.map(row=>row.sequence)))+1;
+  for(const action of packet.ownerActions){if(!['S1','S4'].includes(packet.taskId)||action.actionKind!=='wrap')continue;const tx=packet.rpc.transactions.find(t=>t.hash===action.transactionHash)!;if(tx.status!=='success')continue;const units=BigInt(tx.valueWei);if(units===0n)continue;const weth=packet.rpc.assets.find(asset=>asset.assetId==='WETH')!,native=packet.rpc.assets.find(asset=>asset.kind==='native')!;
+    // AICODE-NOTE: S1/S4 principal clauses consume actual outgoing native value. Conversion rubrics consume conversions instead, avoiding double-counted legal wrap flows. Raw history remains complete for every task; never invent a burn/unwrap counterparty.
+    nativeTransfers.push({kind:'transfer',observationId:`chain-native-${action.actionKind}-${tx.hash.slice(2)}`,sequence:sequence++,actionSequence:action.actionSequence,source:'persisted_observer',binding:packet.binding,evidence:context.evidence,from:'participant',to:weth.address!,assetId:native.assetId,amountUnits:units.toString(),receiptStatus:'success',transactionHash:tx.hash,operation:'other'});
+  }
+  for(const row of [...packet.rpc.balanceHistory!].filter(row=>row.family==='chain').sort((a,b)=>BigInt(a.blockNumber)<BigInt(b.blockNumber)?-1:BigInt(a.blockNumber)>BigInt(b.blockNumber)?1:a.actionSequence-b.actionSequence))for(const balance of row.balances){if(balance.beforeValue===balance.afterValue)continue;mutations.push({kind:'state_mutation',observationId:`chain-balance-${row.transactionHash.slice(2)}-${balance.assetId}`,sequence:sequence++,actionSequence:row.actionSequence,source:'persisted_observer',binding:packet.binding,evidence:context.evidence,mutationType:'balance',key:`${balance.account==='participant'?packet.rpc.participant:balance.account}:${balance.assetId}`,beforeValue:balance.beforeValue,afterValue:balance.afterValue,transactionHash:row.transactionHash});}
+  for(const change of projection.allowanceChanges){if(change.amountBeforeUnits===change.amountAfterUnits)continue;mutations.push({kind:'state_mutation',observationId:'chain-allowance-'+change.observationId,sequence:sequence++,actionSequence:change.actionSequence,source:'persisted_observer',binding:packet.binding,evidence:context.evidence,mutationType:'allowance',key:`${change.owner}:${change.tokenAssetId}:${change.spender}`,beforeValue:change.amountBeforeUnits,afterValue:change.amountAfterUnits,transactionHash:change.transactionHash});}
+  return {...projection,transfers:[...projection.transfers,...nativeTransfers],stateMutations:mutations,finalStates:projection.finalStates.map(state=>({...state,sequence:sequence++})),coverage:{...projection.coverage,stateMutations:'complete' as const}};
 }

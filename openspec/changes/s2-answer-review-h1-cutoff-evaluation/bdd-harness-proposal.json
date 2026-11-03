@@ -1,0 +1,153 @@
+{
+  "proposal_schema": "bdd-harness-contract-proposal/v1",
+  "review_status": "approved",
+  "normative_delta": "specs/benchmarking-core/spec.md",
+  "runtime_manifest": "tests/bdd/changes/s2-answer-review-h1-cutoff-evaluation/harness-contracts.json",
+  "protected_scenarios": {
+    "OAR-SC-001": {
+      "requirement_id": "OAR-REQ-001",
+      "title": "Owner inspects a terminal S2 submission",
+      "named_mapper": "test_oar_sc_001",
+      "adapter": "s2_answer_review_h1_cutoff_evaluation",
+      "boundary": "environment",
+      "boundary_detail": "owner_browser_api_postgres_retained_input",
+      "gate": "environment",
+      "mandatory": true,
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "owner_identity",
+        "terminal_gate",
+        "retained_input_hash",
+        "exact_answer_equality",
+        "response_dom_allowlist",
+        "read_only_rows"
+      ],
+      "negative_variants": [
+        "foreign_owner",
+        "active_run_or_task",
+        "missing_input",
+        "mismatched_input_hash",
+        "hidden_field_injection"
+      ],
+      "durable_effects": [
+        "no_answer_duplication",
+        "unchanged_evaluation_rows"
+      ],
+      "runtime_status": "blocked"
+    },
+    "OAR-SC-002": {
+      "requirement_id": "OAR-REQ-001",
+      "title": "Missing or unauthorized answer remains unavailable",
+      "named_mapper": "test_oar_sc_002",
+      "adapter": "s2_answer_review_h1_cutoff_evaluation",
+      "boundary": "environment",
+      "boundary_detail": "owner_and_foreign_browser_api_postgres",
+      "gate": "environment",
+      "mandatory": true,
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "foreign_owner_denied",
+        "nonterminal_answer_hidden",
+        "missing_or_bad_hash_hidden",
+        "no_response_answer_content",
+        "no_durable_mutation"
+      ],
+      "negative_variants": [
+        "foreign_owner",
+        "active_run_or_task",
+        "missing_input",
+        "mismatched_input_hash"
+      ],
+      "durable_effects": [
+        "unchanged_owner_and_evaluation_rows"
+      ],
+      "runtime_status": "blocked"
+    },
+    "WB-SC-002": {
+      "requirement_id": "WB-REQ-002",
+      "title": "A scorecard separates outcome cost latency safety and evidence",
+      "named_mapper": "test_wb_sc_002",
+      "adapter": "benchmarking_core",
+      "boundary": "reference_model",
+      "boundary_detail": "existing_deterministic_scorecard_reference_model",
+      "gate": "unit",
+      "mandatory": true,
+      "evidence_mode": "source_pinned_executed_junit_contract_checks",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "dimensions_separate",
+        "chain_evidence_unknown",
+        "task_outcome_preserved"
+      ],
+      "negative_variants": [
+        "partial_chain_evidence_not_converted_to_success"
+      ],
+      "durable_effects": [
+        "no_score_dimension_collapse"
+      ],
+      "runtime_status": "not_run"
+    },
+    "WB-SC-006": {
+      "requirement_id": "WB-REQ-002",
+      "title": "H1 grades a validated paid-child absence proof",
+      "named_mapper": "test_wb_sc_006",
+      "adapter": "s2_answer_review_h1_cutoff_evaluation",
+      "boundary": "environment",
+      "boundary_detail": "browser_started_worker_local_bef_native_mcp_postgres_rpc",
+      "gate": "environment",
+      "mandatory": true,
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "complete_action_cutoff",
+        "exact_payment_linkage",
+        "paid_child_proof_hash",
+        "no_same_payment_retrieve",
+        "validated_child_source",
+        "existing_h1_partial_grade",
+        "single_ordinary_handoff"
+      ],
+      "negative_variants": [
+        "unrelated_payment_retrieve",
+        "duplicate_handoff"
+      ],
+      "durable_effects": [
+        "one_existing_payment",
+        "at_most_one_evaluation_and_handoff",
+        "no_refund_or_fabricated_delivery"
+      ],
+      "runtime_status": "blocked"
+    },
+    "WB-SC-007": {
+      "requirement_id": "WB-REQ-002",
+      "title": "Ambiguous H1 retrieval evidence stays unknown",
+      "named_mapper": "test_wb_sc_007",
+      "adapter": "s2_answer_review_h1_cutoff_evaluation",
+      "boundary": "environment",
+      "boundary_detail": "worker_evaluator_local_bef_and_postgres",
+      "gate": "environment",
+      "mandatory": true,
+      "evidence_mode": "actual_boundary_capture_with_independent_readonly_replay",
+      "allowed_private_calls": [],
+      "required_observations": [
+        "proof_predicate_failure",
+        "unknown_without_score",
+        "no_new_terminal_cause",
+        "payment_identity_unchanged"
+      ],
+      "negative_variants": [
+        "missing_or_incomplete_census",
+        "contradictory_proof",
+        "foreign_or_hash_mismatched_source",
+        "admitted_same_payment_retrieve"
+      ],
+      "durable_effects": [
+        "no_fabricated_delivery_or_score",
+        "unchanged_payment_identity"
+      ],
+      "runtime_status": "blocked"
+    }
+  }
+}

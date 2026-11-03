@@ -50,9 +50,28 @@
     "BER-SC-005": "blocked",
     "BER-SC-006": "passed",
     "BER-SC-007": "passed",
-    "BER-SC-008": "blocked"
+    "BER-SC-008": "blocked",
+    "BER-SC-009": "not_run",
+    "BER-SC-010": "not_run",
+    "BER-SC-011": "not_run",
+    "BER-SC-012": "not_run"
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-31T12:44:19.412980Z"
+  "started_at_utc": "2026-10-31T12:44:19.412980Z",
+  "approved_extension": {
+    "date": "2026-11-02",
+    "scenario_ids": [
+      "BER-SC-009",
+      "BER-SC-010",
+      "BER-SC-011",
+      "BER-SC-012"
+    ],
+    "status": "not_run",
+    "note": "Original eight results and timestamps retained from prior acceptance; this inventory reconciliation is not a new runtime execution.",
+    "original_record_ref": {
+      "path": ".local/ber-acceptance-before-approved-learning-20261102.json",
+      "sha256": "91a3058e976126f874d5b6e3191bd0018756d1bdd9ed6135bc13b2453e82903b"
+    }
+  }
 }

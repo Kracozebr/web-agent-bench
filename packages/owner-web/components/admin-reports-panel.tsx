@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { apiRequest, errorText, getCurrentOwner, newOperationId, type OwnerProjection } from "@/lib/api";
+import { diagnosticReportCaseId } from "@/lib/diagnostics";
 
 type ReportStatus = "new" | "in_progress" | "closed";
 interface ReportImage { id: string; sha256: string; contentType: string; bytes: number; width: number; height: number; imagePath: string; }
@@ -134,11 +136,12 @@ export function AdminReportsPanel() {
         <div className="field"><label htmlFor="report-run-filter">Run ID</label><input id="report-run-filter" value={runId} onChange={(event) => setRunId(event.target.value)} /></div>
       </div>
       {reports.length === 0 ? <p className="empty-state">No reports match these filters.</p> : <div className="table-wrap"><table><thead><tr><th>Created</th><th>Report</th><th>Source</th><th>Status</th><th>Screenshots</th><th></th></tr></thead><tbody>
-        {reports.map((report) => <tr key={report.id} data-report-id={report.id}><td>{timestamp(report.createdAt)}</td><td><strong>{report.title}</strong><br /><span className="fine">Owner {report.ownerId.slice(0, 8)}…</span></td><td>{report.source}</td><td>{report.status.replace("_", " ")}</td><td>{report.imageCount}</td><td><button className="button button-small" type="button" onClick={() => { setError(""); void openDetail(report.id).catch((failure) => setError(errorText(failure))); }}>Open</button></td></tr>)}
+        {reports.map((report) => <tr key={report.id} data-report-id={report.id}><td>{timestamp(report.createdAt)}</td><td><strong>{report.title}</strong>{diagnosticReportCaseId(report.safeContext) ? <><br/><Link href={`/admin/diagnostics?caseId=${diagnosticReportCaseId(report.safeContext)}`}>Diagnostic coverage</Link></> : null}<br /><span className="fine">Owner {report.ownerId.slice(0, 8)}…</span></td><td>{diagnosticReportCaseId(report.safeContext) ? "Client diagnostics" : report.source}</td><td>{report.status.replace("_", " ")}</td><td>{report.imageCount}</td><td><button className="button button-small" type="button" onClick={() => { setError(""); void openDetail(report.id).catch((failure) => setError(errorText(failure))); }}>Open</button></td></tr>)}
       </tbody></table></div>}
     </section>
     {detail ? <section className="card" aria-label="Selected private report"><div className="section-heading"><div><p className="eyebrow">{detail.source} report · revision {detail.revision}</p><h2>{detail.title}</h2><p className="fine">Owner {detail.ownerId} · Created {timestamp(detail.createdAt)}</p></div><button className="button button-small" type="button" onClick={() => setDetail(null)}>Close details</button></div>
       <p className="report-body-preview">{detail.body}</p>
+      {diagnosticReportCaseId(detail.safeContext) ? <p><span className="pill">Client diagnostics</span> <Link href={`/admin/diagnostics?caseId=${diagnosticReportCaseId(detail.safeContext)}`}>View current diagnostic coverage and errors</Link><br/><small>The original report remains unchanged as later diagnostic batches arrive. A report receipt does not establish complete delivery.</small></p> : null}
       {detail.clientVersion ? <p className="fine">Client version: {detail.clientVersion}</p> : null}
       <div className="button-row" aria-label="Report status actions">
         {detail.status === "new" ? <button className="button button-small" type="button" disabled={busy} onClick={() => void changeStatus(detail, "in_progress")}>Mark in progress</button> : null}

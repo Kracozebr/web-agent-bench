@@ -11,6 +11,7 @@ const links = [
   { href: "/public/agents", label: "Public results" },
   { href: "/billing", label: "Billing" },
   { href: "/reports", label: "Reports" },
+  { href: "/diagnostics", label: "Diagnostics" },
   { href: "/admin", label: "Administration" },
 ];
 

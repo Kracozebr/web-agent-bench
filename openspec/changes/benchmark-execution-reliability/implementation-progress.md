@@ -777,3 +777,190 @@ API health and sign-in returned 200 inside the source container; public host
 normal web proxy. Direct host port 8784 is not this fixture's public API boundary;
 its API binds container loopback. No new OAuth sign-in or browser-admin journey is
 claimed by these health checks.
+
+
+## 2026-11-03: fresh BEF qualification and controlled observer smoke
+
+Fresh source qualification `e9249fc9-cb75-4d03-8d18-90ad099986fa` finished as
+`validated_candidate_not_activated`. Its fifteen physical reference runs, raw
+integrity verification, minimum-action review, independent reference semantics
+and final release validator completed. This establishes the fresh BEF/reference
+candidate boundary, not all-fifteen owner-observer repair acceptance, the 135
+learning-action cells, or actual native Training/Ranked success.
+
+| Immutable evidence | SHA-256 |
+| --- | --- |
+| `artifacts/runs/bts-source-refresh-qualification/e9249fc9-cb75-4d03-8d18-90ad099986fa/qualification.json` | `e1f20673cc02e29bf5503e7b3407d5dce87c2a1eea01985c22ce5f71ebf9afe0` |
+| `artifacts/runs/bts-difficulty-v2-release-validation/81a79dfd-2dde-404f-b4f8-6865cd6fe779/validation.json` | `3b9b5c50d7bb0483a3bd8003b851ebc3fbfc4d40caa06f87638a2a0add239953` |
+| `artifacts/runs/bts-source-refresh-qualification/e9249fc9-cb75-4d03-8d18-90ad099986fa/candidate-inputs.json` | `a114dcd95a1171174b0a51bda754379070c488e2d78e74923b215b4401e5fd73` |
+
+The local selector was separately selected by the operator through the existing
+validated-pointer loader; tracked `current-task-release-inputs.json` remained
+unchanged. Activation is not inferred from the qualification's candidate status.
+
+Controlled SDK smoke `49763f53-9249-4f57-aec6-c8561ec358c5` preserved its actual
+failure at the catalog-selection boundary: `/catalog` resources publish
+`offers[].payment`, without a root `resource.payment`. The first producer had
+assumed the latter. No pay action was dispatched. The original capture remains
+under `artifacts/runs/genuine-s1-owner-run/49763f53-9249-4f57-aec6-c8561ec358c5/`;
+parent/operator independently confirmed fencing of its exact owner/BEF generation.
+
+The producer correction selects a first published offer only as a candidate,
+then requires the actual `/offer` root and first-offer terms, resource hash/type
+and read-handle identity to match before payment. Three focused pure controls
+passed; they do not constitute physical acceptance. Retry
+`b01f9861-6c35-4e76-915a-11b3d3157793` was running when this note was recorded.
+No result is inferred for that retry. BER-SC-009–012 remain not_run/blocked;
+complete family, negative, recovery and actual native matrices are still required.
+
+## 2026-11-03: controlled profile A replay and ungraded Training B failure
+
+The actual SDK-reference profile A Training capture
+`df19cb3c-c07b-4056-8e9e-cb00b05a05bd` completed S1/M1/H1. Independent replay
+verified its twelve original actions, paid/read/delivery effects, receipt history,
+separate retrieval bytes, exact debit and sealed facts reaching the original
+persisted evaluator input/result under unchanged evaluator and rubric pins.
+The recorded credits are 0/1, 1/1 and 1/3. Its immutable private reader proof is
+`.local/ber-training-a-reader-proof-cfbe4063-7316-46ac-9f42-487e1856f2be/report.json`,
+SHA-256 `40e15e6013ff0fd6624786d49e926d5ce5d634562f82af1256f1fbf60e427b77`;
+34 focused reader integrity/mutation checks passed. This is controlled reference
+execution, not native-agent acceptance or a new scoring implementation.
+
+Ranked profile A capture `25720023-ccde-41d0-851a-6b0709c735e9` completed all twelve
+tasks with original owner/BEF fences. Independent replay verified all 48 original
+actions, twelve payments and twelve separately evidenced deliveries, the S4 setup
+partition, original receipt/history and persisted evaluator input/result/source
+linkage. H1 is 1/3, U1 is 3/10 and the other ten tasks are 0/1; these are deliberate
+fixed-strategy results, not benchmark-solving success. The immutable proof is
+`.local/ber-ranked-a-r4-all12-reader-proof-6bc8e942-4495-48c4-86cf-3bded736f9f6/report.json`,
+SHA-256 `c25ba876ce35009cd189bf90a87d33a841fd64927a274ecf21d370de13e9cb8d`;
+the cumulative private suite then passed 82 checks. Actor capture
+`artifacts/runs/genuine-ranked-worker-owner-run/25720023-ccde-41d0-851a-6b0709c735e9/capture.json`
+has SHA-256 `1b2602c997aa0f12b37c391033ee06d5bed5725ddb57bf32d9880be5bbcf9679`.
+Historical partial/cancelled A attempts remain unchanged and are not repinned.
+
+Training B capture `8526e927-1ac1-461c-871f-3088a1bd145b`, run
+`e85a74ee-2be7-450b-a13c-5022c04a3031`, retained observed wrap/approve and an
+original swap recorded as settlement unknown. The transaction actually mined;
+a later read-only reconstruction of that exact original hash verified a successful
+receipt and effects without redispatch. The immediate original exception was not
+retained (`unknown_not_retained`), so the replay does not establish its cause.
+The run remains cancelled `owner_voluntary`, with no sealed task evaluation and
+no regrade. Its actor capture at
+`artifacts/runs/genuine-training-sequence-owner-run/8526e927-1ac1-461c-871f-3088a1bd145b/capture.json`
+has SHA-256 `7a3f82a1346ce2e37029d63ba8508f428efdabc3f7238061bba327c6bb49972f`.
+The independent original-hash replay is
+`.local/ber-training-b-original-hash-replay-proof-80af1a2c.json`, SHA-256
+`cd2e5870555c4e3ddf5162443584918442306c7e32b774dd1432858aeba25431`,
+with original source proof
+`.local/ber-training-b-swap-source-proof-a0c812a7-186c-4de2-b441-ad8108eb65c1.json`,
+SHA-256 `b75e24ad2123805b2d78d174114bdab37074e8cde31cff8f17a203a2dbfd7304`.
+
+The full 135-cell matrix, B/C independent chain-effect coverage, separate negative
+and recovery matrices, actual native Training/Ranked and combined mandatory gates
+remain incomplete. BER-SC-009–012 are not promoted by these partial results.
+
+The next source qualification attempt `8d831fc7-f940-479f-88f0-c21a4c594a67`
+blocked before executing Ranked S1. Reset returned HTTP 409
+`unresolved_operation_blocks_reset`, protecting the original Training B unknown
+operation. The retained response is
+`artifacts/runs/bts-difficulty-v2-reference/s1-ranked/cc10ca62-4b24-4096-ae63-2590e617c0fe/http/0002-task-transfer-reset.json`.
+The operator authorized existing admin reconciliation of original BEF operation
+`67b29038-2b63-4f72-b0d8-fdea99265880` using only the same transaction hash and
+append-only verification evidence. Completion is not inferred here. The old
+cancelled owner run, absent grade and original ledger must remain unchanged;
+this is not a regrade or a repair of that run. A new full qualification is a
+separate later attempt; the blocked attempt remains historical evidence.
+
+## 2026-11-03: canonical measurement refresh and original-effect reconciliation
+
+Qualification `ac59ead3-27b0-422e-8a3b-df2bb1073dbb` completed all fifteen fresh
+reference captures, raw integrity, semantic/reference/minimum checks and final
+validation for application
+`fc55640604baa65ff5fbaeb042188e186ad71e31139b0749e21d7e5327085f50`.
+Its status is `validated_candidate_not_activated`; activation and native/owner
+acceptance do not follow from that status.
+
+| Immutable artifact | SHA-256 |
+| --- | --- |
+| `artifacts/runs/bts-source-refresh-qualification/ac59ead3-27b0-422e-8a3b-df2bb1073dbb/qualification.json` | `76430ae1d9b745eec24e0a06a3a2eb3d0c12ddaf02eb723db4ceddd2dc8df2f2` |
+| `artifacts/runs/bts-source-refresh-qualification/ac59ead3-27b0-422e-8a3b-df2bb1073dbb/candidate-inputs.json` | `d0e03fbf22fa851cfcbaa703dcc72db71f7022568c471c05ed8b19c8c69ca0ae` |
+| `artifacts/runs/bts-difficulty-v2-release-validation/39927cf0-53f4-4551-8754-2bb5bff25ce5/validation.json` | `8bf9e13031d83ec01fdfaf2275056cb4881a792cf4a143a2c91e2cfe938763b7` |
+
+One supported admin request then reconciled the original Training B BEF operation
+`67b29038-2b63-4f72-b0d8-fdea99265880` using its already-broadcast transaction.
+Original hash, intent, prestate and selected action were preserved; source status
+became settled with appended observer evidence. Independent retained before/after
+inspection confirmed that owner rows, cancelled run, absent evaluation and ledger
+remained unchanged, and the original transaction cost remained counted once. This
+was original-effect source reconciliation, not redispatch or owner regrading.
+
+- Admin proof: `.local/ber-training-b-admin-reconciliation-2251f694-391c-4593-83ce-240da4efdc1f-proof.json`, SHA-256 `0f91da0d1e034c87f76faa28bb808bea4980beb7bcfbda8c82704b372e7455b3`.
+- Independent source/cost addendum: `.local/ber-training-b-admin-source-cost-addendum-165eea95-4ec9-412c-adff-ae6f79ecce00.json`, SHA-256 `2b8ccfa1beaf260c680fe44ca1a139278a4127cb8669566c788cdb01e527307d`.
+
+The reproduced fee-500 measurement producer/parser mismatch explains the later
+admin rejection under that source. The first immediate Training B exception still
+remains `unknown_not_retained`; no historical throw site or old result is rewritten.
+
+A subsequent narrow revert-observation correction excludes only advancing
+block-number metadata from state equality, retains exact receipt/prestate block
+binding, gas and all asset/allowance/pool checks, and prevents both successful and
+reverted unverified effects from terminal persistence. It changes application
+source to `d1da71cd6b16e200631b6a2d919e3d7c3022b1df876b0b0c49bd2ec23d2bcd15`.
+That new batch requires its own fresh qualification; the successful `fc5564…`
+cohort cannot qualify different application bytes. At this note, the new workflow
+had only begun rebuilding/recreating services. Main 135-cell, B/C, adversarial,
+recovery, native and combined BER gates remain incomplete.
+
+
+### Deterministic non-EOA rejection implementation (2026-11-03; runtime pending)
+
+The new finite `--ber-contract-recipient-rejection-training` acceptance profile uses
+full Training S1/M1/H1. S1 admits one fixed WETH-to-USDC swap to the USDC contract
+address from the issued public execution assets; M1/H1 retain strategy A. It performs
+no funding, corrective action or economic retry and adds no positive matrix cells.
+
+The optional MCP status `rejectionProof` has schema
+`bef-selected-recipient-code-guard/v1`, exact reason
+`selected_recipient_must_be_eoa`, original BEF `operationId` and `requestSha256`.
+That BEF operation ID is distinct from the owner request operation ID and action ID.
+The marker is a provisional evidence hint, not permission, a grade or independent
+proof of no execution. The actor requires the original admitted action, matching
+run/task/receipt/evidence identities, null transaction and null tool response. Any
+earlier bound transaction prevents no-execution qualification. Infrastructure code
+observation failures remain unknown.
+
+The production family verifier separately joins the original append-only guard
+events and exact source operation, rereads historical recipient code/block evidence
+and verifies the no-execution partition. The unchanged rubric decides the eventual
+result. Focused tests and production wire checks are recorded separately from the
+still-pending physical control; BER-SC-009 through BER-SC-012 and full matrix/native
+acceptance remain incomplete.
+
+
+### Final acceptance assembly implementation (2026-11-03; physical gates open)
+
+The current acceptance assembly has strict public readers for the exact135
+positive A/B/C cells; finite no-op/revert, mixed, non-EOA and MCP guard controls;
+paid/chain/composite file/seal faults; both S4 preparation faults; seven scoped
+source-observation faults; and actual native/UI/OAuth/diagnostic-receipt linkage.
+The required negative-to-producer/reader inventory is in
+`tests/bdd/changes/benchmark-execution-reliability/admitted-learning-capture-contract.md`.
+All missing final physical captures remain blocked. No new BER-SC-009–012 task is
+checked off by implementation, unit tests or this document.
+
+Actual readonly/semantic diagnostics protect existing wire details: facilitator
+gas remains measured separately from scored participant expense; successful
+no-op approval keeps one Approval audit with no allowance state mutation; native
+tool IDs are distinct from JSON-RPC IDs; and a clean complete diagnostic session
+has a synced HTTP receipt without an invented error report. Error/partial sessions
+require their canonical report. S1 isolated reserve R-1/R/R+1/missing checks are
+actual canonical semantic tests over synthetic observations, separately labelled
+from real reference execution and actual S1 balance/gas/input proof. They do not
+claim a live isolated below-reserve failure.
+
+Historical successful subsets and historical wire/reader failures remain
+immutable. A new actual source-completion clock follows every owner snapshot read;
+older support captures lacking that witness are not promoted. The final cohort
+requires the complete current source inventory and fresh typed replay, not old-pin
+rewriting, source overlays, producer pass flags or a second evaluator.

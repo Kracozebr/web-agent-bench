@@ -34,3 +34,19 @@ def test_ber_sc_007():
 @scenario("../features/benchmark_execution_reliability.feature", "Attribute failures with bounded diagnostic evidence")
 def test_ber_sc_008():
     """Named mapper for BER-SC-008."""
+
+@scenario("../features/benchmark_execution_reliability.feature", "Observe every admitted learning action across all fifteen variants")
+def test_ber_sc_009():
+    """Named mapper for BER-SC-009."""
+
+@scenario("../features/benchmark_execution_reliability.feature", "Grade known effects and preserve unknown observations")
+def test_ber_sc_010():
+    """Named mapper for BER-SC-010."""
+
+@scenario("../features/benchmark_execution_reliability.feature", "Preserve separate payment delivery and single-count costs")
+def test_ber_sc_011():
+    """Named mapper for BER-SC-011."""
+
+@scenario("../features/benchmark_execution_reliability.feature", "Recover admitted-action observation closure and handoff")
+def test_ber_sc_012():
+    """Named mapper for BER-SC-012."""

@@ -1,10 +1,10 @@
 {
   "acceptance_state": "failed",
-  "active_delta_sha256": "fa2ff773d4c588408076bfc8a11e886f15af5b01ea2567b40556d924f56e426e",
+  "active_delta_sha256": "f8df8ee40134d1ecae6479cd3023b64907b1d3b091d16a7669f00eb4eae16089",
   "bef_spec_profile": "active-delta",
   "change": "benchmark-run-lifecycle",
   "command": [
-    ".venv/Scripts/python.exe",
+    ".venv/bin/python",
     "-m",
     "pytest",
     "tests/bdd/mappers/test_benchmark_run_lifecycle_bdd.py",
@@ -16,13 +16,13 @@
     "--junitxml=artifacts/bdd-evidence/benchmark-run-lifecycle-pytest.xml"
   ],
   "execution_started": true,
-  "exit_code": 0,
-  "finished_at_utc": "2026-10-31T12:11:46.220498Z",
+  "exit_code": 1,
+  "finished_at_utc": "2026-11-03T16:53:41.360908Z",
   "gate": {
     "class": "environment",
     "mandatory": true
   },
-  "git_commit": "5b0b74e1b85c2aa5efbee8f459d3175e5ae36b54",
+  "git_commit": "530bcb67753d2aec83a115c9b9f2b200af403646",
   "git_worktree_dirty": true,
   "harness_audit": {
     "approved_scenarios": 25,
@@ -35,13 +35,13 @@
     "unprotected_scenarios": [],
     "warnings": []
   },
-  "harness_contract_sha256": "a2ef7f712b1fc2fffe0ed75f213b7cb94f7b877071558a4ade42b791bf651f8a",
-  "harness_sources_sha256": "3c7652c37f97dc440883e399e72c05f169f4d18d0c5c2407cb043667fc91fa1e",
-  "harness_sources_sha256_after": "3c7652c37f97dc440883e399e72c05f169f4d18d0c5c2407cb043667fc91fa1e",
+  "harness_contract_sha256": "c41380b951bcb31b431e8ff734fd721f03e882f469c35cf4316b290dae27ee2b",
+  "harness_sources_sha256": "2ac8b4de7003c99868486a920770883a6b6bfafb4fa0dc3acf30ffaf8190131a",
+  "harness_sources_sha256_after": "2ac8b4de7003c99868486a920770883a6b6bfafb4fa0dc3acf30ffaf8190131a",
   "lifecycle_phase": "active-delta",
   "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
   "normative_source": "openspec/changes/benchmark-run-lifecycle/specs/*/spec.md",
-  "scenario_map_sha256": "1a9ed2890ffdf5928a0450452230cc12b0e8ca85769cebd4dd0b0b3cac5d7cb6",
+  "scenario_map_sha256": "f2d160ba4dd8b8b6cef8bff19789c09d60e835ba0b4dea8d97aff10d6d6b90e3",
   "scenario_results": {
     "BRL-SC-001": "blocked",
     "BRL-SC-002": "blocked",
@@ -58,18 +58,18 @@
     "BRL-SC-013": "blocked",
     "BRL-SC-014": "blocked",
     "BRL-SC-015": "blocked",
-    "BRL-SC-016": "blocked",
+    "BRL-SC-016": "passed",
     "BRL-SC-017": "blocked",
     "BRL-SC-018": "blocked",
     "BRL-SC-019": "blocked",
     "BRL-SC-020": "blocked",
     "BRL-SC-021": "blocked",
     "BRL-SC-022": "blocked",
-    "BRL-SC-023": "blocked",
-    "BRL-SC-024": "blocked",
-    "BRL-SC-025": "blocked"
+    "BRL-SC-023": "failed",
+    "BRL-SC-024": "failed",
+    "BRL-SC-025": "failed"
   },
   "schema_version": 1,
   "source_unchanged": true,
-  "started_at_utc": "2026-10-31T12:11:43.665294Z"
+  "started_at_utc": "2026-11-03T16:53:18.537854Z"
 }

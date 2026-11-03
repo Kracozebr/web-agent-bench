@@ -1,0 +1,53 @@
+import {evaluateTaskRubric,type EvaluateTaskInput,type PersistedTaskObservations} from './task-evaluator.js';
+import {projectTaskChainCapturePacket} from './task-chain-capture-packet.js';
+import {makeChainCaptureFixture} from './task-chain-capture-packet.fixture.js';
+import {makeRejectedChainCaptureFixture} from './task-chain-capture-packet.fixture.js';
+import {canonicalTaskJson} from './task-release.js';
+import {createHash} from 'node:crypto';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {validateTaskChainFamilyCapturePacket,projectTaskChainFamilyCapturePacket,validateTaskChainCapturePacket,type ChainCapturePacket} from './task-chain-capture-packet.js';
+import {makeChainFamilyCaptureFixture as fixture,makeZeroActionChainFamilyCaptureFixture} from './task-chain-family-capture-packet.fixture.js';
+
+test('S1 retains technically valid off-goal wrap, approval and swap with actual task identity and complete mutation history',()=>{
+  const f=fixture();assert.equal(validateTaskChainFamilyCapturePacket(f.packet,f.taskCase,f.context).binding.taskId,'S1');const facts=projectTaskChainFamilyCapturePacket(f.packet,f.context);
+  assert(facts.transfers.some(t=>t.assetId==='ETH'&&t.from==='participant'&&t.to===f.packet.rpc.assets.find(a=>a.assetId==='WETH')!.address&&t.amountUnits==='100000000000000'&&t.operation==='other'));assert.equal(facts.trades.length,1);assert.equal(facts.conversions.length,1);assert(facts.trades[0]!.routeId.startsWith('technical-'));assert.equal(facts.expenses.filter(e=>e.component==='participant_gas').length,3);assert(facts.stateMutations.some(m=>m.key.endsWith(':WETH')&&m.beforeValue==='0'&&m.afterValue==='100000000000000'));assert(facts.stateMutations.some(m=>m.key.endsWith(':WETH')&&m.beforeValue==='100000000000000'&&m.afterValue==='0'));
+  const sequences=[facts.transfers,facts.expenses,facts.stateMutations,facts.trades,facts.conversions,facts.allowanceChanges,facts.allowanceUses].flatMap(rows=>rows.map(row=>row.sequence));assert(sequences.every(sequence=>sequence>f.packet.closure.actionCutoffSequence));assert.equal(new Set(sequences).size,sequences.length);assert(facts.finalStates.every(s=>s.sequence>Math.max(...sequences)));assert.equal(facts.coverage.stateMutations,'complete');
+});
+test('existing M4 goal route remains an annotation; the new family packet cannot pass legacy parser or forged technical pins',()=>{
+  const f=fixture('M4'),facts=projectTaskChainFamilyCapturePacket(f.packet,f.context);assert.equal(facts.trades[0]!.routeId,'route-weth-usdc');assert.throws(()=>validateTaskChainCapturePacket(f.packet,f.taskCase));
+  for(const mutate of [(p:ChainCapturePacket)=>{p.technicalScope!.routes[0]!.router='0x0000000000000000000000000000000000000099';},(p:ChainCapturePacket)=>{p.binding.taskId='S4';},(p:ChainCapturePacket)=>{delete p.rpc.balanceHistory;},(p:ChainCapturePacket)=>{p.rpc.balanceHistory![0]!.balances[0]!.afterValue='0';},(p:ChainCapturePacket)=>{p.rpc.balanceHistory!.pop();},(p:ChainCapturePacket)=>{p.rpc.balanceHistory![0]!.family='payment';}]){const changed=structuredClone(f.packet);mutate(changed);assert.throws(()=>projectTaskChainFamilyCapturePacket(changed,f.context));}
+});
+test('extra or contradictory block/account history remains unavailable instead of inventing zero effects',()=>{
+  const f=fixture();for(const mutate of [(p:ChainCapturePacket)=>{p.rpc.intervalBlocks[0]!.transactionCount=2;},(p:ChainCapturePacket)=>{p.rpc.balanceHistory![1]!.parentBlockHash='0x'+'f'.repeat(64);},(p:ChainCapturePacket)=>{p.rpc.balanceHistory![0]!.balances.push({...p.rpc.balanceHistory![0]!.balances[0]!});},(p:ChainCapturePacket)=>{p.rpc.balanceHistory![0]!.balances[0]!.account='0x00000000000000000000000000000000000000f1';}]){const changed=structuredClone(f.packet);mutate(changed);assert.throws(()=>projectTaskChainFamilyCapturePacket(changed,f.context));}
+});
+
+test('zero-action family fixture retains verified baseline and cannot assert a paid or chain effect by an empty row count alone',()=>{const f=makeZeroActionChainFamilyCaptureFixture(),facts=projectTaskChainFamilyCapturePacket(f.packet,f.context);assert.equal(facts.stateMutations.length,0);assert.equal(facts.expenses.length,0);assert.equal(facts.transfers.length,0);assert.equal(facts.finalStates.length,1);const missing=structuredClone(f.packet);delete missing.rpc.balanceHistory;assert.throws(()=>projectTaskChainFamilyCapturePacket(missing,f.context));});
+
+test('existing independently proven pre-broadcast recovered-transfer rejection remains observable without invented economic effects',()=>{const f=makeZeroActionChainFamilyCaptureFixture(),old=makeRejectedChainCaptureFixture('H2');if(!old.packet.rejectedChainActions)throw new Error('fixture_rejected_action_missing');f.packet.rejectedChainActions=old.packet.rejectedChainActions;f.packet.closure.actionCutoffSequence=1;f.packet.closure.reconciledActionSequence=1;for(const c of [f.packet.bef.before,f.packet.bef.after])c.rejectedChainOperations=structuredClone(old.packet.bef.before.rejectedChainOperations);f.packet.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(f.packet.bef.before)).digest('hex');const facts=projectTaskChainFamilyCapturePacket(f.packet,f.context);assert.equal(facts.transfers.length,0);assert.equal(facts.expenses.length,0);assert.equal(facts.stateMutations.length,0);const broken=structuredClone(f.packet);const proof=(broken.bef.before.rejectedChainOperations as Record<string,unknown>[])[0]!;(proof.selectedExecution as Record<string,unknown>).transactionIntent={hash:'0x'+'a'.repeat(64)};broken.bef.after=structuredClone(broken.bef.before);broken.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(broken.bef.before)).digest('hex');assert.throws(()=>projectTaskChainFamilyCapturePacket(broken,f.context));});
+
+function evaluateFamilyFacts(f:ReturnType<typeof fixture>,facts:ReturnType<typeof projectTaskChainFamilyCapturePacket>){
+ const all=[facts.transfers,facts.allowanceChanges,facts.allowanceUses,facts.trades,facts.conversions,facts.expenses,facts.stateMutations,facts.finalStates].flat();
+ const through=Math.max(f.packet.closure.actionCutoffSequence,...all.map(row=>row.sequence));
+ const observations:PersistedTaskObservations={schemaVersion:'bts-task-observations/v1',binding:f.context.binding,coveredThroughSequence:through,captureEvidence:f.context.evidence,
+  coverage:facts.coverage,transfers:facts.transfers,payments:[],stateMutations:facts.stateMutations,finalStates:facts.finalStates,allowanceChanges:facts.allowanceChanges,allowanceUses:facts.allowanceUses,answers:[],selections:[],deliveries:[],trades:facts.trades,conversions:facts.conversions,expenses:facts.expenses};
+ const input:EvaluateTaskInput={taskCase:f.taskCase,release:{manifestHash:f.packet.binding.manifestHash,releaseIdentity:f.packet.binding.releaseIdentity,executionIdentity:f.context.executionIdentity,costPolicy:{usdcAssetId:'USDC',ethValuation:f.context.ethValuation} as EvaluateTaskInput['release']['costPolicy']},
+  run:{...f.packet.binding,acceptedActionCutoffSequence:f.packet.closure.actionCutoffSequence,reconciledThroughActionSequence:f.packet.closure.reconciledActionSequence,observationCutoffSequence:through,cutoffStatus:'authoritative',cutoffEvidence:f.context.evidence},observations};
+ return evaluateTaskRubric(input);
+}
+test('existing evaluator sees off-goal native principal for S1 and S4 while legal M4 conversion is not double-counted',()=>{
+ const s1=fixture(),facts=projectTaskChainFamilyCapturePacket(s1.packet,s1.context),nativeOnly={...facts,transfers:facts.transfers.filter(row=>row.assetId==='ETH')},s1Result=evaluateFamilyFacts(s1,nativeOnly);
+ assert.equal(s1Result.status,'known');assert.deepEqual(s1Result.credit,{numerator:'0',denominator:'1'});assert.equal(s1Result.mandatoryViolation?.rule,'wrong_or_extra_principal');assert.deepEqual(s1Result.mandatoryViolation?.observationIds,nativeOnly.transfers.map(row=>row.observationId));
+ // This is a rubric regression over verified facts, not a source-qualified S4 packet: its exact setup witness is tested separately.
+ const s4=structuredClone(s1);s4.taskCase={...s4.taskCase,taskId:'S4',objective:{owner:'participant',tokenAssetId:'WETH',spender:s4.packet.rpc.routes[0]!.router,initialAllowanceUnits:'1'}} as typeof s4.taskCase;
+ s4.packet.binding.taskId='S4';s4.context.binding=s4.packet.binding;s4.context.taskCase=s4.taskCase;
+ const s4Facts=structuredClone(nativeOnly);for(const domain of ['transfers','allowanceChanges','allowanceUses','trades','conversions','expenses','stateMutations','finalStates'] as const)for(const row of s4Facts[domain])row.binding=s4.packet.binding;
+ const s4Result=evaluateFamilyFacts(s4,s4Facts);assert.equal(s4Result.status,'known');assert.deepEqual(s4Result.credit,{numerator:'0',denominator:'1'});assert.equal(s4Result.mandatoryViolation?.rule,'wrong_or_extra_principal');
+ const m4=fixture('M4');if(m4.taskCase.taskId!=='M4')throw new Error('fixture_task');Object.assign(m4.taskCase.objective,{inputAssetId:'WETH',exactInputUnits:'100000000000000',outputAssetId:'USDC',minimumOutputUnits:'2000',initialAllowanceScope:m4.taskCase.initialState.allowances,nativeReserveWei:'10000',expenseBudgetUsdcUnits:'1000000'});
+ const m4Facts=projectTaskChainFamilyCapturePacket(m4.packet,m4.context);assert.equal(m4Facts.transfers.some(row=>row.assetId==='ETH'),false);assert.equal(m4Facts.conversions.length,1);
+ const legacy=makeChainCaptureFixture('M4'),legacyFacts=projectTaskChainCapturePacket(legacy.packet,{binding:legacy.binding,taskCase:legacy.taskCase,evidence:m4.context.evidence,ethValuation:legacy.ethValuation});
+ const m4Result=evaluateFamilyFacts(m4,m4Facts),legacyResult=evaluateFamilyFacts(m4,{...m4Facts,stateMutations:[],transfers:legacyFacts.transfers,allowanceChanges:legacyFacts.allowanceChanges,allowanceUses:legacyFacts.allowanceUses,trades:legacyFacts.trades,conversions:legacyFacts.conversions,expenses:legacyFacts.expenses,finalStates:legacyFacts.finalStates});
+ assert.equal(m4Result.status,'known');assert.equal(m4Result.mandatoryViolation,null);assert.equal(m4Result.outcome,'passed');assert.equal(legacyResult.status,'known',JSON.stringify(legacyResult));assert.equal(legacyResult.outcome,'passed');assert.deepEqual(m4Result.credit,legacyResult.credit);
+});
+
+test('actor modeled gas NULL remains unavailable and cannot borrow setup cost semantics',()=>{const f=fixture('M4'),p=structuredClone(f.packet);(p.bef.before.costs as Record<string,unknown>[])[0]!.modeledGasFeeUsdcUnits=null;p.bef.after=structuredClone(p.bef.before);p.bef.censusSha256=createHash('sha256').update(canonicalTaskJson(p.bef.before)).digest('hex');assert.throws(()=>validateTaskChainFamilyCapturePacket(p,f.taskCase,f.context));});

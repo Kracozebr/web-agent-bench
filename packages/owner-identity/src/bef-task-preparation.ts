@@ -119,6 +119,9 @@ export type BefPreparationDiagnostic = {
   /** At most four exact safe producer class names; never an error message. */
   fixtureCauseClass?: string | null;
   fixtureAdminRpc?: { reason: string; stage: 'request'|'set'|'readback'; httpStatus?: number; rpcCode?: number };
+  preparationProgress?: { attemptedPhase: BefPreparationSetupPhase | null; confirmedPhases: BefPreparationSetupPhase[] };
+  preparationSqlState?: string;
+  preparationHttpStatus?: number;
   transportCause?: 'timeout'|'abort'|'network'|'http_status'|'other';
   elapsedMs?: number;
   requestTimeoutMs?: number;
@@ -139,7 +142,9 @@ export function preparationTransportCause(error:unknown):NonNullable<BefPreparat
   return aborted?'abort':network?'network':'other';
 }
 
-const FIXTURE_DIAGNOSTIC_PHASES = ['identity', 'read_token_before', 'validate_donor_funds', 'set_donor_balance',
+const PREPARATION_SETUP_PHASES=['reserve_preparation','reset_identity_before','reset_rpc','reset_identity_after','recover_facilitator','persist_reset_proof'] as const;
+type BefPreparationSetupPhase=typeof PREPARATION_SETUP_PHASES[number];
+const FIXTURE_DIAGNOSTIC_PHASES = [...PREPARATION_SETUP_PHASES,'identity', 'read_token_before', 'validate_donor_funds', 'set_donor_balance',
   'set_payer_balance', 'impersonate', 'pin_funding_timestamp', 'reset_donor_balance', 'send_transfer',
   'persist_transaction_hash', 'stop_impersonating', 'wait_receipt', 'validate_receipt', 'read_token_after', 'validate_effects', 'unknown'] as const;
 type BefPreparationFixturePhase = typeof FIXTURE_DIAGNOSTIC_PHASES[number];
@@ -148,10 +153,23 @@ const FIXTURE_DIAGNOSTIC_CAUSES = new Set(['AdminRpcFailure', 'AbortError', 'Agg
   'RequestError', 'RpcRequestError', 'TimeoutError', 'TransactionNotFoundError', 'TransactionReceiptNotFoundError',
   'TypeError', 'UnknownRpcError', 'WaitForTransactionReceiptTimeoutError', 'OtherError']);
 
-export function preparationPutFailureDetails(value: unknown): Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'|'fixtureAdminRpc'> {
+type PreparationFailureDetails=Pick<BefPreparationDiagnostic,'fixturePhase'|'fixtureCauseClass'|'fixtureAdminRpc'|'preparationProgress'|'preparationSqlState'|'preparationHttpStatus'>;
+export function preparationPutFailureDetails(value: unknown): PreparationFailureDetails {
   const body = object(value);
-  if (!body || body.error !== 'preparation_failed' || body.fixtureState !== 'unknown' ||
+  if (!body || !((body.error==='preparation_failed'&&body.fixtureState==='unknown')||(body.error==='preparation_unavailable'&&body.outcome==='unknown'&&body.preparationProgress!==undefined)) ||
       typeof body.fixturePhase !== 'string' || !FIXTURE_DIAGNOSTIC_PHASES.some((phase) => phase === body.fixturePhase)) return {};
+  let preparationProgress:BefPreparationDiagnostic['preparationProgress'];
+  if(body.preparationProgress!==undefined){
+    const progress=object(body.preparationProgress),phases=progress?.confirmedPhases;
+    if(!progress||Object.keys(progress).sort().join('|')!=='attemptedPhase|confirmedPhases'||!Array.isArray(phases)||phases.length>PREPARATION_SETUP_PHASES.length||
+      !(progress.attemptedPhase===null||PREPARATION_SETUP_PHASES.some(p=>p===progress.attemptedPhase))||
+      phases.some(p=>!PREPARATION_SETUP_PHASES.some(known=>known===p))||new Set(phases).size!==phases.length)return {};
+    const indexes=phases.map(p=>PREPARATION_SETUP_PHASES.findIndex(known=>known===p));
+    const attemptedIndex=PREPARATION_SETUP_PHASES.findIndex(known=>known===progress.attemptedPhase);
+    if(indexes.some((index,i)=>index>attemptedIndex||(i>0&&index<=indexes[i-1]!))||
+      PREPARATION_SETUP_PHASES.some(p=>p===body.fixturePhase)&&(progress.attemptedPhase!==body.fixturePhase||phases.includes(progress.attemptedPhase)))return {};
+    preparationProgress={attemptedPhase:progress.attemptedPhase as BefPreparationSetupPhase|null,confirmedPhases:phases as BefPreparationSetupPhase[]};
+  }else if(PREPARATION_SETUP_PHASES.some(p=>p===body.fixturePhase))return {};
   const cause = body.fixtureCauseClass;
   if (cause !== null && (typeof cause !== 'string' || cause.length > 160 || cause.split('>').length > 4 ||
       !cause.split('>').every((name) => FIXTURE_DIAGNOSTIC_CAUSES.has(name)))) return {};
@@ -165,13 +183,15 @@ export function preparationPutFailureDetails(value: unknown): Pick<BefPreparatio
       ...(Number.isInteger(rpc.rpcCode) && Number(rpc.rpcCode) >= -2147483648 && Number(rpc.rpcCode) <= 2147483647 ? {rpcCode: Number(rpc.rpcCode)} : {}),
     } : undefined;
   return { fixturePhase: body.fixturePhase as BefPreparationFixturePhase, fixtureCauseClass: cause as string | null,
-    ...(fixtureAdminRpc ? {fixtureAdminRpc} : {}) };
+    ...(fixtureAdminRpc ? {fixtureAdminRpc} : {}),...(preparationProgress?{preparationProgress}:{}),
+    ...(preparationProgress&&typeof body.preparationSqlState==='string'&&/^[0-9A-Z]{5}$/.test(body.preparationSqlState)?{preparationSqlState:body.preparationSqlState}:{}),
+    ...(preparationProgress&&Number.isInteger(body.preparationHttpStatus)&&Number(body.preparationHttpStatus)>=100&&Number(body.preparationHttpStatus)<=599?{preparationHttpStatus:Number(body.preparationHttpStatus)}:{}) };
 }
 
 type PreparationDiagnosticReporter = (
   phase: BefPreparationDiagnosticPhase,
   reasonCode: BefPreparationDiagnosticReasonCode,
-  details?: Pick<BefPreparationDiagnostic, 'fixturePhase' | 'fixtureCauseClass'|'fixtureAdminRpc'|'transportCause'|'elapsedMs'|'requestTimeoutMs'>,
+  details?: PreparationFailureDetails & Pick<BefPreparationDiagnostic,'transportCause'|'elapsedMs'|'requestTimeoutMs'>,
 ) => Promise<void>;
 
 export type BefTaskPreparationAdapterDependencies = {

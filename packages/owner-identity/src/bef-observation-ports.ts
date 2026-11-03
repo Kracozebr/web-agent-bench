@@ -1,5 +1,6 @@
 import { validateTaskChainCapturePacket } from './task-chain-capture-packet.js';
-import { validatePaidDataCapturePacket } from './task-paid-data-capture-packet.js';
+import { validatePaidDataCapturePacket, validatePaidFamilyCapturePacket } from './task-paid-data-capture-packet.js';
+import { validateAdmittedActionsCapturePacket } from './task-admitted-actions-capture-packet.js';
 import { validateS3CapturePacket } from './task-s3-capture-packet.js';
 import { validateCompositeCapturePacket } from './task-composite-capture-packet.js';
 import { createHash } from 'node:crypto';
@@ -361,6 +362,9 @@ function packetIdentity(packet: unknown): { runId: string; taskId: string; envir
     'bts-paid-data-run-observation-capture/v1':['M1','M2','H1','H3','U1'],
     'bts-composite-run-observation-capture/v1':['H3','U1'],
     'bts-s3-run-observation-capture/v1':['S3'],
+    'bts-paid-family-observation-capture/v1':[...TASK_IDS],
+    'bts-chain-family-observation-capture/v1':[...TASK_IDS],
+    'bts-admitted-actions-observation-capture/v1':[...TASK_IDS],
   };
   const generic=typeof packet.schemaVersion==='string'&&genericSchemas[packet.schemaVersion]?.includes(String(taskId));
   const runId = packet.binding.runId;
@@ -446,7 +450,7 @@ async function boundedExistingFile(path: string, expected: Buffer): Promise<bool
   } finally { await handle.close(); }
 }
 
-async function createObservationEvidenceSink(repositoryRoot: string): Promise<BefObservationEvidenceSink> {
+export async function createObservationEvidenceSink(repositoryRoot: string): Promise<BefObservationEvidenceSink> {
   let root: string;
   try { root = await realpath(repositoryRoot); } catch { throw safeError('bef_observer_repository_root_unavailable'); }
   return {
@@ -460,6 +464,12 @@ async function createObservationEvidenceSink(repositoryRoot: string): Promise<Be
         if(isRecord(packet))switch(packet.schemaVersion){
           case 'bts-chain-task-observation-capture/v1':validateTaskChainCapturePacket(packet);break;
           case 'bts-paid-data-run-observation-capture/v1':validatePaidDataCapturePacket(packet);break;
+          case 'bts-paid-family-observation-capture/v1':validatePaidFamilyCapturePacket(packet);break;
+          case 'bts-admitted-actions-observation-capture/v1':validateAdmittedActionsCapturePacket(packet);break;
+          // AICODE-NOTE: The chain-family collector and sealed replayer validate with
+          // the actual pinned release/manifest. This sink supplies bounded immutable
+          // storage, not an independent claim of chain or family completeness.
+          case 'bts-chain-family-observation-capture/v1':break;
           case 'bts-s3-run-observation-capture/v1':validateS3CapturePacket(packet);break;
           case 'bts-composite-run-observation-capture/v1':validateCompositeCapturePacket(packet);break;
         }

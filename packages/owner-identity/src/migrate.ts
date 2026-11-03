@@ -13,6 +13,8 @@ import { migrateTaskPreparations } from "./task-preparation-migrate.js";
 import { migrateTaskObservations } from "./task-observation-migrate.js";
 import { migrateBonusCodes } from "./bonus-code-migrate.js";
 import { migrateReports } from "./report-migrate.js";
+import { migrateMcpDiagnostics } from './mcp-diagnostics-migrate.js';
+import { migrateDiagnosticOAuth } from './mcp-diagnostics-oauth-migrate.js';
 import { migrateBetaPlatformRecovery } from "./beta-platform-recovery.js";
 import { migrateBetaOperationsControl } from "./beta-operations-control.js";
 
@@ -289,6 +291,8 @@ async function main() {
       await migrateRankedRuns(tx);
       await migrateBonusCodes(tx);
       await migrateReports(tx);
+      await migrateMcpDiagnostics(tx);
+      await migrateDiagnosticOAuth(tx);
       const resource = agentOAuthResource(config);
       const remoteResource = config.mcpTransportProfile === 'remote-oauth-v1';
       const resourceDbId = remoteResource ? `oid-remote-resource-${createHash('sha256').update(resource).digest('hex').slice(0, 32)}` : 'oid-agent-resource-v1';

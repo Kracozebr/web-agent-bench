@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "oar-h1-runtime-inputs/v1",
+  "status": "blocked",
+  "blockers": [
+    {
+      "code": "FRESH_H1_NATIVE_MCP_CAPTURE_NOT_RUN",
+      "detail": "The Docker API/UI backend has been restarted and is ready. The user said Training runs are not needed, so no fresh browser-started H1 run was launched. WB-SC-006/007 still require worker, local BEF and native MCP cutoff evidence."
+    }
+  ],
+  "scenarios": {}
+}

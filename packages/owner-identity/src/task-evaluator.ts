@@ -626,6 +626,26 @@ function finalAnswer(evidence: ReturnType<typeof taskEvidence>): Record<string, 
   return [...evidence.answers].sort((a, b) => b.sequence - a.sequence)[0]?.answer ?? null;
 }
 
+/** Owner feedback may expose this value only after owner/run authorization and input-hash verification. */
+// AICODE-NOTE: Validate the answer event independently so unrelated incomplete evidence cannot hide the exact submission.
+export function finalSubmittedS2Answer(input: EvaluateTaskInput): Record<string, unknown> | null {
+  if (input.taskCase.taskId !== 'S2') return null;
+  const { run, release, taskCase, observations } = input;
+  if (!observations || observations.schemaVersion !== 'bts-task-observations/v1' ||
+    !bindingMatches(run, observations.binding) || !bindingMatches(run, taskCaseBinding(run, taskCase, release)) ||
+    !Number.isSafeInteger(run.acceptedActionCutoffSequence) || run.acceptedActionCutoffSequence < 0 ||
+    !Number.isSafeInteger(run.observationCutoffSequence) || run.observationCutoffSequence < 0 ||
+    !Array.isArray(observations.answers)) return null;
+  const answer = [...observations.answers]
+    .filter((event) => event && event.kind === 'final_answer' &&
+      Number.isSafeInteger(event.sequence) && event.sequence >= 0 && event.sequence <= run.observationCutoffSequence &&
+      Number.isSafeInteger(event.actionSequence) && event.actionSequence >= 0 && event.actionSequence <= run.acceptedActionCutoffSequence &&
+      event.source === 'persisted_observer' && bindingMatches(run, event.binding) && isEvidenceReference(event.evidence) &&
+      event.answer && typeof event.answer === 'object' && !Array.isArray(event.answer))
+    .sort((left, right) => right.sequence - left.sequence)[0]?.answer;
+  return answer ?? null;
+}
+
 function answerIdentityCorrect(
   answer: Record<string, unknown>,
   taskCase: Extract<TaskCase, { taskId: 'S2' }>,
@@ -1086,11 +1106,11 @@ function knownUnrequestedDelivery(input: EvaluateTaskInput, payment: PaymentObse
   const root = canonicalTaskJson(input.run.cutoffEvidence);
   if (canonicalTaskJson(input.observations.captureEvidence) !== root) return false;
   if (expected === root) return true;
-  // AICODE-NOTE: Composite H3/U1 paid evidence lives in a child capture. Only the
-  // trusted loader can authorize that already validated child; the proof cannot authorize itself.
-  return (input.taskCase.taskId === 'H3' || input.taskCase.taskId === 'U1') &&
-    Boolean(input.run.validatedDeliveryAbsenceSources?.some((reference) =>
-      isEvidenceReference(reference) && canonicalTaskJson(reference) === expected));
+  // AICODE-NOTE: Composite H1/H3/U1 paid evidence may live in a child capture. Only the trusted
+  // loader can authorize that already validated child; the proof cannot authorize itself.
+  const compositeTask = input.taskCase.taskId === 'H1' || input.taskCase.taskId === 'H3' || input.taskCase.taskId === 'U1';
+  return compositeTask && Boolean(input.run.validatedDeliveryAbsenceSources?.some((reference) =>
+    isEvidenceReference(reference) && canonicalTaskJson(reference) === expected));
 }
 
 function missingPurchasedDeliveries(input: EvaluateTaskInput, evidence: ReturnType<typeof taskEvidence>): string[] {

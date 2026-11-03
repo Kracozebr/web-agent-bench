@@ -78,6 +78,9 @@ export interface AgentRouteDependencies {
   agentPreflightUrl: string;
   registerMcpTools?: (server: McpServer, principal: AgentPrincipal) => void;
   observeAgentMcp?: (event: AgentMcpAcceptanceEvent) => void;
+  diagnosticIngress?: { authenticated(request:FastifyRequest,principal:{ownerId:string;agentId:string;connectionId:string}):Promise<void>; handlerEntered(request:FastifyRequest):void;
+    toolRegistered(request:FastifyRequest,name:string,configuration:unknown):void; run<T>(request:FastifyRequest,work:()=>Promise<T>):Promise<T>;
+    authenticationStarted?(request:FastifyRequest):void;sdkStarted?(request:FastifyRequest):void;handlerCompleted?(request:FastifyRequest):void;receiptStarted?(request:FastifyRequest):void };
   invalidationStore?: AgentConnectionInvalidationStore;
 }
 
@@ -640,6 +643,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     if (origin && origin !== dependencies.config.publicOrigin) return reply.code(403).send({ error: "origin_not_allowed" });
     const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
     if (contentType !== "application/json") return reply.code(415).send({ error: "unsupported_media_type" });
+    dependencies.diagnosticIngress?.authenticationStarted?.(request);
     const authorization = request.headers.authorization;
     const match = typeof authorization === "string" ? /^Bearer ([^\s]{1,8192})$/.exec(authorization) : null;
     if (!match) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
@@ -650,6 +654,8 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
     await dependencies.rateLimit(request, "agent-mcp-ip", 300);
     const principal = await resolveAgentPrincipal(dependencies, match[1]!);
     if (!principal) return reply.code(401).header("WWW-Authenticate", bearerChallenge(dependencies)).send({ error: "unauthorized" });
+
+    await dependencies.diagnosticIngress?.authenticated(request, {ownerId:principal.ownerId,agentId:principal.agentId,connectionId:principal.grantId});
 
     const mcpRequestId = randomUUID();
     const offeredProtocol = request.headers['mcp-protocol-version'] ??
@@ -696,6 +702,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
         protocolVersion: z.enum(REMOTE_MCP_PROTOCOLS)
       } : {})
     });
+    dependencies.diagnosticIngress?.sdkStarted?.(request);
     const mcpHandler = createMcpHandler(() => {
       const server = new McpServer({ name: "Web3 Agent Bench", version: "1.0.0" }, {
         supportedProtocolVersions: remoteOAuthTransport ? [...REMOTE_MCP_PROTOCOLS] : localCodexTransport ? ["2026-07-28", "2025-06-18"] : betaRemoteTransport
@@ -704,6 +711,19 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
           : ["2026-07-28"],
         maxToolInputElements: AGENT_MCP_INPUT_ELEMENTS
       });
+      if (dependencies.diagnosticIngress) {
+        const register = server.registerTool.bind(server);
+        server.registerTool = new Proxy(register, { apply(target, thisArg, args) {
+          if(typeof args[0]==='string')dependencies.diagnosticIngress!.toolRegistered(request,args[0],args[1]);
+          const callback = args[args.length - 1];
+          if (typeof callback === 'function') args[args.length - 1] = async (...input:unknown[]) => {
+            dependencies.diagnosticIngress!.handlerEntered(request);
+            try{return await Reflect.apply(callback, undefined, input);}
+            finally{dependencies.diagnosticIngress!.handlerCompleted?.(request);}
+          };
+          return Reflect.apply(target, thisArg, args);
+        } });
+      }
       server.registerTool("identity.preflight", {
         title: "Check agent connection",
         description: "Check this fixed agent connection and report the current policy revision. This free check does not authorize a paid or public action.",
@@ -713,6 +733,7 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
         }),
         outputSchema
       }, async ({ agentId, operationId }) => {
+        dependencies.diagnosticIngress?.handlerEntered(request);
         const checkedAt = new Date();
         const allowed = agentId === undefined || agentId === principal.agentId;
         if (allowed && remoteOAuthTransport) {
@@ -752,7 +773,10 @@ export function registerAgentRoutes(app: FastifyInstance, dependencies: AgentRou
       method: "POST", headers, body: JSON.stringify(request.body)
     });
     try {
-      const response = await mcpHandler.fetch(webRequest, { parsedBody: request.body });
+      const response = await (dependencies.diagnosticIngress
+        ? dependencies.diagnosticIngress.run(request,()=>mcpHandler.fetch(webRequest, { parsedBody: request.body }))
+        : mcpHandler.fetch(webRequest, { parsedBody: request.body }));
+      dependencies.diagnosticIngress?.receiptStarted?.(request);
       const responseHeaders = new Headers(response.headers);
       responseHeaders.set("Cache-Control", "no-store");
       responseHeaders.forEach((value, key) => reply.header(key, value));

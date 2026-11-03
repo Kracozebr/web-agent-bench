@@ -1,15 +1,9 @@
-import { collectBefCompositeObservationCandidate } from './bef-composite-observation-collector.js';
+import { collectBefAdmittedActionsObservationCandidate } from './bef-admitted-actions-observation-collector.js';
+import { admittedDeliveryAbsenceSources, validateAdmittedActionsCapturePacket } from './task-admitted-actions-capture-packet.js';
 import { compositeDeliveryAbsenceSources, validateCompositeCapturePacket } from './task-composite-capture-packet.js';
 import { TASK_IDS } from './task-catalog.js';
 import { sql } from 'drizzle-orm';
 import type { OwnerDatabase } from './db.js';
-import { collectBefS1TaskObservationCandidate } from './bef-s1-observation-collector.js';
-import { collectBefS2TaskObservationCandidate } from './bef-s2-observation-collector.js';
-import { collectBefS4TaskObservationCandidate } from './bef-s4-observation-collector.js';
-import { collectBefM1TaskObservationCandidate } from './bef-m1-observation-collector.js';
-import { collectBefPaidDataObservationCandidate } from './bef-paid-data-observation-collector.js';
-import { collectBefChainTaskObservationCandidate } from './bef-chain-observation-collector.js';
-import { collectBefS3TaskObservationCandidate } from './bef-s3-observation-collector.js';
 import type { BefFenceProof, BefObservationPorts } from './bef-observation-ports.js';
 import { taskPreparationPublicPinsSha256 } from './bef-task-preparation.js';
 import { HttpError } from './http-error.js';
@@ -319,7 +313,21 @@ async function loadCandidateContext(deps: TaskTrainingObservationLifecycleDepend
       caseHash: taskCase.caseHash, rubricHash: taskCase.rubricHash, taskId: taskCase.taskId,
     };
     let validatedDeliveryAbsenceSources: ReturnType<typeof compositeDeliveryAbsenceSources> = [];
-    if ((row.task_id === 'H3' || row.task_id === 'U1') && candidate.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)) {
+    if (candidate.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined) &&
+        isRecord(collection.packet) && collection.packet.schemaVersion === 'bts-admitted-actions-observation-capture/v1') {
+      try {
+        const packet = validateAdmittedActionsCapturePacket(collection.packet);
+        const expectedExecution = { environmentId: row.environment_id, preparationId: row.preparation_id, leaseId: row.lease_id,
+          generationId: row.generation_id, environmentManifestHash: row.environment_manifest_sha256,
+          applicationSourceHash: row.application_source_hash, executionIdentityHash: row.execution_identity_hash,
+          initialStateSha256: row.initial_state_sha256 };
+        if (!same(packet.binding,binding)||!same(packet.execution,expectedExecution)||packet.taskIndex!==target.taskIndex||
+          packet.closure.closureId!==row.closure_id||packet.closure.operationId!==row.closure_operation_id||
+          packet.closure.payloadHash!==row.closure_payload_hash||packet.closure.reason!==row.closure_reason||
+          packet.closure.actionCutoffSequence!==actionCutoff||packet.closure.reconciledActionSequence!==reconciled) return null;
+        validatedDeliveryAbsenceSources=admittedDeliveryAbsenceSources(packet,candidate,collection.evidence);
+      } catch { return null; }
+    } else if ((row.task_id === 'H3' || row.task_id === 'U1') && candidate.observations.payments.some((payment) => payment.deliveryRequestAbsence !== undefined)) {
       try {
         const packet = validateCompositeCapturePacket(collection.packet);
         const expectedExecution = { environmentId: row.environment_id, preparationId: row.preparation_id, leaseId: row.lease_id,
@@ -370,17 +378,10 @@ export async function collectObservationCandidate(deps: TaskObservationCollector
   const common = { db: deps.db, taskReleaseSource: deps.taskReleaseSource, repositoryRoot: deps.repositoryRoot,
     postgresByEnvironment: deps.observerPorts.postgresByEnvironment,
     rpcByEnvironment: deps.observerPorts.rpcByEnvironment, evidenceSink: deps.observerPorts.evidenceSink };
-  switch (taskObservationCollectorFor(mode, taskId)) {
-    case 's1': return collectBefS1TaskObservationCandidate(common, target);
-    case 's2': return collectBefS2TaskObservationCandidate(common, target);
-    case 's4': return collectBefS4TaskObservationCandidate(common, target);
-    case 'm1_training': return collectBefM1TaskObservationCandidate(common, target);
-    case 'paid_data': return collectBefPaidDataObservationCandidate(common, target);
-    case 'chain': return collectBefChainTaskObservationCandidate(common, target);
-    case 's3': return collectBefS3TaskObservationCandidate(common, target);
-    case 'composite': return collectBefCompositeObservationCandidate(common, target);
-    default: return { status: 'unavailable' as const, reasonCode: 'unsupported_task' };
-  }
+  if (!taskObservationCollectorFor(mode,taskId)) return {status:'unavailable' as const,reasonCode:'unsupported_task'};
+  // AICODE-NOTE: Family collectors prove all admitted effects on every task. Legacy
+  // collector names remain a compatibility scope lookup, never permission to skip a family.
+  return collectBefAdmittedActionsObservationCandidate(common,target);
 }
 
 

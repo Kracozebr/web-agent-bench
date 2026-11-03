@@ -142,7 +142,10 @@ function Invoke-PgDump([string]$JobId, [string]$DatabaseName, [string]$JobDirect
     if ([IO.File]::Exists($hostPath) -or [IO.File]::Exists($containerPath)) { Stop-Safe 'dump_path_exists' }
     try {
         Invoke-Compose @('exec','-T','postgres','sh','-c',"umask 077; set -C; : > '$containerPath'") 'dump_stage_failed'
-        Invoke-Compose @('exec','-T','postgres','pg_dump','-U','oid_owner','-d',$DatabaseName,'-Fc','--no-owner','--no-acl','-f',$containerPath) 'pg_dump_failed'
+        # Fixed SC006 policy: retain schemas and every other row, exclude only
+        # ephemeral diagnostic-helper requests/grants/tokens. Never caller-controlled.
+        Invoke-Compose @('exec','-T','postgres','pg_dump','-U','oid_owner','-d',$DatabaseName,'-Fc','--no-owner','--no-acl',
+          '--exclude-table-data=public.oid_diagnostic_oauth_request','--exclude-table-data=public.oid_diagnostic_oauth_grant','--exclude-table-data=public.oid_diagnostic_oauth_token','-f',$containerPath) 'pg_dump_failed'
         Invoke-Docker @('cp',"${containerId}:$containerPath",$hostPath) 'dump_copy_failed'
         $file = Get-Item -LiteralPath $hostPath -Force
         if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -le 0) { Stop-Safe 'dump_output_invalid' }

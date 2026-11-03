@@ -207,7 +207,10 @@ function object(value: unknown): Record<string, unknown> | null {
 /**
  * Internal successor guard: reconstruct the immutable evaluation from its persisted input before
  * treating it as known. A mandatory violation is an allowed terminal failure only when the
- * evaluator itself reproduces the exact failed, zero-credit result and observation-backed claim.
+ * evaluator itself reproduces the exact failed, zero-credit result and its complete canonical claim.
+ * AICODE-NOTE: A service-budget violation can be proven by settled payment facts while the
+ * participant-expense array is empty. Event-ID list length is not an independent proof gate;
+ * exact evaluator reproduction and the mandatory sealed evidence/fence replay remain authoritative.
  */
 function readKnownCanonicalTaskEvaluation(
   resultValue: unknown,
@@ -238,7 +241,7 @@ function readKnownCanonicalTaskEvaluation(
   if (violation !== null) {
     const claim = object(violation);
     if (!claim || typeof claim.rule !== 'string' || claim.rule.length === 0 || !Array.isArray(claim.observationIds) ||
-        claim.observationIds.length === 0 || claim.observationIds.some((id) => typeof id !== 'string' || id.length === 0) ||
+        claim.observationIds.some((id) => typeof id !== 'string' || id.length === 0) ||
         new Set(claim.observationIds).size !== claim.observationIds.length || result.outcome !== 'failed' ||
         object(result.credit)?.numerator !== '0') return null;
   }
@@ -248,7 +251,7 @@ function readKnownCanonicalTaskEvaluation(
         (reconstructed.mandatoryViolation === null) !== (violation === null) ||
         canonicalTaskJson(reconstructed) !== canonicalTaskJson(result)) return null;
     if (reconstructed.mandatoryViolation !== null && (reconstructed.outcome !== 'failed' ||
-        reconstructed.credit?.numerator !== '0' || reconstructed.mandatoryViolation.observationIds.length === 0)) return null;
+        reconstructed.credit?.numerator !== '0')) return null;
     return reconstructed as CanonicalKnownTaskEvaluation;
   } catch {
     return null;

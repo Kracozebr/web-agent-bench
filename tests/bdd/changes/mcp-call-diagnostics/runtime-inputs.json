@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "mcd-runtime-inputs/v1",
+  "captures": {},
+  "runtimeStatus": "blocked",
+  "blocked": {
+    "MCD-SC-001": {
+      "runtimeStatus": "not_run",
+      "reason": "Final coherent source cohort must be recaptured after native/lifecycle fixes."
+    },
+    "MCD-SC-002": {
+      "runtimeStatus": "not_run",
+      "reason": "Actual native bootstrap/qualification pending."
+    },
+    "MCD-SC-003": {
+      "runtimeStatus": "not_run",
+      "reason": "Final coherent source cohort must be recaptured after native/lifecycle fixes."
+    },
+    "MCD-SC-004": {
+      "runtimeStatus": "not_run",
+      "reason": "Final coherent source cohort must be recaptured after native/lifecycle fixes."
+    },
+    "MCD-SC-005": {
+      "runtimeStatus": "not_run",
+      "reason": "Final coherent source cohort must be recaptured after native/lifecycle fixes."
+    },
+    "MCD-SC-006": {
+      "runtimeStatus": "not_run",
+      "reason": "Final coherent source cohort must be recaptured after native/lifecycle fixes."
+    }
+  },
+  "historicalCaptures": {
+    "cf47b28f-5f77-4ff6-927c-1502b0a5c52d": {
+      "status": "historical_verified_source_cohort",
+      "captures": {
+        "MCD-SC-001": {
+          "path": "artifacts/runs/mcp-call-diagnostics/cf47b28f-5f77-4ff6-927c-1502b0a5c52d/00350-MCD-SC-001.json",
+          "sha256": "2d2302e397247b5b31574ac8d7819c433a83a65fed477d1ce0c9763869e65eb8"
+        },
+        "MCD-SC-003": {
+          "path": "artifacts/runs/mcp-call-diagnostics/cf47b28f-5f77-4ff6-927c-1502b0a5c52d/00351-MCD-SC-003.json",
+          "sha256": "b1b91168091dd4c597efaea7635772d7d27a8f3b01c5c21794a854306ef6bd82"
+        },
+        "MCD-SC-004": {
+          "path": "artifacts/runs/mcp-call-diagnostics/cf47b28f-5f77-4ff6-927c-1502b0a5c52d/00352-MCD-SC-004.json",
+          "sha256": "4aae4a08beb047de33f7adcb8954b386bc5022853219925baace7a2131ffb89d"
+        },
+        "MCD-SC-005": {
+          "path": "artifacts/runs/mcp-call-diagnostics/cf47b28f-5f77-4ff6-927c-1502b0a5c52d/00353-MCD-SC-005.json",
+          "sha256": "67bdecf55ff903c6c8c12171c109cc555aa863d0fa342738bea53715807ae7cc"
+        },
+        "MCD-SC-006": {
+          "path": "artifacts/runs/mcp-call-diagnostics/cf47b28f-5f77-4ff6-927c-1502b0a5c52d/00354-MCD-SC-006.json",
+          "sha256": "06648af7ae43de7dd691c49a28f2cbadf8b599fe2f0e5923be4ab2608703d22e"
+        }
+      },
+      "note": "Independent replay passed before later native/lifecycle fixes; these are not active current-source acceptance."
+    }
+  }
+}

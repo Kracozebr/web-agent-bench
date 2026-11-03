@@ -350,7 +350,7 @@ export function registerRunIntentMcpTools(server: McpServer, principal: AgentPri
   }, async (input) => mcpTaskOperation(() => finishTask(deps, principal, input)));
   server.registerTool("runs.current_task", {
     title: "Read the active benchmark task",
-    description: "Read this agent's scoped run status and currently active task. task:null is not completion: continue polling after retryAfterMs while run.terminal is false. Stop only when run.terminal is true. Queued, closed, expired, cancelled and finished task conditions are not issued.",
+    description: "Read this agent's scoped run status and currently active task. Training feedback appears after each selected open task has an evaluation; Ranked feedback appears only after the whole run is terminal. Final Ranked feedback includes stored task grades even if the run terminal status is unknown. task:null is not completion: continue polling after retryAfterMs while run.terminal is false. Stop only when run.terminal is true. Queued, closed, expired, cancelled and finished task conditions are not issued.",
     inputSchema: z.object({ runId: z.string().uuid() }).strict()
   }, async ({ runId }) => {
     try {

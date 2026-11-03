@@ -1,3 +1,4 @@
+import {rejectedSwapGuardMarkerMatches,type RejectedSwapGuardMarker} from './task-rejected-swap-proof.js';
 /**
  * Durable bridge from admitted task actions to the selected BEF participant
  * tools. This module is an internal executor boundary; it does not create or
@@ -9,6 +10,7 @@
  * application build. The immutable manifest digest is checked separately.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { observeDiagnosticAction } from './mcp-diagnostics-boundary.js';
 import type { PaymentRequired, PaymentRequirements } from '@x402/core/types';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -67,6 +69,7 @@ export interface BefTaskSessionBinding {
 }
 
 export interface SafeTaskActionEvidence {
+  rejectionProof?: RejectedSwapGuardMarker;
   schema: 'bef-task-action-observation-v1';
   actionId: string;
   runId: string;
@@ -204,6 +207,7 @@ interface HealthIdentity {
 }
 
 interface DispatchObservation {
+  rejectionProof?: RejectedSwapGuardMarker;
   status: SafeTaskActionEvidence['status'];
   reasonCode?: string;
   requestStartedAt?: string;
@@ -592,6 +596,12 @@ export function classifyBefTaskActionResponse(input: {
     ? receipt.transactionHash.toLowerCase()
     : typeof body?.transactionHash === 'string' && TX_HASH.test(body.transactionHash) ? body.transactionHash.toLowerCase() : undefined;
   const code = responseErrorCode(body);
+  if(status===400&&code==='selected_recipient_must_be_eoa'&&operationId&&
+    body&&exactKeys(body,['error','operationId','rejectionProof'])&&(headerOperationId===null||headerOperationId===operationId)&&rejectedSwapGuardMarkerMatches(body.rejectionProof,operationId)&&
+    transactionHash===undefined&&participantToolResponse===undefined){
+    return {status:'rejected_before_execution',reasonCode:code,httpStatus:status,befOperationId:operationId,rawResponseSha256,
+      rejectionProof:body!.rejectionProof as RejectedSwapGuardMarker};
+  }
   // The selected-execution API binds operation identity in its response body.
   // Some deployments omit the optional response header, so compare it when
   // present but do not require it to classify a fully bound measurement.
@@ -1213,6 +1223,7 @@ export class BefTaskExecutor {
   }
 
   private async claim(candidate: ActionCandidate, binding?: BefTaskSessionBinding): Promise<boolean> {
+    const diagnosticAttemptStartedAt=new Date().toISOString();
     return this.deps.db.transaction(async (tx) => {
       const context = await this.lockContext(tx, candidate.id);
       if (!context || context.candidate.outbox_status !== 'pending' || context.candidate.receipt_status !== 'pending') return false;
@@ -1231,6 +1242,13 @@ export class BefTaskExecutor {
         } : {}),
       });
       return true;
+    }).then(async claimed=>{
+      if(claimed)await observeDiagnosticAction(this.deps.db,{stage:'dispatch',actionId:candidate.id,outcome:'unknown'});
+      return claimed;
+    }).catch(async error=>{
+      await observeDiagnosticAction(this.deps.db,{stage:'dispatch',actionId:candidate.id,outcome:'error',errorCode:'INTERNAL_ERROR',
+        attemptId:randomUUID(),startedAt:diagnosticAttemptStartedAt,completedAt:new Date().toISOString()});
+      throw error;
     });
   }
 
@@ -1714,6 +1732,7 @@ export class BefTaskExecutor {
         (candidate.application_source_hash && HASH.test(candidate.application_source_hash) ? candidate.application_source_hash.toLowerCase() : null),
       idempotencyKey: `task-action-${candidate.id}`, status: observation.status,
       ...(observation.reasonCode ? { reasonCode: observation.reasonCode } : {}),
+      ...(observation.rejectionProof ? {rejectionProof:observation.rejectionProof}:{}),
       ...(observation.requestStartedAt ? { requestStartedAt: observation.requestStartedAt } : {}),
       ...(observation.requestFinishedAt ? { requestFinishedAt: observation.requestFinishedAt } : {}),
       ...(observation.httpStatus !== undefined ? { httpStatus: observation.httpStatus } : {}),
