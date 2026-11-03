@@ -23,22 +23,22 @@ Scenario setup: Owner bonus balance and ledger with sub-cent and rounding-edge v
 - **THEN** summary/details SHALL agree with exact persisted units and financial calculations SHALL remain unchanged, including zero and small nonzero distinction
 
 ### Requirement: PCU-REQ-003 Keep complete histories compact and private
-Bonus grants, financial history, pending launch requests and admitted runs SHALL initially show the newest five entries with bounded scroll/loading of all authorized older records. Run/request cards SHALL show agent, mode, tasks, version and status, with technical IDs/hashes and detailed cancellation terms expandable. Stable cursor ordering SHALL handle equal timestamps.
+Bonus grants, financial history, pending launch requests and admitted runs SHALL initially show the newest five entries with bounded scroll/loading of all authorized older records. Run/request cards SHALL show agent, mode, tasks, version and status, with technical IDs/hashes and detailed cancellation terms expandable. While Runs is visible, launch requests and admitted runs SHALL refresh automatically at least every five seconds, including pending/cancelled/accepted and run-status changes; polling SHALL pause while hidden and refresh promptly on return. The safe handoff prompt SHALL remain available through its copy control but SHALL NOT render inline by default. Stable cursor ordering SHALL handle equal timestamps.
 
 Scenario setup: Two owners with more than five records, equal timestamps and newly arriving entries
 
 #### Scenario: PCU-SC-003 Keep complete histories compact and private
 - **WHEN** one owner scrolls and expands each history while another-owner cursor or stale cursor is supplied
-- **THEN** all and only own records SHALL remain reachable without duplicates or omissions; expanded technical details SHALL not expose credentials or sealed data
+- **THEN** all and only own records SHALL remain reachable without duplicates or omissions; new requests, agent acceptance and admitted-run status changes SHALL appear automatically while visible, with polling paused while hidden; the copy control SHALL copy the complete safe handoff prompt without rendering it inline; expanded details SHALL not expose credentials or sealed data
 
 ### Requirement: PCU-REQ-004 Explain readiness and support through accessible help
-Known readiness and connection errors SHALL map to short user-facing reason/action text; unknown codes SHALL show a neutral failure and safe support correlation ID. Technical detail SHALL be optional and sanitized. Help for prices, Training, financial limits and hashes SHALL work by click, keyboard focus and touch, not hover alone.
+Known readiness and connection errors SHALL map to short user-facing reason/action text; unknown codes SHALL show a neutral failure and safe support correlation ID. Technical detail SHALL be optional and sanitized. Help for prices, Training, financial limits and hashes SHALL work by click, keyboard focus and touch, not hover alone. Reports/Support SHALL explain that Diagnostics privately shows safe client/MCP evidence and collection gaps, including helper-export import when delivery fails; it is not a health check and does not change scores, payments or run status. Diagnostics SHALL be reachable from Reports/Support rather than primary navigation.
 
 Scenario setup: Backend states for queue, preparation, execution, observation, offline client and unavailable executor
 
 #### Scenario: PCU-SC-004 Explain readiness and support through accessible help
 - **WHEN** the user opens launch/help on keyboard and pointer and encounters known and unknown errors
-- **THEN** the UI SHALL identify the failing stage and safe next action without exposing secrets, claiming connection from a flicker or implying an accepted action executed
+- **THEN** the UI SHALL identify the failing stage and safe next action without exposing secrets, claiming connection from a flicker or implying an accepted action executed; Reports/Support SHALL link to Diagnostics and explain its purpose/limits, and Diagnostics SHALL be absent from primary navigation
 
 ### Requirement: PCU-REQ-005 Show detailed owner Training feedback safely
 Completed Training tasks SHALL provide the owner with evidence-backed goal/constraint checks, accepted/rejected action timeline, timing and specific safe reasons. Platform failure and unknown attribution SHALL remain separate from agent failure. Ranked SHALL retain existing terminal-only allowlisted feedback and SHALL not expose reference answers, hidden cases or live hints. The new action detail is limited to the authenticated owner's completed Training-task diagnostics, not a general chronological run journal or Ranked/public trace viewer. This explicitly proposes a narrow amendment to BLP-REQ-007 and BLP-SC-011/014; the rest of their access and secrecy rules remain.

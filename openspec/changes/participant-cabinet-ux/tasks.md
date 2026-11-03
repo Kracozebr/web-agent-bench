@@ -19,10 +19,12 @@ Implementation approved on 2026-10-31; uncompleted tasks remain unchecked. [Appr
 - [ ] 2.7 Implement create contextual reports with optional private screenshots at owner_browser_report_upload_admin_independent_postgres_files; exercise all listed negative variants and independently inspect one_report_image_audit, unchanged_benchmark_and_finances, existing_beta_ended_at_plus_30_utc_day_cleanup; gate: PCU-SC-006 (environment).
 - [ ] 2.8 Implement hide and reject non-admin administration pages at real_http_browser_admin_server_api_postgres; exercise all listed negative variants and independently inspect authorized_admin_writes_only, no_unauthorized_page_data_or_mutation; gate: PCU-SC-007 (environment).
 - [ ] 2.9 Implement present connection management without manual credential clutter at owner_browser_remote_mcp_status_native_client_postgres; exercise all listed negative variants and independently inspect scoped_grant_changes_only, unchanged_caps_and_other_connections; gate: PCU-SC-008 (environment).
+- [ ] 2.10 Add visible-page five-second polling for launch requests/admitted runs and remove inline handoff-prompt rendering; PCU-SC-003 must be recaptured and replayed against this source before passing.
+- [ ] 2.11 Move Diagnostics into Reports/Support and explain its evidence/import purpose and limits; PCU-SC-004 must be recaptured and replayed against this source before passing.
 
 ## 3. Prove integration before release
 
-- [ ] 3.1 Capture all scenario observations/variants on frozen source and independently replay raw paths/hashes, then rerun affected existing BRL/BTS/BPC/AAP/BLP regressions; gate: complete environment report, missing variants non-passing.
+- [ ] 3.1 Capture all scenario observations/variants on frozen source and independently replay raw paths/hashes, then rerun affected existing BRL/BTS/BPC/AAP/BLP regressions. This includes recapturing PCU-SC-003 and PCU-SC-004 after the Runs and Diagnostics updates; gate: complete environment report, missing variants non-passing.
 - [ ] 3.2 Prove real browser-to-backend-to-database journeys and each applicable native client edition on the selected target; gate: source-bound target acceptance, no reference-worker substitution.
 - [ ] 3.3 Exercise interruption/rollback and existing unified backup/restore for any new durable records or private files, preserving auth revocation, original identities and once-only business effects; gate: restore/restart integration evidence.
 - [ ] 3.4 Review all mandatory results and unresolved external prerequisites, approve activation deliberately, then sync/archive only after all required gates pass; gate: strict validation, semantic audit, runtime closeout. No sync/archive in planning.

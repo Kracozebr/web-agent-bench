@@ -69,7 +69,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .release-prices > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fcfcff; }
 .release-prices dt { color: var(--ink-soft); font-size: 12px; }
 .release-prices dd { margin: 0; color: var(--ink); font-family: var(--font-mono); font-size: 14px; font-weight: 750; white-space: nowrap; }
-.benchmark-heading { margin-bottom: 0; }
+.benchmark-heading { max-width: 850px; margin: 0; }
+.benchmark-task-catalog { padding: 4px 22px 0; }
+.benchmark-version-grid { align-items: stretch; }
+.benchmark-version-card { display: grid; align-content: start; gap: 12px; color: inherit; text-decoration: none; transition: border-color .15s ease, transform .15s ease; }
+.benchmark-version-card:hover { border-color: #b6b9db; transform: translateY(-1px); }
+.benchmark-version-card h2, .benchmark-version-card p { margin: 0; }
+.benchmark-version-card .pill { justify-self: start; }
+.benchmark-version-prices { display: grid; gap: 7px; margin: 0; }
+.benchmark-version-prices > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+.benchmark-version-prices dt { color: var(--ink-soft); font-size: 12px; }
+.benchmark-version-prices dd { margin: 0; color: var(--ink); font-family: var(--font-mono); font-weight: 750; white-space: nowrap; }
+.benchmark-version-action { color: var(--primary-ink); font-size: 12px; font-weight: 700; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
 .section-heading h2 { margin-bottom: 0; }
 .section-heading > p { max-width: 330px; margin-bottom: 2px; text-align: right; }
@@ -99,6 +110,7 @@ h3 { margin-bottom: 7px; font-size: 14px; }
 .span-4 { grid-column: span 4; }
 .stack { display: grid; gap: 16px; }
 .stack-sm { display: grid; gap: 10px; }
+.stack-lg { display: grid; gap: 24px; }
 .muted { color: var(--ink-soft); }
 .fine { color: var(--ink-faint); font-size: 12px; }
 .button-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
@@ -239,6 +251,8 @@ td code, code { font-family: var(--font-mono); font-size: 11px; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 7px; }
   .section-heading > p { text-align: left; }
   .release-prices { grid-template-columns: 1fr; }
+  .benchmark-task-catalog { padding: 0 18px; }
+  .benchmark-version-prices > div { align-items: flex-start; flex-direction: column; gap: 2px; }
   .landing-lower .span-8, .landing-lower .span-4 { grid-row: auto; }
 }
 

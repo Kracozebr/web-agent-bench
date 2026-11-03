@@ -18,10 +18,11 @@ Implementation is approved on 2026-10-31. Product code is being implemented; all
 - [x] 2.5 Reuse the existing authoritative public Ranked read model and best-result pointer; expose only discovery navigation, preserving its selection and privacy contract. PBD-SC-004 actual coordinator handoff/database/cache gate remains `not_run`.
 - [x] 2.6 Distinguish healthy empty results, qualification restrictions, missing results, and unavailable service; provide safe retry on the list and do not weaken guards or error caching. PBD-SC-005 HTTP/manifest/cache transition gate remains `not_run`.
 - [x] 2.7 Keep explanatory content separate from release/results activation; catalog release state is informational and does not enable a cohort. PBD-SC-006 target-profile and activation-denial gate remains `not_run`.
+- [x] 2.8 Add a read-only allowlisted catalogue of distinct activated release versions; show the current release as “Web3 Agent Bench v1”, retain retired versions as completed history, and render version-specific detail. Do not expose release identity, hashes, manifests, cases or evidence. PBD-SC-002 remains `not_run` until captured and independently replayed.
 
 ## 3. Prove integration before acceptance
 
-- [ ] 3.1 Capture every approved observation and negative variant on frozen source/profile and independently replay raw paths/hashes; rerun applicable BRL/BTS/BPC/AAP/BLP regressions. Missing variants are non-passing.
+- [ ] 3.1 Capture every approved observation and negative variant on frozen source/profile and independently replay raw paths/hashes; rerun applicable BRL/BTS/BPC/AAP/BLP regressions. This includes recapturing PBD-SC-002 after the version catalogue changes. Missing variants are non-passing.
 - [ ] 3.2 Prove the real anonymous browser-to-API and eligible-result journeys against the selected target with independent database/BEF observation. Local UI or API tests alone do not pass the gate.
 - [x] 3.3 No new durable records, private files, or mutation flows were added, so no new migration/rollback/restore rehearsal is applicable to this implementation. Existing unified backup/restore target controls remain required by BPC and PBD-SC-006.
 - [ ] 3.4 Review mandatory gate results and external prerequisites; deliberate release activation, spec sync, and archive are allowed only after all required gates pass under `docs/task-design.md`.

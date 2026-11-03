@@ -83,7 +83,7 @@ export function DiagnosticsPanel({ admin = false }: { admin?: boolean }) {
     <section className="page-heading">
       <p className="eyebrow">Private support evidence</p>
       <h1>{admin ? "Client diagnostics" : "Your diagnostics"}</h1>
-      <p className="lede">Inspect received call evidence and collection gaps. Diagnostic reports do not change benchmark scores, payments or run status.</p>
+      <p className="lede">Review safe MCP/client call evidence and collection gaps. If automatic delivery failed, import the bounded helper export here. This is support evidence, not a service health check, and it does not change benchmark scores, payments or run status.</p>
       <p><Link href={admin ? "/admin/reports" : "/reports"}>Open reports</Link>{!admin ? <> · <Link href="/agents">Manage connected agents</Link></> : null}</p>
     </section>
     {error ? <p className="status-box status-error" role="alert">{error}</p> : null}

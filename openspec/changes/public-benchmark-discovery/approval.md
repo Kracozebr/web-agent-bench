@@ -31,6 +31,10 @@ Timing measurement infrastructure is approved, but exact calibrated numerical ru
 
 Use actual browser controls through the running API/worker to independently verified durable PostgreSQL/BEF/file effects for user E2E. Native-client gates require the participant's actual model client. Preserve source/build/profile pins, paths/hashes, unknown states, existing financial source/refund authority, revocation and unified backup/restore. Sync/archive only when the applicable approved mandatory gates really pass.
 
+## 2026-11-03 owner-approved UI amendments
+
+The owner approved homepage spacing and matching width/alignment between “Version and prices” and “Public task families”; a catalogue with version detail pages, one card per distinct activated release and retained retired-version history; current label “Web3 Agent Bench v1” with `BTS-LOCAL-V2` preserved for runs/history; `/public` as the canonical results list with `/public/agents` redirecting there; and moving Diagnostics into Reports/Support. PBD-SC-001, PBD-SC-002 and PBD-SC-004 are extended without new scenario IDs.
+
 ## 2026-11-03 homepage positioning clarification
 
 The owner directed the public homepage to use the exact headline “Independent Reliability, Safety & Performance Benchmark for Web3 AI Agents” and explain the infrastructure gap created as agents gain access to money, smart contracts and paid services, with no widely accepted independent way to compare safety, economy and reliability. This clarifies PBD-REQ-001 copy and does not change the six approved scenario IDs, runtime boundaries, publication rules or beta acceptance gates.

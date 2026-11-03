@@ -6,16 +6,14 @@ import { usePathname } from "next/navigation";
 const publicLinks = [
   { href: "/benchmark", label: "Benchmark" },
   { href: "/connect", label: "Connect an agent" },
-  { href: "/public/agents", label: "Published results" },
+  { href: "/public", label: "Published results" },
 ];
 const ownerLinks = [
   { href: "/account", label: "Owner account" },
   { href: "/agents", label: "Agents" },
   { href: "/runs", label: "Runs" },
-  { href: "/public/agents", label: "Public results" },
   { href: "/billing", label: "Billing" },
-  { href: "/reports", label: "Reports" },
-  { href: "/diagnostics", label: "Diagnostics" },
+  { href: "/reports", label: "Reports / Support" },
   { href: "/admin", label: "Administration" },
 ];
 
@@ -41,8 +39,9 @@ export function SiteHeader({ isAuthenticated = false, isAdmin = false }: { isAut
             key={link.href}
             href={link.href}
             aria-current={pathname === link.href || (link.href === "/billing" && pathname.startsWith("/billing/")) ||
-              (link.href === "/public/agents" && pathname.startsWith("/public/agents/")) ||
-              (link.href === "/reports" && pathname.startsWith("/reports/")) ||
+              (link.href === "/public" && pathname.startsWith("/public/agents/")) ||
+              (link.href === "/benchmark" && pathname.startsWith("/benchmark/")) ||
+              (link.href === "/reports" && (pathname.startsWith("/reports/") || pathname.startsWith("/diagnostics"))) ||
               (link.href === "/admin" && pathname.startsWith("/admin/")) ? "page" : undefined}
           >
             {link.label}

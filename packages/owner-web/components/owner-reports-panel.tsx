@@ -162,9 +162,9 @@ export function OwnerReportsPanel() {
   if (!owner) return <p className="notice">Sign in with an admitted owner account to manage reports.</p>;
 
   return <div className="stack">
-    <section className="page-heading"><p className="eyebrow">Private support</p><h1>Reports</h1>
+    <section className="page-heading"><p className="eyebrow">Private support</p><h1>Reports / Support</h1>
       <p className="lede">Send a private issue report to the support team. Do not include passwords, tokens, private keys, or hidden task answers. Reports and screenshots are not grading or billing evidence.</p>
-      <p><Link href="/diagnostics">View safe client diagnostics and collection coverage</Link></p>
+      <p><Link href="/diagnostics">Open Diagnostics</Link> — review safe client/MCP call evidence, collection gaps, or import a helper export if delivery failed. This is not a health check and does not change scores, payments, or run status.</p>
     </section>
     {error ? <p className="status-box status-error" role="alert" data-testid="owner-report-error">{error}</p> : null}
     {message ? <p className="notice notice-success" role="status">{message}</p> : null}

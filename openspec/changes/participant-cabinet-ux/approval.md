@@ -34,6 +34,10 @@ Use actual browser controls through the running API/worker to independently veri
 
 The owner explicitly requested agents to implement the UI according to the existing remarks/specification and new Remote MCP plan after the successful Training/Ranked E2E commit and push. This continues the approved PCU assertions and replaces installer wording with native Remote MCP URL/OAuth setup. Client-reported name/version remain unverified observations; stable authorization identity and last preflight do not prove current client health. All eight runtime gates remain not_run until actual evidence is independently replayed.
 
+## 2026-11-03 owner-approved UI amendments
+
+The owner approved five-second Runs polling while visible, pausing while hidden and refreshing on return; copying the handoff prompt without inline rendering; and moving Diagnostics under Reports/Support with an explanation of safe client/MCP evidence, collection gaps and helper-export recovery. PCU-SC-003 and PCU-SC-004 are extended without new scenario IDs. The public label is “Web3 Agent Bench v1”; internal ID `BTS-LOCAL-V2` remains stable.
+
 ## Signed history presentation reconciliation (2026-11-01)
 
 The current implementation instruction clarifies PCU-SC-002's `negative_refund_display` variant without changing accounting: `oid_ledger_entry.amount_units` remains strictly positive. Display direction derives from the authoritative entry type: debit is negative, refund is a positive credit, and reserve/release are explicitly holds rather than spending. The original positive magnitude, exact micro-USDC and entry type remain accessible. This is presentation within the approved formatting boundary; it does not authorize negative database rows, modified balances, changed prices or altered financial arithmetic. Actual tied debit/refund history fixtures and read-only fingerprints exercise the variant.

@@ -55,6 +55,11 @@ function agentCanUse(agent: AgentCard, mode: RunMode): boolean {
   return agent.permissions[mode] === true;
 }
 
+function mergeFirstPage<T extends { id: string }>(fresh: T[], existing: T[]): T[] {
+  const freshIds = new Set(fresh.map((item) => item.id));
+  return [...fresh, ...existing.filter((item) => !freshIds.has(item.id))];
+}
+
 export function RunLaunchPanel() {
   const router = useRouter();
   const [ownerReady, setOwnerReady] = useState(false);
@@ -82,6 +87,7 @@ export function RunLaunchPanel() {
   const pendingCreate = useRef<PendingOperation | null>(null);
   const pendingCancels = useRef<Record<string, PendingOperation>>({});
   const pendingRunCancels = useRef<Record<string, PendingOperation>>({});
+  const polling = useRef(false);
 
   const refresh = useCallback(async (refreshFeedback = false) => {
     setBusy(true);
@@ -110,6 +116,38 @@ export function RunLaunchPanel() {
       setLoading(false);
     }
   }, [router]);
+
+  const pollLaunchState = useCallback(async () => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible" || polling.current) return;
+    polling.current = true;
+    try {
+      const [intentResponse, runResponse] = await Promise.all([
+        apiRequest<IntentsResponse>("/api/owner/runs/intents?limit=5"),
+        apiRequest<RunsResponse>("/api/owner/runs?limit=5"),
+      ]);
+      setIntents((current) => mergeFirstPage(intentResponse.intents, current));
+      setRuns((current) => mergeFirstPage(runResponse.runs, current));
+      setIntentCursor((current) => current ?? intentResponse.nextCursor ?? null);
+      setRunCursor((current) => current ?? runResponse.nextCursor ?? null);
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) router.replace("/sign-in");
+    } finally {
+      polling.current = false;
+    }
+  }, [router]);
+
+  useEffect(() => {
+    if (!ownerReady) return;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void pollLaunchState();
+    };
+    const interval = window.setInterval(refreshWhenVisible, 5000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [ownerReady, pollLaunchState]);
 
   useEffect(() => {
     let active = true;
@@ -316,7 +354,7 @@ export function RunLaunchPanel() {
       setError(false);
       setMessage("Copied the complete request: preflight, accept and continuously execute this run.");
     } catch {
-      setMessage("Clipboard access is unavailable. The safe handoff prompt is shown below for manual copying.");
+      setMessage("Clipboard access is unavailable. Allow clipboard access and try again; the prompt text is not displayed on this page.");
       setError(true);
     }
   }
@@ -509,7 +547,6 @@ export function RunLaunchPanel() {
                     <button className="button button-small" data-testid={`run-intent-handoff-${intent.id}`} type="button" onClick={() => void copyHandoffPrompt(intent)} disabled={busy}>
                       {copiedHandoffId === intent.id ? "Copied safe handoff" : "Copy safe handoff prompt"}
                     </button>
-                    <p className="fine" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }} data-testid={`run-intent-handoff-text-${intent.id}`}>{buildRunHandoffPrompt(intent)}</p>
                   </div>
                   <div className="button-row">
                     <button className="button button-danger" data-testid={`run-intent-cancel-${intent.id}`} type="button" onClick={() => void cancelIntent(intent)} disabled={busy}>Cancel pending intent</button>

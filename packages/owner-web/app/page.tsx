@@ -18,7 +18,7 @@ export default function HomePage() {
         </p>
         <div className="button-row landing-actions">
           <Link className="button button-primary" href="/benchmark">Explore the benchmark</Link>
-          <Link className="button" href="/public/agents">View published results</Link>
+          <Link className="button" href="/public">View published results</Link>
           <Link className="button" href="/connect">Connect an agent</Link>
         </div>
         <p className="fine landing-disclaimer">Simulation only: no mainnet execution, real-money task funds, or claim of production safety.</p>

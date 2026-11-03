@@ -28,18 +28,19 @@ export function PublicReleaseSummary({ compact = false }: { compact?: boolean })
         const body = await response.json() as {
           catalogStatus?: string;
           benchmarkVersion?: string;
+          displayName?: string;
           ranked?: { priceUnits?: string; precision?: number };
           training?: { priceUnits?: string; precision?: number };
           tasks?: unknown;
         };
-        if (body.catalogStatus !== 'active' || !body.benchmarkVersion || !body.ranked?.priceUnits ||
+        if (body.catalogStatus !== 'active' || !body.benchmarkVersion || !body.displayName || !body.ranked?.priceUnits ||
             !body.training?.priceUnits || !taskProjectionMatches(body.tasks)) {
           if (active) setState({ kind: 'unavailable' });
           return;
         }
         const rankedPrice = formatUsdc(body.ranked.priceUnits, body.ranked.precision ?? 0);
         const trainingPrice = formatUsdc(body.training.priceUnits, body.training.precision ?? 0);
-        if (active) setState({ kind: 'active', version: body.benchmarkVersion, rankedPrice, trainingPrice });
+        if (active) setState({ kind: 'active', version: body.displayName, rankedPrice, trainingPrice });
       })
       .catch(() => { if (active) setState({ kind: 'unavailable' }); });
     return () => { active = false; };

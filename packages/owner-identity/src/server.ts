@@ -32,6 +32,7 @@ import type { RunServiceDependencies } from "./run-service.js";
 import { unavailableTaskExecutionReadinessProvider, type TaskExecutionReadiness } from "./task-release.js";
 import { registerPublicRankedRoutes } from "./public-ranked.js";
 import { registerPublicBenchmarkCatalogRoutes } from "./public-benchmark-catalog.js";
+import { createPostgresPublicBenchmarkHistoryProvider } from "./public-benchmark-history-provider.js";
 import { createPostgresTaskReleaseProvider, createPostgresTaskReleaseQuerySource } from "./task-store.js";
 import { closeExpiredTaskActions } from "./task-action-service.js";
 import { cleanupFailedLocalBefTaskCoordinatorStartup, createLocalBefTaskCoordinator,
@@ -536,9 +537,11 @@ async function start() {
   const betaOperationsEnabled = config.betaManifest !== undefined || config.localReportAcceptanceEnabled;
   const operationsPrivateDataDir = config.betaManifest?.storage.privateDataDir ??
     (config.localReportAcceptanceEnabled ? config.privateDataDir : undefined);
+  const taskReleaseProvider = createPostgresTaskReleaseProvider(db);
   const admissionReleaseProvider = config.betaManifest
-    ? pinBetaRunReleaseProvider(createPostgresTaskReleaseProvider(db), config.betaManifest)
-    : createPostgresTaskReleaseProvider(db);
+    ? pinBetaRunReleaseProvider(taskReleaseProvider, config.betaManifest)
+    : taskReleaseProvider;
+  const publicBenchmarkHistoryProvider = createPostgresPublicBenchmarkHistoryProvider(db, taskReleaseProvider);
   const runServiceDependencies = {
     db,
     betaOperationsEnabled,
@@ -699,6 +702,7 @@ async function start() {
   registerPublicRankedRoutes(app, { db, config });
   registerPublicBenchmarkCatalogRoutes(app, {
     provider: admissionReleaseProvider,
+    historyProvider: publicBenchmarkHistoryProvider,
     resultsConfigured: config.betaManifest !== undefined,
   });
 

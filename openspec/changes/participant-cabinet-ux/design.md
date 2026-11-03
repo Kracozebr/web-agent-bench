@@ -16,6 +16,12 @@ Keep the current backend quote/reservation/cancellation APIs and server permissi
 
 Money display is presentation only: two decimal places using an explicit documented display rounding rule, exact micro-units in accessible details, and a nonzero less-than-0.01 marker. Server validations use exact units even if two values look identical after rounding. Histories use bounded server pagination with stable created_at plus unique ID cursor and an initial five-row viewport; scrolling must preserve complete authorized history and keyboard accessibility.
 
+### Live run request and diagnostics placement
+
+Runs polls the owner's first page of launch requests and admitted runs every five seconds while visible, pauses network polling in hidden tabs, and refreshes immediately when visible again. Polls are read-only, coalesced, do not refresh unrelated catalogs, and do not replace status messages each interval. The full handoff prompt remains available through Copy but is not rendered inline by default.
+
+Diagnostics is a private support-evidence viewer for safe MCP/client events, collection completeness and helper-export recovery after delivery failure. Reports/Support explains and links to Diagnostics. It does not monitor service health or mutate scores, payments or run status.
+
 ### Diagnostics, reports and admin
 
 BER owns evidence-based error attribution and action truth; PCU maps stable allowlisted categories to readable text plus an optional sanitized support ID. Do not turn a user report into platform-failure authority or an automatic refund. Training detail can inspect authorized open-task traces and disclosed criteria; Ranked feedback remains terminal-only allowlisted reasons, with no new case/validator leakage. Current View results is too coarse and must be upgraded with evidence-linked causes, not fabricated textual explanations.
