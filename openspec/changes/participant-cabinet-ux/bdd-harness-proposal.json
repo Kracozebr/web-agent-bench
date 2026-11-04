@@ -105,7 +105,8 @@
         "accessible_help_interaction",
         "safe_state_error_mapping",
         "correlation_id_binding",
-        "no_secret_render"
+        "no_secret_render",
+        "distinct_active_vs_hovered_nav_background"
       ],
       "negative_variants": [
         "unknown_code",

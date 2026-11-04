@@ -1,6 +1,7 @@
 """Read-only PCU raw replay. Producer status/facts are never accepted as evidence."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from decimal import Decimal
@@ -133,8 +134,53 @@ def verify_capture(root: Path, reference: dict) -> dict:
     need(help_case["keyboardExpanded"] is True and help_case["pointerExpanded"] is True, "accessible help")
     need(help_case["unknown"]["status"] == 400, "unknown cursor rejection")
     need(re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", help_case["unknown"]["requestId"] or ""), "server support correlation missing")
-    result["PCU-SC-004"]["facts"].update(accessible_help_interaction=True, correlation_id_binding=True)
-    rendered = help_case["renderedPageText"]
+    navigation = help_case.get("navigationColors")
+    need(isinstance(navigation, dict) and navigation.get("activeHref") != navigation.get("hoveredHref"), "active and hovered routes are distinct")
+    color_re = re.compile(r"rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)")
+    active_color = navigation.get("activeBackground")
+    hover_color = navigation.get("hoveredBackground")
+    need(isinstance(active_color, str) and isinstance(hover_color, str), "active and hovered navigation backgrounds are strings")
+    active_match = color_re.fullmatch(active_color)
+    hover_match = color_re.fullmatch(hover_color)
+    need(active_match and hover_match, "active and hovered navigation backgrounds are rendered colors")
+    active_rgb = tuple(map(int, active_match.groups()))
+    hover_rgb = tuple(map(int, hover_match.groups()))
+    need(max(abs(active - hover) for active, hover in zip(active_rgb, hover_rgb)) >= 8, "active and hovered navigation backgrounds are not visibly distinct")
+    error_mapping = help_case.get("readinessErrorMapping")
+    need(isinstance(error_mapping, dict) and isinstance(error_mapping.get("cases"), list), "readiness error mapping capture")
+    mapped = {row.get("variant"): row for row in error_mapping["cases"] if isinstance(row, dict)}
+    expected_codes = {
+        "offline_client": "client_offline",
+        "executor_unavailable": "executor_unavailable",
+        "unknown_code": "pcu_unrecognized_readiness",
+        "malicious_error_text": "<script>PCU_MALICIOUS_READINESS</script>",
+    }
+    need(set(mapped) == set(expected_codes), "readiness error mapping variants")
+    for variant, code in expected_codes.items():
+        row = mapped[variant]
+        need(row.get("apiStatus") == 200 and row.get("codeSha256") == hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            "readiness fault injection is bound to its actual API response")
+    need("client has not been verified" in mapped["offline_client"]["renderedText"].lower()
+        and "open your client" in mapped["offline_client"]["renderedText"].lower(), "offline client error lacks safe next action")
+    need("execution is unavailable" in mapped["executor_unavailable"]["renderedText"].lower()
+        and "wait for service recovery" in mapped["executor_unavailable"]["renderedText"].lower(), "executor error lacks safe next action")
+    neutral = "the server has not confirmed this stage is ready"
+    need(neutral in mapped["unknown_code"]["renderedText"].lower()
+        and "pcu_unrecognized_readiness" not in mapped["unknown_code"]["renderedText"], "unknown readiness code was not neutral")
+    need(neutral in mapped["malicious_error_text"]["renderedText"].lower()
+        and "<script>" not in mapped["malicious_error_text"]["renderedText"]
+        and "PCU_MALICIOUS_READINESS" not in mapped["malicious_error_text"]["renderedText"], "malicious readiness text was rendered")
+    before, after = error_mapping.get("before"), error_mapping.get("after")
+    need(isinstance(before, dict) and isinstance(after, dict)
+        and {row["id"] for row in before["intents"]} == {row["id"] for row in after["intents"]}
+        and before["grants"] == after["grants"] and before["history"] == after["history"]
+        and error_mapping.get("mutationRequests") == [],
+        "readiness help/error mapping caused a durable effect or automatic paid retry")
+    result["PCU-SC-004"]["facts"].update(accessible_help_interaction=True, correlation_id_binding=True,
+        safe_state_error_mapping=True, distinct_active_vs_hovered_nav_background=True,
+        no_automatic_paid_retry=True)
+    result["PCU-SC-004"]["verifiedVariants"].extend(expected_codes)
+    rendered = help_case["renderedPageText"] + "\n" + "\n".join(row["renderedText"] for row in mapped.values())
     need(isinstance(rendered, str) and not re.search(r"PCU_SECRET_CANARY|aap1_[A-Za-z0-9_-]{43}|Bearer\s+\S+", rendered), "credential/canary rendered")
     result["PCU-SC-004"]["facts"]["no_secret_render"] = True
     result["PCU-SC-004"]["verifiedVariants"].append("screen_keyboard_only")

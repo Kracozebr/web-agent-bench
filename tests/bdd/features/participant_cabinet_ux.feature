@@ -22,13 +22,13 @@ Feature: Participant cabinet and actionable diagnostics approved scenarios
   Scenario: Keep complete histories compact and private
     Given the approved environment setup for "PCU-SC-003"
     When one owner scrolls and expands each history while another-owner cursor or stale cursor is supplied
-    Then all and only own records SHALL remain reachable without duplicates or omissions; expanded technical details SHALL not expose credentials or sealed data
+    Then all and only own records SHALL remain reachable without duplicates or omissions; new requests, agent acceptance and admitted-run status changes SHALL appear automatically while visible, with polling paused while hidden; the copy control SHALL copy the complete safe handoff prompt without rendering it inline; expanded details SHALL not expose credentials or sealed data
 
   @req_pcu_req_004 @scn_pcu_sc_004 @gate_environment @mandatory
   Scenario: Explain readiness and support through accessible help
     Given the approved environment setup for "PCU-SC-004"
-    When the user opens launch/help on keyboard and pointer and encounters known and unknown errors
-    Then the UI SHALL identify the failing stage and safe next action without exposing secrets, claiming connection from a flicker or implying an accepted action executed
+    When the user opens launch/help on keyboard and pointer, compares the active navigation link with a hovered inactive link and encounters known and unknown errors
+    Then the UI SHALL identify the failing stage and safe next action without exposing secrets, claiming connection from a flicker or implying an accepted action executed; Reports/Support SHALL link to Diagnostics and explain its purpose/limits, Diagnostics SHALL be absent from primary navigation, and active and hovered inactive navigation links SHALL have distinct background colors while active selection remains visible
 
   @req_pcu_req_005 @scn_pcu_sc_005 @gate_environment @mandatory
   Scenario: Show detailed owner Training feedback safely

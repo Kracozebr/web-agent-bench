@@ -38,6 +38,10 @@ The owner explicitly requested agents to implement the UI according to the exist
 
 The owner approved five-second Runs polling while visible, pausing while hidden and refreshing on return; copying the handoff prompt without inline rendering; and moving Diagnostics under Reports/Support with an explanation of safe client/MCP evidence, collection gaps and helper-export recovery. PCU-SC-003 and PCU-SC-004 are extended without new scenario IDs. The public label is “Web3 Agent Bench v1”; internal ID `BTS-LOCAL-V2` remains stable.
 
+## 2026-11-04 owner-approved navigation state amendment
+
+The owner approved distinct visual background colors for the active primary-navigation route and an inactive route under pointer hover. This extends PCU-REQ-004 and PCU-SC-004 without adding a scenario ID; keyboard focus remains governed by the existing visible-focus rule.
+
 ## Signed history presentation reconciliation (2026-11-01)
 
 The current implementation instruction clarifies PCU-SC-002's `negative_refund_display` variant without changing accounting: `oid_ledger_entry.amount_units` remains strictly positive. Display direction derives from the authoritative entry type: debit is negative, refund is a positive credit, and reserve/release are explicitly holds rather than spending. The original positive magnitude, exact micro-USDC and entry type remain accessible. This is presentation within the approved formatting boundary; it does not authorize negative database rows, modified balances, changed prices or altered financial arithmetic. Actual tied debit/refund history fixtures and read-only fingerprints exercise the variant.

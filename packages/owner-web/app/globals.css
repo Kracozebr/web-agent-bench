@@ -3,6 +3,7 @@
   --canvas: #f7f8fc;
   --surface: #fff;
   --surface-soft: #f0f2ff;
+  --nav-hover: #e4eaf5;
   --ink: #172238;
   --ink-soft: #5f6b82;
   --ink-faint: #7e899e;
@@ -46,7 +47,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .brand-copy small { color: var(--ink-faint); font-size: 10px; }
 .topnav { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .topnav a { padding: 8px 12px; border-radius: 9px; color: var(--ink-soft); text-decoration: none; font-size: 12px; font-weight: 600; }
-.topnav a:hover, .topnav a[aria-current="page"] { background: #eeefff; color: var(--primary-ink); }
+.topnav a:hover:not([aria-current="page"]) { background: var(--nav-hover); color: var(--primary-ink); }
+.topnav a[aria-current="page"] { background: #eeefff; color: var(--primary-ink); }
 .main-content { width: min(100% - 36px, 1080px); min-height: calc(100vh - 144px); margin: 0 auto; padding: clamp(30px, 6vw, 72px) 0; }
 .site-footer { display: flex; justify-content: space-between; gap: 20px; padding: 18px clamp(18px, 5vw, 68px); border-top: 1px solid var(--line); background: #fbfbfe; color: var(--ink-faint); font-size: 11px; }
 .page-heading { max-width: 700px; margin: 0 auto 28px; }

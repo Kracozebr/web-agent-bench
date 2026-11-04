@@ -3,12 +3,12 @@
   "spec_snapshot": {
     "requirements": 8,
     "scenarios": 8,
-    "normative_clauses": 48,
+    "normative_clauses": 60,
     "requirement_clause_counts": {
       "PCU-REQ-001": 6,
       "PCU-REQ-002": 5,
-      "PCU-REQ-003": 5,
-      "PCU-REQ-004": 5,
+      "PCU-REQ-003": 11,
+      "PCU-REQ-004": 11,
       "PCU-REQ-005": 7,
       "PCU-REQ-006": 8,
       "PCU-REQ-007": 6,
@@ -142,7 +142,8 @@
         "accessible_help_interaction",
         "safe_state_error_mapping",
         "correlation_id_binding",
-        "no_secret_render"
+        "no_secret_render",
+        "distinct_active_vs_hovered_nav_background"
       ],
       "negative_variants": [
         "unknown_code",

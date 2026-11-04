@@ -201,9 +201,62 @@ export async function runParticipantCabinetCases(input) {
     await help.focus(); await page.keyboard.press("Enter");
     const keyboardExpanded = await help.locator("..").getAttribute("open") !== null;
     await help.click(); await help.click();
+    const navPage = await page.context().newPage();
+    let navigationColors;
+    try {
+      await navPage.goto("/agents", { waitUntil: "domcontentloaded" });
+      const activeNav = navPage.locator(".topnav a[aria-current='page']");
+      const hoveredNav = navPage.locator(".topnav a[href='/runs']");
+      await activeNav.waitFor();
+      await hoveredNav.hover();
+      navigationColors = await navPage.evaluate(() => {
+        const active = document.querySelector(".topnav a[aria-current='page']");
+        const hovered = document.querySelector(".topnav a:hover:not([aria-current='page'])");
+        if (!active || !hovered) return null;
+        return { activeHref: active.getAttribute("href"), activeBackground: getComputedStyle(active).backgroundColor,
+          hoveredHref: hovered.getAttribute("href"), hoveredBackground: getComputedStyle(hovered).backgroundColor };
+      });
+    } finally { await navPage.close(); }
+    const readinessPage = await page.context().newPage();
+    const injectedReadinessCases = [
+      { variant: "offline_client", code: "client_offline" },
+      { variant: "executor_unavailable", code: "executor_unavailable" },
+      { variant: "unknown_code", code: "pcu_unrecognized_readiness" },
+      { variant: "malicious_error_text", code: "<script>PCU_MALICIOUS_READINESS</script>" },
+    ];
+    const readinessErrorMapping = { cases: [], before: await snapshot(pool, ownerId), mutationRequests: [] };
+    const recordMutationRequest = (request) => {
+      if (request.method() !== "GET") readinessErrorMapping.mutationRequests.push({
+        method: request.method(), path: new URL(request.url()).pathname });
+    };
+    readinessPage.on("request", recordMutationRequest);
+    let injectedCode = "";
+    let readinessApiStatus = null;
+    await readinessPage.route("**/api/owner/runs/catalog", async (route) => {
+      const response = await route.fetch();
+      readinessApiStatus = response.status();
+      const body = await response.json().catch(() => null);
+      if (!response.ok() || !body || typeof body !== "object") return route.fulfill({ response });
+      return route.fulfill({ response, json: { ...body, readyToStart: false, readinessReason: injectedCode } });
+    });
+    try {
+      for (const injected of injectedReadinessCases) {
+        injectedCode = injected.code;
+        readinessApiStatus = null;
+        await readinessPage.goto("/runs", { waitUntil: "domcontentloaded" });
+        const message = readinessPage.getByTestId("run-release-readiness");
+        await message.waitFor();
+        readinessErrorMapping.cases.push({ variant: injected.variant, codeSha256: hash(injected.code),
+          apiStatus: readinessApiStatus, renderedText: await message.innerText() });
+      }
+      readinessErrorMapping.after = await snapshot(pool, ownerId);
+    } finally {
+      readinessPage.off("request", recordMutationRequest);
+      await readinessPage.close();
+    }
     const unknown = await deny(page, "/api/owner/billing/history?cursor=invalid");
     capture.cases["PCU-SC-004"] = { keyboardExpanded, pointerExpanded: await help.locator("..").getAttribute("open") !== null,
-      readiness: await page.getByTestId("run-release-readiness").textContent().catch(() => null), unknown,
+      navigationColors, readinessErrorMapping, readiness: await page.getByTestId("run-release-readiness").textContent().catch(() => null), unknown,
       renderedPageText: await page.getByTestId("run-launch-page").innerText() };
 
     capture.phase = "training_feedback";

@@ -1,0 +1,58 @@
+{
+  "acceptance_state": "failed",
+  "active_delta_sha256": "73bdbed4b706c667ecf32189a5eb515f11ff73c6ca8a9ee17cc9c24059e5d0d5",
+  "bef_spec_profile": "active-delta",
+  "change": "participant-cabinet-ux",
+  "command": [
+    ".venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/bdd/mappers/test_participant_cabinet_ux_bdd.py",
+    "--change",
+    "participant-cabinet-ux",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=artifacts/bdd-evidence/participant-cabinet-ux-pytest.xml"
+  ],
+  "execution_started": true,
+  "exit_code": 1,
+  "finished_at_utc": "2026-11-04T04:41:43.434315Z",
+  "gate": {
+    "class": "environment",
+    "mandatory": true
+  },
+  "git_commit": "98c191cc106d9b9116b0ab29552c3a3146bb5c21",
+  "git_worktree_dirty": true,
+  "harness_audit": {
+    "approved_scenarios": 8,
+    "change": "participant-cabinet-ux",
+    "coverage_status": "complete",
+    "errors": [],
+    "normative_source": "openspec/changes/participant-cabinet-ux/specs/*/spec.md",
+    "protected_scenarios": 8,
+    "status": "passed",
+    "unprotected_scenarios": [],
+    "warnings": []
+  },
+  "harness_contract_sha256": "a49cf7f0295a68c25929845672a33721a14e388fa89f35adca9541a599e86033",
+  "harness_sources_sha256": "a0403c6fa39892ee0b00fc2e2bcc7cd535ec43f6b6720c40bc52989c1b4d3097",
+  "harness_sources_sha256_after": "a0403c6fa39892ee0b00fc2e2bcc7cd535ec43f6b6720c40bc52989c1b4d3097",
+  "lifecycle_phase": "active-delta",
+  "main_specs_sha256": "bf49a950f9d6b1656907c6e8cf1a9c6e04dea9ff5991efd3f0bc5276f62d1551",
+  "normative_source": "openspec/changes/participant-cabinet-ux/specs/*/spec.md",
+  "scenario_map_sha256": "cfdb35020dddadca979acafdfd677cce1c81945a8d5b46b66f5ebea691a68620",
+  "scenario_results": {
+    "PCU-SC-001": "failed",
+    "PCU-SC-002": "failed",
+    "PCU-SC-003": "failed",
+    "PCU-SC-004": "failed",
+    "PCU-SC-005": "failed",
+    "PCU-SC-006": "failed",
+    "PCU-SC-007": "failed",
+    "PCU-SC-008": "failed"
+  },
+  "schema_version": 1,
+  "source_unchanged": true,
+  "started_at_utc": "2026-11-04T04:41:12.294882Z"
+}

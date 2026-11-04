@@ -82,6 +82,8 @@ class ParticipantCabinetCase:
         context.check("safe_state_error_mapping", facts.get("safe_state_error_mapping") is True)
         context.check("correlation_id_binding", facts.get("correlation_id_binding") is True)
         context.check("no_secret_render", facts.get("no_secret_render") is True)
+        context.check("distinct_active_vs_hovered_nav_background", facts.get("distinct_active_vs_hovered_nav_background") is True)
+        context.check("no_automatic_paid_retry", facts.get("no_automatic_paid_retry") is True)
 
     def _execute_PCU_SC_005(self, context):
         self._capture(context)

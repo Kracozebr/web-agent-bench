@@ -21,6 +21,7 @@ Implementation approved on 2026-10-31; uncompleted tasks remain unchecked. [Appr
 - [ ] 2.9 Implement present connection management without manual credential clutter at owner_browser_remote_mcp_status_native_client_postgres; exercise all listed negative variants and independently inspect scoped_grant_changes_only, unchanged_caps_and_other_connections; gate: PCU-SC-008 (environment).
 - [x] 2.10 Add visible-page five-second polling for launch requests/admitted runs and remove inline handoff-prompt rendering. The updated Runs UI was checked on the Docker preview; its BDD replay remains open in 3.1.
 - [x] 2.11 Move Diagnostics into Reports/Support and explain its evidence/import purpose and limits. The Reports / Support link and explanation were checked on the Docker preview; its BDD replay remains open in 3.1.
+- [x] 2.12 Give the active primary-navigation route and an inactive hovered route distinct background colors. PCU-SC-004 captures and independently replays the computed colors in 3.1.
 
 ## 3. Prove integration before release
 
